@@ -237,7 +237,56 @@ static void downloadImageIfNeeded(const QString &url, const QPersistentModelInde
     });
 }
 
+static QList<Message> readLatestMessagesFromBuffer(RingBuffer<LogEntry>& buffer,
+                                                   int maxMessages,
+                                                   const QString& contactId,
+                                                   int appid2,
+                                                   bool checkAppid,
+                                                   QString* lastMsgId = nullptr)
+{
+    QList<Message> result;
+    if (buffer.capacity() == 0) return result;
+    int head = buffer.totalWritten(); // 需要用 totalWritten()
+    if (head == 0) return result;
 
+    int capacity = buffer.capacity();
+    int firstLogical = (head > capacity) ? (head - capacity) : 0;
+    QVector<Message> temp;
+    temp.reserve(maxMessages);
+
+    for (int logical = head - 1; logical >= firstLogical && temp.size() < maxMessages; --logical) {
+        const LogEntry& e = buffer.at(logical % capacity);
+        if (checkAppid && e.appid != appid2) continue;
+        if (e.groupId != contactId) continue;
+        if (!e.direction.isEmpty() && temp.size() < maxMessages) {
+            if (!e.direction.startsWith("[黑名单]")) {
+                Message me;
+                me.msg = e.direction;
+                me.user = e.user;
+                me.timestamp = e.time;
+                me.isSelf = true;
+                me.hf = e.hf;
+                me.ch = e.deleteid;
+                temp.append(me);
+            }
+        }
+        if (!e.msg.isEmpty() && temp.size() < maxMessages) {
+            Message me;
+            me.msg = e.msg;
+            me.user = e.user;
+            me.timestamp = e.time;
+            me.name = e.user_name;
+            me.hf = e.hf;
+            temp.append(me);
+            if (lastMsgId && lastMsgId->isEmpty()) {
+                *lastMsgId = e.msgid;
+            }
+        }
+    }
+    std::reverse(temp.begin(), temp.end());
+    result = temp.toList();
+    return result;
+}
 
 
 // ==================== MessageListModel ====================
@@ -607,6 +656,7 @@ QSize BubbleDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelI
     int contentHeight = textHeight + imageHeight;
     int bubbleHeight = nameHeight + contentHeight + timeHeight;
     int totalHeight = qMax(bubbleHeight, 30);
+    if(isSelf) totalHeight+=16;
     return QSize(option.rect.width(), totalHeight);
 }
 
@@ -694,21 +744,21 @@ ChatPage::ChatPage(QWidget *parent)
     QFile file("data/全量群.hash");
     if (file.open(QIODevice::ReadOnly)) {
         QDataStream in(&file);
-        in.setVersion(QDataStream::Qt_6_0);
+        in.setVersion(QDataStream::Qt_5_15);
         in >> 全量群;
         file.close();
     }
     QFile file2("data/customGroupNames.hash");
     if (file2.open(QIODevice::ReadOnly)) {
         QDataStream in(&file2);
-        in.setVersion(QDataStream::Qt_6_0);
+        in.setVersion(QDataStream::Qt_5_15);
         in >> customGroupNames;
         file2.close();
     }
     QFile file3("data/最近对话.hash");
     if (file3.open(QIODevice::ReadOnly)) {
         QDataStream in(&file3);
-        in.setVersion(QDataStream::Qt_6_0);
+        in.setVersion(QDataStream::Qt_5_15);
         in >> 最近对话;
         file3.close();
     }
@@ -1127,7 +1177,7 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                 QFile file("data/customGroupNames.hash");
                 if (file.open(QIODevice::WriteOnly)) {
                     QDataStream out(&file);
-                    out.setVersion(QDataStream::Qt_6_0);
+                    out.setVersion(QDataStream::Qt_5_15);
                     out << customGroupNames;
                     file.close();
                 }
@@ -1255,7 +1305,7 @@ void ChatPage::addContact(int type, int appid, const QString& id,const QString &
             QFile file("data/全量群.hash");
             if (file.open(QIODevice::WriteOnly)) {
                 QDataStream out(&file);
-                out.setVersion(QDataStream::Qt_6_0);
+                out.setVersion(QDataStream::Qt_5_15);
                 out << 全量群;   // 直接序列化整个 QHash
                 file.close();
             }
@@ -1419,13 +1469,8 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
         return;
     }
     QString lastMsgId;
-    QList<Message> msg = m_logStore[bufferIdx].readLatestMessages(
-        100,                      // 最多100条消息
-        contactId,                // 群ID
-        appid2,                   // 机器人appid
-        (m_currentBotIndex != -1),// 是否需要检查appid
-        &lastMsgId                // 输出最后一个有效的msgid
-        );
+QList<Message> msg = readLatestMessagesFromBuffer(m_logStore[bufferIdx], 100,
+                                                      contactId, appid2, (m_currentBotIndex != -1), &lastMsgId);
     m_msgid = lastMsgId;
 
     if (msg.size()!=0) {
@@ -1462,7 +1507,7 @@ void ChatPage::onSendmsg(QString &text)
         QFile file("data/最近对话.hash");
         if (file.open(QIODevice::WriteOnly)) {
             QDataStream out(&file);
-            out.setVersion(QDataStream::Qt_6_0);
+            out.setVersion(QDataStream::Qt_5_15);
             out << 最近对话;
             file.close();
         }

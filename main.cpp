@@ -100,10 +100,11 @@ void initdiv()
 }
 
 
-
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
 int main(int argc, char *argv[]) {
+
+
     QApplication a(argc, argv);
     g_totalRuntime = QDateTime::currentSecsSinceEpoch();
     MEMORYSTATUSEX memStatus;
@@ -114,9 +115,11 @@ int main(int argc, char *argv[]) {
     } else {
         totalMemMB = 8192.0;
     }
+
     QUuid uuid = QUuid::createUuid();
     g_keyuuid = uuid.toString(QUuid::WithoutBraces).toStdString();
-    size_t len = g_keyuuid.length();
+    int len = g_keyuuid.length();
+    qDebug() << len << "|" << g_keyuuid.c_str();
     g_keyuuid2 = new char[len + 1];
     strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
 

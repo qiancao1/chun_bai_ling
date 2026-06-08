@@ -1,8 +1,8 @@
 #include "global.h"
 #include "LogPage.h"
-#include "WinHttpRequest.h"
 #include <QMessageBox>
 #include <qtcpserver.h>
+#include <QNetworkReply>
 
 
 
@@ -336,37 +336,60 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
 
     // 5. 设置请求头
     QString contentType = "multipart/form-data; boundary=" + boundary;
+    QNetworkRequest request;
+    request.setUrl(QUrl("https://upload.api.cli.im/upload.php?kid=cliim"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    request.setRawHeader("Accept", "*/*");
+    request.setRawHeader("Origin", "https://cli.im");
+    request.setRawHeader("Referer", "https://cli.im/deqr/");
+    request.setRawHeader("Sec-Fetch-Site", "same-site");
+    request.setRawHeader("Sec-Fetch-Mode", "cors");
 
-    // 6. 发送请求
-    WinHttpRequest req;
-    req.setUrl("https://upload.api.cli.im/upload.php?kid=cliim")
-        .setMethod(WinHttpRequest::Post)
-        .setBody(body)
-        .setContentType(contentType)
-        .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .addHeader("Accept", "*/*")
-        .addHeader("Origin", "https://cli.im")
-        .addHeader("Referer", "https://cli.im/deqr/")
-        .addHeader("Sec-Fetch-Site", "same-site")
-        .addHeader("Sec-Fetch-Mode", "cors")
-        .setTimeout(30000);
+    // 6. 发送请求（同步阻塞）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.post(request, body);
 
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(30000);  // 30秒超时
+    loop.exec();
 
-    bool ok = req.exec();
-    int statusCode = req.statusCode();
-    QByteArray responseBody = req.body();
+    // 7. 处理响应
+    bool ok = false;
+    int statusCode = 0;
+    QByteArray responseBody;
+    QString reqErrorString;
+
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        ok = true;
+        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        responseBody = reply->readAll();
+    } else {
+        if (!timer.isActive()) {
+            reqErrorString = "Request timeout";
+        } else {
+            reqErrorString = reply->errorString();
+        }
+        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        responseBody = reply->readAll();  // 可能包含部分响应
+    }
+    reply->deleteLater();
 
     if (!ok || statusCode != 200) {
         if (errorMsg) {
-            *errorMsg = QString("HTTP %1: %2")
-            .arg(statusCode)
-                .arg(QString::fromUtf8(responseBody));
-            if (errorMsg->isEmpty()) *errorMsg = req.errorString();
+            if (!responseBody.isEmpty())
+                *errorMsg = QString("HTTP %1: %2").arg(statusCode).arg(QString::fromUtf8(responseBody));
+            else
+                *errorMsg = reqErrorString;
         }
         return QString();
     }
 
-    // 7. 解析 JSON 响应
+    // 8. 解析 JSON 响应
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
     if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
@@ -378,7 +401,7 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
     QString status = obj.value("status").toString();
     if (status != "1") {
         QString msg = obj.value("msg").toString();
-        if (errorMsg) *errorMsg = QString("Upload failed, status=%1, msg=%2").arg(status,msg);
+        if (errorMsg) *errorMsg = QString("Upload failed, status=%1, msg=%2").arg(status, msg);
         return QString();
     }
 
@@ -390,7 +413,6 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
     }
     return url;
 }
-
 // 便捷重载：直接根据本地文件路径上传
 QString uploadToMhimg(const QString &filePath, QString *errorMsg)
 {

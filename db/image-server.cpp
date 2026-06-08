@@ -24,7 +24,7 @@
 #include <QHostAddress>
 #include <QSet>
 #include <QCryptographicHash>
-#include "winhttprequest.h"
+#include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUrl>
@@ -284,10 +284,7 @@ static void processUpload(QTcpSocket *socket, const QByteArray &headers, const Q
     }
 
     // 构造访问 URL
-    QString accessUrl = QString("http://%1:%2/?path=%3")
-                            .arg(g_ip)
-                            .arg(g_port)
-                            .arg(QUrl::toPercentEncoding(savePath));
+    QString accessUrl = QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(savePath)));
     QJsonObject respObj;
     respObj["url"] = accessUrl;
     respObj["hash"] = hashHex;
@@ -364,7 +361,7 @@ static void handleUploadByPath(QTcpSocket *socket, const QByteArray &headers, co
     QString accessUrl = QString("http://%1:%2/?path=%3")
                             .arg(g_ip)
                             .arg(g_port)
-                            .arg(QUrl::toPercentEncoding(savePath));
+                            .arg(QString::fromUtf8(QUrl::toPercentEncoding(savePath)));
     QJsonObject respObj;
     respObj["url"] = accessUrl;
     respObj["hash"] = hashHex;
@@ -375,7 +372,7 @@ static void handleUploadByPath(QTcpSocket *socket, const QByteArray &headers, co
 
 
 
-QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int timeoutMs,QString *errorMsg)
+QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg)
 {
     // 1. 检查本地文件是否存在且可读
     QFileInfo fi(localPath);
@@ -392,33 +389,65 @@ QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int
         return QString();
     }
 
-
+    // 2. 构造上传 URL
     QUrl url(serverUrl);
     QString path = url.path();
     if (!path.endsWith('/'))
         path += '/';
     path += "upload_by_path";
     url.setPath(path);
-;
+
     // 3. 构造 JSON 请求体
     QJsonObject reqObj;
     reqObj["path"] = localPath;
     QByteArray jsonData = QJsonDocument(reqObj).toJson(QJsonDocument::Compact);
 
-    // 4. 使用 WinHttpRequest 发送请求
-    WinHttpRequest req;
-    req.setUrl(url.toString())
-        .setMethod(WinHttpRequest::Post)
-        .setBody(jsonData)
-        .addHeader("Content-Type", "application/json")
-        .setTimeout(timeoutMs)
-        .setVerifyCertificate(false);   // 本地测试可忽略证书错误（若使用 HTTPS）
+    // 4. 设置 Qt 请求
+    QNetworkRequest request;
+    request.setUrl(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    // 忽略证书错误（与原代码 setVerifyCertificate(false) 一致）
+    QSslConfiguration sslConfig = QSslConfiguration::defaultConfiguration();
+    sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
+    request.setSslConfiguration(sslConfig);
 
+    // 5. 发送请求（同步阻塞）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.post(request, jsonData);
 
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
 
-    QByteArray responseBody = req.body();
+    // 6. 处理响应
+    QByteArray responseBody;
+    QString reqErrorString;
+    bool ok = false;
 
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        ok = true;
+        responseBody = reply->readAll();
+    } else {
+        if (!timer.isActive()) {
+            reqErrorString = "Request timeout";
+        } else {
+            reqErrorString = reply->errorString();
+        }
+        // 尝试读取可能的部分响应
+        responseBody = reply->readAll();
+    }
+    reply->deleteLater();
 
+    if (!ok) {
+        if (errorMsg) *errorMsg = reqErrorString;
+        return QString();
+    }
+
+    // 7. 解析 JSON 响应
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
     if (parseErr.error != QJsonParseError::NoError) {
@@ -432,7 +461,6 @@ QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int
     }
     return urlResult;
 }
-
 // 全局请求处理（带缓冲区）
 static void handleRequest(QTcpSocket *socket)
 {
@@ -523,7 +551,7 @@ protected:
 // 本地直接保存文件的辅助函数（供内部调用）
 QString upload(const QString &path)
 {
-    return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QUrl::toPercentEncoding(path));
+    return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(path)));
 }
 
 QString upload(const QByteArray &data)
@@ -539,7 +567,7 @@ QString upload(const QByteArray &data)
         newFile.write(data);
         newFile.close();
     }
-    return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QUrl::toPercentEncoding(savePath));
+    return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(savePath)));
 }
 
 // 对外启动函数
@@ -576,22 +604,13 @@ void stopImageServer()
     g_server = nullptr;
 }
 
-#include "winhttprequest.h"
-#include <QFile>
-#include <QFileInfo>
-#include <QUrl>
-#include <QUrlQuery>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QUuid>
 
-// 辅助：生成随机 boundary
+
 static QString generateBoundary()
 {
     return QUuid::createUuid().toString(QUuid::WithoutBraces).replace("-", "");
 }
 
-// 辅助：构造 multipart/form-data 请求体
 static QByteArray buildMultipart(const QString& fieldName, const QString& fileName, const QByteArray& fileData, const QString& boundary)
 {
     QByteArray body;
@@ -613,10 +632,9 @@ static QByteArray buildMultipart(const QString& fieldName, const QString& fileNa
  * @param errorMsg    可选，输出错误信息
  * @return 成功返回图片 URL，失败返回空字符串
  */
-QString uploadImageSync(const QString& serverUrl, const QString &token,const QString& filePath,
-                        int timeoutMs = 30000, QString* errorMsg = nullptr)
+QString uploadImageSync(const QString& serverUrl, const QString &token, const QString& filePath,
+                        int timeoutMs, QString* errorMsg)
 {
-    // 1. 读取文件
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
         if (errorMsg) *errorMsg = QString("Cannot open file: %1").arg(file.errorString());
@@ -629,43 +647,73 @@ QString uploadImageSync(const QString& serverUrl, const QString &token,const QSt
         return QString();
     }
 
-    // 2. 准备 multipart 数据
     QString boundary = generateBoundary();
     QFileInfo fi(filePath);
     QString fileName = fi.fileName();
     QByteArray postData = buildMultipart("file", fileName, fileData, boundary);
     QString contentType = QString("multipart/form-data; boundary=%1").arg(boundary);
 
-    // 3. 构造请求 URL（将 token 作为查询参数，可选同时也放 Header）
+    // 3. 构造请求 URL（将 token 作为查询参数）
     QUrl urlObj(serverUrl);
     QUrlQuery query(urlObj);
     query.addQueryItem("token", token);
     urlObj.setQuery(query);
     QString finalUrl = urlObj.toString();
 
-    // 4. 执行同步 HTTP 请求
-    WinHttpRequest req;
-    req.setUrl(finalUrl)
-        .setMethod(WinHttpRequest::Post)
-        .setBody(postData)
-        .addHeader("Authorization", "Bearer " + token)   // 两种认证方式都提供
-        .setContentType(contentType)
-        .setTimeout(timeoutMs)
-        .setVerifyCertificate(false);   // 如果 HTTPS 证书无效可忽略（仅测试用）
+    // 4. 设置 Qt 请求
+    QNetworkRequest request;
+    request.setUrl(QUrl(finalUrl));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+    request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
+    // 忽略 SSL 证书错误（与原 setVerifyCertificate(false) 一致）
+    QSslConfiguration sslConfig = QSslConfiguration::defaultConfiguration();
+    sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
+    request.setSslConfiguration(sslConfig);
 
-    bool ok = req.exec();
-    int status = req.statusCode();
-    QByteArray responseBody = req.body();
+    // 5. 发送请求（同步阻塞）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.post(request, postData);
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
+
+    // 6. 收集响应结果
+    bool ok = false;
+    int status = 0;
+    QByteArray responseBody;
+    QString reqErrorString;
+
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        ok = true;
+        status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        responseBody = reply->readAll();
+    } else {
+        if (!timer.isActive()) {
+            reqErrorString = "Request timeout";
+        } else {
+            reqErrorString = reply->errorString();
+        }
+        status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        responseBody = reply->readAll();
+    }
+    reply->deleteLater();
 
     if (!ok || status != 200) {
         if (errorMsg) {
-            *errorMsg = QString("HTTP %1: %2").arg(status).arg(QString::fromUtf8(responseBody));
-            if (errorMsg->isEmpty()) *errorMsg = req.errorString();
+            if (!responseBody.isEmpty())
+                *errorMsg = QString("HTTP %1: %2").arg(status).arg(QString::fromUtf8(responseBody));
+            else
+                *errorMsg = reqErrorString;
         }
         return QString();
     }
 
-    // 5. 解析 JSON 获取 url 字段
+    // 7. 解析 JSON 获取 url 字段
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
     if (parseErr.error != QJsonParseError::NoError) {
@@ -679,6 +727,5 @@ QString uploadImageSync(const QString& serverUrl, const QString &token,const QSt
     }
     return url;
 }
-
 
 #include "image-server.moc"

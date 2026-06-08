@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QToolButton>
 #include <QString>
+#include <qnetworkaccessmanager.h>
 
 class HomePage;
 class AccountPage;
@@ -47,8 +48,11 @@ private:
     void showBotSelectorMenu();
     void switchToBot(int index);
     void xr();
+    void checkUpdate();
+    void showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl);
+    void startDownloadAndReplace(const QString &version, const QString &downloadUrl) ;
     QPixmap generateBotAvatar(const QString &initial, const QString &colorHex) const;
-
+    QNetworkAccessManager *networkManager=nullptr;
 
     void applyStyleSheet();
     // UI 组件
@@ -56,7 +60,7 @@ private:
     QWidget *sideBar;
 
 
-    QPushButton *btnHome, *btnAccount, *btnLog, *btnPlugin, *btnChat;
+    QPushButton *btnHome, *btnAccount, *btnLog, *btnPlugin, *btnChat,*checkUpdateBtn;
     QButtonGroup *btnGroup;
     QLabel *m_kantoumusume;
     // 标题栏

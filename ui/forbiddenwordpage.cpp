@@ -1,4 +1,6 @@
 // forbiddenwordpage.cpp
+
+
 #include "forbiddenwordpage.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -165,10 +167,24 @@ void ForbiddenWordPage::onTableDataChanged() {
             }
         }
     }
-    if (newList != m_forbiddenWords) {
+    // 手动比较，避免 QList::operator !=
+    if (newList.size() != m_forbiddenWords.size()) {
         m_forbiddenWords = newList;
         buildAutomaton();
-        saveToDefaultFile();   // 自动持久化
+        saveToDefaultFile();
+    } else {
+        bool same = true;
+        for (int i = 0; i < newList.size(); ++i) {
+            if (newList[i] != m_forbiddenWords[i]) {
+                same = false;
+                break;
+            }
+        }
+        if (!same) {
+            m_forbiddenWords = newList;
+            buildAutomaton();
+            saveToDefaultFile();
+        }
     }
 }
 
@@ -223,7 +239,7 @@ void ForbiddenWordPage::onSave() {
         return;
     }
     QTextStream out(&file);
-    for (const QString &w : nonEmpty)
+    for (const QString &w : std::as_const(nonEmpty))
         out << w << "\n";
     file.close();
     QMessageBox::information(this, "成功", QString("已导出 %1 个违禁词").arg(nonEmpty.size()));

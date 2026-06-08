@@ -697,7 +697,7 @@ void ButtonEditor::dropEvent(QDropEvent *event) {
     if (!draggedBtn) return;
 
     // 获取鼠标位置下的目标按钮
-    QPoint pos = event->position().toPoint();
+    QPoint pos = event->pos();
     DragButton *targetBtn = nullptr;
     QWidget *child = childAt(pos);
     while (child && !targetBtn) {

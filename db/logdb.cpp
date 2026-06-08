@@ -58,7 +58,7 @@ bool LogDB::open()
     MDB_txn *txn = nullptr;
     rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
-        qCritical() << "LogDB: 开始事务失败";
+
         return false;
     }
     const char *nextIdKey = "next_log_id";
@@ -124,9 +124,9 @@ void LogDB::close()
 LogRecord& LogDB::appendLog()
 {
     QMutexLocker locker(&m_mutex);
-    // 直接在 QList 末尾构造一个默认的 LogRecord
-    // emplaceBack 返回的是新元素的引用 (C++17)
-    return m_writeBuf.emplaceBack();
+    m_writeBuf.append(LogRecord()); // 添加一个默认构造的 LogRecord
+    return m_writeBuf.last();       // 返回最后一个元素的引用
+
 }
 
 void LogDB::flush()

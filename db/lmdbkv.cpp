@@ -92,7 +92,7 @@ bool LmdbKV::putInternal(const QByteArray &key, const QByteArray &value)
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
-        qCritical() << "put: 开始事务失败" << mdb_strerror(rc);
+
         return false;
     }
 
@@ -133,7 +133,7 @@ QByteArray LmdbKV::getInternal(const QByteArray &key) const
     // 只读事务使用 MDB_RDONLY
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) {
-        qCritical() << "get: 开始只读事务失败" << mdb_strerror(rc);
+
         return QByteArray();
     }
 
@@ -145,7 +145,7 @@ QByteArray LmdbKV::getInternal(const QByteArray &key) const
         return QByteArray();   // 键不存在
     } else if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
-        qCritical() << "get: mdb_get 失败" << mdb_strerror(rc);
+
         return QByteArray();
     }
 
@@ -171,7 +171,7 @@ bool LmdbKV::removeInternal(const QByteArray &key)
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
-        qCritical() << "remove: 开始事务失败" << mdb_strerror(rc);
+
         return false;
     }
 

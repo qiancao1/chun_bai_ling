@@ -64,7 +64,7 @@ void RowMovableTableWidget::dropEvent(QDropEvent *event)
         return;
     }
 
-    QPoint dropPos = event->position().toPoint();
+    QPoint dropPos = event->pos();
     int targetRow = indexAt(dropPos).row();
     if (targetRow == -1)
         targetRow = rowCount();

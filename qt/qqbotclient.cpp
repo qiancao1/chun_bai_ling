@@ -800,27 +800,44 @@ void QQBotClient::resetReconnectAttempts()
 }
 
 
-
-#include "winhttprequest.h"
-
 QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int timeoutMs)
 {
-
+    // 1. 准备 JSON 数据
     QByteArray jsonData = QJsonDocument(json).toJson(QJsonDocument::Compact);
 
-    // 3. 使用 WinHttpRequest 发起请求
-    WinHttpRequest req;
-    req.setUrl(url)
-        .setMethod(WinHttpRequest::Post)
-        .setBody(jsonData)
-        .setTimeout(timeoutMs)                       // 毫秒
-        .addHeader("Authorization", "QQBot " + m_accessToken)
-        .addHeader("X-Union-Appid", m_info->appid)
-        .setContentType("application/json");
-    req.exec();
-    return QString::fromUtf8(req.body());
-}
+    // 2. 创建请求对象
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
+    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
 
+    // 3. 创建网络管理器（局部变量，在同步阻塞模式下安全）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.post(request, jsonData);
+
+    // 4. 同步等待：事件循环 + 超时定时器
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();   // 阻塞直到请求完成或超时
+
+    // 5. 处理结果
+    QString response;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        response = QString::fromUtf8(reply->readAll());
+    } else {
+        // 可选：记录错误日志
+        // qDebug() << "POST请求失败:" << reply->errorString();
+        response.clear();   // 超时或错误时返回空字符串
+    }
+
+    reply->deleteLater();
+    return response;
+}
 void QQBotClient::fetchSelfInfo()
 {
     if (!m_info->online) return;

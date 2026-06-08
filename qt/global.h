@@ -41,7 +41,6 @@ struct dblog
 
 
 
-
 extern HomePage *homePage;
 extern AccountPage *accountPage;
 extern LogPage *logPage;

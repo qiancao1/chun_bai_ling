@@ -58,7 +58,7 @@ void MovableKeywordTable::dropEvent(QDropEvent *event) {
         QTableWidget::dropEvent(event);
         return;
     }
-    QPoint dropPos = event->position().toPoint();
+    QPoint dropPos = event->pos();
     int targetRow = indexAt(dropPos).row();
     if (targetRow == -1) targetRow = rowCount();
     int fromRow = dragStartRow;
@@ -342,13 +342,13 @@ void KeywordMatchConfigWidget::addRowFromRuleItem(const KeywordMatchRule &rule) 
 void KeywordMatchConfigWidget::onAddRow() {
     KeywordMatchRule newRule;
     newRule.enabled = true;
-    newRule.keywords = {"新关键词"};
+    newRule.keywords << "新关键词";
     newRule.matchType = 2;
     newRule.replyContent = R"(#python 不带这行就是普通信息
 api.outlog(f"收到来自 {msg.appid} 的消息")
 __result__ = f"收到来自 {msg.appid} 的消息"
 )";
-    newRule.forbiddenWords = {};
+    newRule.forbiddenWords.clear();
     addRowFromRuleItem(newRule);
     onTableDataChanged();
 }
@@ -494,7 +494,7 @@ void KeywordMatchConfigWidget::addRowsFromTSV(const QString &tsv) {
             added++;
         } else if (parts.size() >= 1 && !line.trimmed().isEmpty()) {
             KeywordMatchRule rule;
-            rule.keywords = {line.trimmed()};
+            rule.keywords << line.trimmed();
             addRowFromRuleItem(rule);
             added++;
         }

@@ -1,3 +1,5 @@
+
+
 #include "BotRuleConfigWidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
 
@@ -67,7 +69,7 @@ void BotMovableTableWidget::dropEvent(QDropEvent *event)
         return;
     }
 
-    QPoint dropPos = event->position().toPoint();
+    QPoint dropPos = event->pos();
     int targetRow = indexAt(dropPos).row();
     if (targetRow == -1)
         targetRow = rowCount();

@@ -32,10 +32,17 @@
 #include "set.h"
 #include "textreplaceconfigwidget.h"
 #include "keywordmatchconfigwidget.h"
-
+#include <QNetworkReply>
+#include <QProgressDialog>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
+
+#define APP_VERSION_STR "v1.0.1.2"
+#define APP_BUILD_NUMBER 2
+
+
+
 // 全局指针（保持与你原有代码一致）
 HomePage *homePage = nullptr;
 set *setA=nullptr;
@@ -123,29 +130,221 @@ void showClickableLicenseInfo() {
     QMessageBox msgBox;
     msgBox.setWindowTitle("许可证信息");
     msgBox.setIcon(QMessageBox::Information);
-
-    // 使用 HTML 格式，其中 <a href="..."> 就是可点击链接
     QString richText =
         "本程序使用 Qt 6.8.0 (LGPLv3)。<br><br>"
         "源代码、目标文件 (.obj) 及 LGPL 协议全文请访问：<br>"
         "<a href=\"https://github.com/qiancao1/qiancao/tree/master\">"
-        "https://github.com/qiancao1/qiancao/tree/master</a><br><br>"
+        "GitHub</a> 或 "
+        "<a href=\"https://gitee.com/qiancao1/qiancao\">"
+        "Gitee</a><br><br>"
+
         "Qt 是 The Qt Company 的注册商标。<br>"
         "本程序遵循 MIT 协议。<br><br>"
-        "icons by <a href=\"https://icons8.com\">https://icons8.com</a>";
+        "icons by <a href=\"https://icons8.com\">https://icons8.com</a><br><br>"
+        "咸鱼Ai中转 <a href=\"https://allgpt.xianyuw.cn\">https://allgpt.xianyuw.cn</a><br><br>"
+        "官方群 <a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a>";
 
     msgBox.setTextFormat(Qt::RichText);          // 设为富文本模式
     msgBox.setText(richText);
-
-    // 让链接可点击（需要设置此标志）
     msgBox.setTextInteractionFlags(Qt::TextBrowserInteraction);
-
-    // 可选：让鼠标悬停时变成手型
     msgBox.setCursor(Qt::PointingHandCursor);
-
     msgBox.exec();
 }
 
+
+
+void MainWindow::checkUpdate() {
+
+    QUrl url("https://gitee.com/api/v5/repos/qiancao1/qiancao/releases/latest");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
+
+    QNetworkReply *reply = networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater(); // 自动清理
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::warning(this, "检查更新", "网络请求失败: " + reply->errorString());
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+        if (err.error != QJsonParseError::NoError) {
+            QMessageBox::warning(this, "检查更新", "数据解析错误");
+            return;
+        }
+
+        QJsonObject obj = doc.object();
+        QString remoteTag = obj.value("tag_name").toString();  // 例如 "v1.0.1.12931"
+        QString releaseNotes = obj.value("body").toString();   // 更新说明
+        const QJsonArray assets = obj.value("assets").toArray();
+        QString downloadUrl;
+        for (const auto &asset : assets) {
+            QJsonObject assetObj = asset.toObject();
+            QString fileName = assetObj.value("name").toString();
+
+            if (fileName.endsWith(".exe", Qt::CaseInsensitive)) {
+                downloadUrl = assetObj.value("browser_download_url").toString();
+                break; // 找到 exe 文件，退出循环
+            }
+        }
+
+
+        int remoteBuild = 0;
+        QStringList parts = remoteTag.split('.');
+        if (!parts.isEmpty()) {
+            QString last = parts.last();
+            last.remove(QRegularExpression("[^0-9]")); // 去掉可能的 'v'
+            remoteBuild = last.toInt();
+        }
+
+        if (remoteBuild > APP_BUILD_NUMBER) {
+            showUpdateDialog(remoteTag, releaseNotes, downloadUrl);
+        } else {
+            QMessageBox::information(this, "检查更新", "当前已经是最新版本");
+        }
+    });
+}
+
+
+
+void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
+    // 生成新文件名（去掉版本号中的 'v' 前缀）
+    QString cleanVersion = version;
+    if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
+    QString exeName = QString("qiancao-%1.exe").arg(cleanVersion);
+    QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
+
+    // 如果文件已存在，先删除
+    if (QFile::exists(savePath)) {
+        if (!QFile::remove(savePath)) {
+            QMessageBox::critical(this, "文件错误", "无法删除旧版本文件，请检查权限");
+            return;
+        }
+    }
+
+    // 创建进度对话框（使用指针）
+    QProgressDialog *progressDialog = new QProgressDialog("正在下载更新...", "取消", 0, 100, this);
+    progressDialog->setWindowTitle("更新");
+    progressDialog->setMinimumDuration(0);
+    progressDialog->setAutoReset(false);
+    progressDialog->setAutoClose(false);
+    progressDialog->show();
+
+    QNetworkAccessManager *downloadManager = new QNetworkAccessManager(this);
+    QNetworkReply *reply = downloadManager->get(QNetworkRequest(QUrl(downloadUrl)));
+
+    // 下载进度
+    connect(reply, &QNetworkReply::downloadProgress, [progressDialog](qint64 bytesReceived, qint64 bytesTotal) {
+        if (bytesTotal > 0) {
+            int percent = static_cast<int>((bytesReceived * 100) / bytesTotal);
+            progressDialog->setValue(percent);
+        } else {
+            progressDialog->setValue(0);
+        }
+    });
+
+    // 用户取消
+    connect(progressDialog, &QProgressDialog::canceled, [reply, downloadManager, progressDialog]() {
+        reply->abort();
+        progressDialog->close();
+        // 注意：不要在这里 delete，因为 finished 信号还会触发
+    });
+
+    // 下载完成
+    connect(reply, &QNetworkReply::finished, [=]() {
+        progressDialog->setValue(100);
+
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            reply->deleteLater();
+            downloadManager->deleteLater();
+            progressDialog->deleteLater();
+            return;
+        }
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::critical(this, "下载失败", "网络错误: " + reply->errorString());
+            reply->deleteLater();
+            downloadManager->deleteLater();
+            progressDialog->deleteLater();
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        reply->deleteLater();
+
+        QFile file(savePath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            QMessageBox::critical(this, "写入失败", "无法创建文件: " + savePath);
+            downloadManager->deleteLater();
+            progressDialog->deleteLater();
+            return;
+        }
+        file.write(data);
+        file.close();
+        downloadManager->deleteLater();
+        progressDialog->deleteLater();
+
+        // 启动新程序
+        if (!QProcess::startDetached(savePath, QStringList())) {
+            QMessageBox::critical(this, "启动失败", "无法启动更新程序: " + savePath);
+            return;
+        }
+
+        // 关闭当前框架
+        QCoreApplication::quit();
+    });
+}
+void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl) {
+    QDialog dialog(this);
+    dialog.setWindowTitle("发现新版本");
+    dialog.setMinimumWidth(500);
+    dialog.setMinimumHeight(400);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *titleLabel = new QLabel(QString("<h3>新版本: %1</h3>").arg(version));
+    layout->addWidget(titleLabel);
+
+
+    QTextEdit *notesEdit = new QTextEdit(&dialog);
+    if (releaseNotes.isEmpty()) {
+        notesEdit->setPlainText("暂无更新说明。");
+    } else {
+
+        notesEdit->setMarkdown(releaseNotes);
+    }
+    notesEdit->setReadOnly(true);
+    layout->addWidget(notesEdit);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *downloadBtn = new QPushButton("前往下载", &dialog);
+    QPushButton *cancelBtn = new QPushButton("以后再说", &dialog);
+    btnLayout->addStretch();
+    btnLayout->addWidget(downloadBtn);
+    btnLayout->addWidget(cancelBtn);
+    layout->addLayout(btnLayout);
+
+
+    connect(downloadBtn, &QPushButton::clicked, [this, version, downloadUrl, &dialog]() {
+        // 1. 确认更新
+        QMessageBox::StandardButton reply = QMessageBox::warning(&dialog,
+            "确认更新",
+            "更新需要关闭当前框架，确认更新吗？",
+            QMessageBox::Yes | QMessageBox::No
+            );
+        if (reply != QMessageBox::Yes) return;
+
+        dialog.accept();
+
+        startDownloadAndReplace(version, downloadUrl);
+    });
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    dialog.exec();
+}
 MainWindow::~MainWindow()
 {
 }
@@ -153,7 +352,7 @@ QStackedWidget *stackedWidget=nullptr;
 
 void MainWindow::setupUi()
 {
-
+    networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
     accountPage = new AccountPage;
     logPage = new LogPage;
@@ -269,10 +468,21 @@ void MainWindow::setupUi()
     sideLayout->addWidget(btnAdvancedConfig);   // 新按钮
     sideLayout->addStretch();
 
-    QPushButton *btnLicense = new QPushButton("许可证信息");
+
+    checkUpdateBtn = new QPushButton("检查更新");
+    checkUpdateBtn->setFlat(true);
+    checkUpdateBtn->setObjectName("aaaaaaaa");
+    checkUpdateBtn->setStyleSheet("QPushButton:hover { color: blue; }");
+    connect(checkUpdateBtn, &QPushButton::clicked, [this](){
+
+        checkUpdate();
+    });
+    sideLayout->addWidget(checkUpdateBtn);
+    QPushButton *btnLicense = new QPushButton("关于");
+    btnLicense->setObjectName("aaaaaaaa");
     btnLicense->setCursor(Qt::PointingHandCursor);
-    btnLicense->setMinimumHeight(40);
-    btnLicense->setObjectName("navBtn");        // 复用导航按钮样式
+    btnLicense->setMinimumHeight(24);
+
     btnLicense->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     sideLayout->addWidget(btnLicense);
 
@@ -686,7 +896,7 @@ void MainWindow::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton) {
         QPoint pos = event->pos();
         if (sideBar && sideBar->geometry().contains(pos)) {
-            dragStartPos = event->globalPosition().toPoint() - frameGeometry().topLeft();
+            dragStartPos = event->globalPos() - frameGeometry().topLeft();
             event->accept();
             return;
         }
@@ -697,7 +907,7 @@ void MainWindow::mousePressEvent(QMouseEvent *event)
 void MainWindow::mouseMoveEvent(QMouseEvent *event)
 {
     if (!resizing && (event->buttons() & Qt::LeftButton) && !dragStartPos.isNull()) {
-        move(event->globalPosition().toPoint() - dragStartPos);
+        move(event->globalPos() - dragStartPos);
         event->accept();
         return;
     }
@@ -726,14 +936,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (event->type() == QEvent::MouseButtonPress) {
             QMouseEvent *me = static_cast<QMouseEvent*>(event);
             if (me->button() == Qt::LeftButton) {
-                dragStartPos = me->globalPosition().toPoint() - frameGeometry().topLeft();
+                dragStartPos = me->globalPos() - frameGeometry().topLeft();
                 return true;
             }
         }
         else if (event->type() == QEvent::MouseMove) {
             QMouseEvent *me = static_cast<QMouseEvent*>(event);
             if (me->buttons() & Qt::LeftButton && !dragStartPos.isNull()) {
-                move(me->globalPosition().toPoint() - dragStartPos);
+                move(me->globalPos() - dragStartPos);
                 return true;
             }
         }

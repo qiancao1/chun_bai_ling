@@ -5,6 +5,7 @@
 #include <cstring>
 #include <QElapsedTimer>
 #include <QApplication>
+#include <qjsondocument.h>
 #include <qjsonobject.h>
 // 共享内存布局（两边必须一致）
 static const size_t BLOCK_SIZE = 1024 * 1024;           // 1 MB

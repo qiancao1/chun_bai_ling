@@ -108,7 +108,7 @@ bool BlacklistPage::loadFromFile()
         return false;
 
     QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
+    stream.setVersion(QDataStream::Qt_5_15);
     // 直接反序列化 QHash<QString, QString>
     stream >> m_blacklist;
     return stream.status() == QDataStream::Ok;
@@ -121,7 +121,7 @@ bool BlacklistPage::saveToFile()
         return false;
 
     QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
+    stream.setVersion(QDataStream::Qt_5_15);
     stream << m_blacklist;   // 直接序列化整个哈希表
     return stream.status() == QDataStream::Ok;
 }
