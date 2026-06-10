@@ -314,7 +314,7 @@ void LogPage::setupUi()
         btn->setObjectName("logTabBtn");
         return btn;
     };
-    btnEventTab = makeTabBtn("全部");
+    btnEventTab = makeTabBtn("事件");
     btnGroupTab = makeTabBtn("群聊");
     btnPrivateTab = makeTabBtn("频道");
     btnChannelTab = makeTabBtn("私聊");
@@ -409,7 +409,14 @@ void LogPage::setupUi()
 
         view->verticalHeader()->setDefaultSectionSize(28);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
-
+        connect(view, &QTableView::doubleClicked,
+                this, [this, view, model](const QModelIndex &index) {
+                    if (!index.isValid())
+                        return;
+                    const LogEntry entry = model->entryAt(index.row());
+                    QString text = entry.msg + "\n\n-----------------------------------\n\n" + entry.direction;
+                    QMessageBox::information(this, "消息内容", text);
+                });
         // 右键菜单（代码与原有一致，略作简化）
         connect(view, &QTableView::customContextMenuRequested, this, [this, view, model](const QPoint &pos) {
             QModelIndex index = view->indexAt(pos);

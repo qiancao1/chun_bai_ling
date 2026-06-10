@@ -62,6 +62,7 @@ public:
         hf,
         ch
     };
+    void set_sh(const QModelIndex &index);
     void set_ch(const QModelIndex &index);
     void setMessages(QList<Message> &&msgs);
     void addMessage(const Message &msg);

@@ -64,6 +64,8 @@ void QQBotClient::start()
             scheduleReconnect(5);
             return;
         }
+    }else{
+        代理=1;
     }
 
     // 第三步：连接 WebSocket
@@ -74,6 +76,7 @@ void QQBotClient::start()
         return;
     }
     m_webSocket.open(url);
+
 }
 
 void QQBotClient::stop()
@@ -724,6 +727,7 @@ void QQBotClient::onTextMessageReceived(const QString &message)
 // ---------- 发送协议包 ----------
 void QQBotClient::sendIdentify()
 {
+
     QJsonObject identify;
     identify["token"] = QString("QQBot %1").arg(m_accessToken);
     identify["intents"] = m_info->wsIntents;
@@ -735,10 +739,18 @@ void QQBotClient::sendIdentify()
 
     QString msg = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     m_webSocket.sendTextMessage(msg);
+    if(代理)
+    {
+        m_info->online = true;
+        m_isConnecting = false;
+        resetReconnectAttempts();
+        fetchSelfInfo();
+
+    }
 
 }
 
-void QQBotClient::sendHeartbeat()
+void QQBotClient::sendHeartbeat() //心跳
 {
     if (!m_info->online && m_webSocket.state() != QAbstractSocket::ConnectedState)
         return;
@@ -758,6 +770,7 @@ void QQBotClient::onHeartbeatTimeout()
 {
     if (!m_info->online) return;
     sendHeartbeat();
+    if(代理) return;
     m_invalidHeartbeatCount++;
     if (m_invalidHeartbeatCount >= 3) {
         AppendEventLog("连续3次心跳无响应，主动断开重连", Qt::red);
@@ -848,10 +861,7 @@ void QQBotClient::fetchSelfInfo()
 
     QNetworkReply *reply = m_nam.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        if (reply->error() != QNetworkReply::NoError) {
-            reply->deleteLater();
-            return;
-        }
+
         QByteArray data = reply->readAll();
         reply->deleteLater();
         QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -863,6 +873,8 @@ void QQBotClient::fetchSelfInfo()
         QString nickname = obj.value("username").toString();
         QString avatarUrl = obj.value("avatar").toString();
         if (uid.isEmpty()) {
+            m_info->nickname = "请检查ip白名单";
+            AppendEventLog(QString::fromUtf8(data));
             return;
         }
         m_info->pduid = uid;

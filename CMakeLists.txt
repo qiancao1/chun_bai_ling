@@ -110,7 +110,6 @@ target_include_directories(qiancao PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
 
 
 
-
 if(WIN32)
     target_sources(qiancao PRIVATE app.rc)
 endif()

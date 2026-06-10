@@ -150,7 +150,7 @@ int main(int argc, char *argv[]) {
         bridge->stopServer();
         bridge->writeResponseToBlock(1,"{\"type\":6}");
     }
-
+    pluginPage->foruninstall_Plugin();
     QThreadPool::globalInstance()->waitForDone();
 
     return ret;

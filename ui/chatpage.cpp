@@ -346,9 +346,16 @@ void MessageListModel::set_ch(const QModelIndex &index)
     Message &msg = m_messages[index.row()];
     msg.msg = "[已撤回]"+msg.msg;
     msg.ch="";
-
-
 }
+void MessageListModel::set_sh(const QModelIndex &index)
+{
+    if (!index.isValid() || index.row() >= m_messages.size())
+        return ;
+    Message &msg = m_messages[index.row()];
+    msg.msg = "[已删除]";
+    msg.ch="";
+}
+
 void MessageListModel::clear()
 {
     beginResetModel();
@@ -1350,7 +1357,7 @@ void ChatPage::showMessageContextMenu(const QPoint &pos)
     QAction *at = menu.addAction("艾特他");
     QAction *hf = menu.addAction("回复");
     QAction *ch = menu.addAction("撤回");
-
+    QAction *sc = menu.addAction("太长了删除");
     QAction *copyTextAction = menu.addAction("复制文本");
     QAction *copyAllAction = menu.addAction("复制全部内容");
 
@@ -1392,6 +1399,8 @@ void ChatPage::showMessageContextMenu(const QPoint &pos)
             else
                 QMessageBox::warning(this,"撤回失败",res);
        }
+   } else if (selectedAction == sc) {
+       msgModel->set_sh(index);
    }
 }
 

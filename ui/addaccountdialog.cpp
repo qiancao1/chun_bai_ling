@@ -37,17 +37,16 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
     m_markdownCheckBox->setChecked(info.markdown);
     m_welcomeEdit->setPlainText(info.welcomeMsg);
     m_fallbackEdit->setPlainText(info.fallbackReply);
-    m_portEdit->setText(QString::number(info.webhookPort));
-    m_sslPasswordEdit->setText(info.webhookSslPassword);
+
 
     setIntentsMask(info.wsIntents);
-    onTypeChanged(info.type);
+
 
 }
 
 void AddAccountDialog::setupUI() {
     setWindowTitle("账号详细设置");
-    resize(760, 760);
+    resize(760, 738);
     setModal(true);
 
 
@@ -243,71 +242,30 @@ void AddAccountDialog::setupUI() {
     typeLayout->setHorizontalSpacing(16);
     m_wsRadio = new QRadioButton("WebSocket");
     m_webhookRadio = new QRadioButton("Webhook");
+    m_arkCheckBox = new QCheckBox("启用Ark");
+    m_markdownCheckBox = new QCheckBox("启用Markdown");
     m_wsRadio->setChecked(true);
     typeLayout->addWidget(m_wsRadio, 0, 0);
     typeLayout->addWidget(m_webhookRadio, 0, 1);
+    typeLayout->addWidget(m_arkCheckBox, 0, 2);
+    typeLayout->addWidget(m_markdownCheckBox, 0, 3);
     // typeWidget 需要占满第1~5列
     basicLayout->addWidget(new QLabel("连接设置:"), row, 0);
     basicLayout->addWidget(typeWidget, row, 1, 1, 5);
     row++;
 
-    // Ark 和 Markdown 复选框
-    QWidget *formatWidget = new QWidget;
-    QHBoxLayout *formatLayout = new QHBoxLayout(formatWidget);
-    formatLayout->setContentsMargins(0, 0, 0, 0);
-    formatLayout->setSpacing(4);
-    m_arkCheckBox = new QCheckBox("Ark");
-    m_markdownCheckBox = new QCheckBox("Markdown");
-    formatLayout->addWidget(m_arkCheckBox);
-    formatLayout->addWidget(m_markdownCheckBox);
-    formatLayout->addStretch();
-    basicLayout->addWidget(new QLabel(""), row, 0);
-    basicLayout->addWidget(formatWidget, row, 1, 1, 5);
-    row++;
-
-    // 信号连接
-    connect(m_wsRadio, &QRadioButton::toggled, this, [this](bool checked){
-        if (checked) onTypeChanged(0);
-    });
-    connect(m_webhookRadio, &QRadioButton::toggled, this, [this](bool checked){
-        if (checked) onTypeChanged(1);
-    });
 
     contentLayout->addWidget(basicGroup);
 
-    // ---------- 以下内容（StackedWidget、回复设置、按钮栏等）与你的原代码完全相同 ----------
-    // 注意：原本在 addRow 之后还有 m_botqqEdit 的创建，现在已经移到第一行，所以删除原来的那一行
-    // 保持你的其他逻辑不变（如 m_stackedConfig 等）
-
-    m_stackedConfig = new QStackedWidget;
     m_wsConfigWidget = new QWidget;
-    QVBoxLayout *wsLayout = new QVBoxLayout(m_wsConfigWidget);
-    wsLayout->setContentsMargins(0, 0, 0, 0);
     setupWsIntentsGroup();
-    wsLayout->addWidget(m_wsIntentsGroup);
-    m_stackedConfig->addWidget(m_wsConfigWidget);
+    contentLayout->addWidget(m_wsIntentsGroup);
+    contentLayout->addWidget(m_wsConfigWidget);
 
-    m_webhookConfigWidget = new QWidget;
-    QVBoxLayout *webhookMainLayout = new QVBoxLayout(m_webhookConfigWidget);
-    webhookMainLayout->setContentsMargins(0, 0, 0, 0);
-    QGroupBox *webhookGroup = new QGroupBox("Webhook 配置");
-    QFormLayout *webhookLayout = new QFormLayout(webhookGroup);
-    webhookLayout->setContentsMargins(4, 4, 4, 4);
-    webhookLayout->setSpacing(4);
-    m_portEdit = new QLineEdit;
-    m_portEdit->setText("8080");
-    m_sslPasswordEdit = new QLineEdit;
-    m_sslPasswordEdit->setEchoMode(QLineEdit::Password);
-    webhookLayout->addRow("监听端口:", m_portEdit);
-    webhookLayout->addRow("SSL 密码:", m_sslPasswordEdit);
-    webhookLayout->addRow(new QLabel("Webhook 需自行配置 SSL 证书"));
-    webhookMainLayout->addWidget(webhookGroup);
-    m_stackedConfig->addWidget(m_webhookConfigWidget);
-    contentLayout->addWidget(m_stackedConfig);
 
     QGroupBox *replyGroup = new QGroupBox("回复设置");
     QGridLayout *replyLayout = new QGridLayout(replyGroup);
-    replyLayout->setContentsMargins(16, 16, 16, 16);
+    replyLayout->setContentsMargins(4, 4, 4, 4);
     replyLayout->setHorizontalSpacing(14);
     replyLayout->setVerticalSpacing(10);
     QLabel *welcomeLabel = new QLabel("被添加时欢迎词:");
@@ -358,14 +316,18 @@ void AddAccountDialog::setEmbeddedMode(bool embedded) {
 
 void AddAccountDialog::setupWsIntentsGroup() {
     m_wsIntentsGroup = new QGroupBox("订阅事件 (WebSocket)");
+    m_wsIntentsGroup->setContentsMargins(4, 4, 4, 4);
     QVBoxLayout *groupLayout = new QVBoxLayout(m_wsIntentsGroup);
+    groupLayout->setContentsMargins(4, 4, 4, 4);
     QScrollArea *scroll = new QScrollArea;
+
     scroll->setWidgetResizable(true);
     scroll->setMinimumHeight(150);
     scroll->setMaximumHeight(220);
     QWidget *scrollWidget = new QWidget;
     scrollWidget->setObjectName("softScrollContent");
     QVBoxLayout *scrollLayout = new QVBoxLayout(scrollWidget);
+    scrollLayout->setContentsMargins(4, 4, 4, 4);
     scrollLayout->setSpacing(6);
 
     struct IntentItem { QString name; int mask; };
@@ -414,9 +376,7 @@ void AddAccountDialog::setIntentsMask(int mask) {
 
 
 
-void AddAccountDialog::onTypeChanged(int index) {
-    m_stackedConfig->setCurrentIndex(index);
-}
+
 
 AccountInfo AddAccountDialog::getAccountInfo() const {
     AccountInfo info;
@@ -436,8 +396,7 @@ AccountInfo AddAccountDialog::getAccountInfo() const {
     info.welcomeMsg = m_welcomeEdit->toPlainText();
     info.fallbackReply = m_fallbackEdit->toPlainText();
     info.wsIntents = computeIntentsMask();
-    info.webhookPort = m_portEdit->text().toInt();
-    info.webhookSslPassword = m_sslPasswordEdit->text();
+
 
     return info;
 }

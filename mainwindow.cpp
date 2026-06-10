@@ -38,8 +38,8 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.0.1.2"
-#define APP_BUILD_NUMBER 2
+#define APP_VERSION_STR "v1.0.2.3"
+#define APP_BUILD_NUMBER 3
 
 
 
@@ -549,14 +549,11 @@ void MainWindow::createTitleBar()
     QLabel *iconLabel = new QLabel("🔔");
     iconLabel->setFixedSize(34, 34);
     iconLabel->setAlignment(Qt::AlignCenter);
-
-
     // 右侧垂直标签
     QVBoxLayout *textLayout = new QVBoxLayout;
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-
-    QLabel *mainLabel = new QLabel("qinacao v1.0.0.1-正式版");
+    QLabel *mainLabel = new QLabel(QString("qinacao %1").arg(APP_VERSION_STR));
     mainLabel->setObjectName("leftMainLabel");
 
 
@@ -616,7 +613,9 @@ void MainWindow::createTitleBar()
     closeBtn->setFixedSize(btnSize, btnSize);
     closeBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
     closeBtn->setToolTip("关闭");
-    connect(closeBtn, &QToolButton::clicked, this, &QMainWindow::close);
+    connect(closeBtn, &QToolButton::clicked, [this](){
+        QApplication::quit();
+    });
 
     minBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarMinButton));
     maxBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton));

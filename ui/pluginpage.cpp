@@ -718,7 +718,12 @@ bool PluginPage::Enabled_Plugin(int index) //32ok
     m_pluginList[index].enabled=true;
     return true;
 }
+void PluginPage::foruninstall_Plugin()
+{
+    for(int i=0;i<m_pluginList.size();++i)
+        uninstall_Plugin(m_pluginList[i]);
 
+}
 bool PluginPage::uninstall_Plugin(PluginInfo &info)
 {
 

@@ -6,7 +6,6 @@
 #include <QNetworkAccessManager>
 #include <QTimer>
 #include "AccountInfo.h"
-#include "LogPage.h"
 #include <QColor>
 
 struct MessageEvent
@@ -129,7 +128,7 @@ private:
     QNetworkAccessManager m_nam;
     QTimer m_heartbeatTimer;
     QTimer m_reconnectTimer;
-
+    bool 代理=false;
     QString m_accessToken;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
     QString m_sessionId;

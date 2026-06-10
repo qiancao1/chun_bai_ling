@@ -93,7 +93,7 @@ class PluginPage : public QWidget {
     Q_OBJECT
 public:
     explicit PluginPage(QWidget *parent = nullptr);
-
+    void foruninstall_Plugin();
     QString LoadPlugin(const QString &path,int type,bool enabled,QList<int> &array);
     QString LoadPlugin_DLL(PluginInfo &info);
     QString LoadPlugin_py(PluginInfo &info);

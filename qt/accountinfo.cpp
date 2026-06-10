@@ -26,8 +26,7 @@ QJsonObject AccountInfo::toJson() const {
     obj["welcomeMsg"] = welcomeMsg;
     obj["fallbackReply"] = fallbackReply;
     obj["wsIntents"] = wsIntents;
-    obj["webhookPort"] = webhookPort;
-    obj["webhookSslPassword"] = webhookSslPassword;
+
 
     return obj;
 }
@@ -54,8 +53,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.welcomeMsg = obj["welcomeMsg"].toString();
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();
-    info.webhookPort = obj["webhookPort"].toInt(8080);
-    info.webhookSslPassword = obj["webhookSslPassword"].toString();
+
 
     return info;
 }

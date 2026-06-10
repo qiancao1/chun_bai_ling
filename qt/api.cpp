@@ -1,6 +1,6 @@
-#include "WinHttpRequest.h"
+
 #include "qqbotclient.h"
-#include <qtypes.h>
+
 #include <string>
 #include "global.h"
 #include <QFile>
@@ -218,7 +218,7 @@ QString calculateFileMD5(const QString &filePath)
 
             return QString();
         }
-        hash.addData(QByteArrayView(buffer.constData(), bytesRead));
+        hash.addData(buffer.constData(), bytesRead);
 
     }
 
@@ -226,25 +226,18 @@ QString calculateFileMD5(const QString &filePath)
     QByteArray result = hash.result();
     return QString::fromLatin1(result.toHex());
 }
-QString python_http(const QString qurl,QString method,QString headersJsonStr,QString bodyBase64,int timeoutSec)
+
+
+QString python_http(const QString qurl, QString method, QString headersJsonStr, QString bodyBase64, int timeoutSec)
 {
+    // 1. 解码请求体（Base64 -> 原始字节）
     QByteArray bodyData = QByteArray::fromBase64(bodyBase64.toUtf8());
-    WinHttpRequest::Method winMethod = WinHttpRequest::Get;
-    if (method == "POST") winMethod = WinHttpRequest::Post;
-    else if (method == "PUT") winMethod = WinHttpRequest::Put;
-    else if (method == "DELETE") winMethod = WinHttpRequest::Delete;
-    else if (method == "HEAD") winMethod = WinHttpRequest::Head;
 
-    int statusCode = 0;
-    QByteArray responseBody;
-    QString errorMsg;
+    // 2. 创建请求对象并设置 URL
+    QNetworkRequest request;
+    request.setUrl(QUrl(qurl));
 
-    WinHttpRequest req;
-    req.setUrl(qurl)
-        .setMethod(winMethod)
-        .setBody(bodyData)
-        .setTimeout(timeoutSec * 1000);   // 超时单位毫秒
-
+    // 3. 解析并设置自定义请求头
     if (!headersJsonStr.isEmpty()) {
         QJsonParseError error;
         QJsonDocument doc = QJsonDocument::fromJson(headersJsonStr.toUtf8(), &error);
@@ -252,31 +245,82 @@ QString python_http(const QString qurl,QString method,QString headersJsonStr,QSt
             QJsonObject obj = doc.object();
             for (auto it = obj.begin(); it != obj.end(); ++it) {
                 if (it.value().isString()) {
-                    req.addHeader(it.key(), it.value().toString());
+                    request.setRawHeader(it.key().toUtf8(), it.value().toString().toUtf8());
                 }
             }
         }
     }
 
-    bool ok = req.exec();
-    statusCode = req.statusCode();
-    responseBody = req.body();
-    if (!ok) {
-        errorMsg = req.errorString();
+    // 4. 创建网络管理器（局部变量，在同步阻塞模式下安全）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = nullptr;
+
+    // 5. 根据 HTTP 方法执行不同请求
+    QString upperMethod = method.toUpper();
+    if (upperMethod == "GET") {
+        reply = manager.get(request);
+    } else if (upperMethod == "POST") {
+        reply = manager.post(request, bodyData);
+    } else if (upperMethod == "PUT") {
+        reply = manager.put(request, bodyData);
+    } else if (upperMethod == "DELETE") {
+        reply = manager.deleteResource(request);
+    } else if (upperMethod == "HEAD") {
+        reply = manager.head(request);
+    } else {
+        // 未知方法，返回错误
+        QJsonObject jsonResult;
+        jsonResult["success"] = false;
+        jsonResult["status_code"] = 0;
+        jsonResult["content"] = "";
+        jsonResult["error"] = "Unsupported HTTP method: " + method;
+        QJsonDocument doc(jsonResult);
+        return doc.toJson(QJsonDocument::Compact);
     }
 
+    // 6. 同步等待：事件循环 + 超时定时器
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutSec * 1000);  // 毫秒
+    loop.exec();  // 阻塞直到请求完成或超时
 
-    // 构建返回的 JSON
+    // 7. 收集结果
+    bool success = false;
+    int statusCode = 0;
+    QByteArray responseBody;
+    QString errorMsg;
+
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        success = true;
+        // 获取 HTTP 状态码
+        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        responseBody = reply->readAll();
+    } else {
+        // 请求失败（网络错误或超时）
+        success = false;
+        if (!timer.isActive()) {
+            errorMsg = "Request timeout";
+        } else {
+            errorMsg = reply->errorString();
+        }
+        // 尝试获取可能的部分响应头状态码
+        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    }
+
+    reply->deleteLater();
+
+    // 8. 构建返回 JSON
     QJsonObject jsonResult;
-    jsonResult["success"] = errorMsg.isEmpty();
+    jsonResult["success"] = success;
     jsonResult["status_code"] = statusCode;
-    // 响应体 base64 编码
     jsonResult["content"] = QString::fromUtf8(responseBody.toBase64());
     jsonResult["error"] = errorMsg;
     QJsonDocument doc(jsonResult);
     return doc.toJson(QJsonDocument::Compact);
 }
-
 // 模拟处理沙盒内的插件调用（返回 JSON 字符串）
 static std::string handleSandboxCallback(int apiId, const char* _1, const char* _2, const char* _3,
                                          const char* _4, const char* _5, const char* _6,
@@ -658,16 +702,36 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
     return qMakePair(addr, realMsgId);
 }
 
-QString sendPutRequest(const QString& url, const QByteArray& data, int timeoutMs = 30000) {
-    WinHttpRequest req;
-    req.setUrl(url)
-        .setMethod(WinHttpRequest::Put)
-        .setBody(data)
-        .setTimeout(timeoutMs)                       // 毫秒
-        .setContentType("application/octet-stream");
-    req.exec();
-    return QString::fromUtf8(req.body());
 
+QString sendPutRequest(const QString& url, const QByteArray& data, int timeoutMs)
+{
+    // 1. 构造请求
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
+
+    // 2. 创建管理器（局部变量，在同步等待下安全）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.put(request, data);
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
+
+    QByteArray responseBody;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        responseBody = reply->readAll();
+    } else {
+
+        responseBody.clear();
+    }
+
+    reply->deleteLater();
+    return QString::fromUtf8(responseBody);
 }
 
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString())
@@ -920,7 +984,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 bool ok = false;
                 qint64 expireTime = 0;
                 QString md5;
-                fileInfo = uploadRichMediaA(targetType, openid, 0, firstImg.urlOrPath,ok);
+                fileInfo = uploadRichMediaA(targetType, openid, 1, firstImg.urlOrPath,ok);
                 if (ok)
                      cache_db->put(QString("imageA_%1").arg(fileMd5), fileInfo);
                 else
@@ -937,7 +1001,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         for (int i = tags.size() - 1; i >= 0; --i) {
             text.remove(tags[i].start, tags[i].length);
         }
-
+        text = convertMdLinksKeepHttp(text);
     }
     else if (type == 1) {
         // 构建新字符串，一次性分配足够内存
@@ -996,7 +1060,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         }
         result.append(QStringView(text).mid(lastPos));
         text = std::move(result);
-
+        text = convertMarkdownLinksToXml(text);
     }
     return text;
 }
@@ -1014,10 +1078,10 @@ QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int 
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
-    case 0: typeStr = "pic"; break;
-    case 1: typeStr = "audio"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "file"; break;
+    case 1: typeStr = "pic"; break;
+    case 2: typeStr = "audio"; break;
+    case 3: typeStr = "video"; break;
+    case 4: typeStr = "file"; break;
     default: typeStr = "unknown";
     }
     return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
@@ -1030,10 +1094,10 @@ QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int 
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
-    case 0: typeStr = "pic"; break;
-    case 1: typeStr = "audio"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "file"; break;
+    case 1: typeStr = "pic"; break;
+    case 2: typeStr = "audio"; break;
+    case 3: typeStr = "video"; break;
+    case 4: typeStr = "file"; break;
     default: typeStr = "unknown";
     }
     return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
@@ -1293,7 +1357,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
         }
         bool needUpload = true;
         QString fileInfo,fileMd5;
-        int fileType = 0;
+        int fileType = 1;
         if (mediaType == "video") fileType = 2;
         else if (mediaType == "audio") fileType = 3;
         else if (mediaType == "file") fileType = 4;
@@ -1343,7 +1407,6 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
             }
         }
 
-        // ----- 发送媒体消息 -----
         if (ok && !fileInfo.isEmpty()) {
             response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup); // 增加 fileType 参数
         }
@@ -1757,15 +1820,28 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid)
 {
     QString url = get_url(type, openid, "messages", msgid);
-    WinHttpRequest req;
-    req.setUrl(url)
-        .setMethod(WinHttpRequest::Delete)
-        .addHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8())
-        .addHeader("X-Union-Appid", m_info->appid.toUtf8())
-        .addHeader("Content-Type","application/json");
 
-    req.exec();
-    QByteArray result = req.body();
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
+    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.deleteResource(request);
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(30000);  // 30秒超时，可根据需要调整
+    loop.exec();
+
+    QByteArray result;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        result = reply->readAll();
+    }
+    reply->deleteLater();
     return QString::fromUtf8(result);
 }
 

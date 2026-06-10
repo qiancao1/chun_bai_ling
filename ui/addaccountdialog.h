@@ -21,8 +21,6 @@ public:
     AccountInfo getAccountInfo() const;
     void setEmbeddedMode(bool embedded);
 
-private slots:
-    void onTypeChanged(int index);
 
 private:
     void setupUI();
@@ -58,9 +56,6 @@ private:
     QGroupBox *m_wsIntentsGroup;
     QList<QCheckBox*> m_intentCheckboxes;
 
-    // Webhook 特有
-    QLineEdit *m_portEdit;
-    QLineEdit *m_sslPasswordEdit;
 
 
 };
