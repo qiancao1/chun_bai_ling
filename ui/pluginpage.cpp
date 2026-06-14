@@ -519,9 +519,9 @@ QString python_code(QString &py_code,const MessageEvent &msg)
 
         return ret;
     } catch (const py::error_already_set &e) {
-        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()));
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
     } catch (const std::exception &e) {
-        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()));
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
     }
     return QString();
 }
@@ -556,9 +556,9 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
                     }
                 }
             } catch (const std::exception &e) {
-                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: " + e.what());
+                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: " + e.what() ,0xff);
             } catch (...) {
-                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: unknown exception");
+                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: unknown exception" ,0xff);
             }
             continue;
         }
@@ -577,9 +577,9 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
                 m_pluginList[i].DLL.onMessage(utf8.data());
             }
         } catch (const std::exception &e) {
-            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: " + e.what());
+            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: " + e.what() ,0xff);
         } catch (...) {
-            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: unknown exception");
+            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: unknown exception" ,0xff);
         }
     }
 
@@ -728,7 +728,7 @@ bool PluginPage::Reload_Plugin(int index) //32ok
         return true;
     }
     removePlugin(index);
-    AppendEventLog("[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+err);
+    AppendEventLog("[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+err ,0xff);
     showAutoCloseMessageBox("错误","[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+ err);
 
     return false;
@@ -868,7 +868,7 @@ void PluginPage::LoadPlugin_DLL() //按钮
     QString err = LoadPlugin(path,1,false,empty);
     if(!err.isEmpty())
     {
-        AppendEventLog("[载入插件]"+path+" 错误信息："+err);
+        AppendEventLog("[载入插件]"+path+" 错误信息："+err ,0xff);
         QMessageBox::about(this,"载入插件","[载入插件]"+path+" 错误信息："+err);
         return;
     }
@@ -891,7 +891,7 @@ void PluginPage::LoadPlugin_Python() //按钮
     QString err = LoadPlugin(dir,0,false,empty);
     if(!err.isEmpty())
     {
-        AppendEventLog("[载入插件]"+dir+" 错误信息："+err);
+        AppendEventLog("[载入插件]"+dir+" 错误信息："+err ,0xff);
         QMessageBox::about(this,"错误",err);
         return;
     }
@@ -1158,7 +1158,7 @@ void PluginPage::LoadPlugin_JS() { // 按钮点击槽
     info.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QString err = LoadPlugin_js(info);
     if (!err.isEmpty()) {
-        AppendEventLog("加载JS插件失败: " + err);
+        AppendEventLog("加载JS插件失败: " + err ,0xff);
         QMessageBox::warning(this, "错误", err);
         return;
     }
@@ -1211,9 +1211,9 @@ void PluginPage::loadPlugins() {
         QString err =LoadPlugin(path,type,enabled,array);
         if(!err.isEmpty())
         {
-            AppendEventLog("[载入插件]"+err,Qt::black);
+            AppendEventLog("[载入插件] 错误："+err ,0xff);
         }else{
-            AppendEventLog("[载入插件]"+path,Qt::black);
+            AppendEventLog("[载入插件] 成功："+path);
         }
     }
 }

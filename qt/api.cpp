@@ -331,12 +331,7 @@ static std::string handleSandboxCallback(int apiId, const char* _1, const char* 
     case OUTLOG: {
         QString text = toQString(_1);
         if (_2 != nullptr && strlen(_2) > 0) {
-            int rgbInt = toInt(_2);
-            int r = (rgbInt >> 16) & 0xFF;
-            int g = (rgbInt >> 8) & 0xFF;
-            int b = rgbInt & 0xFF;
-            QColor color(r, g, b);
-            AppendEventLog(text, color);
+            AppendEventLog(text, toInt(_2));
         } else {
             AppendEventLog(text);
         }
@@ -426,12 +421,8 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             AppendEventLog(text);
            return result.c_str();
         }
-        int rgbInt = toInt(_2);  // 将字符串或直接整数转换
-        int r = (rgbInt >> 16) & 0xFF;
-        int g = (rgbInt >> 8) & 0xFF;
-        int b = rgbInt & 0xFF;
-        QColor color(r, g, b);
-        AppendEventLog(text,color);
+
+        AppendEventLog(text,toInt(_2));
         return result.c_str();
     }
     if(apiId==10002)
@@ -491,12 +482,8 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             AppendEventLog(text);
             break;
         }
-        int rgbInt = toInt(_2);  // 将字符串或直接整数转换
-        int r = (rgbInt >> 16) & 0xFF;
-        int g = (rgbInt >> 8) & 0xFF;
-        int b = rgbInt & 0xFF;
-        QColor color(r, g, b);
-        AppendEventLog(text,color);
+
+        AppendEventLog(text,toInt(_2));
         break;
     }
     case API_ID_SEND_MESSAGES: {

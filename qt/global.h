@@ -90,7 +90,7 @@ extern BlacklistPage *Black;
 extern int 聊天发送模式;
 extern int plugin_n;
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs = 5000);
-void AppendEventLog(const QString &msg,const QColor color=Qt::black);
+void AppendEventLog(const QString &msg, int color=Color_0);
 QString upload(const QString &path);
 QString upload(const QByteArray &data);
 int mapTypeToTabIndex(int type);

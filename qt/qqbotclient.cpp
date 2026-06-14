@@ -44,7 +44,7 @@ void QQBotClient::start()
     if (m_info->online || m_isConnecting)
         return;
     m_isConnecting = true;
-    AppendEventLog(QString("正在启动机器人 %1 ...").arg(m_info->appid), Qt::darkGreen);
+    AppendEventLog(QString("正在启动机器人 %1 ...").arg(m_info->appid), 0x0082FD);
 
     if (!refreshAccessToken()) {
         emit loginFailed("获取 access_token 失败，请检查 appid/secret 或网络");
@@ -59,7 +59,7 @@ void QQBotClient::start()
         wsUrl = fetchGatewayUrl();
         if (wsUrl.isEmpty()) {
             emit loginFailed("无法获取网关地址，可能是 token 无效或网络问题");
-            AppendEventLog("获取网关地址失败，token 可能无效", Qt::red);
+            AppendEventLog("获取网关地址失败，token 可能无效", 0xff);
             m_isConnecting = false;
             scheduleReconnect(5);
             return;
@@ -93,7 +93,7 @@ void QQBotClient::stop()
     m_sessionId.clear();
     resetReconnectAttempts();
     m_reconnectAttempts = 10;
-    AppendEventLog(QString("机器人 %1 已停止").arg(m_info->appid), Qt::gray);
+    AppendEventLog(QString("机器人 %1 已停止").arg(m_info->appid),0xff);
 }
 
 // ---------- 网络请求 ----------
@@ -103,7 +103,7 @@ QString QQBotClient::fetchGatewayUrl()
         return m_info->wsAddress;
 
     if (m_accessToken.isEmpty()) {
-        AppendEventLog("无法获取网关：access_token 为空", Qt::red);
+        AppendEventLog("无法获取网关：access_token 为空",0xff);
         return QString();
     }
 
@@ -123,7 +123,7 @@ QString QQBotClient::fetchGatewayUrl()
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
     if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("获取登录Ws错误: " + err.errorString(), Qt::red);
+        AppendEventLog("获取登录Ws错误: " + err.errorString(),0xff);
         return QString();
     }
 
@@ -136,7 +136,7 @@ QString QQBotClient::fetchGatewayUrl()
             m_accessToken.clear();
         if (errMsg.isEmpty())
             errMsg = "未知错误，可能 token 无效或 appid 不正确";
-        AppendEventLog("获取ws地址失败: " + errMsg, Qt::red);
+        AppendEventLog("获取ws地址失败: " + errMsg,0xff);
     }
     return wsUrl;
 }
@@ -150,7 +150,7 @@ bool QQBotClient::refreshAccessToken()
 
     // 动态获取 token
     if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
-        AppendEventLog("缺少 appid 或 secret，无法获取 token", Qt::red);
+        AppendEventLog("缺少 appid 或 secret，无法获取 token",0xff);
         return false;
     }
 
@@ -169,7 +169,7 @@ bool QQBotClient::refreshAccessToken()
     loop.exec();
 
     if (reply->error() != QNetworkReply::NoError) {
-        AppendEventLog("刷新 token 网络错误: " + reply->errorString(), Qt::red);
+        AppendEventLog("刷新 token 网络错误: " + reply->errorString(),0xff);
         reply->deleteLater();
         return false;
     }
@@ -179,7 +179,7 @@ bool QQBotClient::refreshAccessToken()
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
     if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("解析 token 响应失败: " + err.errorString(), Qt::red);
+        AppendEventLog("解析 token 响应失败: " + err.errorString(),0xff);
         return false;
     }
 
@@ -189,7 +189,7 @@ bool QQBotClient::refreshAccessToken()
         QString errMsg = obj.value("message").toString();
         if (errMsg.isEmpty())
             errMsg = "appid 或 secret 错误（无具体返回信息）";
-        AppendEventLog("获取 token 失败: " + errMsg, Qt::red);
+        AppendEventLog("获取 token 失败: " + errMsg,0xff);
         return false;
     }
 
@@ -209,7 +209,7 @@ void QQBotClient::onConnected()
 
 void QQBotClient::onDisconnected()
 {
-    AppendEventLog("WebSocket 已断开", Qt::gray);
+    AppendEventLog("WebSocket 已断开", 0xff);
     stopHeartbeatTimer();
     bool wasOnline = m_info->online;
     m_info->online = false;
@@ -222,7 +222,7 @@ void QQBotClient::onDisconnected()
 
 void QQBotClient::onError(QAbstractSocket::SocketError error)
 {
-    AppendEventLog("WebSocket 错误: " + m_webSocket.errorString(), Qt::red);
+    AppendEventLog("WebSocket 错误: " + m_webSocket.errorString(),0xff);
 }
 void Message(AccountInfo *info,const MessageEvent &ev);
 int mapTypeToTabIndex(int type);
@@ -669,7 +669,7 @@ void QQBotClient::onTextMessageReceived(const QString &message)
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &err);
     if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("收到非法 JSON: " + message.left(200), Qt::red);
+        AppendEventLog("收到非法 JSON: " + message.left(200),0xff);
         return;
     }
     QJsonObject obj = doc.object();
@@ -701,7 +701,7 @@ void QQBotClient::onTextMessageReceived(const QString &message)
         } else if (eventType == "RESUMED") {
             m_info->online = true;
             m_isConnecting = false;
-            AppendEventLog("会话恢复成功", Qt::green);
+            AppendEventLog("会话恢复成功",0x594787);
             emit loginSuccess();
             return;
         }
@@ -709,7 +709,7 @@ void QQBotClient::onTextMessageReceived(const QString &message)
         break;
     }
     case 9: // Invalid Session
-        AppendEventLog("鉴权失败：可能订阅了不允许的事件或 token 无效", Qt::red);
+        AppendEventLog("鉴权失败：可能订阅了不允许的事件或 token 无效" ,0xff);
         stop();
         scheduleReconnect(10);
         break;
@@ -718,7 +718,7 @@ void QQBotClient::onTextMessageReceived(const QString &message)
         m_webSocket.close();
         break;
     default:
-        AppendEventLog(QString("未处理的 op=%1").arg(op), Qt::darkGray);
+        AppendEventLog(QString("未处理的 op=%1").arg(op) ,0xff);
         break;
     }
 }
@@ -774,7 +774,7 @@ void QQBotClient::onHeartbeatTimeout()
     if(代理) return;
     m_invalidHeartbeatCount++;
     if (m_invalidHeartbeatCount >= 3) {
-        AppendEventLog("连续3次心跳无响应，主动断开重连", Qt::red);
+        AppendEventLog("连续3次心跳无响应，主动断开重连" ,0xff);
         m_webSocket.close();
     }
 }
@@ -784,7 +784,7 @@ void QQBotClient::startHeartbeatTimer(int intervalSec)
     stopHeartbeatTimer();
     if (intervalSec > 0) {
         m_heartbeatTimer.start(intervalSec * 1000);
-        AppendEventLog(QString("心跳定时器已启动，间隔 %1 秒").arg(intervalSec), Qt::darkGray);
+        AppendEventLog(QString("心跳定时器已启动，间隔 %1 秒").arg(intervalSec),0x28BF74);
     }
 }
 
@@ -798,12 +798,12 @@ void QQBotClient::stopHeartbeatTimer()
 void QQBotClient::scheduleReconnect(int delaySec)
 {
     if (m_reconnectAttempts >= 5) {
-        AppendEventLog("重连次数已达上限，停止自动重连", Qt::red);
+        AppendEventLog("重连次数已达上限，停止自动重连" ,0xff);
         return;
     }
     m_reconnectAttempts++;
     int wait = delaySec * m_reconnectAttempts;
-    AppendEventLog(QString("将在 %1 秒后进行第 %2 次重连...").arg(wait).arg(m_reconnectAttempts), Qt::darkYellow);
+    AppendEventLog(QString("将在 %1 秒后进行第 %2 次重连...").arg(wait).arg(m_reconnectAttempts),0xD891BC);
     m_reconnectTimer.start(wait * 1000);
 }
 
@@ -868,7 +868,7 @@ void QQBotClient::fetchSelfInfo()
         QString avatarUrl = obj.value("avatar").toString();
         if (uid.isEmpty()) {
             m_info->nickname = "请检查ip白名单";
-            AppendEventLog(QString::fromUtf8(data));
+            AppendEventLog(QString::fromUtf8(data) ,0xff);
             return;
         }
         m_info->pduid = uid;

@@ -109,6 +109,8 @@ set(PROJECT_SOURCES_ALL
     qt/ffmpeg_silk.cpp
     ui/blacklistpage.h ui/blacklistpage.cpp
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
+    qt/node_process.h qt/node_process.cpp
+    qt/node_plugin_manager.h qt/node_plugin_manager.cpp
 )
 
 # ==================== 构建目标 ====================
@@ -121,10 +123,7 @@ else()
     if(ANDROID)
         add_library(qiancao SHARED ${PROJECT_SOURCES_ALL})
     else()
-        add_executable(qiancao ${PROJECT_SOURCES_ALL}
-            node_process.h node_process.cpp
-            node_plugin_manager.h node_plugin_manager.cpp
-        )
+        add_executable(qiancao ${PROJECT_SOURCES_ALL})
     endif()
 endif()
 

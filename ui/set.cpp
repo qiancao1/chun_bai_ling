@@ -492,7 +492,7 @@ void set::onStartStopClicked()
             m_startStopBtn->setText(tr("停止"));
             saveAutoStartFlag(true);
         } else {
-            AppendEventLog("图床服务器启动失败，请检查IP/端口是否可用。下次程序启动将自动重试。");
+            AppendEventLog("图床服务器启动失败，请检查IP/端口是否可用。下次程序启动将自动重试。" ,0xff);
         }
     } else {
         // 停止服务器

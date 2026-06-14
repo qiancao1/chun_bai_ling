@@ -11,11 +11,11 @@ QByteArray convertMp3ToSilk(const QByteArray &mp3Data)
     QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
     QString encoderPath = QDir(ffmpegdiv).filePath("silk_v3_encoder.exe");
     if (!QFile::exists(ffmpegPath)) {
-        AppendEventLog("ffmpeg.exe 不存在");
+        AppendEventLog("ffmpeg.exe 不存在",0xff);
         return {};
     }
     if (!QFile::exists(encoderPath)) {
-        AppendEventLog("silk_v3_encoder.exe 不存在" );
+        AppendEventLog("silk_v3_encoder.exe 不存在");
         return {};
     }
 

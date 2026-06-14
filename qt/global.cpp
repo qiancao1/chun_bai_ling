@@ -48,14 +48,14 @@ void botnomsg(int type,const QString &openid,const QString &msgid)
 
 }
 
-void AppendEventLog(const QString &msg,const QColor color)
+void AppendEventLog(const QString &msg,int color)
 {
     LogEntry* ev2 = m_logStore[0].allocate2();
     if (!ev2) return;
     ev2->botName = QString();
     ev2->appid = 0;
     ev2->time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-    ev2->color = 0;  // 默认颜色
+    ev2->color = color;  // 默认颜色
     ev2->user = QString();
     ev2->user_name = QString();
     ev2->groupId = QString();
