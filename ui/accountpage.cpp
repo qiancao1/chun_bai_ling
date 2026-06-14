@@ -155,6 +155,7 @@ AccountPage::AccountPage(QWidget *parent)
 
 AccountPage::~AccountPage() {
     saveAccounts();
+
 }
 
 

@@ -2,21 +2,10 @@
 #include <QMessageBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QDir>
 #include <QProcess>
 #include <QDebug>
 #include <QCoreApplication>
-
-
-// 获取 Python 可执行文件路径（复用你提供的函数）
-static QString getSystemPythonPrefix() {
-    QProcess proc;
-    proc.start("python", QStringList() << "-c" << "import sys; print(sys.prefix)");
-    if (!proc.waitForFinished(3000)) return QString();
-    QString output = proc.readAllStandardOutput().trimmed();
-    if (output.isEmpty()) return QString();
-    return output;
-}
+#include <QStandardPaths>   // 新增：用于查找可执行文件
 
 PluginDepDialog::PluginDepDialog(const QStringList& requires, const QString& pluginName, QWidget *parent)
     : QDialog(parent), m_process(nullptr), m_pluginName(pluginName)
@@ -24,13 +13,14 @@ PluginDepDialog::PluginDepDialog(const QStringList& requires, const QString& plu
     setWindowTitle(QString("安装依赖库 - %1").arg(pluginName));
     resize(600, 500);
 
-    // 确定 python 命令（优先使用完整路径）
-    QString pyPrefix = getSystemPythonPrefix();
-    if (!pyPrefix.isEmpty()) {
-        m_pythonCmd = QDir(pyPrefix).absoluteFilePath("python.exe");
-        if (!QFile::exists(m_pythonCmd)) m_pythonCmd = "python";
+    // 查找 python3.14t 的完整路径（避免 QProcess 的 PATH 问题）
+    QString pythonCmd = QStandardPaths::findExecutable("python3.14t");
+    if (pythonCmd.isEmpty()) {
+        // 如果找不到，回退到短命令（可能会再次失败，但至少尝试）
+        m_pythonCmd = "python3.14t";
+        appendOutput("警告: 未找到 python3.14t 的完整路径，将使用短命令，可能失败。");
     } else {
-        m_pythonCmd = "python";
+        m_pythonCmd = pythonCmd;
     }
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -69,7 +59,7 @@ PluginDepDialog::PluginDepDialog(const QStringList& requires, const QString& plu
 void PluginDepDialog::appendOutput(const QString &text)
 {
     m_outputBrowser->append(text);
-    QCoreApplication::processEvents(); // 实时刷新
+    QCoreApplication::processEvents();
 }
 
 void PluginDepDialog::onInstallClicked()
@@ -94,7 +84,6 @@ void PluginDepDialog::onInstallClicked()
     appendOutput(QString("准备安装 %1 个依赖库...").arg(m_pendingLibs.size()));
     appendOutput(QString("使用 Python 命令: %1").arg(m_pythonCmd));
 
-    // 禁用界面控件
     m_installBtn->setEnabled(false);
     m_checkList->setEnabled(false);
 
@@ -105,7 +94,6 @@ void PluginDepDialog::onInstallClicked()
             this, &PluginDepDialog::onProcessFinished);
     connect(m_process, &QProcess::errorOccurred, this, &PluginDepDialog::onProcessError);
 
-    // 开始安装第一个
     startNextInstall();
 }
 
@@ -142,18 +130,15 @@ void PluginDepDialog::onProcessFinished(int exitCode, QProcess::ExitStatus exitS
 {
     if (exitStatus == QProcess::CrashExit || exitCode != 0) {
         appendOutput(QString("[安装失败] %1 (退出码 %2)").arg(m_currentLib).arg(exitCode));
-        // 可以选择停止或继续下一个，这里继续尝试下一个
         m_statusLabel->setText(QString("安装 %1 失败，继续下一个...").arg(m_currentLib));
     } else {
         appendOutput(QString("[安装成功] %1").arg(m_currentLib));
     }
-    // 继续下一个
     startNextInstall();
 }
 
 void PluginDepDialog::onProcessError()
 {
     appendOutput(QString("[错误] %1").arg(m_process->errorString()));
-    // 继续下一个
     startNextInstall();
 }

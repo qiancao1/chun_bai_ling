@@ -20,6 +20,7 @@
 #include <qlibrary.h>
 #include "PluginDepDialog.h"
 #include "global.h"
+#include "node_plugin_manager.h"
 
 #include <QListWidget>
 
@@ -33,7 +34,7 @@ static void safeCall(const py::object &func) {
     if (func.is_none()) return;
     if (!py::isinstance<py::function>(func) && !PyCallable_Check(func.ptr())) return;
     try {
-        py::gil_scoped_acquire gil;
+         py::gil_scoped_acquire gil;
         func();
     } catch (...) {}
 }
@@ -134,13 +135,13 @@ void PluginPage::setupUi()
 
     addPluginBtn  = new QPushButton("添加(DLL)");
     addPluginBtn2 = new QPushButton("添加(Python)");
-    addPluginBtn->setFixedWidth(120);
-    addPluginBtn2->setFixedWidth(120);
+    addPluginBtn3 = new QPushButton("添加(JS)");
+
 
     QHBoxLayout *btnRow = new QHBoxLayout;
     btnRow->addWidget(addPluginBtn);
     btnRow->addWidget(addPluginBtn2);
-
+    btnRow->addWidget(addPluginBtn3);
     leftLayout->addWidget(listTitle);
     leftLayout->addWidget(pluginListWidget);
     leftLayout->addLayout(btnRow);
@@ -296,6 +297,9 @@ void PluginPage::setupUi()
     connect(pluginListWidget, &QListWidget::currentRowChanged, this, &PluginPage::onPluginSelected);
     connect(addPluginBtn, &QPushButton::clicked, [this](){ LoadPlugin_DLL(); });
     connect(addPluginBtn2, &QPushButton::clicked, [this](){ LoadPlugin_Python(); });
+    connect(addPluginBtn3, &QPushButton::clicked, [this](){ LoadPlugin_JS(); });
+
+
     connect(setBtn, &QPushButton::clicked, [this](){
 
         if(currentSelected_index<0 || currentSelected_index>=m_pluginList.size()) return;
@@ -484,7 +488,15 @@ int PluginPage::findPluginIndex(const QString &id) const {
     }
     return -1;
 }
+void plug_tji() {
+    plugin_n=2;
+    for (int i = 0; i < m_pluginList.size(); ++i) {
 
+        if (m_pluginList[i].type == 3) plugin_n++;
+
+    }
+
+}
 QString python_code(QString &py_code,const MessageEvent &msg)
 {
     py::gil_scoped_acquire gil;
@@ -521,6 +533,7 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
     int _32=0;
     for (int i = 0; i < m_pluginList.size(); ++i) {
         if (!m_pluginList[i].enabled) continue;
+        if(m_pluginList[i].appid.contains(msg.appid)) continue; //这个插件禁用
         if (m_pluginList[i].type == 0){
             try {
                 if (m_pluginList[i].python.instance) {
@@ -553,6 +566,10 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
         {
             _32++;
             continue;
+        }else if (m_pluginList[i].type == 3) {
+            NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text);
+
+            continue;
         }
         if(m_pluginList[i].appid.contains(msg.appid)) continue;
         try {
@@ -569,7 +586,8 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
     else if(msg.at_you || !msg.fullType)
-        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
+        botnomsg(msg.type,msg.groupId,msg.msgId);
+
 }
 
 
@@ -619,7 +637,15 @@ void PluginPage::updateDetailPanel(int index)
     if (!pix.isNull())
         detailIconLabel->setPixmap(pix);
     detailNameLabel->setText(m_pluginList[index].name);
-    detailTypeLabel->setText(m_pluginList[index].type==0 ? "Python" : "DLL");
+    QString typeStr;
+    switch (m_pluginList[index].type) {
+    case 0: typeStr = "Python"; break;
+    case 1: typeStr = "DLL (64位)"; break;
+    case 2: typeStr = "DLL (32位)"; break;
+    case 3: typeStr = "JavaScript"; break;
+    default: typeStr = "未知"; break;
+    }
+    detailTypeLabel->setText(typeStr);
     detailVersionLabel->setText("v" + m_pluginList[index].version);
     detailAuthorLabel->setText(m_pluginList[index].author.isEmpty() ? "未知" : m_pluginList[index].author);
     detailpathLabel->setText(getShortPath(m_pluginList[index].path,32));
@@ -650,16 +676,16 @@ void PluginPage::updateDetailPanel(int index)
 
 bool PluginPage::disable_Plugin(PluginInfo &info)
 {
-    if(info.type==0)
-    {
+    if (info.type == 0) {
         safeCall(info.python.onDisable);
-    }else if(info.type==1)
-    {
-        if(info.DLL.onDisable) info.DLL.onDisable();
-    }else if(info.type==2)
-    {
-        if(sendData32(3,info)!="true")return false; //3禁用
+    } else if (info.type == 1) {
+        if (info.DLL.onDisable) info.DLL.onDisable();
+    } else if (info.type == 2) {
+        if (sendData32(3, info) != "true") return false;
+    } else if (info.type == 3) {
+        if (!NodePluginManager::instance().disablePlugin(info.uuid)) return false;
     }
+
     info.enabled = false;
     return true;
 }
@@ -682,12 +708,22 @@ bool PluginPage::Reload_Plugin(int index) //32ok
         err = LoadPlugin_DLL(m_pluginList[index]);
     }else if(m_pluginList[index].type==2){
         err = LoadPlugin_DLL32(m_pluginList[index]);
+    }else  if (m_pluginList[index].type == 3) {
+
+
+        QString err = LoadPlugin_js(m_pluginList[index]);
+        if (err.isEmpty()) {
+            if (m_pluginList[index].enabled) {
+                NodePluginManager::instance().enablePlugin(m_pluginList[index].uuid);
+            }
+            updatePluginItemInUI(index);
+            return true;
+        }
     }else{
-         return false;
+        return false;
     }
     if(err.isEmpty())
     {
-
         updatePluginItemInUI(index);
         return true;
     }
@@ -698,24 +734,31 @@ bool PluginPage::Reload_Plugin(int index) //32ok
     return false;
 }
 
-bool PluginPage::Enabled_Plugin(int index) //32ok
+bool PluginPage::Enabled_Plugin(int index)
 {
-    if (index<=-1 && index>m_pluginList.length()) return false;
+    if (index < 0 || index >= m_pluginList.size()) return false;
 
+    PluginInfo &info = m_pluginList[index];
 
-    if(m_pluginList[index].enabled!=false) return disable_Plugin(m_pluginList[index]);
-
-    if(m_pluginList[index].type==0)
-    {
-        safeCall(m_pluginList[index].python.onEnable);
-    }else if(m_pluginList[index].type==1)
-    {
-        if(m_pluginList[index].DLL.onEnable) m_pluginList[index].DLL.onEnable();
-    }else if(m_pluginList[index].type==2)
-    {
-        if(sendData32(2,m_pluginList[index])!="true")  return false; //2启用
+    // 如果已经是启用状态，则调用禁用逻辑（与原来一致）
+    if (info.enabled) {
+        return disable_Plugin(info);
     }
-    m_pluginList[index].enabled=true;
+
+    // 根据类型调用对应的启用函数
+    if (info.type == 0) {
+        safeCall(info.python.onEnable);
+    } else if (info.type == 1) {
+        if (info.DLL.onEnable) info.DLL.onEnable();
+    } else if (info.type == 2) {
+        if (sendData32(2, info) != "true") return false;
+    } else if (info.type == 3) {
+        if (!NodePluginManager::instance().enablePlugin(info.uuid)) return false;
+    } else {
+        return false;
+    }
+
+    info.enabled = true;
     return true;
 }
 void PluginPage::foruninstall_Plugin()
@@ -724,17 +767,17 @@ void PluginPage::foruninstall_Plugin()
         uninstall_Plugin(m_pluginList[i]);
 
 }
+
 bool PluginPage::uninstall_Plugin(PluginInfo &info)
 {
+    if (info.enabled) {
+        disable_Plugin(info);
+    }
 
-    if (info.enabled) disable_Plugin(info);
-    if(info.type==0)
-    {
+    if (info.type == 0) {
         safeCall(info.python.onUnload);
-    }else if(info.type==1)
-    {
-        if(info.DLL.onUnload) info.DLL.onUnload();
-        // 1. 卸载 DLL
+    } else if (info.type == 1) {
+        if (info.DLL.onUnload) info.DLL.onUnload();
         if (info.dllLib) {
             info.dllLib->unload();
             delete info.dllLib;
@@ -744,10 +787,12 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
             QFile::remove(info.loadedDllPath);
             info.loadedDllPath.clear();
         }
-    }else if(info.type==2)
-    {
-        return sendData32(4,info)=="true"; //4卸载
+    } else if (info.type == 2) {
+        return sendData32(4, info) == "true";
+    } else if (info.type == 3) {
+        return NodePluginManager::instance().unloadPlugin(info.uuid);
     }
+
     return true;
 }
 
@@ -801,11 +846,15 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
     }else if(type==2){
         err = LoadPlugin_DLL32(info);
         info.type=2;
+    }else if(type==3){
+        err = LoadPlugin_js(info);
+        info.type=3;
     }else{
         return QString();
     }
     if(!err.isEmpty()) return err;
     appendPlugin(info);
+    plug_tji();
     return QString();
 }
 
@@ -820,7 +869,7 @@ void PluginPage::LoadPlugin_DLL() //按钮
     if(!err.isEmpty())
     {
         AppendEventLog("[载入插件]"+path+" 错误信息："+err);
-        showAutoCloseMessageBox("载入插件","[载入插件]"+path+" 错误信息："+err);
+        QMessageBox::about(this,"载入插件","[载入插件]"+path+" 错误信息："+err);
         return;
     }
     AppendEventLog("[载入插件]"+path);
@@ -843,13 +892,12 @@ void PluginPage::LoadPlugin_Python() //按钮
     if(!err.isEmpty())
     {
         AppendEventLog("[载入插件]"+dir+" 错误信息："+err);
-        showAutoCloseMessageBox("错误",err);
+        QMessageBox::about(this,"错误",err);
         return;
     }
     savePlugins();
     AppendEventLog("[载入插件]"+dir);
 }
-
 
 QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 {
@@ -917,6 +965,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     }
     return QString();
 }
+
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
 {
 
@@ -978,7 +1027,7 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     info.type=2;
     return QString();   // 成功
 }
-// PluginPage.cpp
+
 void PluginPage::syncPluginsTo32()
 {
     if (!bridge) return;
@@ -1050,7 +1099,7 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         info.python.onEnable = getCb("on_enable");
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
-
+        info.python.requires.clear();
         // 获取插件信息
         if (plugin_globals.contains("get_plugin_info")) {
             try {
@@ -1092,83 +1141,32 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
     }
 }
 
-/*
-QString PluginPage::LoadPlugin_py(PluginInfo &info)
-{
-    QString mainPy = info.path+"/main.py";
-    if (!QFile::exists(mainPy)) return info.path+"/main.py 文件不存在";
-
-    try {
-
-        py::exec(QString("import sys; sys.path.insert(0, '%1')").arg(info.path).toStdString());
-        py::dict plugin_globals;
-        plugin_globals["__builtins__"] = py::module_::import("builtins");
-        plugin_globals["__name__"] = py::str(info.path.toStdString());
-        plugin_globals["qq_api"] = py::module_::import("qq_api");
-        plugin_globals["sys"] = py::module_::import("sys");
-        py::dict local;
-        py::eval_file(mainPy.toStdString(), plugin_globals, local);
-
-        if (!local.contains("on_message")) return info.path+"\\main.py 中 on_message 函数不存在";
-        py::object func = local["on_message"];
-        if (!py::isinstance<py::function>(func)) return info.path+"\\main.py 中 on_message 函数不存在";
-        info.python.instance = func;
-        auto getCb = [&](const char *name) -> py::object {
-            if (local.contains(name)) {
-                py::object obj = local[name];
-                return (py::isinstance<py::function>(obj) || PyCallable_Check(obj.ptr())) ? obj : py::object();
-            }
-            return {};
-        };
-        if(info.uuid.isEmpty())
-        {
-            QUuid uuid = QUuid::createUuid();
-            info.uuid=uuid.toString(QUuid::WithoutBraces);
-        }
-        info.python.onSet = getCb("on_set");
-        info.python.onEnable = getCb("on_enable");
-        info.python.onDisable = getCb("on_disable");
-        info.python.onUnload = getCb("on_unload");
-        if (local.contains("get_plugin_info")) {
-            try {
-
-                py::dict dict = local["get_plugin_info"](py::str(info.uuid.toStdString()));  // 注意这里传入的 info.uuid 可能还是旧类型？确保调用前已正确初始化
-
-                if (dict.is_none()) {
-                    return QString("执行 %1/main.py 中 get_plugin_info 函数异常 异常内容：get_plugin_info 返回空").arg(info.path);
-                }
-                auto readString = [&](const char* key, QString& target) {
-                    if (dict.contains(key) && !dict[key].is_none()) {
-                        target = QString::fromStdString(dict[key].cast<std::string>());
-                    }
-                };
-                readString("name", info.name);
-                readString("version", info.version);
-                readString("author", info.author);
-                readString("description", info.description);
-                readString("icon", info.icon);
-
-                if (dict.contains("requires") && py::isinstance<py::list>(dict["requires"])) {
-                    py::list reqs = dict["requires"].cast<py::list>();
-                    for (py::handle h : reqs) {
-                        if (py::isinstance<py::str>(h)) {
-                            info.python.requires << QString::fromStdString(h.cast<std::string>());
-                        }
-                    }
-                }
-            } catch (const py::error_already_set &e) {
-                return QString("执行 %1/main.py 中 get_plugin_info 函数异常 异常内容：%2").arg(info.path,e.what());
-            }
-        }
-        if (info.name.isEmpty()) return info.path+"/main.py 中 get_plugin_info 函数 未返回 插件名称";
-
-        return QString();
-    } catch (const py::error_already_set &e) {
-        return QString("%1 错误: %2").arg(info.path,e.what());
+void PluginPage::LoadPlugin_JS() { // 按钮点击槽
+    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
+    if (dir.isEmpty()) return;
+    if (!QFile::exists(dir + "/main.js")) {
+        QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
+        return;
     }
+    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
+    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
+
+    PluginInfo info;
+    info.path = dir;
+    info.type = 3;
+    info.enabled = false;
+    info.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QString err = LoadPlugin_js(info);
+    if (!err.isEmpty()) {
+        AppendEventLog("加载JS插件失败: " + err);
+        QMessageBox::warning(this, "错误", err);
+        return;
+    }
+    appendPlugin(info);
+    savePlugins();
+    AppendEventLog("加载JS插件: " + dir);
 }
 
- */
 void PluginPage::savePlugins() {
     QJsonArray arr;
      for (int i = 0; i < m_pluginList.size(); ++i) {
@@ -1188,7 +1186,7 @@ void PluginPage::savePlugins() {
     saveConfig();
 
 }
-void AppendEventLog(const QString &msg) ;
+
 void PluginPage::loadPlugins() {
 
     const QJsonArray arr = g_config["plugins"].toArray();
@@ -1204,7 +1202,6 @@ void PluginPage::loadPlugins() {
         for (const QJsonValue &v : appidArr) {
             array.append(v.toInt());
         }
-
         if (type == 0) {
             if (!QDir(path).exists()) continue;
 
@@ -1221,6 +1218,26 @@ void PluginPage::loadPlugins() {
     }
 }
 
+QString PluginPage::LoadPlugin_js(PluginInfo& info) {
+    QString fullPath = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(info.path);
+    if (!QDir(fullPath).exists()) return "目录不存在";
+    if (!QFile::exists(fullPath + "/main.js")) return "缺少 main.js";
 
+    if (info.uuid.isEmpty()) {
+        info.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
 
+    QVariantMap metadata = NodePluginManager::instance().loadPlugin(fullPath, info.uuid);
+    if (metadata.contains("error")) {
+        return metadata["error"].toString();
+    }
 
+    info.name = metadata["name"].toString();
+    info.version = metadata["version"].toString();
+    info.author = metadata["author"].toString();
+    info.description = metadata["description"].toString();
+    info.icon = metadata["icon"].toString();
+    info.type = 3;
+
+    return QString();
+}

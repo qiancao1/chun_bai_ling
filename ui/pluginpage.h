@@ -2,6 +2,7 @@
 #define PLUGINPAGE_H
 
 
+#include <qprocess.h>
 #pragma push_macro("slots")
 #undef slots
 #include <pybind11/embed.h>
@@ -15,6 +16,9 @@
 #include <QTextBrowser>
 #include <QLibrary>
 #include "qqbotclient.h"
+
+
+
 class PluginManager;   // 前置声明
 
 
@@ -29,7 +33,12 @@ struct PythonPluginobj {
     py::object onDisable;                // 禁用时调用
     py::object onUnload;                 // 卸载前调用
 };
-
+struct JsPlugin {
+    QProcess* process = nullptr;
+    QString entryScript;           // main.js 完整路径
+    bool isReady = false;          // 是否已就绪（收到 ready 消息）
+    QJsonObject pendingRequest;    // 如果请求响应模式需要，可以暂存
+};
 const char* myCallback(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
                        const char* _6, const char* _7, const char* _8);
@@ -68,6 +77,7 @@ struct PluginInfo {
     QString loadedDllPath;
     PythonPluginobj python;
     DLLPluginobj DLL;
+    JsPlugin js;
     QString uuid;
     QList<int> appid;
     int SendQuantity=0;
@@ -113,6 +123,7 @@ public:
     void addPluginItemToUI(int index, const PluginInfo &info);
     void insertPluginItemToUI(int index, const PluginInfo &info);
     void updatePluginItemInUI(int index);
+    QString LoadPlugin_js(PluginInfo &info);
     int findPluginIndex(const QString &id) const;
     QString sendData32(int type,PluginInfo &info,const QString &appidlist = QString());
     QString LoadPlugin_DLL32(PluginInfo &info);
@@ -123,11 +134,13 @@ private slots:
     void onAccountCheckStateChanged(QListWidgetItem *item);
     void onPluginRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
 
+
 private:
     void setupUi();
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
     void LoadPlugin_Python();
+    void LoadPlugin_JS();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
     QListWidget *pluginListWidget;
@@ -146,7 +159,7 @@ private:
 
     QPushButton *loadBtn;
     QPushButton *addPluginBtn;   // 顶部按钮
-    QPushButton *addPluginBtn2;   // 顶部按钮
+    QPushButton *addPluginBtn2,*addPluginBtn3;   // 顶部按钮
     QPushButton *uninstallBtn;   // 卸载按钮
     QPushButton *setBtn;
     int currentSelected_index;

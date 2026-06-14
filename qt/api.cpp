@@ -27,7 +27,7 @@ const int API_ID_BOT_LIST = 7;
 const int API_ID_GET_OPENID = 8;
 const int API_ID_GET_USER_NAME=9;
 const int API_ID_PYTHON_HTTP=10;
-
+const int API_ID_GET_USER_ID=11;
 
 
 inline QString toQString(const char* s) {
@@ -415,7 +415,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
                        const char* _6, const char* _7, const char* _8) {
     static std::string result="{}";
 
-
+    qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
     if (apiId == 10000) {
         miaomiao32 = 0;
         return result.c_str();
@@ -436,7 +436,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
     }
     if(apiId==10002)
     {
-        botnomsg(appid,toInt(_1),toQString(_2),toQString(_3));
+        botnomsg(toInt(_1),toQString(_2),toQString(_3));
         return result.c_str();
     }
     if(!g_sandboxuuid.isEmpty() && uuid==g_sandboxuuid)
@@ -453,7 +453,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         {
             if(m_pluginList[i].uuid!=uuid) continue;
             pluginindex=i;
-            pname = "["+m_pluginList[i].name+"|%1]";
+            pname = "["+m_pluginList[i].name+"|%1ms]";
             break;
         }
     }else{
@@ -588,6 +588,18 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         result = python_http(qurl,method,headersJsonStr,bodyBase64,timeoutSec).toStdString();
         break;
     }
+    case API_ID_GET_USER_ID: {
+        if(!g_botdb.contains(appid))
+        {
+            result = "";
+            break;
+        }
+        BotDB *db = g_botdb[appid];
+        QString name;
+        uint32_t id=db->getOrUpdateUser(toQString(_1),name);
+        result = id;
+        break;
+    }
     default:
         result = R"({"error":"Unknown apiId"})";
         break;
@@ -648,7 +660,7 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
             e->botName = m_info->nickname;
             e->appid =m_info->appid_int;
             e->time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-            e->msg = "[多条回复]"+entry.msg;
+            e->msg = "[多条回复] "+entry.msg;
             e->user =entry.user;
             e->user_name =entry.user_name;
             e->groupId = entry.groupId;

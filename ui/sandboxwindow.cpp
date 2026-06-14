@@ -760,6 +760,7 @@ void SandboxWindow::onSavePluginClicked()
     }
 
     QTextStream stream(&file);
+    stream.setCodec(QTextCodec::codecForName("UTF-8"));
     stream << codeEditor->toPlainText();
     file.close();
     targetDir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"/");

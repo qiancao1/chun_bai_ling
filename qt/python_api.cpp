@@ -1,7 +1,7 @@
 #include <pybind11/pybind11.h>
 #include "global.h"
 
-// ========== 1. QString 转换器（必须在 MessageEvent 使用之前定义）==========
+
 namespace pybind11 { namespace detail {
 template <> struct type_caster<QString> {
 public:
@@ -43,7 +43,7 @@ public:
 
 namespace py = pybind11;
 
-PYBIND11_EMBEDDED_MODULE(qq_api, m) {
+PYBIND11_EMBEDDED_MODULE(qq_api, m, py::mod_gil_not_used()) {
     m.doc() = "QQ API binding with uid support";
     py::class_<MessageEvent>(m, "MessageEvent")
     .def(py::init<>())

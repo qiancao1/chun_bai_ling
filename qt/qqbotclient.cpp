@@ -633,7 +633,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         if(g_botdb.contains(ev.appid))
         {
             BotDB *db = g_botdb[ev.appid];
-            if(ev.subType==7)
+            if(ev.subType==6)
                 db->addFriend(ev.user_int,QDateTime::currentSecsSinceEpoch()/60);
             else
                 db->removeFriend(ev.user_int);
@@ -650,8 +650,9 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["user_id"] = ev.user_int;
     payload["appid"]=ev.appid;
     payload["at_you"]=ev.at_you;
+    payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-
+    //qDebug() << ev.raw;
     EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
 
         Message(info, event);
@@ -839,14 +840,7 @@ QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int time
     loop.exec();   // 阻塞直到请求完成或超时
 
     // 5. 处理结果
-    QString response;
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        response = QString::fromUtf8(reply->readAll());
-    } else {
-        // 可选：记录错误日志
-        // qDebug() << "POST请求失败:" << reply->errorString();
-        response.clear();   // 超时或错误时返回空字符串
-    }
+    QString response= QString::fromUtf8(reply->readAll());
 
     reply->deleteLater();
     return response;

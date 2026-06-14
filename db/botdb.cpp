@@ -463,6 +463,7 @@ uint64_t BotDB::makeFriendKey(uint32_t a, uint32_t b)
 // 添加好友：key = userSeqId，value = addTimeMinutes
 bool BotDB::addFriend(uint32_t userSeqId, uint32_t addTimeMinutes)
 {
+    if(!m_env) return false;
     QMutexLocker locker(&m_mutex);
     QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
     MDB_txn *txn = nullptr;
@@ -480,6 +481,7 @@ bool BotDB::addFriend(uint32_t userSeqId, uint32_t addTimeMinutes)
 
 bool BotDB::removeFriend(uint32_t userSeqId)
 {
+    if(!m_env) return false;
     QMutexLocker locker(&m_mutex);
     QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
     MDB_txn *txn = nullptr;
@@ -497,6 +499,7 @@ bool BotDB::removeFriend(uint32_t userSeqId)
 
 bool BotDB::isFriend(uint32_t userSeqId)
 {
+    if (!m_env) return false;
     QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
@@ -509,7 +512,9 @@ bool BotDB::isFriend(uint32_t userSeqId)
 
 QList<uint32_t> BotDB::getFriendList()
 {
+
     QList<uint32_t> result;
+    if (!m_env) return result;
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) return result;
@@ -537,6 +542,7 @@ QList<uint32_t> BotDB::getFriendList()
 
 bool BotDB::getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes)
 {
+    if (!m_env) return false;
     QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);

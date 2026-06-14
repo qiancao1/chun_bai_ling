@@ -14,6 +14,8 @@
 #include "logdb.h"
 #include "LogPage.h"
 #include <QJsonObject>
+#include "node_plugin_manager.h"
+#include "node_process.h"
 #include "qqbotclient.h"
 #include "botdb.h"
 #include "lmdbkv.h"
@@ -86,7 +88,7 @@ extern char* g_keyuuid2;
 extern QString ffmpegdiv;
 extern BlacklistPage *Black;
 extern int 聊天发送模式;
-
+extern int plugin_n;
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs = 5000);
 void AppendEventLog(const QString &msg,const QColor color=Qt::black);
 QString upload(const QString &path);
@@ -100,7 +102,7 @@ QString replaceFileTag(const QString &content, const QString &format = "[文件]
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
-void botnomsg(int appid,int type,const QString &openid,const QString &msgid);
+void botnomsg(int type, const QString &openid, const QString &msgid);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 
@@ -208,5 +210,35 @@ private:
     QString m_nickname;
     bool mode;
 };
+class JsApiTask : public QRunnable {
+public:
+    JsApiTask(NodePluginManager* mgr, const QString& uuid, int id,
+              const QString& method, const QJsonArray& params,
+              QPointer<NodeProcess> proc)
+        : m_mgr(mgr), m_uuid(uuid), m_id(id), m_method(method), m_params(params), m_proc(proc)
+    {
+        setAutoDelete(true);
+    }
 
+    void run() override {
+        // 在线程池线程中执行耗时的 API 调用
+        QString result = m_mgr->processApiRequest(m_uuid, m_method, m_params);
+
+        // 将响应发送回主线程（因为 QProcess::write 必须在主线程）
+        QMetaObject::invokeMethod(qApp, [weakProc = m_proc, id = m_id, result]() {
+            NodeProcess* proc = weakProc.data();
+            if (proc && proc->isRunning()) {  // 此时在主线程，安全
+                proc->sendResponse(id, result);
+            }
+        }, Qt::QueuedConnection);
+    }
+
+private:
+    NodePluginManager* m_mgr;
+    QString m_uuid;
+    int m_id;
+    QString m_method;
+    QJsonArray m_params;
+    QPointer<NodeProcess> m_proc;
+};
 #endif // GLOBAL_H

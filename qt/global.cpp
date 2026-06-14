@@ -26,7 +26,8 @@ int mapTypeToTabIndex(int type)
     }
 }
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
-void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
+int plugin_n=0;
+void botnomsg(int type,const QString &openid,const QString &msgid)
 {
     if(m_logStore[0].capacity()==0) return ;
     int tabIndex=type + 1;
@@ -37,13 +38,14 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
     if(!entry.direction.isEmpty()) return;
     entry.n++;
     //qDebug()<< "未回应计数：" <<entry.n;
-    if(entry.n>=2 && m_botClients.contains(appid))
+    if(entry.n>=plugin_n && m_botClients.contains(entry.appid))
     {
-        QQBotClient *c =  m_botClients[appid];
+        QQBotClient *c =  m_botClients[entry.appid];
         if(c->m_info->fallbackReply.isEmpty()) return;
         QString text="[未被处理回应]";
         c->send_messages(type,openid,text,c->m_info->fallbackReply,msgid);
     }
+
 }
 
 void AppendEventLog(const QString &msg,const QColor color)
@@ -216,7 +218,7 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
 
     }
     pluginPage->dispatch_message(ev.raw,ev);
-    if(ev.at_you || !ev.fullType) botnomsg(ev.appid,ev.type,ev.groupId,ev.msgId);
+    if(ev.at_you || !ev.fullType) botnomsg(ev.type,ev.groupId,ev.msgId);
 }
 QString extractBetween(const QString &source, const QString &left, const QString &right) {
     int start = source.indexOf(left);

@@ -38,8 +38,8 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.0.2.3"
-#define APP_BUILD_NUMBER 3
+#define APP_VERSION_STR "v1.0.3.4"
+#define APP_BUILD_NUMBER 4
 
 
 

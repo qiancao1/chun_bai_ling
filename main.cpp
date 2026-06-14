@@ -69,18 +69,29 @@ bool clearPTmpFolder()
 }
 #include <windows.h>
 #include <QProcess>
+QString getPythonExecutable() {
+    // 搜索 python3.14t 可执行文件
+    QString exePath = QStandardPaths::findExecutable("python3.14t");
+    if (exePath.isEmpty()) {
+        // 降级：尝试搜索 python3.14（无 t）
+        exePath = QStandardPaths::findExecutable("python3.14");
+    }
+    return exePath;
+}
 
+QString getPythonPrefix() {
+    QString pythonExe = getPythonExecutable();
+    if (pythonExe.isEmpty()) {
+        return QString();
+    }
 
-QString getSystemPythonPrefix() {
     QProcess process;
-    process.start("python", QStringList() << "-c" << "import sys; print(sys.prefix)");
-    if (!process.waitForFinished(3000)) {
-        qWarning() << "Failed to get python prefix";
+    process.start(pythonExe, QStringList() << "-c" << "import sys; print(sys.prefix)");
+    if (!process.waitForFinished(2000)) {
         return QString();
     }
     QString output = process.readAllStandardOutput().trimmed();
     if (output.isEmpty()) {
-        qWarning() << "Python prefix is empty";
         return QString();
     }
     return output;
@@ -98,13 +109,32 @@ void initdiv()
     dir.mkpath("plugin");
     dir.mkpath("plugin_data");
 }
+#include <DbgHelp.h>
+#pragma comment(lib, "DbgHelp.lib")
 
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
+{
+    // 创建 minidump 文件
+    HANDLE hFile = CreateFileA("crash.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION mei;
+        mei.ThreadId = GetCurrentThreadId();
+        mei.ExceptionPointers = ep;
+        mei.ClientPointers = FALSE;
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mei, NULL, NULL);
+        CloseHandle(hFile);
+    }
+
+
+    QMessageBox::about(NULL,  "Error","程序崩溃，已生成 crash.dmp");
+    return EXCEPTION_EXECUTE_HANDLER; // 终止进程
+}
 
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
 int main(int argc, char *argv[]) {
-
-
+    qputenv("QT_DEBUG_PLUGINS", "1");
+    SetUnhandledExceptionFilter(CrashHandler);
     QApplication a(argc, argv);
     g_totalRuntime = QDateTime::currentSecsSinceEpoch();
     MEMORYSTATUSEX memStatus;
@@ -119,21 +149,33 @@ int main(int argc, char *argv[]) {
     QUuid uuid = QUuid::createUuid();
     g_keyuuid = uuid.toString(QUuid::WithoutBraces).toStdString();
     int len = g_keyuuid.length();
-    qDebug() << len << "|" << g_keyuuid.c_str();
+
     g_keyuuid2 = new char[len + 1];
     strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
-
-    QString pythonHome = getSystemPythonPrefix();
-    if (!pythonHome.isEmpty()) {
-        qputenv("PYTHONHOME", pythonHome.toUtf8());  // Qt 方式
-    }
-    py::scoped_interpreter guard{};
-    py::gil_scoped_release release;
     initdiv();
     loadconfig();
     clearPTmpFolder();
+    QString pythonHome= g_config["pythonHome"].toString();
+    if(pythonHome.isEmpty()) pythonHome = getPythonPrefix();
 
-
+    if (!pythonHome.isEmpty()) {
+        qputenv("PYTHONHOME", pythonHome.toUtf8());  // Qt 方式
+        g_config["pythonHome"] = pythonHome;
+    }
+    std::unique_ptr<py::scoped_interpreter> interpreter;
+    try {
+        interpreter = std::make_unique<py::scoped_interpreter>();
+    } catch (...) {
+        qputenv("PYTHONHOME", QByteArray());
+        try {
+            interpreter = std::make_unique<py::scoped_interpreter>();
+        } catch (...) {
+            // 两次都失败，无法继续
+            QMessageBox::critical(nullptr, "错误", "Python 解释器初始化失败，程序无法运行。 请尝试安装py3.14t 后试试");
+            return -1;
+        }
+    }
+    py::gil_scoped_release release;
     cache_db = new LmdbKV("botdb/file_db");
     g_logdb = new LogDB("botdb/logdb",1000000);
     if (QFile::exists("miaomiao32.exe")) {
@@ -145,10 +187,14 @@ int main(int argc, char *argv[]) {
     MainWindow w;
     w.show();
     int ret = a.exec();
+    for(auto &c :m_botClients)
+    {
+        c->stop();
+    }
     if(bridge)
     {
-        bridge->stopServer();
         bridge->writeResponseToBlock(1,"{\"type\":6}");
+        bridge->stopServer();
     }
     pluginPage->foruninstall_Plugin();
     QThreadPool::globalInstance()->waitForDone();
