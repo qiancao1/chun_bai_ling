@@ -44,6 +44,7 @@
 QString Homev=R"(
 # 更新日志🌸
 ## v1.0.4.5 (2026-06-15)
+- 好好好 茜草改名为 纯白铃
 - 修复 js子进程不会自动退出问题
 - 优化 适配云崽 【部分】单js插件
 
@@ -97,7 +98,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     resize(1040, 660);
     setMinimumSize(900, 560);
-    setWindowTitle("qiancao");
+    setWindowTitle("纯白铃");
 
     setupUi();
     xr();
@@ -606,7 +607,7 @@ void MainWindow::createTitleBar()
     QVBoxLayout *textLayout = new QVBoxLayout;
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-    QLabel *mainLabel = new QLabel(QString("qinacao %1").arg(APP_VERSION_STR));
+    QLabel *mainLabel = new QLabel(QString("纯白铃 %1").arg(APP_VERSION_STR));
     mainLabel->setObjectName("leftMainLabel");
 
 
