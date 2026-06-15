@@ -240,7 +240,7 @@ void MainWindow::checkUpdate() {
 void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
     QString cleanVersion = version;
     if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
-    QString exeName = QString("qiancao-%1.exe").arg(cleanVersion);
+    QString exeName = QString("纯白铃-%1.exe").arg(cleanVersion);
     QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
 
     if (QFile::exists(savePath) && !QFile::remove(savePath)) {
