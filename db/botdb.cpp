@@ -1,4 +1,5 @@
 #include "botdb.h"
+#include "global.h"
 #include <QDir>
 #include <QDebug>
 #include <cstring>
@@ -97,8 +98,9 @@ bool BotDB::open()
         qCritical() << "提交事务失败:" << mdb_strerror(rc);
         return false;
     }
+    AppendEventLog( "数据库已打开，目录:" + m_path + "初始mapsize:" + QString::number((m_currentMapSize >> 20)) + "MB");
 
-    qDebug() << "数据库已打开，目录:" << m_path << "初始mapsize:" << (m_currentMapSize >> 20) << "MB";
+
     return true;
 
 fail:

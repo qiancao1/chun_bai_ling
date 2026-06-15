@@ -88,6 +88,7 @@ extern char* g_keyuuid2;
 extern QString ffmpegdiv;
 extern BlacklistPage *Black;
 extern int 聊天发送模式;
+extern bool 框架退出;
 extern int plugin_n;
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs = 5000);
 void AppendEventLog(const QString &msg, int color=Color_0);

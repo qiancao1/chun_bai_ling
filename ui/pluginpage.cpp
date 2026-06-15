@@ -52,10 +52,11 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     iconLabel = new QLabel;
     iconLabel->setFixedSize(48, 48);
     iconLabel->setScaledContents(true);
-    iconLabel->setStyleSheet("border: 2px solid #89b4fa; border-radius: 6px;");
+    iconLabel->setObjectName("icon_AAA");
+    iconLabel->setStyleSheet("border: 1px solid #89b4fa; border-radius: 2px;");
     QPixmap pix(info.icon);
     if (!pix.isNull()) iconLabel->setPixmap(pix);
-
+    else iconLabel->clear();
     QVBoxLayout *vLayout = new QVBoxLayout;
     vLayout->setSpacing(2);
     QHBoxLayout *line1 = new QHBoxLayout;
@@ -92,7 +93,10 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
 void PluginItemWidget::updateInfo(const PluginInfo &info) {
     // 更新图标
     QPixmap pix(info.icon);
-    if (!pix.isNull()) iconLabel->setPixmap(pix);
+    if (!pix.isNull())
+        iconLabel->setPixmap(pix);
+    else
+        iconLabel->clear();
     // 更新名称
     nameLabel->setText(info.name);
     // 更新作者
@@ -178,7 +182,7 @@ void PluginPage::setupUi()
     detailIconLabel = new QLabel;
     detailIconLabel->setFixedSize(64, 64);
     detailIconLabel->setScaledContents(true);
-    detailIconLabel->setStyleSheet("border: 2px solid #222222; border-radius: 8px;");
+    detailIconLabel->setStyleSheet("border: 1px solid #222222; border-radius: 0px;");
     iconNameLayout->addWidget(detailIconLabel);
     QFormLayout *formLayout2 = new QFormLayout;
 
@@ -265,9 +269,11 @@ void PluginPage::setupUi()
     connect(uninstallBtn, &QPushButton::clicked, [this](){
         uninstall_Plugin(currentSelected_index);
         savePlugins();
+        currentSelected_index=-1;
     });
 
     connect(reloadBtn, &QPushButton::clicked, [this](){
+
         Reload_Plugin(currentSelected_index);
         updatePluginItemInUI(currentSelected_index);
     });
@@ -636,6 +642,7 @@ void PluginPage::updateDetailPanel(int index)
     QPixmap pix(m_pluginList[index].icon);
     if (!pix.isNull())
         detailIconLabel->setPixmap(pix);
+    else detailIconLabel->clear();
     detailNameLabel->setText(m_pluginList[index].name);
     QString typeStr;
     switch (m_pluginList[index].type) {
@@ -898,7 +905,25 @@ void PluginPage::LoadPlugin_Python() //按钮
     savePlugins();
     AppendEventLog("[载入插件]"+dir);
 }
-
+void PluginPage::LoadPlugin_JS() { // 按钮点击槽
+    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
+    if (dir.isEmpty()) return;
+    if (!QFile::exists(dir + "/main.js")) {
+        QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
+        return;
+    }
+    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
+    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
+    QList<int> empty{};
+    QString err = LoadPlugin (dir,3,false, empty);
+    if (!err.isEmpty()) {
+        AppendEventLog("加载JS插件失败: " + err ,0xff);
+        QMessageBox::warning(this, "错误", err);
+        return;
+    }
+    savePlugins();
+    AppendEventLog("加载JS插件: " + dir);
+}
 QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 {
     // 1. 确保临时目录存在
@@ -1141,31 +1166,7 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
     }
 }
 
-void PluginPage::LoadPlugin_JS() { // 按钮点击槽
-    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
-    if (dir.isEmpty()) return;
-    if (!QFile::exists(dir + "/main.js")) {
-        QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
-        return;
-    }
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
 
-    PluginInfo info;
-    info.path = dir;
-    info.type = 3;
-    info.enabled = false;
-    info.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    QString err = LoadPlugin_js(info);
-    if (!err.isEmpty()) {
-        AppendEventLog("加载JS插件失败: " + err ,0xff);
-        QMessageBox::warning(this, "错误", err);
-        return;
-    }
-    appendPlugin(info);
-    savePlugins();
-    AppendEventLog("加载JS插件: " + dir);
-}
 
 void PluginPage::savePlugins() {
     QJsonArray arr;

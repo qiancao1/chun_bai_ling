@@ -42,7 +42,7 @@ void loadconfig()
 
 void saveConfig()
 {
-    qDebug() << "保存时间" << QDateTime::currentDateTime().toString();
+    if(框架退出) return;
     QFile file("data/config.json");
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(QJsonDocument(g_config).toJson(QJsonDocument::Compact));
@@ -187,6 +187,7 @@ int main(int argc, char *argv[]) {
     MainWindow w;
     w.show();
     int ret = a.exec();
+    框架退出=true;
     for(auto &c :m_botClients)
     {
         c->stop();

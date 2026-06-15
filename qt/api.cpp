@@ -1717,15 +1717,21 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         QJsonArray prompt_keyboard;
         QString message_reference;
 
-        text=normalizeNewlinesToCR(text); //处理换行
+        QString textB=normalizeNewlinesToCR(text); //处理换行
 
-        bianl(type,index,text,keyboard,prompt_keyboard);//挂载按钮解析 小尾巴
-
+        bianl(type,index,textB,keyboard,prompt_keyboard);//挂载按钮解析 小尾巴
+        if(textB.isEmpty())
+        {
+            QString response = R"({"message":"发送内容不能为空"})";
+            addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+            return response;
+        }
         QString response,fileinfo;
         if(!mode && m_info->markdown || mode && 聊天发送模式==1)
         {
-            text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(text);
+            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+
+            QString textA = forbidden->filterText(textB);
             response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
             if(response.contains("token not exist or expire")) //token过期
             {
@@ -1734,9 +1740,11 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                 response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
             }
 
+
         }else{
-            text=processImageTags(text,0,fileinfo,type,openid,message_reference);
-            QString textA = forbidden->filterText(text);
+            textB=processImageTags(textB,0,fileinfo,type,openid,message_reference);
+
+            QString textA = forbidden->filterText(textB);
             response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup);
             if(response.contains("token not exist or expire"))
             {
@@ -1802,8 +1810,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     json["msg_type"] = 2;
     json["markdown"] = QJsonObject{{"content", markdown}};
 
-    if (keyboard.contains("keyboard"))
-    {
+    if (keyboard.contains("keyboard")){
         json["keyboard"] = keyboard["keyboard"];
     }else if(keyboard.contains("content")){
         json["keyboard"] = keyboard;

@@ -29,13 +29,17 @@ NodeProcess::NodeProcess(const QString& uuid, const QString& pluginPath, QObject
     m_process = new QProcess(this);
     m_restartTimer = new QTimer(this);
     m_restartTimer->setSingleShot(true);
+
+
+
+
     connect(m_restartTimer, &QTimer::timeout, this, &NodeProcess::onRestartTimer);
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, &NodeProcess::onReadyRead);
     connect(m_process, &QProcess::readyReadStandardError, this, [this](){
         for (auto &p : m_pluginList) {
             if(p.uuid == m_uuid) {
-                AppendEventLog("["+p.name+"]异常：" + m_process->readAllStandardError(), 0xff0000);
+                AppendEventLog("["+p.name+"]信息：" + m_process->readAllStandardError(), 0xff0000);
                 return;
             }
         }
@@ -46,7 +50,7 @@ NodeProcess::NodeProcess(const QString& uuid, const QString& pluginPath, QObject
         Q_UNUSED(error)
         for (auto &p : m_pluginList) {
             if(p.uuid == m_uuid) {
-                AppendEventLog("["+p.name+"]异常：" + m_process->readAllStandardError(), 0xff0000);
+                AppendEventLog("["+p.name+"]信息：" + m_process->readAllStandardError(), 0xff0000);
                 return;
             }
         }
@@ -56,16 +60,14 @@ NodeProcess::NodeProcess(const QString& uuid, const QString& pluginPath, QObject
 NodeProcess::~NodeProcess() { stop(); }
 
 bool NodeProcess::start(bool isManual) {
-    // 先停止当前进程，避免重复启动
-    stop();
 
-    // 重置内部状态（清空旧进程残留）
+    stop();
     m_readBuffer.clear();
     m_pendingCallbacks.clear();
     m_nextId = 1;
 
     if (isManual) {
-        // 手动启动时重置重启计数
+
         m_restartCount = 0;
         m_autoRestart = true;
     }
@@ -73,7 +75,8 @@ bool NodeProcess::start(bool isManual) {
     QString program = getNodePath();
     QString scriptPath = QDir(m_pluginPath).absoluteFilePath("main.js");
     m_process->setWorkingDirectory(m_pluginPath);
-    m_process->start(program, QStringList() << scriptPath << "--uuid=" + m_uuid);
+
+    m_process->start(program, QStringList() << scriptPath  <<  QString::number(QCoreApplication::applicationPid()));
     if (!m_process->waitForStarted(3000)) {
         AppendEventLog("NodeProcess start failed:" + m_process->errorString(), 0xff0000);
         return false;

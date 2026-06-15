@@ -179,13 +179,14 @@ void AccountPage::loadAccounts() {
 }
 void AccountPage::saveAccounts() {
 
-
+    if(框架退出) return;
     QJsonArray arr;
     for (const auto& infoPtr : std::as_const(m_accounts)) {
         arr.append(infoPtr->toJson());
     }
 
     QJsonDocument doc(arr);
+    qDebug() << "保存时间" << QDateTime::currentDateTime().toString();
     QFile file("data/accounts.json");
     if (file.open(QIODevice::WriteOnly)) {
         file.write(doc.toJson());

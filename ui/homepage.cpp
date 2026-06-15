@@ -5,7 +5,6 @@
 
 #include <windows.h>
 #include <Psapi.h> // 仍然需要这个头文件，用于 PROCESS_MEMORY_COUNTERS 结构体声明
-
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -17,6 +16,7 @@
 #include <QSysInfo>
 #include "global.h"
 
+extern QString Homev;
 
 QString formatBytes(long long bytes, const QString& prefix) {
     const char* units[] = {"B", "KB", "MB", "GB"};
@@ -471,7 +471,6 @@ QFrame* HomePage::createStatusPanel() {
 
     statusLayout->addStretch();
 
-    // ========== 右侧更新日志（不变） ==========
     QTextBrowser* changelogEdit = new QTextBrowser(this);
     changelogEdit->setReadOnly(true);
     changelogEdit->setObjectName("changelogTextEdit");
@@ -479,29 +478,7 @@ QFrame* HomePage::createStatusPanel() {
         "QTextEdit { background-color: #f8f8f8; border: 1px solid #ddd; "
         "border-radius: 4px; padding: 8px; font-family: monospace; }"
         );
-    QString changelogMarkdown = R"(
-# 更新日志🌸
-## v1.0.3.4 (2026-06-14)
-- 增加对 JS 插件的支持
-- 修复 发送失败时 无错误信息
-- 其他 python 启用多线程 请注意编写py代码时多线程有没有问题
-- 修复 沙盒保存到插件 编码问题
-- 修复 被添加好友 删除好友时崩溃问题
-
-## v1.0.2.3 (2026-06-10)
-- 修复 代理类ws 不可用问题
-- 修复 检查更新 下载失败问题
-
-## v1.0.1.2 (2026-06-08)
-- 降低版本 指qt 5.15.3 兼容多类 低版本心跳
-
-## v1.0.0.1 (2026-06-07)
-- 修复\[]\()语法无效问题
-
-## v1.0.0 (2026-06-06)
-- 初始版本发布
-
-)";
+    QString changelogMarkdown = Homev;
 
     changelogEdit->setOpenExternalLinks(true);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)

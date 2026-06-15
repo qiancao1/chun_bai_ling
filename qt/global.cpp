@@ -5,7 +5,7 @@
 #include <QNetworkReply>
 
 
-
+bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
 Global::Global() {}
