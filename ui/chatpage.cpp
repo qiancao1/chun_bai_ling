@@ -59,35 +59,26 @@ static QSet<QString> mediaDownloadingSet; // 避免重复下载
 static bool extractImageInfo(const QString &content, bool &isLocalPath, QString &source) {
     if(!content.contains("[image,")) return false;
     QString tag = extractBetween(content, "path=", ",");
+    QString tag2 = extractBetween(content, "path=", "]");
+    if(tag.size()>tag2.size() && tag2.size()>10)
+        tag=tag2;
     if (!tag.isEmpty()) {
         isLocalPath = true;
         source = tag;
         return true;
     }
-    if(tag.isEmpty()){
-        tag = extractBetween(content, "path=", "]");
-        if (!tag.isEmpty()) {
-            isLocalPath = true;
-            source = tag;
-            return true;
-        }
-    }
-    // [image,url=xxx]
+
+
     tag = extractBetween(content, "url=", ",");
-    if (!tag.isEmpty()) {
-        isLocalPath = false;
-        source = tag;
-        return true;
-    }
-    if(tag.isEmpty()){
-        tag = extractBetween(content, "url=", "]");
-        if (!tag.isEmpty()) {
-            isLocalPath = false;
-            source = tag;
-            return true;
-        }
-    }
-    return false;
+    tag2 = extractBetween(content, "url=", "]");
+    if(tag.size()>tag2.size() && tag2.size()>10)
+        tag=tag2;
+    if (tag.isEmpty()) return false;
+
+    isLocalPath = false;
+    source = tag;
+    return true;
+
 }
 
 // 异步下载媒体文件，下载完成后调用打开函数
@@ -1068,7 +1059,8 @@ void ChatPage::initUI()
     comboSendType = new QComboBox;
     comboSendType->setObjectName("sendTypeCombo");
     comboSendType->addItems({"普通文本", "MarkDown"});
-
+    聊天发送模式=g_config["SendType"].toInt();
+    comboSendType->setCurrentIndex(聊天发送模式);
     btnSend = new QPushButton("发送");
     btnSend->setObjectName("sendButton");
     btnSend->setFixedHeight(28);
@@ -1108,6 +1100,8 @@ void ChatPage::initUI()
     connect(comboSendType, QOverload<int>::of(&QComboBox::currentIndexChanged),
             [=](int index){
                 聊天发送模式=index;
+                g_config["SendType"] = index;
+                saveConfig();
             });
 }
 
@@ -1558,7 +1552,15 @@ void ChatPage::onSendClicked()
         QMessageBox::warning(this, "提示", "请先选择一个聊天对象");
         return;
     }
-    QString text = inputEdit->toPlainText().trimmed();
+    QString text = inputEdit->toHtml();
+    qDebug() << text;
+    text = extractBetween(text,"style:normal;\">",
+                   "</p></body></html>" );
+    text = subTextReplace(text,"<img src=\"","[image,path=");
+    text = subTextReplace(text,"\" alt=\"本地图片\" width=\"64\" />","]");
+    text = subTextReplace(text,"</p>","");
+    text = subTextReplace(text,"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">","");
+    text = text.trimmed();
     onSendmsg(text);
 
 }
@@ -1567,8 +1569,11 @@ void ChatPage::onSendImage()
     if (currentContactId.isEmpty()) return;
     QString path = QFileDialog::getOpenFileName(this, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.wepb *.ico *.gif *.jxr);;所有文件 (*.*)");
     if (!path.isEmpty()) {
-        QString text=QString("[image,path=%1]").arg(path);
-        inputEdit->append(text);
+        //QString text=QString("[image,path=%1]").arg(path);
+        //<img src="C:/Users/Airuan/Pictures/AI绘画/下载.png" alt="本地图片" />
+        QString text = QString("<img src=\"%1\" width=\"64\" alt=\"本地图片\" />").arg(path);
+        QTextCursor cursor = inputEdit->textCursor();
+        cursor.insertHtml(text);
     }
 }
 void ChatPage::onSendAudio()

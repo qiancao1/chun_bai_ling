@@ -195,6 +195,7 @@ void KeywordMatchConfigWidget::setupUI() {
     mainSplitter->setStretchFactor(1, 3);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->addWidget(mainSplitter);
     setLayout(mainLayout);
 
@@ -214,13 +215,13 @@ void KeywordMatchConfigWidget::setupUI() {
 }
 
 void KeywordMatchConfigWidget::initTable() {
-    QStringList headers = {"启用", "关键词 (|||分隔多个)", "匹配类型", "回复内容", "禁止词 (|||分隔多个)"};
+    QStringList headers = {"关键词 (|||分隔多个)", "匹配类型", "回复内容", "禁止词 (|||分隔多个)"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     // 启用列固定宽度30，其他列自动拉伸
-    ruleTable->horizontalHeader()->setSectionResizeMode(COL_ENABLED, QHeaderView::Fixed);
-    ruleTable->setColumnWidth(COL_ENABLED, 30);
+    //ruleTable->horizontalHeader()->setSectionResizeMode(COL_ENABLED, QHeaderView::Fixed);
+    //ruleTable->setColumnWidth(COL_ENABLED, 30);
     ruleTable->verticalHeader()->setVisible(true);
 }
 
@@ -291,7 +292,7 @@ void KeywordMatchConfigWidget::setRuleItemToRow(int row, const KeywordMatchRule 
     };
 
     QTableWidgetItem *checkItem = ensureItem(COL_ENABLED);
-    checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    //checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     checkItem->setCheckState(rule.enabled ? Qt::Checked : Qt::Unchecked);
 
     ensureItem(COL_KEYWORDS)->setText(rule.keywords.join("|||"));
@@ -375,8 +376,7 @@ void KeywordMatchConfigWidget::onCopyRow() {
     }
     KeywordMatchRule rule = getRuleItemFromRow(row);
     QString line = QString("%1\t%2\t%3\t%4\t%5")
-                       .arg(rule.enabled ? "1" : "0")
-                       .arg(rule.keywords.join("|||"))
+                       .arg(rule.enabled ? "1" : "0",rule.keywords.join("|||"))
                        .arg(rule.matchType)
                        .arg(rule.replyContent, rule.forbiddenWords.join("|||"));
     QApplication::clipboard()->setText(line);

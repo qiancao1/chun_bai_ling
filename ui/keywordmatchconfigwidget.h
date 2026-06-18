@@ -11,7 +11,6 @@
 #include <QHash>
 #include <QSet>
 #include <QStringList>
-#include <memory>
 
 // 前置声明
 class AhoCorasick;
@@ -89,11 +88,11 @@ private:
 
     enum Column {
         COL_ENABLED = 0,
-        COL_KEYWORDS,
-        COL_MATCH_TYPE,
-        COL_REPLY,
-        COL_FORBIDDEN,
-        COL_COUNT
+        COL_KEYWORDS=0,
+        COL_MATCH_TYPE=1,
+        COL_REPLY=2,
+        COL_FORBIDDEN=3,
+        COL_COUNT=4
     };
 
     // UI 组件

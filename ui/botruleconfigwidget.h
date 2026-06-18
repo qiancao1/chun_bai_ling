@@ -89,11 +89,11 @@ private:
 
     // 列索引
     static constexpr int COL_ENABLED = 0;
-    static constexpr int COL_REMARK = 1;
-    static constexpr int COL_BUTTON_TYPE = 2;
-    static constexpr int COL_BUTTON_TEXT = 3;
-    static constexpr int COL_MATCH_TYPE = 4;
-    static constexpr int COL_CANDIDATE = 5;
+    static constexpr int COL_REMARK = 0;
+    static constexpr int COL_BUTTON_TYPE = 1;
+    static constexpr int COL_BUTTON_TEXT = 2;
+    static constexpr int COL_MATCH_TYPE = 3;
+    static constexpr int COL_CANDIDATE = 4;
 
 signals:
     void needLoadBotRules(int robotId);   // 队列加载信号

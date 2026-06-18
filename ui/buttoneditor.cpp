@@ -195,7 +195,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     QWidget *basicPage = new QWidget;
     QFormLayout *basicLayout = new QFormLayout(basicPage);
     basicLayout->setSpacing(4);
-
+    basicLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_buttonIdEdit = new QLineEdit;
     basicLayout->addRow("按钮ID (id):", m_buttonIdEdit);
 
@@ -240,7 +240,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     // ========== 权限页 ==========
     QWidget *permPage = new QWidget;
     QFormLayout *permLayout = new QFormLayout(permPage);
-
+    permLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_permissionTypeCombo = new QComboBox;
     m_permissionTypeCombo->addItem("指定用户 (0)", 0);
     m_permissionTypeCombo->addItem("仅管理者 (1)", 1);
@@ -263,7 +263,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     // ========== 模态框页 ==========
     QWidget *modalPage = new QWidget;
     QFormLayout *modalLayout = new QFormLayout(modalPage);
-
+    modalLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_modalContentEdit = new QLineEdit;
     m_modalContentEdit->setPlaceholderText("弹窗内容，最多40字符");
     modalLayout->addRow("弹窗内容 (content):", m_modalContentEdit);

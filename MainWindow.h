@@ -11,6 +11,7 @@
 #include <QToolButton>
 #include <QString>
 #include <qnetworkaccessmanager.h>
+#include "ui_ai.h"
 
 class HomePage;
 class AccountPage;
@@ -39,6 +40,10 @@ protected:
 
 private slots:
     void onMaximizeClicked();
+
+
+
+    void on_pushButton_clicked(bool checked);
 
 private:
     void setupUi();
@@ -80,7 +85,8 @@ private:
     QSize startSize;
     QPoint startGlobalPos;
     int edgeMargin;
-
+    //QWidget *aiContainer;      // 用来承载 ai.ui 的容器
+    //Ui::Ai aiUi;              // UI 对象
     // 其他
     QTimer *m_heartbeatTimer;
 

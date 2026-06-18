@@ -162,6 +162,7 @@ void BotRuleConfigWidget::setupUI()
     mainSplitter->setStretchFactor(1, 3);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->addWidget(mainSplitter);
     setLayout(mainLayout);
 
@@ -182,7 +183,7 @@ void BotRuleConfigWidget::setupUI()
 
 void BotRuleConfigWidget::initTable()
 {
-    QStringList headers = {"启用", "备注", "禁止词", "按钮文本", "匹配类型", "候选词"};
+    QStringList headers = {"备注", "禁止词", "按钮文本", "匹配类型", "候选词"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -272,7 +273,7 @@ void BotRuleConfigWidget::setRuleItemToRow(int row, const BotRuleItem &item)
 
     // 启用列
     QTableWidgetItem *checkItem = ensureItem(COL_ENABLED);
-    checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    //checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     checkItem->setCheckState(item.enabled ? Qt::Checked : Qt::Unchecked);
 
     // 普通文本列

@@ -101,6 +101,7 @@ void logMessageEvent(const QString &botName, const MessageEvent &ev,QString &dir
     ev2.color=Color_1;
     switch (ev.type) {
     case 0: // 群消息
+            ev2.msg = QString("[%1] 群:%2 用户:%3").arg(ev.subType == 2 ? "群成员添加" : "群成员退群", ev.groupId, ev.user);
         break;
     case 1: // 频道消息
         break;
@@ -172,6 +173,7 @@ QString normalizeNewlinesToCR(const QString &input)
     return result;
 }
 QString python_code(QString &py_code,const MessageEvent &msg);
+//===========================================================================================================================================我猜你在找这个
 void Message(AccountInfo *info,const MessageEvent &ev) {
 
     //================================引用式更新变量
@@ -200,23 +202,24 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     }
     logMessageEvent(info->nickname,ev,text);
     QString ret = keyword->match(info->appid_int,ev.msg);
+    if(ret.isEmpty()) ret = schedule->ppzl(ev,text);
+
     if(!ret.isEmpty())
     {
+        if(ret == "*") return;
         if(m_botClients.contains(info->appid_int))
         {
-
-            if(ret.startsWith("#python"))
-                ret = python_code(ret,ev);
+            if(ret.startsWith("#python")) ret = python_code(ret,ev);
             if(!ret.isEmpty())
             {
                 QQBotClient *client = m_botClients[info->appid_int];
-                text = "[关键词匹配|%1ms]";
+                if(text.isEmpty()) text = "[关键词匹配|%1ms]";
                 client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
                 return;
             }
         }
-
     }
+
     pluginPage->dispatch_message(ev.raw,ev);
     if(ev.at_you || !ev.fullType) botnomsg(ev.type,ev.groupId,ev.msgId);
 }
@@ -486,20 +489,7 @@ QString joinIntListFast(const QList<int>& list, const QString& sep) {
     return result;
 }
 
-#include <QString>
 
-/**
- * @brief 模仿易语言的子文本替换
- * @param source       源字符串
- * @param find         要查找的子串
- * @param replace      替换成的子串
- * @param replaceCount 替换次数，-1 表示替换所有，0 或正数表示替换前 replaceCount 次
- * @param startPos     查找起始位置（易语言风格，从 1 开始计数），1 表示从第一个字符开始
- * @return 替换后的字符串
- *
- * 注意：若 find 为空字符串，直接返回 source 原串，避免无限循环。
- *      起始位置会被约束在 [1, source.length()+1] 范围内，超出则返回原串。
- */
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,
                        int replaceCount,int startPos)
 {
@@ -528,21 +518,11 @@ QString subTextReplace(const QString &source,const QString &find,const QString &
 
         if (pos == -1)
             break;              // 找不到更多
-
-        // 跳过第一次查找起始位置之前的部分（只对第一次有效）
-        // 注意：我们已经在整体结果上从 offset 开始找，offset 会随着替换动态调整
-        // 但为了模拟易语言 startPos 仅影响第一次查找位置，这里已经正确
-
-        // 执行替换
         result.replace(pos, find.length(), replace);
         replaced++;
 
-        // 检查是否达到替换次数限制
         if (replaceCount != -1 && replaced >= replaceCount)
             break;
-
-        // 更新 offset：新位置 = 替换后的位置 + 替换后子串的长度
-        // 这是为了避免在刚替换的内容中再次查找（防止无限替换）
         offset = pos + replace.length();
     }
 

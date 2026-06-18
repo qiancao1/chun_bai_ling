@@ -28,7 +28,13 @@ public:
 
     bool open();
     void close();
-
+    // 订阅（添加）：标记 + 群ID
+    bool addSubscription(uint32_t mark, uint8_t param, const QString &groupId);
+    // 取消订阅（删除）：标记 + 群ID
+    bool removeSubscription(uint32_t mark, uint8_t param, const QString &groupId);
+    bool clearSubscriptionsByMark(uint32_t mark);
+    // 获取某个标记下的所有群ID列表
+    QStringList listSubscriptions(uint32_t mark);
     static uint32_t nowMinutes();
 
     uint32_t getOrUpdateUser(const QString &openid, QString &name);
@@ -73,6 +79,8 @@ private:
     MDB_dbi  m_dbi_seq_idx;
     MDB_dbi  m_dbi_groups;
     MDB_dbi  m_dbi_friends;
+    MDB_dbi m_dbi_subscriptions;  // 订阅数据库
+
     QMutex   m_mutex;
 };
 

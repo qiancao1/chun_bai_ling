@@ -1,4 +1,7 @@
+
+
 #include "MainWindow.h"
+#include "AiWidget.h"
 #include "BlacklistPage.h"
 #include "ButtonEditor.h"
 #include "HomePage.h"
@@ -6,6 +9,8 @@
 #include "PluginPage.h"
 
 #include "LogPage.h"
+#include "ScheduleConfigWidget.h"
+#include "ScreenshotSyncClient.h"
 #include "botruleconfigwidget.h"
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
@@ -28,12 +33,16 @@
 #include <QPainter>
 #include <QFile>
 #include <qgroupbox.h>
+#include "htmltoimagewidget.h"
 #include "sandboxwindow.h"
 #include "set.h"
 #include "textreplaceconfigwidget.h"
 #include "keywordmatchconfigwidget.h"
 #include <QNetworkReply>
 #include <QProgressDialog>
+
+
+
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -45,8 +54,11 @@ QString Homev=R"(
 # 更新日志🌸
 ## v1.0.4.5 (2026-06-15)
 - 好好好 茜草改名为 纯白铃
+- 添加 订阅 也可以叫定时 可以推送订阅信息的群
 - 修复 js子进程不会自动退出问题
 - 优化 适配云崽 【部分】单js插件
+- 添加 Html制图
+- 添加 常用功能Ai
 
 ## v1.0.3.4 (2026-06-14)
 - 增加对 JS 插件的支持
@@ -84,13 +96,15 @@ TextReplaceConfigWidget *TextReplace=nullptr;
 KeywordMatchConfigWidget *keyword=nullptr;
 BlacklistPage *Black=nullptr;
 ForbiddenWordPage *forbidden=nullptr;
-
+ScheduleConfigWidget *schedule=nullptr;
+HtmlToImageWidget *htmltoimg =nullptr;
+ScreenshotSyncClient *ScreenA=nullptr;
+AiWidget *ai = nullptr;
 int m_currentBotIndex = -1;
+int 定时检查变量=0;
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , resizing(false)
-    , edgeMargin(5)
+
+MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(5)
 {
     // 无边框窗口
     setWindowFlags(Qt::FramelessWindowHint);
@@ -103,6 +117,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupUi();
     xr();
     applyStyleSheet();
+
 
     // 默认选中首页
     btnHome->setChecked(true);
@@ -118,6 +133,7 @@ MainWindow::MainWindow(QWidget *parent)
                 if (card) card->onTimeRefresh();
             }
         }
+        schedule->检查定时列表();
         if(ss==homePage) homePage->refreshRuntimeStats();
         if (!bridge) return;
         if (miaomiao32 >= 2)
@@ -136,7 +152,6 @@ MainWindow::MainWindow(QWidget *parent)
     });
     m_heartbeatTimer->start();
 }
-
 
 void MainWindow::xr()
 {
@@ -178,227 +193,6 @@ void showClickableLicenseInfo() {
     msgBox.exec();
 }
 
-
-
-void MainWindow::checkUpdate() {
-
-    QUrl url("https://gitee.com/api/v5/repos/qiancao1/qiancao/releases/latest");
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
-
-    QNetworkReply *reply = networkManager->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater(); // 自动清理
-
-        if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(this, "检查更新", "网络请求失败: " + reply->errorString());
-            return;
-        }
-
-        QByteArray data = reply->readAll();
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-        if (err.error != QJsonParseError::NoError) {
-            QMessageBox::warning(this, "检查更新", "数据解析错误");
-            return;
-        }
-
-        QJsonObject obj = doc.object();
-        QString remoteTag = obj.value("tag_name").toString();  // 例如 "v1.0.1.12931"
-        QString releaseNotes = obj.value("body").toString();   // 更新说明
-        const QJsonArray assets = obj.value("assets").toArray();
-        QString downloadUrl;
-        for (const auto &asset : assets) {
-            QJsonObject assetObj = asset.toObject();
-            QString fileName = assetObj.value("name").toString();
-
-            if (fileName.endsWith(".exe", Qt::CaseInsensitive)) {
-                downloadUrl = assetObj.value("browser_download_url").toString();
-                break; // 找到 exe 文件，退出循环
-            }
-        }
-
-
-        int remoteBuild = 0;
-        QStringList parts = remoteTag.split('.');
-        if (!parts.isEmpty()) {
-            QString last = parts.last();
-            last.remove(QRegularExpression("[^0-9]")); // 去掉可能的 'v'
-            remoteBuild = last.toInt();
-        }
-
-        if (remoteBuild > APP_BUILD_NUMBER) {
-            showUpdateDialog(remoteTag, releaseNotes, downloadUrl);
-        } else {
-            QMessageBox::information(this, "检查更新", "当前已经是最新版本");
-        }
-    });
-}
-
-
-
-void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
-    QString cleanVersion = version;
-    if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
-    QString exeName = QString("纯白铃-%1.exe").arg(cleanVersion);
-    QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
-
-    if (QFile::exists(savePath) && !QFile::remove(savePath)) {
-        QMessageBox::critical(this, "文件错误", "无法删除旧版本文件");
-        return;
-    }
-
-    QProgressDialog *progressDialog = new QProgressDialog("正在下载更新...", "取消", 0, 100, this);
-    progressDialog->setWindowTitle("更新");
-    progressDialog->setMinimumDuration(0);
-    progressDialog->setAutoReset(false);
-    progressDialog->setAutoClose(false);
-    progressDialog->show();
-
-    QNetworkRequest request((QUrl(downloadUrl)));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-
-    QNetworkAccessManager *downloadManager = new QNetworkAccessManager(this);
-    QNetworkReply *reply = downloadManager->get(request);
-
-    connect(reply, &QNetworkReply::downloadProgress, [progressDialog](qint64 recv, qint64 total) {
-        if (total > 0) {
-            progressDialog->setValue(int(recv * 100 / total));
-        } else {
-            progressDialog->setValue(0);
-        }
-    });
-
-    connect(progressDialog, &QProgressDialog::canceled, [reply, downloadManager, progressDialog]() {
-        reply->abort();
-        progressDialog->close();
-    });
-
-    connect(reply, &QNetworkReply::finished, [=]() {
-        progressDialog->setValue(100);
-
-        // 辅助清理 lambda
-        auto cleanup = [reply, downloadManager, progressDialog]() {
-            reply->deleteLater();
-            downloadManager->deleteLater();
-            progressDialog->deleteLater();
-        };
-
-        // 被取消
-        if (reply->error() == QNetworkReply::OperationCanceledError) {
-            cleanup();
-            return;
-        }
-
-        // 网络错误
-        if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::critical(this, "下载失败", "网络错误: " + reply->errorString());
-            cleanup();
-            return;
-        }
-
-        // 处理 HTTP 状态码
-        int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        QUrl finalUrl = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
-        if (!finalUrl.isEmpty()) {
-            qDebug() << "检测到重定向到：" << finalUrl.toString();
-            QMessageBox::critical(this, "下载失败", "重定向未自动处理，请重试");
-            cleanup();
-            return;
-        }
-
-        QByteArray data = reply->readAll();
-        qint64 actualSize = data.size();
-        qint64 expectedSize = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
-
-        // 检查是否为 HTML 错误页面
-        if (data.size() < 500 && (data.contains("redirected") || data.contains("<html"))) {
-            QMessageBox::critical(this, "下载失败", "服务器返回了重定向页面，可能是网络问题");
-            cleanup();
-            return;
-        }
-
-        if (expectedSize > 0 && actualSize != expectedSize) {
-            QMessageBox::critical(this, "下载不完整",
-                                  QString("预期大小: %1 字节, 实际: %2 字节").arg(expectedSize).arg(actualSize));
-            cleanup();
-            return;
-        }
-
-        // 原子保存
-        QSaveFile file(savePath);
-        if (!file.open(QIODevice::WriteOnly)) {
-            QMessageBox::critical(this, "写入失败", "无法创建文件: " + savePath);
-            cleanup();
-            return;
-        }
-        file.write(data);
-        if (!file.commit()) {
-            QMessageBox::critical(this, "写入失败", "保存文件失败");
-            cleanup();
-            return;
-        }
-
-        // 启动新程序
-        if (!QProcess::startDetached(savePath, QStringList())) {
-            QMessageBox::critical(this, "启动失败", "无法启动更新程序: " + savePath);
-            cleanup();
-            return;
-        }
-
-        // 关闭当前程序
-        QCoreApplication::quit();
-        cleanup();
-    });
-}
-void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl) {
-    QDialog dialog(this);
-    dialog.setWindowTitle("发现新版本");
-    dialog.setMinimumWidth(500);
-    dialog.setMinimumHeight(400);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QLabel *titleLabel = new QLabel(QString("<h3>新版本: %1</h3>").arg(version));
-    layout->addWidget(titleLabel);
-
-
-    QTextEdit *notesEdit = new QTextEdit(&dialog);
-    if (releaseNotes.isEmpty()) {
-        notesEdit->setPlainText("暂无更新说明。");
-    } else {
-
-        notesEdit->setMarkdown(releaseNotes);
-    }
-    notesEdit->setReadOnly(true);
-    layout->addWidget(notesEdit);
-
-    QHBoxLayout *btnLayout = new QHBoxLayout();
-    QPushButton *downloadBtn = new QPushButton("前往下载", &dialog);
-    QPushButton *cancelBtn = new QPushButton("以后再说", &dialog);
-    btnLayout->addStretch();
-    btnLayout->addWidget(downloadBtn);
-    btnLayout->addWidget(cancelBtn);
-    layout->addLayout(btnLayout);
-
-
-    connect(downloadBtn, &QPushButton::clicked, [this, version, downloadUrl, &dialog]() {
-        // 1. 确认更新
-        QMessageBox::StandardButton reply = QMessageBox::warning(&dialog,
-            "确认更新",
-            "更新需要关闭当前框架，确认更新吗？",
-            QMessageBox::Yes | QMessageBox::No
-            );
-        if (reply != QMessageBox::Yes) return;
-
-        dialog.accept();
-        qDebug() << downloadUrl;
-        startDownloadAndReplace(version, downloadUrl);
-    });
-    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
-
-    dialog.exec();
-}
 MainWindow::~MainWindow()
 {
 }
@@ -406,6 +200,7 @@ QStackedWidget *stackedWidget=nullptr;
 
 void MainWindow::setupUi()
 {
+    ScreenA= new ScreenshotSyncClient;
     networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
     accountPage = new AccountPage;
@@ -420,6 +215,12 @@ void MainWindow::setupUi()
     keyword = new KeywordMatchConfigWidget;
     Black = new BlacklistPage;
     forbidden = new ForbiddenWordPage;
+    schedule =new ScheduleConfigWidget;
+    htmltoimg = new HtmlToImageWidget(this);
+    ai = new AiWidget;
+
+    //aiContainer = new QWidget(this);          // 容器
+    //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
 
 
 
@@ -434,6 +235,10 @@ void MainWindow::setupUi()
     configTabWidget->addTab(keyword, "关键词回复");
     configTabWidget->addTab(Black, "黑名单管理");
     configTabWidget->addTab(forbidden, "违禁词过滤");
+    configTabWidget->addTab(schedule, "订阅");
+    configTabWidget->addTab(htmltoimg, "HTML制图");
+    configTabWidget->addTab(ai, "Ai");
+
     // 将选择夹放入分组框
     QVBoxLayout *groupLayout = new QVBoxLayout(configGroupBox);
     groupLayout->setContentsMargins(0, 0, 0, 0);
@@ -450,6 +255,7 @@ void MainWindow::setupUi()
     stackedWidget->addWidget(chatPage);          // index 4
     stackedWidget->addWidget(Sandbox);           // index 5
     stackedWidget->addWidget(configGroupBox); // index 6
+
     stackedWidget->setObjectName("contentStack");
 
 
@@ -1008,6 +814,224 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     return QMainWindow::eventFilter(obj, event);
 }
 
+void MainWindow::checkUpdate() {
+
+    QUrl url("https://gitee.com/api/v5/repos/qiancao1/qiancao/releases/latest");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
+
+    QNetworkReply *reply = networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater(); // 自动清理
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::warning(this, "检查更新", "网络请求失败: " + reply->errorString());
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+        if (err.error != QJsonParseError::NoError) {
+            QMessageBox::warning(this, "检查更新", "数据解析错误");
+            return;
+        }
+
+        QJsonObject obj = doc.object();
+        QString remoteTag = obj.value("tag_name").toString();  // 例如 "v1.0.1.12931"
+        QString releaseNotes = obj.value("body").toString();   // 更新说明
+        const QJsonArray assets = obj.value("assets").toArray();
+        QString downloadUrl;
+        for (const auto &asset : assets) {
+            QJsonObject assetObj = asset.toObject();
+            QString fileName = assetObj.value("name").toString();
+
+            if (fileName.endsWith(".exe", Qt::CaseInsensitive)) {
+                downloadUrl = assetObj.value("browser_download_url").toString();
+                break; // 找到 exe 文件，退出循环
+            }
+        }
+
+
+        int remoteBuild = 0;
+        QStringList parts = remoteTag.split('.');
+        if (!parts.isEmpty()) {
+            QString last = parts.last();
+            last.remove(QRegularExpression("[^0-9]")); // 去掉可能的 'v'
+            remoteBuild = last.toInt();
+        }
+
+        if (remoteBuild > APP_BUILD_NUMBER) {
+            showUpdateDialog(remoteTag, releaseNotes, downloadUrl);
+        } else {
+            QMessageBox::information(this, "检查更新", "当前已经是最新版本");
+        }
+    });
+}
+
+void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
+    QString cleanVersion = version;
+    if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
+    QString exeName = QString("纯白铃-%1.exe").arg(cleanVersion);
+    QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
+
+    if (QFile::exists(savePath) && !QFile::remove(savePath)) {
+        QMessageBox::critical(this, "文件错误", "无法删除旧版本文件");
+        return;
+    }
+
+    QProgressDialog *progressDialog = new QProgressDialog("正在下载更新...", "取消", 0, 100, this);
+    progressDialog->setWindowTitle("更新");
+    progressDialog->setMinimumDuration(0);
+    progressDialog->setAutoReset(false);
+    progressDialog->setAutoClose(false);
+    progressDialog->show();
+
+    QNetworkRequest request((QUrl(downloadUrl)));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    QNetworkAccessManager *downloadManager = new QNetworkAccessManager(this);
+    QNetworkReply *reply = downloadManager->get(request);
+
+    connect(reply, &QNetworkReply::downloadProgress, [progressDialog](qint64 recv, qint64 total) {
+        if (total > 0) {
+            progressDialog->setValue(int(recv * 100 / total));
+        } else {
+            progressDialog->setValue(0);
+        }
+    });
+
+    connect(progressDialog, &QProgressDialog::canceled, [reply, downloadManager, progressDialog]() {
+        reply->abort();
+        progressDialog->close();
+    });
+
+    connect(reply, &QNetworkReply::finished, [=]() {
+        progressDialog->setValue(100);
+
+        // 辅助清理 lambda
+        auto cleanup = [reply, downloadManager, progressDialog]() {
+            reply->deleteLater();
+            downloadManager->deleteLater();
+            progressDialog->deleteLater();
+        };
+
+        // 被取消
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            cleanup();
+            return;
+        }
+
+        // 网络错误
+        if (reply->error() != QNetworkReply::NoError) {
+            QMessageBox::critical(this, "下载失败", "网络错误: " + reply->errorString());
+            cleanup();
+            return;
+        }
+
+        // 处理 HTTP 状态码
+        int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QUrl finalUrl = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
+        if (!finalUrl.isEmpty()) {
+            qDebug() << "检测到重定向到：" << finalUrl.toString();
+            QMessageBox::critical(this, "下载失败", "重定向未自动处理，请重试");
+            cleanup();
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        qint64 actualSize = data.size();
+        qint64 expectedSize = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+
+        // 检查是否为 HTML 错误页面
+        if (data.size() < 500 && (data.contains("redirected") || data.contains("<html"))) {
+            QMessageBox::critical(this, "下载失败", "服务器返回了重定向页面，可能是网络问题");
+            cleanup();
+            return;
+        }
+
+        if (expectedSize > 0 && actualSize != expectedSize) {
+            QMessageBox::critical(this, "下载不完整",
+                                  QString("预期大小: %1 字节, 实际: %2 字节").arg(expectedSize).arg(actualSize));
+            cleanup();
+            return;
+        }
+
+        // 原子保存
+        QSaveFile file(savePath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            QMessageBox::critical(this, "写入失败", "无法创建文件: " + savePath);
+            cleanup();
+            return;
+        }
+        file.write(data);
+        if (!file.commit()) {
+            QMessageBox::critical(this, "写入失败", "保存文件失败");
+            cleanup();
+            return;
+        }
+
+        // 启动新程序
+        if (!QProcess::startDetached(savePath, QStringList())) {
+            QMessageBox::critical(this, "启动失败", "无法启动更新程序: " + savePath);
+            cleanup();
+            return;
+        }
+
+        // 关闭当前程序
+        QCoreApplication::quit();
+        cleanup();
+    });
+}
+
+void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl) {
+    QDialog dialog(this);
+    dialog.setWindowTitle("发现新版本");
+    dialog.setMinimumWidth(500);
+    dialog.setMinimumHeight(400);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *titleLabel = new QLabel(QString("<h3>新版本: %1</h3>").arg(version));
+    layout->addWidget(titleLabel);
+
+
+    QTextEdit *notesEdit = new QTextEdit(&dialog);
+    if (releaseNotes.isEmpty()) {
+        notesEdit->setPlainText("暂无更新说明。");
+    } else {
+
+        notesEdit->setMarkdown(releaseNotes);
+    }
+    notesEdit->setReadOnly(true);
+    layout->addWidget(notesEdit);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    QPushButton *downloadBtn = new QPushButton("前往下载", &dialog);
+    QPushButton *cancelBtn = new QPushButton("以后再说", &dialog);
+    btnLayout->addStretch();
+    btnLayout->addWidget(downloadBtn);
+    btnLayout->addWidget(cancelBtn);
+    layout->addLayout(btnLayout);
+
+
+    connect(downloadBtn, &QPushButton::clicked, [this, version, downloadUrl, &dialog]() {
+        // 1. 确认更新
+        QMessageBox::StandardButton reply = QMessageBox::warning(&dialog,
+                                                                 "确认更新",
+                                                                 "更新需要关闭当前框架，确认更新吗？",
+                                                                 QMessageBox::Yes | QMessageBox::No
+                                                                 );
+        if (reply != QMessageBox::Yes) return;
+
+        dialog.accept();
+        qDebug() << downloadUrl;
+        startDownloadAndReplace(version, downloadUrl);
+    });
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    dialog.exec();
+}
 
 void MainWindow::applyStyleSheet()
 {
@@ -1017,7 +1041,7 @@ void MainWindow::applyStyleSheet()
         }
         QWidget#centralRoot {
             background: #FFF8EF;
-            border-radius: 18px;
+            border-radius: 10px;
         }
         QWidget {
             color: #263241;
@@ -1027,13 +1051,13 @@ void MainWindow::applyStyleSheet()
         QWidget#titleBar {
             background: #FFF8EF;
             border: none;
-            border-top-left-radius: 18px;
-            border-top-right-radius: 18px;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
         }
         QWidget#botStatusWidget {
             background: transparent;
             border: 1px solid #F2E8DE;
-            border-radius: 18px;
+            border-radius: 10px;
         }
         QWidget#botStatusWidget:hover {
             background: #FFF7EA;
@@ -1041,7 +1065,7 @@ void MainWindow::applyStyleSheet()
         }
         QLabel#titleAvatar {
             background: #8A94A6;
-            border-radius: 17px;
+            border-radius: 10px;
             color: white;
             font-size: 16px;
             font-weight: bold;
@@ -1059,14 +1083,14 @@ void MainWindow::applyStyleSheet()
         }
         QWidget#contentWidget {
             background: #F7EFE5;
-            border-bottom-left-radius: 18px;
-            border-bottom-right-radius: 18px;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
         }
         QWidget#sideBar {
             background: #FEFEFC;
             border-right: 1px solid #F4E8DA;
-            border-top-right-radius: 22px;
-            border-bottom-left-radius: 18px;
+            border-top-right-radius: 10px;
+            border-bottom-left-radius: 10px;
         }
         QLabel#brandLogoLabel {
             background: transparent;
@@ -1075,7 +1099,7 @@ void MainWindow::applyStyleSheet()
         QPushButton#navBtn {
             background: transparent;
             border: none;
-            border-radius: 12px;
+            border-radius: 6px;
             color: #687589;
             font-size: 14px;
             font-weight: 600;
@@ -1097,12 +1121,12 @@ void MainWindow::applyStyleSheet()
         QStackedWidget#contentStack {
             background: #F7EFE5;
             border: none;
-            border-bottom-right-radius: 18px;
+            border-bottom-right-radius: 5px;
         }
         QFrame, QGroupBox {
             background: #FFFFFF;
             border: none; /* 移除残余硬边框 */
-            border-radius: 12px;
+            border-radius: 5px;
         }
         QGroupBox {
             margin-top: 14px;
@@ -1117,8 +1141,8 @@ void MainWindow::applyStyleSheet()
         }
         QListWidget, QListView, QScrollArea {
             background: #FFFFFF;
-            border: none;
-            border-radius: 12px;
+            border: 1px solid #e0e0e0;   /* 宽度1px，实线，黑色 */
+            border-radius: 4px;
             outline: none;
         }
         QListWidget::item, QListView::item {
@@ -1128,7 +1152,7 @@ void MainWindow::applyStyleSheet()
         QListWidget::item:selected, QListView::item:selected {
             background: #FFF0DE;
             color: #FF7F32;
-            border-radius: 6px;
+            border-radius: 4px;
         }
         QListWidget::item:hover, QListView::item:hover {
             background: #FFF7EA;
@@ -1136,17 +1160,21 @@ void MainWindow::applyStyleSheet()
             /*background: transparent;*/
         }
         QLineEdit, QTextEdit, QPlainTextEdit, QComboBox {
-            background: #F9F9F9;
-            border: none;
-            border-radius: 8px;
+            background: #FeFeFe;
+
+            border-radius: 4px;
             padding: 6px 10px;
-            color: #263241;
+            border: 1px solid #E0E0E0;   /* 宽度1px，实线，黑色 */
             selection-background-color: #FFB066;
             selection-color: #FFFFFF;
         }
         QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
             background: #FFFFFF;
             border: 1px solid #FFB066;
+        }
+        /* 新增 placeholder 颜色 */
+        QLineEdit::placeholder, QTextEdit::placeholder, QPlainTextEdit::placeholder {
+            color: #AfAfAf;
         }
         QPushButton {
             border: none;
@@ -1175,6 +1203,39 @@ void MainWindow::applyStyleSheet()
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
         }
-
+        QComboBox {
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            padding: 5px 30px 5px 10px; /* 为按钮腾出右侧空间 */
+            background: white;
+        }
+        QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 25px;
+            border-left: 1px solid #ccc;
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
+            background: #f0f0f0;
+        }
+        QComboBox::down-arrow {
+            image: url(:/arrow_down.png); /* 或自定义 */
+            width: 12px;
+            height: 12px;
+        }
+        /* 悬停效果 */
+        QComboBox::drop-down:hover {
+            background: #e0e0e0;
+        }
+        QTableWidget { border: 1px solid #AE8AB1; gridline-color: #d0d0d0; }
+        QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
     )");
 }
+
+
+
+void MainWindow::on_pushButton_clicked(bool checked)
+{
+
+}
+

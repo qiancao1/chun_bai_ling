@@ -337,6 +337,7 @@ void AddAccountDialog::setupWsIntentsGroup() {
                                  {"GUILD_MESSAGES(**私域**无艾特)", 1<<9},
                                  {"GUILD_MESSAGE_REACTIONS(添加表情)", 1<<10},
                                  {"DIRECT_MESSAGE(频道私聊事件)", 1<<12},
+                                 {"GROUP_MEMBER  (群成员添加退出)", 1<<24},
                                  {"GROUP_AND_C2C_EVENT  (私聊和群聊事件)", 1<<25},
                                  {"INTERACTION(互动事件)", 1<<26},
                                  {"MESSAGE_AUDIT (审核事件)", 1<<27},

@@ -22,12 +22,26 @@ QJsonObject AccountInfo::toJson() const {
     obj["message_received"] = message_received;
     obj["message_sent"] = message_sent;
     obj["autoConnect"] = autoConnect;
-
+    obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
     obj["fallbackReply"] = fallbackReply;
     obj["wsIntents"] = wsIntents;
-
-
+    obj["Ainickname"] = Ai_nickname;
+    obj["model"] = model;
+    obj["setting"] = setting;
+    obj["context"] = context;
+    obj["nSecondsNoReply"] = nSecondsNoReply;
+    obj["nMinutesNoReply"] = nMinutesNoReply;
+    obj["delayReplySeconds"] = delayReplySeconds;
+    obj["enableGroupChat"] = enableGroupChat;
+    obj["enableGroupPersonal"] = enableGroupPersonal;
+    obj["enablePrivateChat"] = enablePrivateChat;
+    obj["nameTrigger"] = nameTrigger;
+    obj["enableChannel"] = enableChannel;
+    obj["atTrigger"] = atTrigger;
+    obj["enableFunction"] = enableFunction;
+    obj["enableImageRec"] = enableImageRec;
+    obj["tools"] = QJsonArray::fromStringList(tools);
     return obj;
 }
 
@@ -53,7 +67,27 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.welcomeMsg = obj["welcomeMsg"].toString();
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();
+    info.dyindex = obj["dyindex"].toInt();
+    info.Ai_nickname = obj["Ainickname"].toString();
 
-
+    info.model = obj["model"].toString();
+    info.setting = obj["setting"].toString();
+    info.context = obj["context"].toString();
+    info.nSecondsNoReply = obj["nSecondsNoReply"].toInt();
+    info.nMinutesNoReply = obj["nMinutesNoReply"].toInt();
+    info.delayReplySeconds = obj["delayReplySeconds"].toInt();
+    info.enableGroupChat = obj["enableGroupChat"].toBool();
+    info.enableGroupPersonal = obj["enableGroupPersonal"].toBool();
+    info.enablePrivateChat = obj["enablePrivateChat"].toBool();
+    info.nameTrigger = obj["nameTrigger"].toBool();
+    info.enableChannel = obj["enableChannel"].toBool();
+    info.atTrigger = obj["atTrigger"].toBool();
+    info.enableFunction = obj["enableFunction"].toBool();
+    info.enableImageRec = obj["enableImageRec"].toBool();
+    QJsonArray arr = obj["tools"].toArray();
+    info.tools.reserve(arr.size());
+    for (const auto &value : std::as_const(arr)) {
+        info.tools.append(value.toString());
+    }
     return info;
 }

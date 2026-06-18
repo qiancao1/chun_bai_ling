@@ -92,7 +92,8 @@ bool BotDB::open()
     if (rc != MDB_SUCCESS) goto fail;
     rc = mdb_dbi_open(txn, "friends", MDB_CREATE, &m_dbi_friends);
     if (rc != MDB_SUCCESS) goto fail;
-
+    rc = mdb_dbi_open(txn, "subscriptions", MDB_CREATE, &m_dbi_subscriptions);
+    if (rc != MDB_SUCCESS) goto fail;
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "提交事务失败:" << mdb_strerror(rc);
@@ -118,6 +119,8 @@ void BotDB::close()
         if (m_dbi_seq_idx) mdb_dbi_close(m_env, m_dbi_seq_idx);
         if (m_dbi_groups) mdb_dbi_close(m_env, m_dbi_groups);
         if (m_dbi_friends) mdb_dbi_close(m_env, m_dbi_friends);
+        if (m_dbi_subscriptions) mdb_dbi_close(m_env, m_dbi_subscriptions);
+        m_dbi_subscriptions = 0;
         mdb_env_close(m_env);
         m_env = nullptr;
     }
@@ -553,4 +556,123 @@ bool BotDB::getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes)
     mdb_txn_abort(txn);
     return ok;
 }
+// 构造 Key
+static QByteArray makeSubKey(uint32_t mark, uint8_t param, const QString &groupId)
+{
+    return QString("%1:%2|%3").arg(mark).arg(param).arg(groupId).toUtf8();
+}
 
+// 构造前缀（用于遍历某个标记下的所有记录）
+static QByteArray makeSubPrefix(uint32_t mark)
+{
+    return QByteArray::number(mark) + ":";
+}
+
+// 构造按参数筛选的前缀（用于快速获取某个标记下特定参数的群）
+static QByteArray makeParamPrefix(uint32_t mark, uint8_t param)
+{
+    return QString("%1:%2|").arg(mark).arg(param).toUtf8();
+}
+bool BotDB::addSubscription(uint32_t mark, uint8_t param, const QString &groupId)
+{
+    if (param > 3 || groupId.isEmpty()) return false;
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        QByteArray keyData = makeSubKey(mark, param, groupId);
+        uint8_t dummy = 1;
+        MDB_val key, value;
+        key.mv_data = keyData.data();
+        key.mv_size = keyData.size();
+        value.mv_data = &dummy;
+        value.mv_size = sizeof(dummy);
+        int rc = mdb_put(txn, m_dbi_subscriptions, &key, &value, MDB_NOOVERWRITE);
+        // 如果键已存在，视为成功（不做任何事）
+        if (rc == MDB_KEYEXIST)
+            return MDB_SUCCESS;
+        return rc;
+    });
+}
+bool BotDB::removeSubscription(uint32_t mark, uint8_t param, const QString &groupId)
+{
+    if (groupId.isEmpty()) return false;
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        QByteArray keyData = makeSubKey(mark, param, groupId);
+        return delRecord(txn, m_dbi_subscriptions, keyData);
+    });
+}
+QStringList BotDB::listSubscriptions(uint32_t mark)
+{
+    QStringList result;
+    if (!m_env) return result;
+
+    QByteArray prefix = makeSubPrefix(mark);
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return result;
+
+    MDB_cursor *cursor = nullptr;
+    if (mdb_cursor_open(txn, m_dbi_subscriptions, &cursor) != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return result;
+    }
+
+    MDB_val key, value;
+    key.mv_data = (void*)prefix.constData();
+    key.mv_size = prefix.size();
+    int rc = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+
+    while (rc == MDB_SUCCESS) {
+        QByteArray currentKey((const char*)key.mv_data, key.mv_size);
+        if (!currentKey.startsWith(prefix))
+            break;
+
+        // 截取 "参数|群ID" 部分（去掉前缀）
+        QByteArray suffix = currentKey.mid(prefix.size());
+        result.append(QString::fromUtf8(suffix));
+
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
+    return result;
+}
+bool BotDB::clearSubscriptionsByMark(uint32_t mark)
+{
+    return retryWrite([&](MDB_txn *txn) -> int {
+        QByteArray prefix = makeSubPrefix(mark);  // "标记:"
+        MDB_cursor *cursor = nullptr;
+        int rc = mdb_cursor_open(txn, m_dbi_subscriptions, &cursor);
+        if (rc != MDB_SUCCESS) return rc;
+
+        MDB_val key, value;
+        key.mv_data = (void*)prefix.constData();
+        key.mv_size = prefix.size();
+
+        // 定位到该标记的第一个键
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+
+        while (rc == MDB_SUCCESS) {
+            QByteArray currentKey((const char*)key.mv_data, key.mv_size);
+            // 如果不再以该前缀开头，说明该标记下的数据已遍历完
+            if (!currentKey.startsWith(prefix))
+                break;
+
+            // 删除当前记录（游标会自动移到下一条）
+            rc = mdb_cursor_del(cursor, 0);
+            if (rc != MDB_SUCCESS) {
+                mdb_cursor_close(cursor);
+                return rc;
+            }
+            // 获取下一条记录
+            rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+        }
+
+        mdb_cursor_close(cursor);
+        // 如果是因为遍历到末尾而退出（MDB_NOTFOUND），视为正常结束
+        if (rc == MDB_NOTFOUND)
+            return MDB_SUCCESS;
+        return rc;
+    });
+}

@@ -83,36 +83,44 @@ set(PROJECT_SOURCES_ALL
     mainwindow.h
     resources.qrc
 
-    qt/sharedmemorybridge.cpp qt/SharedMemoryBridge.h
-    qt/global.h qt/global.cpp
-    qt/api.cpp
-    qt/accountinfo.h qt/accountinfo.cpp
-    qt/qqbotclient.h qt/qqbotclient.cpp
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h
+
     ui/accountpage.cpp ui/accountpage.h ui/addaccountdialog.cpp ui/addaccountdialog.h
     ui/cardwidget.cpp ui/cardwidget.h ui/chatpage.cpp ui/chatpage.h
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
     ui/logpage.cpp ui/logpage.h ui/pluginpage.cpp ui/PluginPage.h
-    qt/eventtask.cpp qt/eventtask.h
-    qt/accountinfo.cpp qt/AccountInfo.h
-    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
-    qt/python_api.cpp
     ui/sandboxwindow.h ui/sandboxwindow.cpp
-    qt/RingBuffer.h
     ui/plugindepdialog.h ui/plugindepdialog.cpp
     ui/buttoneditor.h ui/buttoneditor.cpp
     ui/botruleconfigwidget.h ui/botruleconfigwidget.cpp
     ui/textreplaceconfigwidget.h ui/textreplaceconfigwidget.cpp
     ui/set.h ui/set.cpp
     ui/keywordmatchconfigwidget.h ui/keywordmatchconfigwidget.cpp
-    qt/ahocorasick.h
-    qt/ffmpeg_silk.cpp
     ui/blacklistpage.h ui/blacklistpage.cpp
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
+    ui/scheduleconfigwidget.h ui/scheduleconfigwidget.cpp
+
+    qt/sharedmemorybridge.cpp qt/SharedMemoryBridge.h
+    qt/global.h qt/global.cpp
+    qt/api.cpp
+    qt/accountinfo.h qt/accountinfo.cpp
+    qt/qqbotclient.h qt/qqbotclient.cpp
+    qt/eventtask.cpp qt/eventtask.h
+    qt/accountinfo.cpp qt/AccountInfo.h
+    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
+    qt/python_api.cpp
+    qt/RingBuffer.h
+    qt/ahocorasick.h
+    qt/ffmpeg_silk.cpp
     qt/node_process.h qt/node_process.cpp
     qt/node_plugin_manager.h qt/node_plugin_manager.cpp
+    qt/placeholderlineedit.h qt/placeholderlineedit.cpp
+    qt/placeholdertextedit.h qt/placeholdertextedit.cpp
+    ui/cpphighlighter.h ui/cpphighlighter.cpp
+    htmltoimagewidget.h htmltoimagewidget.cpp
 )
 
+# 或对于 Qt5: qt5_add_ui(myapp ai.ui)
 # ==================== 构建目标 ====================
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(qiancao
@@ -123,7 +131,15 @@ else()
     if(ANDROID)
         add_library(qiancao SHARED ${PROJECT_SOURCES_ALL})
     else()
-        add_executable(qiancao ${PROJECT_SOURCES_ALL})
+        add_executable(qiancao ${PROJECT_SOURCES_ALL}
+            qt/screenshotsyncclient.h qt/screenshotsyncclient.cpp
+            ai.h ai.cpp ai.ui
+            ui/aiwidget.h ui/aiwidget.cpp
+            qt/Role.h
+
+
+
+        )
     endif()
 endif()
 

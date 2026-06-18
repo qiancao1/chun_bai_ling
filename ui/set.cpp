@@ -322,6 +322,8 @@ void set::onWhitelistChanged()
 
     QMessageBox::information(this, tr("保存成功"), tr("Token 白名单已更新"));
 }
+
+
 void set::loadConfig()
 {
     // 读取模式

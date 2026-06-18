@@ -255,6 +255,13 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.groupId = d.value("group_openid").toString();
         QJsonObject author = d.value("author").toObject();
         ev.user = author.value("union_openid").toString();
+        QString role= author.value("member_role").toString();
+        if(role == "owner")
+            ev.member_role = 0;
+        else if(role=="admin")
+            ev.member_role = 1;
+        else if(role == "member")
+            ev.member_role = 2;
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
@@ -455,18 +462,25 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     }
     // ========== 8. 互动回调事件 ==========
     else if (ev.msgType == "INTERACTION_CREATE") {
-        ev.type = 7;
+        ev.subType = 1;
         ev.callbackId = d.value("id").toString();
         ev.callbackType = d.value("chat_type").toInt();
         ev.msgId = payload.value("id").toString();
         QJsonObject resolved = d.value("data").toObject().value("resolved").toObject();
         ev.msg = resolved.value("button_data").toString();
         ev.user = resolved.value("user_id").toString();
-        if (ev.callbackType == 0) ev.groupId = d.value("group_openid").toString();
-        else if (ev.callbackType == 1) {
+        if (ev.callbackType == 0)
+        {
+            ev.type = 0;
+            ev.groupId = d.value("group_openid").toString();
+        }else if (ev.callbackType == 1) {
+            ev.type = 1;
             ev.guildId = d.value("guild_id").toString();
             ev.groupId = d.value("channel_id").toString();
-        } else if (ev.callbackType == 2) ev.groupId = d.value("user_openid").toString();
+        } else if (ev.callbackType == 2){
+            ev.type = 2;
+            ev.groupId = d.value("user_openid").toString();
+        } //频道私聊没按钮
     }
     // ========== 9. 消息审核事件 ==========
     else if (ev.msgType == "MESSAGE_AUDIT_PASS") {
@@ -550,6 +564,18 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.guildId = d.value("guild_id").toString();
         ev.groupId = d.value("channel_id").toString();
         ev.user = d.value("user_id").toString();
+    }
+    else if (ev.msgType == "GROUP_MEMBER_ADD") {
+        ev.type = 0; ev.subType = 2;
+        ev.msgId=payload["id"].toString();
+        ev.groupId = d.value("group_openid").toString();
+        ev.user = d.value("member_openid").toString();
+    }
+    else if (ev.msgType == "GROUP_MEMBER_REMOVE") {
+        ev.type = 0; ev.subType = 3;
+        ev.msgId=payload["id"].toString();
+        ev.groupId = d.value("group_openid").toString();
+        ev.user = d.value("member_openid").toString();
     }
     // ========== 12. 未识别事件 ==========
     else {
@@ -652,7 +678,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    //qDebug() << ev.raw;
+    qDebug() << ev.raw;
     EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
 
         Message(info, event);
@@ -724,14 +750,17 @@ void QQBotClient::onTextMessageReceived(const QString &message)
 }
 
 
-
+int ___aaa=0;
 // ---------- 发送协议包 ----------
 void QQBotClient::sendIdentify()
 {
 
     QJsonObject identify;
     identify["token"] = QString("QQBot %1").arg(m_accessToken);
-    identify["intents"] = m_info->wsIntents;
+
+    identify["intents"] = m_info->wsIntents;//m_info->botqq.toInt()| (1 << ___aaa);//m_info->wsIntents | (1 << 0);
+    //qDebug() <<  (m_info->botqq.toInt() | (1 << ___aaa)) << "|" <<___aaa;
+    //___aaa++;
     identify["shard"] = QJsonArray{0, 1};
 
     QJsonObject payload;

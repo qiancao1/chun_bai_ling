@@ -12,6 +12,12 @@
 #include <QStyledItemDelegate>
 #include <QListWidget>
 #include <qlabel.h>
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
+
+// 全局替换宏
+#define QLineEdit PlaceholderLineEdit
+#define QTextEdit PlaceholderTextEdit
 // 消息结构
 struct Message {
     QString user;

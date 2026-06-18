@@ -109,7 +109,10 @@ void TextReplaceConfigWidget::setupUI()
 
     // 左侧机器人列表
     QWidget *leftWidget = new QWidget;
+
     QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
+
+
     QLabel *robotLabel = new QLabel("机器人昵称列表");
     robotListWidget = new QListWidget;
     refreshRobotBtn = new QPushButton("刷新列表");
@@ -119,7 +122,9 @@ void TextReplaceConfigWidget::setupUI()
 
     // 右侧规则表格
     QWidget *rightWidget = new QWidget;
+
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
+
     QLabel *ruleLabel = new QLabel("文本替换规则表 (可拖拽行首移动)");
     ruleTable = new RowMovableTableWidget;
     ruleTable->setAlternatingRowColors(true);
@@ -157,6 +162,7 @@ void TextReplaceConfigWidget::setupUI()
     mainSplitter->setStretchFactor(1, 3);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
+        mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->addWidget(mainSplitter);
     setLayout(mainLayout);
 
@@ -177,7 +183,7 @@ void TextReplaceConfigWidget::setupUI()
 
 void TextReplaceConfigWidget::initTable()
 {
-    QStringList headers = {"启用", "指令 |||分割", "文本替换 左边||右边|||分割", "无条件添加文本", "禁止词 |||分割"};
+    QStringList headers = {"指令|||分割", "文本替换 左边||右边|||分割", "无条件添加文本", "禁止词 |||分割"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -270,7 +276,7 @@ void TextReplaceConfigWidget::setRuleItemToRow(int row, const TextReplaceRule &i
     };
 
     QTableWidgetItem *checkItem = ensureItem(COL_ENABLED);
-    checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    //checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     checkItem->setCheckState(item.enabled ? Qt::Checked : Qt::Unchecked);
 
     ensureItem(COL_REMARK)->setText(item.remark);

@@ -5,11 +5,14 @@
 #include "BlacklistPage.h"
 #include "HomePage.h"
 #include "PluginPage.h"
+#include "ScheduleConfigWidget.h"
+#include "ScreenshotSyncClient.h"
 #include "SharedMemoryBridge.h"
 
 #include "cardwidget.h"
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
+#include "htmltoimagewidget.h"
 #include "keywordmatchconfigwidget.h"
 #include "logdb.h"
 #include "LogPage.h"
@@ -41,8 +44,8 @@ struct dblog
 
 
 
-
-
+extern HtmlToImageWidget *htmltoimg;
+extern ScreenshotSyncClient *ScreenA;
 extern HomePage *homePage;
 extern AccountPage *accountPage;
 extern LogPage *logPage;
@@ -64,9 +67,10 @@ extern int g_channelLogs_index_index;
 extern int g_privateLogs_index;
 extern int g_channel_privateLogs_index;
 extern int g_groupLogs_index;
+
 extern int Color_0;//默认
 extern int Color_1;//默认
-
+extern ScheduleConfigWidget *schedule;
 extern int miaomiao32;
 extern int miaomiao;
 extern LmdbKV *cache_db;
@@ -81,6 +85,7 @@ extern QHash<int, QQBotClient*> m_botClients;
 extern QHash<int, BotDB*> g_botdb;
 extern QHash<int, CardWidget*> g_CW;
 extern QString g_sandboxuuid;
+extern QString g_admin;
 extern double totalMemMB;
 extern qint64 g_totalRuntime;
 extern std::string g_keyuuid;
@@ -88,6 +93,7 @@ extern char* g_keyuuid2;
 extern QString ffmpegdiv;
 extern BlacklistPage *Black;
 extern int 聊天发送模式;
+extern int 定时检查变量;
 extern bool 框架退出;
 extern int plugin_n;
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs = 5000);
@@ -242,4 +248,49 @@ private:
     QJsonArray m_params;
     QPointer<NodeProcess> m_proc;
 };
+QString python_code(QString &py_code,const MessageEvent &msg);
+class api_dsrw : public QRunnable {
+public:
+    api_dsrw(int appid,const QStringList &list, const QString &data,const QString &订阅名,int 发送类型)
+        : m_appid(appid), m_openid(list), m_data(data),m_订阅名(订阅名),m_发送类型(发送类型)
+    {
+        setAutoDelete(true);
+    }
+
+    void run() override {
+        bool ok = m_data.startsWith("#python");
+        MessageEvent ev{};
+        ev.appid = m_appid;
+        if(ok && m_发送类型 == 0) m_data = python_code(m_data,ev);
+        else ok = m_发送类型 == 1 && ok;
+        QQBotClient *client = m_botClients[m_appid];
+        for (auto &openid : m_openid)
+        {
+            auto li =openid.split("|");
+            if(li.size()<2) continue;
+            int type=li[0].toInt();
+            QString data=m_data ;
+            if(ok)
+            {
+                ev.type = type;
+                ev.groupId = li[1];
+                data = python_code(data,ev);
+            }
+            bool is_wakeup=false;
+            if(type==2) is_wakeup =true;
+            if(!data.isEmpty()) client->send_messages(type,li[1],m_订阅名,data,QString(),is_wakeup);
+        }
+    }
+
+private:
+    int m_appid;
+    int m_发送类型;
+    QString m_data,m_订阅名;
+    QStringList m_openid;
+
+};
+
+
+
+
 #endif // GLOBAL_H

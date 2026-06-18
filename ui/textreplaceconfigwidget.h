@@ -90,10 +90,10 @@ private:
 
     // 列索引
     static constexpr int COL_ENABLED = 0;
-    static constexpr int COL_REMARK = 1;
-    static constexpr int COL_REPLACE_RULE = 2;
-    static constexpr int COL_APPEND_TEXT = 3;
-    static constexpr int COL_FORBIDDEN = 4;
+    static constexpr int COL_REMARK = 0;
+    static constexpr int COL_REPLACE_RULE = 1;
+    static constexpr int COL_APPEND_TEXT = 2;
+    static constexpr int COL_FORBIDDEN = 3;
 };
 
 #endif // TEXTREPLACECONFIGWIDGET_H

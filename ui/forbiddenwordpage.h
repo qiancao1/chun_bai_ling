@@ -10,7 +10,12 @@
 #include <QVector>
 #include <QQueue>
 #include <QHash>
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
 
+// 全局替换宏
+#define QLineEdit PlaceholderLineEdit
+#define QTextEdit PlaceholderTextEdit
 // ---------- 违禁词专用 Aho‑Corasick 自动机 ----------
 class ForbiddenWordAhoCorasick {
 public:

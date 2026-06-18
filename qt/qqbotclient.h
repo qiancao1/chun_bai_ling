@@ -21,8 +21,10 @@ struct MessageEvent
     int type = 0;           // 0群 1频道 2私聊 3频道私聊
     int subType=0;          //ai整的没啥用
     int callbackType = 0;   // 回调回应来源: 0群 1频道 2私聊 3频道私聊
+    int member_role=-1;     //0群主 1管理 2群成员
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
+
     QString nickname;       // 发送人昵称
     QString guildId;        // 频道id (仅频道消息有效)
     QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")

@@ -8,7 +8,12 @@
 #include <QThread>
 #include <QPushButton>
 #include <QListWidget>
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
 
+// 全局替换宏
+#define QLineEdit PlaceholderLineEdit
+#define QTextEdit PlaceholderTextEdit
 class LineNumberArea;
 
 // 自定义代码编辑器，支持行号

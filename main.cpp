@@ -11,6 +11,9 @@
 #include <QResource>
 #include "lmdbkv.h"
 #include "logdb.h"
+
+
+
 namespace py = pybind11;
 
 QJsonObject g_config;
@@ -18,8 +21,8 @@ QList<PluginInfo> m_pluginList;
 LmdbKV *cache_db=nullptr;
 LogDB *g_logdb = nullptr;
 QHash<int, CardWidget*> g_CW;
-
 QHash<int, BotDB*> g_botdb;
+QString g_admin;
 
 void loadconfig()
 {
@@ -38,6 +41,7 @@ void loadconfig()
         file.close();
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
+    g_admin = g_config["admin"].toString();
 }
 
 void saveConfig()
@@ -102,7 +106,7 @@ void initdiv()
     QDir dir;
     dir.mkpath("tmp/video");
     dir.mkpath("tmp/audio");
-    dir.mkpath("tmp/img");
+    dir.mkpath("tmp/image");
     dir.mkpath("tmp/file");
     dir.mkpath("data");
     dir.mkpath("botdb");
@@ -130,9 +134,15 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
     return EXCEPTION_EXECUTE_HANDLER; // 终止进程
 }
 
+
+
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
 int main(int argc, char *argv[]) {
+
+
+
+
     qputenv("QT_DEBUG_PLUGINS", "1");
     SetUnhandledExceptionFilter(CrashHandler);
     QApplication a(argc, argv);

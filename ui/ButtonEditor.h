@@ -12,6 +12,12 @@
 #include <qscrollarea.h>
 #include <qtextedit.h>
 
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
+
+// 全局替换宏
+#define QLineEdit PlaceholderLineEdit
+#define QTextEdit PlaceholderTextEdit
 class DragButton;
 class ButtonPropertyPanel;
 struct ButtonData;

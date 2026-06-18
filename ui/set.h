@@ -11,7 +11,11 @@
 #include <QLabel>
 #include <QTextEdit>
 #include <qtablewidget.h>
+#include "PlaceholderLineEdit.h"
+#include "PlaceholderTextEdit.h"
 
+#define QLineEdit PlaceholderLineEdit
+#define QTextEdit PlaceholderTextEdit
 
 
 
