@@ -2,6 +2,7 @@
 #define GLOBAL_H
 
 #include "AccountPage.h"
+#include "AiWidget.h"
 #include "BlacklistPage.h"
 #include "HomePage.h"
 #include "PluginPage.h"
@@ -42,8 +43,8 @@ struct dblog
 
 };
 
-
-
+extern QListWidget *robotListWidget;
+extern AiWidget *ai_ui;
 extern HtmlToImageWidget *htmltoimg;
 extern ScreenshotSyncClient *ScreenA;
 extern HomePage *homePage;
@@ -74,6 +75,7 @@ extern ScheduleConfigWidget *schedule;
 extern int miaomiao32;
 extern int miaomiao;
 extern LmdbKV *cache_db;
+extern LmdbKV *aidb;
 extern LogDB *g_logdb;
 extern RingBuffer<LogEntry> m_logStore[5];
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
@@ -248,11 +250,11 @@ private:
     QJsonArray m_params;
     QPointer<NodeProcess> m_proc;
 };
-QString python_code(QString &py_code,const MessageEvent &msg);
+QString python_code(const QString &py_code,const MessageEvent &msg);
 class api_dsrw : public QRunnable {
 public:
-    api_dsrw(int appid,const QStringList &list, const QString &data,const QString &订阅名,int 发送类型)
-        : m_appid(appid), m_openid(list), m_data(data),m_订阅名(订阅名),m_发送类型(发送类型)
+    api_dsrw(int appid,const QStringList &list, const QString &data,const QString &订阅名,int 发送类型,int biaoji)
+        : m_appid(appid), m_openid(list), m_data(data),m_订阅名(订阅名),m_发送类型(发送类型),m_biaoji(biaoji)
     {
         setAutoDelete(true);
     }
@@ -264,6 +266,7 @@ public:
         if(ok && m_发送类型 == 0) m_data = python_code(m_data,ev);
         else ok = m_发送类型 == 1 && ok;
         QQBotClient *client = m_botClients[m_appid];
+        auto *db = g_botdb[m_appid];
         for (auto &openid : m_openid)
         {
             auto li =openid.split("|");
@@ -274,6 +277,7 @@ public:
             {
                 ev.type = type;
                 ev.groupId = li[1];
+                ev.msg = db->getSubscriptions(m_biaoji,type,li[1]);
                 data = python_code(data,ev);
             }
             bool is_wakeup=false;
@@ -284,7 +288,7 @@ public:
 
 private:
     int m_appid;
-    int m_发送类型;
+    int m_发送类型,m_biaoji;
     QString m_data,m_订阅名;
     QStringList m_openid;
 

@@ -36,7 +36,7 @@ struct MessageEvent
     // 辅助函数：将结构体转为可读字符串 (调试用)
     QString toString() const;
 };
-
+Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
 class QQBotClient : public QObject
 {
     Q_OBJECT

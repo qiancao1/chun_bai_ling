@@ -52,7 +52,7 @@ public:
 
     // 重新构建某个机器人的匹配器（规则改变后调用）
     void buildMatcherForRobot(int appid);
-
+    void 列表行被单击(QListWidgetItem *item);
     // 将当前机器人规则应用到全局 m_accounts（可选）
     void oninitbot();
 
@@ -60,8 +60,8 @@ signals:
     void needLoadRules(int robotId);
 
 private slots:
-    void refreshRobotList();
-    void onRobotSelectionChanged();
+
+
     void onAddRow();
     void onDeleteRow();
     void onCopyRow();
@@ -97,8 +97,7 @@ private:
 
     // UI 组件
     QSplitter *mainSplitter = nullptr;
-    QListWidget *robotListWidget = nullptr;
-    QPushButton *refreshRobotBtn = nullptr;
+
     MovableKeywordTable *ruleTable = nullptr;
     QPushButton *saveBtn = nullptr;
     QPushButton *addBtn = nullptr;

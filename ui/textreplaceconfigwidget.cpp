@@ -91,7 +91,7 @@ TextReplaceConfigWidget::TextReplaceConfigWidget(QWidget *parent)
 {
     setupUI();
     initTable();
-    refreshRobotList();
+
     loadAllRulesFromFile();
 
     connect(this, &TextReplaceConfigWidget::needLoadRules,
@@ -106,19 +106,6 @@ TextReplaceConfigWidget::~TextReplaceConfigWidget()
 void TextReplaceConfigWidget::setupUI()
 {
     mainSplitter = new QSplitter(Qt::Horizontal, this);
-
-    // 左侧机器人列表
-    QWidget *leftWidget = new QWidget;
-
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
-
-
-    QLabel *robotLabel = new QLabel("机器人昵称列表");
-    robotListWidget = new QListWidget;
-    refreshRobotBtn = new QPushButton("刷新列表");
-    leftLayout->addWidget(robotLabel);
-    leftLayout->addWidget(robotListWidget);
-    leftLayout->addWidget(refreshRobotBtn);
 
     // 右侧规则表格
     QWidget *rightWidget = new QWidget;
@@ -156,7 +143,7 @@ void TextReplaceConfigWidget::setupUI()
     rightLayout->addWidget(ruleTable);
     rightLayout->addLayout(btnLayout);
 
-    mainSplitter->addWidget(leftWidget);
+
     mainSplitter->addWidget(rightWidget);
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 3);
@@ -167,8 +154,8 @@ void TextReplaceConfigWidget::setupUI()
     setLayout(mainLayout);
 
     // 信号连接
-    connect(refreshRobotBtn, &QPushButton::clicked, this, &TextReplaceConfigWidget::refreshRobotList);
-    connect(robotListWidget, &QListWidget::currentRowChanged, this, &TextReplaceConfigWidget::onRobotSelectionChanged);
+
+
     connect(addBtn, &QPushButton::clicked, this, &TextReplaceConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &TextReplaceConfigWidget::onDeleteRow);
     connect(copyRowBtn, &QPushButton::clicked, this, &TextReplaceConfigWidget::onCopyRow);
@@ -190,35 +177,16 @@ void TextReplaceConfigWidget::initTable()
     ruleTable->verticalHeader()->setVisible(true);
 }
 
-void TextReplaceConfigWidget::refreshRobotList()
+
+
+void TextReplaceConfigWidget::列表行被单击(QListWidgetItem *item)
 {
     if (currentAppId != 0)
         saveCurrentRulesToMap();
 
-    robotListWidget->clear();
-    for (const auto &acc : std::as_const(m_accounts)) {
-        if (!acc->nickname.isEmpty()) {
-            QListWidgetItem *item = new QListWidgetItem(acc->nickname);
-            item->setData(Qt::UserRole, acc->appid_int);
-            robotListWidget->addItem(item);
-        }
-    }
-    if (robotListWidget->count() > 0)
-        robotListWidget->setCurrentRow(0);
-    else {
-        currentAppId = 0;
-        ruleTable->setRowCount(0);
-    }
-}
 
-void TextReplaceConfigWidget::onRobotSelectionChanged()
-{
-    if (currentAppId != 0)
-        saveCurrentRulesToMap();
-
-    QListWidgetItem *cur = robotListWidget->currentItem();
-    if (cur) {
-        currentAppId = cur->data(Qt::UserRole).toInt();
+    if (item) {
+        currentAppId = item->data(Qt::UserRole).toInt();
         emit needLoadRules(currentAppId);   // 发射信号，稍后加载
     } else {
         currentAppId = 0;

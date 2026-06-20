@@ -200,6 +200,13 @@ void AccountPage::refreshCards2(AccountInfo *info) {
     connect(card, &CardWidget::loginClicked, this, &AccountPage::onLoginStateChanged);
     m_flowLayout->addWidget(card);
     g_CW.insert(info->appid_int, card);
+    QListWidgetItem *item = new QListWidgetItem;
+    if(info->nickname.isEmpty())
+        item->setText(info->appid);
+    else
+        item->setText(info->nickname);
+    item->setData(Qt::UserRole,info->appid_int);
+    robotListWidget->addItem(item);
 
 
     QPushButton *addBtn = nullptr;
@@ -238,9 +245,17 @@ void AccountPage::refreshCards() {
         connect(card, &CardWidget::settingClicked, this, &AccountPage::onEditAccount);
         connect(card, &CardWidget::deleteClicked, this, &AccountPage::onDeleteAccount);
         connect(card, &CardWidget::loginClicked, this, &AccountPage::onLoginStateChanged);
+
+        QListWidgetItem *item = new QListWidgetItem;
+        item->setText(infoPtr->nickname);
+        item->setData(Qt::UserRole,infoPtr->appid_int);
+        robotListWidget->addItem(item);
         m_flowLayout->addWidget(card);
         g_CW.insert(infoPtr->appid_int,card);
+
     }
+
+
 
     m_addBtn = new QPushButton("+");
     m_addBtn->setObjectName("addAccountCard");
@@ -248,6 +263,8 @@ void AccountPage::refreshCards() {
     m_addBtn->setCursor(Qt::PointingHandCursor);
     connect(m_addBtn, &QPushButton::clicked, this, &AccountPage::onAddAccount);
     m_flowLayout->addWidget(m_addBtn);
+
+
 }
 
 void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
@@ -277,6 +294,7 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         auto infoPtr = std::make_shared<AccountInfo>(newInfo);
         m_accounts.append(infoPtr);
         refreshCards2(infoPtr.get());
+
     } else {
 
         int oldIndex = -1;

@@ -1,20 +1,16 @@
-
 #include "lmdbkv.h"
 #include <QDebug>
 #include <QDir>
-#include <QFileInfo>
 
 LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
-    : QObject(parent), m_env(nullptr), m_dbi(0), m_dbPath(dbPath)
+    : QObject(parent), m_env(nullptr), m_dbi(0), m_dbPath(dbPath), m_currentMapSize(10 * 1024 * 1024)
 {
-    // 确保数据库目录存在
     QDir dir;
     if (!dir.mkpath(dbPath)) {
         qCritical() << "无法创建数据库目录:" << dbPath;
         return;
     }
 
-    // 打开 LMDB 环境
     int rc = mdb_env_create(&m_env);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_create 失败:" << mdb_strerror(rc);
@@ -22,21 +18,16 @@ LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
         return;
     }
 
-    // 设置最大数据库数量（这里只需要 1 个）
     rc = mdb_env_set_maxdbs(m_env, 1);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_set_maxdbs 失败:" << mdb_strerror(rc);
     }
 
-    // 设置内存映射大小 (例如 10MB，实际可按需调整)
-    rc = mdb_env_set_mapsize(m_env, 10 * 1024 * 1024);
+    rc = mdb_env_set_mapsize(m_env, m_currentMapSize);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_set_mapsize 失败:" << mdb_strerror(rc);
     }
 
-    // 打开环境，使用 MDB_NOSUBDIR 表示 dbPath 就是一个文件（而非目录）
-    // 如果希望 dbPath 是一个目录，去掉 MDB_NOSUBDIR 并确保目录存在
-    // 这里为了简单，将 dbPath 作为单一文件路径（例如 ./data.mdb）
     QByteArray pathBytes = dbPath.toUtf8();
     rc = mdb_env_open(m_env, pathBytes.constData(), MDB_MAPASYNC, 0664);
     if (rc != MDB_SUCCESS) {
@@ -46,7 +37,6 @@ LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
         return;
     }
 
-    // 开启一个事务并打开数据库（如果不存在则创建）
     MDB_txn *txn = nullptr;
     rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
@@ -87,31 +77,44 @@ bool LmdbKV::put(const QByteArray &key, const QByteArray &value)
 
 bool LmdbKV::putInternal(const QByteArray &key, const QByteArray &value)
 {
+    QMutexLocker locker(&m_mutex);
     if (!m_env) return false;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) {
-
-        return false;
-    }
-
-    MDB_val k = { (size_t)key.size(), (void*)key.constData() };
-    MDB_val v = { (size_t)value.size(), (void*)value.constData() };
-    rc = mdb_put(txn, m_dbi, &k, &v, 0); // 0 表示覆盖或插入
-
-    if (rc == MDB_SUCCESS) {
-        rc = mdb_txn_commit(txn);
+    const int MAX_RETRIES = 10;
+    for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
+        MDB_txn *txn = nullptr;
+        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
         if (rc != MDB_SUCCESS) {
-            qCritical() << "put: 提交事务失败" << mdb_strerror(rc);
+            qCritical() << "put: mdb_txn_begin 失败" << mdb_strerror(rc);
             return false;
         }
-        return true;
-    } else {
-        mdb_txn_abort(txn);
-        qCritical() << "put: mdb_put 失败" << mdb_strerror(rc);
-        return false;
+
+        MDB_val k = { (size_t)key.size(), (void*)key.constData() };
+        MDB_val v = { (size_t)value.size(), (void*)value.constData() };
+        rc = mdb_put(txn, m_dbi, &k, &v, 0);
+
+        if (rc == MDB_SUCCESS) {
+            rc = mdb_txn_commit(txn);
+            if (rc != MDB_SUCCESS) {
+                qCritical() << "put: 提交事务失败" << mdb_strerror(rc);
+                mdb_txn_abort(txn);
+                return false;
+            }
+            return true;
+        } else if (rc == MDB_MAP_FULL) {
+            mdb_txn_abort(txn);
+            if (!increaseMapSize()) {
+                return false;
+            }
+        } else {
+            mdb_txn_abort(txn);
+            qCritical() << "put: mdb_put 失败" << mdb_strerror(rc);
+            return false;
+        }
     }
+
+    qCritical() << "put: 重试次数耗尽，写入失败";
+    return false;
 }
 
 QString LmdbKV::get(const QString &key) const
@@ -127,13 +130,12 @@ QByteArray LmdbKV::get(const QByteArray &key) const
 
 QByteArray LmdbKV::getInternal(const QByteArray &key) const
 {
+    QMutexLocker locker(&m_mutex);
     if (!m_env) return QByteArray();
 
     MDB_txn *txn = nullptr;
-    // 只读事务使用 MDB_RDONLY
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) {
-
         return QByteArray();
     }
 
@@ -142,15 +144,14 @@ QByteArray LmdbKV::getInternal(const QByteArray &key) const
     rc = mdb_get(txn, m_dbi, &k, &v);
     if (rc == MDB_NOTFOUND) {
         mdb_txn_abort(txn);
-        return QByteArray();   // 键不存在
+        return QByteArray();
     } else if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
-
         return QByteArray();
     }
 
     QByteArray result((const char*)v.mv_data, v.mv_size);
-    mdb_txn_abort(txn);   // 只读事务可以 abort 或 commit
+    mdb_txn_abort(txn);
     return result;
 }
 
@@ -166,21 +167,20 @@ bool LmdbKV::remove(const QByteArray &key)
 
 bool LmdbKV::removeInternal(const QByteArray &key)
 {
+    QMutexLocker locker(&m_mutex);
     if (!m_env) return false;
 
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
-
         return false;
     }
 
     MDB_val k = { (size_t)key.size(), (void*)key.constData() };
-    rc = mdb_del(txn, m_dbi, &k, nullptr); // 只需提供键即可删除
+    rc = mdb_del(txn, m_dbi, &k, nullptr);
     if (rc == MDB_NOTFOUND) {
-        // 键不存在，视为成功删除（或者返回 false，由调用者决定）
         mdb_txn_abort(txn);
-        return true;   // 或者 return false，这里宽容处理
+        return true;
     } else if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
         qCritical() << "remove: mdb_del 失败" << mdb_strerror(rc);
@@ -192,5 +192,20 @@ bool LmdbKV::removeInternal(const QByteArray &key)
         qCritical() << "remove: 提交事务失败" << mdb_strerror(rc);
         return false;
     }
+    return true;
+}
+
+bool LmdbKV::increaseMapSize()
+{
+    if (!m_env) return false;
+
+    size_t newSize = m_currentMapSize + 10ULL * 1024 * 1024;
+    int rc = mdb_env_set_mapsize(m_env, newSize);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "增加 mapsize 失败:" << mdb_strerror(rc);
+        return false;
+    }
+    m_currentMapSize = newSize;
+    qDebug() << "LMDB mapsize 已增加至" << newSize << "字节";
     return true;
 }

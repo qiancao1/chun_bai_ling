@@ -47,12 +47,13 @@ public:
     explicit TextReplaceConfigWidget(QWidget *parent = nullptr);
     ~TextReplaceConfigWidget();
     void oninitbot();
-    void refreshRobotList();          // 刷新左侧机器人列表（从m_accounts）
+    void 列表行被单击(QListWidgetItem *item);   // 切换机器人
+
 
 signals:
     void needLoadRules(int appid);
 private slots:
-    void onRobotSelectionChanged();   // 切换机器人
+
     void onAddRow();
     void onDeleteRow();
     void onCopyRow();
@@ -79,10 +80,10 @@ private:
 
     // UI组件
     QSplitter *mainSplitter;
-    QListWidget *robotListWidget;
+
     RowMovableTableWidget *ruleTable;
     QPushButton *addBtn, *deleteBtn, *copyRowBtn, *copyAllBtn, *pasteBtn;
-    QPushButton *moveUpBtn, *moveDownBtn, *refreshRobotBtn, *saveBtn;
+    QPushButton *moveUpBtn, *moveDownBtn, *saveBtn;
 
     // 数据
     QHash<int, QList<TextReplaceRule>> rulesMap;   // appid_int -> 规则列表

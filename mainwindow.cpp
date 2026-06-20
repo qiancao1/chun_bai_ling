@@ -99,7 +99,8 @@ ForbiddenWordPage *forbidden=nullptr;
 ScheduleConfigWidget *schedule=nullptr;
 HtmlToImageWidget *htmltoimg =nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
-AiWidget *ai = nullptr;
+AiWidget *ai_ui = nullptr;
+QListWidget *robotListWidget=nullptr;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
 
@@ -200,6 +201,8 @@ QStackedWidget *stackedWidget=nullptr;
 
 void MainWindow::setupUi()
 {
+    robotListWidget = new QListWidget;
+
     ScreenA= new ScreenshotSyncClient;
     networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
@@ -217,7 +220,7 @@ void MainWindow::setupUi()
     forbidden = new ForbiddenWordPage;
     schedule =new ScheduleConfigWidget;
     htmltoimg = new HtmlToImageWidget(this);
-    ai = new AiWidget;
+    ai_ui = new AiWidget;
 
     //aiContainer = new QWidget(this);          // 容器
     //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
@@ -227,21 +230,37 @@ void MainWindow::setupUi()
     QGroupBox *configGroupBox = new QGroupBox();   // 分组框，标题可自定义
 
     configGroupBox->setStyleSheet("QGroupBox { padding-top: 5px; margin-top: 0px; border: 0px; }");
+    QWidget *nwid = new QWidget;
+    QHBoxLayout *hxzsy = new QHBoxLayout(nwid);           // 选择夹
+    hxzsy->setContentsMargins(0,0,0,0);
+
+
+
+    robotListWidget->setMaximumWidth(220);
+    hxzsy->addWidget(robotListWidget);
+    QTabWidget *configTabWidget2 = new QTabWidget;           // 选择夹
+    configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
+    configTabWidget2->addTab(TextReplace, "自定义替换");
+    configTabWidget2->addTab(keyword, "关键词回复");
+    configTabWidget2->addTab(schedule, "订阅");
+    configTabWidget2->addTab(ai_ui, "Ai");
+    hxzsy->addWidget(configTabWidget2);
+
+
+
     QTabWidget *configTabWidget = new QTabWidget;           // 选择夹
     configTabWidget->addTab(setA, "基础设置");
     configTabWidget->addTab(buttonEditorPage, "按钮生成");
-    configTabWidget->addTab(RuleConfigWidget, "按钮挂载");
-    configTabWidget->addTab(TextReplace, "自定义替换");
-    configTabWidget->addTab(keyword, "关键词回复");
+    configTabWidget->addTab(nwid, "内置功能");
     configTabWidget->addTab(Black, "黑名单管理");
     configTabWidget->addTab(forbidden, "违禁词过滤");
-    configTabWidget->addTab(schedule, "订阅");
     configTabWidget->addTab(htmltoimg, "HTML制图");
-    configTabWidget->addTab(ai, "Ai");
+
 
     // 将选择夹放入分组框
     QVBoxLayout *groupLayout = new QVBoxLayout(configGroupBox);
     groupLayout->setContentsMargins(0, 0, 0, 0);
+
     groupLayout->addWidget(configTabWidget);
 
 
@@ -318,7 +337,14 @@ void MainWindow::setupUi()
                 stackedWidget->setCurrentIndex(id);
                 if (logPage) logPage->setActive(id == 2);
             });
-
+    connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
+        QListWidgetItem *item = robotListWidget->currentItem();
+        RuleConfigWidget->列表行被单击(item);
+        TextReplace->列表行被单击(item);
+        keyword->列表行被单击(item);
+        schedule->列表行被单击(item);
+        ai_ui->列表行被单击(item);
+    });
     sideLayout->addWidget(btnHome);
     sideLayout->addWidget(btnAccount);
     sideLayout->addWidget(btnLog);
@@ -380,7 +406,7 @@ void MainWindow::setupUi()
         "}"
         );
     setCentralWidget(central);
-
+    robotListWidget->setCurrentRow(0);
 
 
 }

@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QByteArray>
+#include <QMutex>
 #include <lmdb.h>
 
 class LmdbKV : public QObject
@@ -13,27 +14,26 @@ public:
     explicit LmdbKV(const QString &dbPath, QObject *parent = nullptr);
     ~LmdbKV();
 
-    // 写入或修改键值对
     bool put(const QString &key, const QString &value);
     bool put(const QByteArray &key, const QByteArray &value);
 
-    // 读取键对应的值，如果键不存在返回空字符串
     QString get(const QString &key) const;
     QByteArray get(const QByteArray &key) const;
 
-    // 删除键
     bool remove(const QString &key);
     bool remove(const QByteArray &key);
 
 private:
     MDB_env *m_env;
-    MDB_dbi m_dbi;
-    QString m_dbPath;
+    MDB_dbi  m_dbi;
+    QString  m_dbPath;
+    size_t   m_currentMapSize;
+    mutable QMutex m_mutex;
 
-    // 内部通用操作（使用字节数组）
     bool putInternal(const QByteArray &key, const QByteArray &value);
     QByteArray getInternal(const QByteArray &key) const;
     bool removeInternal(const QByteArray &key);
+    bool increaseMapSize();
 };
 
 #endif // LMDBKV_H

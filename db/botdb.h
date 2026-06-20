@@ -29,9 +29,11 @@ public:
     bool open();
     void close();
     // 订阅（添加）：标记 + 群ID
-    bool addSubscription(uint32_t mark, uint8_t param, const QString &groupId);
+    bool addSubscription(uint32_t mark, uint8_t param, const QString &groupId,const QList<QString> &data);
+    //获取单个配置信息
+    QString getSubscriptions(uint32_t mark, uint8_t param, const QString &groupId) const;
     // 取消订阅（删除）：标记 + 群ID
-    bool removeSubscription(uint32_t mark, uint8_t param, const QString &groupId);
+    bool removeSubscription(uint32_t mark, uint8_t param, const QString &groupId,const QList<QString> &data);
     bool clearSubscriptionsByMark(uint32_t mark);
     // 获取某个标记下的所有群ID列表
     QStringList listSubscriptions(uint32_t mark);

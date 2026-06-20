@@ -47,11 +47,11 @@ class BotRuleConfigWidget : public QWidget {
 public:
     explicit BotRuleConfigWidget(QWidget *parent = nullptr);
     ~BotRuleConfigWidget();
+    void 列表行被单击(QListWidgetItem *item);
 
-    void refreshRobotList();          // 刷新左侧机器人列表（从m_accounts）
 
 private slots:
-    void onRobotSelectionChanged();
+
     void onAddRow();
     void onDeleteRow();
     void onCopyRow();
@@ -78,10 +78,10 @@ private:
     void oninitbot();
     // UI组件
     QSplitter *mainSplitter;
-    QListWidget *robotListWidget;
+
     BotMovableTableWidget *ruleTable;
     QPushButton *addBtn, *deleteBtn, *copyRowBtn, *copyAllBtn, *pasteBtn;
-    QPushButton *moveUpBtn, *moveDownBtn, *refreshRobotBtn, *saveBtn;
+    QPushButton *moveUpBtn, *moveDownBtn, *saveBtn;
 
     // 数据存储: robotId (appid_int) -> 规则列表
     QHash<int, QList<BotRuleItem>> m_ruleMap;

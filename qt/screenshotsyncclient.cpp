@@ -18,7 +18,8 @@ QByteArray ScreenshotSyncClient::captureHtmlSync(const QString &html, int width,
 {
     QUrl url(m_serverUrl);
     QUrlQuery query;
-
+    if(width<=0) width=400;
+    if(height<=0) height=400;
     query.addQueryItem("width", QString::number(width));
     query.addQueryItem("height", QString::number(height));
 
@@ -98,7 +99,8 @@ QByteArray ScreenshotSyncClient::captureUrlSync(const QString &url, int width, i
 
 QString renderInThread(const QString &htmlContent,int width = 400) {
     if(htmlContent.isEmpty()) return QString();
-
+    if(width<=0)
+        width=400;
     QTextDocument doc;
     CppHighlighter highlighter(&doc);
     doc.setDefaultStyleSheet(

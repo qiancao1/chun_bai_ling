@@ -96,9 +96,9 @@ BotRuleConfigWidget::BotRuleConfigWidget(QWidget *parent)
 {
     setupUI();
     initTable();
-    refreshRobotList();
+
     loadAllRulesFromFile();
-    // 队列连接，确保加载发生在事件循环末尾
+
     connect(this, &BotRuleConfigWidget::needLoadBotRules,
             this, &BotRuleConfigWidget::loadRulesForRobot,
             Qt::QueuedConnection);
@@ -112,15 +112,7 @@ void BotRuleConfigWidget::setupUI()
 {
     mainSplitter = new QSplitter(Qt::Horizontal, this);
 
-    // 左侧机器人列表
-    QWidget *leftWidget = new QWidget;
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
-    QLabel *robotLabel = new QLabel("机器人昵称列表");
-    robotListWidget = new QListWidget;
-    refreshRobotBtn = new QPushButton("刷新列表");
-    leftLayout->addWidget(robotLabel);
-    leftLayout->addWidget(robotListWidget);
-    leftLayout->addWidget(refreshRobotBtn);
+
 
     // 右侧规则表格
     QWidget *rightWidget = new QWidget;
@@ -156,7 +148,7 @@ void BotRuleConfigWidget::setupUI()
     rightLayout->addWidget(ruleTable);
     rightLayout->addLayout(btnLayout);
 
-    mainSplitter->addWidget(leftWidget);
+
     mainSplitter->addWidget(rightWidget);
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 3);
@@ -167,8 +159,8 @@ void BotRuleConfigWidget::setupUI()
     setLayout(mainLayout);
 
     // 信号连接
-    connect(refreshRobotBtn, &QPushButton::clicked, this, &BotRuleConfigWidget::refreshRobotList);
-    connect(robotListWidget, &QListWidget::currentRowChanged, this, &BotRuleConfigWidget::onRobotSelectionChanged);
+
+
     connect(addBtn, &QPushButton::clicked, this, &BotRuleConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &BotRuleConfigWidget::onDeleteRow);
     connect(copyRowBtn, &QPushButton::clicked, this, &BotRuleConfigWidget::onCopyRow);
@@ -193,35 +185,15 @@ void BotRuleConfigWidget::initTable()
     ruleTable->setItemDelegateForColumn(COL_MATCH_TYPE, nullptr);
 }
 
-void BotRuleConfigWidget::refreshRobotList()
+
+void BotRuleConfigWidget::列表行被单击(QListWidgetItem *item)
 {
     if (m_currentRobotId != 0)
         saveCurrentRulesToMap();
 
-    robotListWidget->clear();
-    for (const auto &acc : std::as_const(m_accounts)) {
-        if (!acc->nickname.isEmpty()) {
-            QListWidgetItem *item = new QListWidgetItem(acc->nickname);
-            item->setData(Qt::UserRole, acc->appid_int);
-            robotListWidget->addItem(item);
-        }
-    }
-    if (robotListWidget->count() > 0)
-        robotListWidget->setCurrentRow(0);
-    else {
-        m_currentRobotId = 0;
-        ruleTable->setRowCount(0);
-    }
-}
 
-void BotRuleConfigWidget::onRobotSelectionChanged()
-{
-    if (m_currentRobotId != 0)
-        saveCurrentRulesToMap();
-
-    QListWidgetItem *cur = robotListWidget->currentItem();
-    if (cur) {
-        m_currentRobotId = cur->data(Qt::UserRole).toInt();
+    if (item) {
+        m_currentRobotId = item->data(Qt::UserRole).toInt();
         emit needLoadBotRules(m_currentRobotId);   // 队列加载
     } else {
         m_currentRobotId = 0;

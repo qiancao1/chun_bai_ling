@@ -503,7 +503,7 @@ void plug_tji() {
     }
 
 }
-QString python_code(QString &py_code,const MessageEvent &msg)
+QString python_code(const QString &py_code,const MessageEvent &msg)
 {
     py::gil_scoped_acquire gil;
     try {

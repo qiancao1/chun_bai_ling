@@ -169,7 +169,8 @@ bool QQBotClient::refreshAccessToken()
     loop.exec();
 
     if (reply->error() != QNetworkReply::NoError) {
-        AppendEventLog("刷新 token 网络错误: " + reply->errorString(),0xff);
+        QByteArray data = reply->readAll();
+        AppendEventLog("刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data,0xff);
         reply->deleteLater();
         return false;
     }
@@ -179,7 +180,7 @@ bool QQBotClient::refreshAccessToken()
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
     if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("解析 token 响应失败: " + err.errorString(),0xff);
+        AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+data,0xff);
         return false;
     }
 
@@ -271,7 +272,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
             const QJsonArray array = d["mentions"].toArray();
             for (const QJsonValue &a : array)
             {
-                if(!a["at_you"].toBool()) continue;
+                if(!a["is_you"].toBool()) continue;
                 ev.at_you = true;
                 client->m_info->unid= a["id"].toString();
                 break;
@@ -678,7 +679,8 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    qDebug() << ev.raw;
+    //qDebug() << ev.raw;
+    qDebug() <<"事件："<< ev.msgType <<":" << ev.at_you;
     EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
 
         Message(info, event);
@@ -903,6 +905,17 @@ void QQBotClient::fetchSelfInfo()
         m_info->pduid = uid;
         m_info->unid = obj.value("union_openid").toString();
         m_info->nickname = nickname;
+
+        for (int i = 0; i < robotListWidget->count(); ++i) {
+            QListWidgetItem *item = robotListWidget->item(i);
+            if (item->data(Qt::UserRole).toInt() == m_info->appid_int) {
+                item->setText(nickname);               // 更新显示名称
+                // 如果 appid_int 可能变化，也可以重新设置（但通常不变）
+                item->setData(Qt::UserRole, m_info->appid_int);
+                break;
+            }
+        }
+
         if (!avatarUrl.isEmpty()) {
             QString avatarDir = QCoreApplication::applicationDirPath() + "/avatars/";
             QDir dir;

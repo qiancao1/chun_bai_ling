@@ -1,6 +1,6 @@
 #include <pybind11/pybind11.h>
 #include "global.h"
-
+#include "aiwidget.h"
 
 namespace pybind11 { namespace detail {
 template <> struct type_caster<QString> {
@@ -66,6 +66,16 @@ PYBIND11_EMBEDDED_MODULE(qq_api, m, py::mod_gil_not_used()) {
         .def_readwrite("callbackid", &MessageEvent::callbackId)
         .def_readwrite("replyto", &MessageEvent::replyTo);
 
+    py::class_<Ai_Fun>(m, "Aifun")
+        .def(py::init<>())
+        .def_readwrite("p1", &Ai_Fun::p1)
+        .def_readwrite("p2", &Ai_Fun::p2)
+        .def_readwrite("p3", &Ai_Fun::p3)
+        .def_readwrite("p4", &Ai_Fun::p4)
+        .def_readwrite("p5", &Ai_Fun::p5)
+        .def_readwrite("p6", &Ai_Fun::p6)
+        .def_readwrite("p7", &Ai_Fun::p7)
+        .def_readwrite("p8", &Ai_Fun::p8);
 
     m.def("Callback", &myCallbackA, "A callback function",
           py::arg("uuid"), py::arg("apiId"), py::arg("appid"),

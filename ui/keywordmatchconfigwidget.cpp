@@ -136,7 +136,7 @@ QMap<int, bool> KeywordMatchConfigWidget::s_matcherBuilt;
 KeywordMatchConfigWidget::KeywordMatchConfigWidget(QWidget *parent) : QWidget(parent) {
     setupUI();
     initTable();
-    refreshRobotList();
+
     loadAllRulesFromFile();
     connect(this, &KeywordMatchConfigWidget::needLoadRules,
             this, &KeywordMatchConfigWidget::loadRulesForRobot,
@@ -147,14 +147,7 @@ KeywordMatchConfigWidget::~KeywordMatchConfigWidget() {}
 
 void KeywordMatchConfigWidget::setupUI() {
     mainSplitter = new QSplitter(Qt::Horizontal, this);
-    QWidget *leftWidget = new QWidget;
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
-    QLabel *robotLabel = new QLabel("机器人昵称列表");
-    robotListWidget = new QListWidget;
-    refreshRobotBtn = new QPushButton("刷新列表");
-    leftLayout->addWidget(robotLabel);
-    leftLayout->addWidget(robotListWidget);
-    leftLayout->addWidget(refreshRobotBtn);
+
 
     QWidget *rightWidget = new QWidget;
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
@@ -189,7 +182,7 @@ void KeywordMatchConfigWidget::setupUI() {
     rightLayout->addWidget(ruleTable);
     rightLayout->addLayout(btnLayout);
 
-    mainSplitter->addWidget(leftWidget);
+
     mainSplitter->addWidget(rightWidget);
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 3);
@@ -200,8 +193,7 @@ void KeywordMatchConfigWidget::setupUI() {
     setLayout(mainLayout);
 
     // 信号连接
-    connect(refreshRobotBtn, &QPushButton::clicked, this, &KeywordMatchConfigWidget::refreshRobotList);
-    connect(robotListWidget, &QListWidget::currentRowChanged, this, &KeywordMatchConfigWidget::onRobotSelectionChanged);
+
     connect(addBtn, &QPushButton::clicked, this, &KeywordMatchConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &KeywordMatchConfigWidget::onDeleteRow);
     connect(copyRowBtn, &QPushButton::clicked, this, &KeywordMatchConfigWidget::onCopyRow);
@@ -225,28 +217,13 @@ void KeywordMatchConfigWidget::initTable() {
     ruleTable->verticalHeader()->setVisible(true);
 }
 
-void KeywordMatchConfigWidget::refreshRobotList() {
-    if (currentRobotId != 0) saveCurrentRulesToMap();
-    robotListWidget->clear();
-    for (const auto &acc : std::as_const(m_accounts)) {
-        if (!acc->nickname.isEmpty()) {
-            QListWidgetItem *item = new QListWidgetItem(acc->nickname);
-            item->setData(Qt::UserRole, acc->appid_int);
-            robotListWidget->addItem(item);
-        }
-    }
-    if (robotListWidget->count() > 0) robotListWidget->setCurrentRow(0);
-    else {
-        currentRobotId = 0;
-        ruleTable->setRowCount(0);
-    }
-}
 
-void KeywordMatchConfigWidget::onRobotSelectionChanged() {
+
+void KeywordMatchConfigWidget::列表行被单击(QListWidgetItem *item) {
     if (currentRobotId != 0) saveCurrentRulesToMap();
-    QListWidgetItem *cur = robotListWidget->currentItem();
-    if (cur) {
-        currentRobotId = cur->data(Qt::UserRole).toInt();
+
+    if (item) {
+        currentRobotId = item->data(Qt::UserRole).toInt();
         emit needLoadRules(currentRobotId);
     } else {
         currentRobotId = 0;

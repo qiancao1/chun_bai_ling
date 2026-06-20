@@ -6,6 +6,7 @@
 #include <qlistwidget.h>
 #include <qtablewidget.h>
 #include "AccountInfo.h"
+#include "qqbotclient.h"
 
 class QTabWidget;
 class QListWidget;
@@ -17,13 +18,14 @@ class QComboBox;
 class QTextEdit;
 
 struct KeyData {
+    bool enabled=false;
     QString key;
     int usageCount = 0;
     QString lastUsed;
 };
 
 struct InterfaceData {
-    bool enabled=false;
+    int key_index=0;
     QString remark;
     QString url;
     QList<KeyData> keys;
@@ -42,7 +44,15 @@ struct FunctionData {
     QStringList params;           // 8 个参数，索引 0~7
     bool interrupt = false;       // 中断复选框
 };
+struct PendingMessage {
+    QString text;           // 纯文本（[image,path=...] 已替换为 [image]）
+    QStringList imagePaths; // 本地缓存图片路径（绝对路径）
+};
+struct Ai_Fun {
 
+    QString p1,p2,p3,p4,p5,p6,p7,p8;
+
+};
 
 class AiWidget : public QWidget
 {
@@ -50,11 +60,35 @@ class AiWidget : public QWidget
 
 public:
     explicit AiWidget(QWidget *parent = nullptr);
+    ~AiWidget();
+    QString Ai_post(AccountInfo *info, const MessageEvent &ev);
+
+    QString Ai_post(const MessageEvent &ev, int &模型开始下标, const QString &model, const QString &msg, int timeoutMs);
+    QString Ai_posts(const MessageEvent &ev, int &模型开始下标, int model_index, QJsonObject &sxw, int timeoutMs);
+    QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
+    QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
+    QJsonArray get_tools(AccountInfo *info);
+    void 列表行被单击(QListWidgetItem *item); // 切换机器人
+
+signals:
+    void newMessageArrived(AccountInfo* info, MessageEvent ev);
+    void asyncReplyReceived(const QString &openid, const QString &reply,
+                            const QJsonObject &updatedContext,       // mutableContext（含 AI 回复）
+                            const QJsonObject &originalContext,     // baseContextCopy（含本地路径，不含 AI 回复）
+                            int oldMsgCount,
+                            int newStartIndex);
 
 private slots:
+    void onNewMessage(AccountInfo* info, MessageEvent ev);
+
+    void onAsyncReply(const QString &openid, const QString &reply,
+                                const QJsonObject &updatedContext,      // mutableContext
+                                const QJsonObject &originalContext,    // baseContextCopy
+                                int oldMsgCount,
+                                int newStartIndex);
     // --- 机器人列表相关 ---
-    void on_refreshButton_clicked();                 // 刷新机器人列表（从 m_accounts 读取）
-    void on_robotListWidget_currentRowChanged(QListWidgetItem *item); // 切换机器人
+
+
     void on_btnSaveRobot_clicked();                  // 保存当前机器人信息（新增/更新）
 
     // --- 全局设定相关 ---
@@ -67,9 +101,9 @@ private slots:
 private:
     void setupUi();                          // 纯代码构建全部 UI
     void loadFromFile();                     // 加载 roles.json
-    void saveToFile() const;                 // 保存到 roles.json
+    void saveToFile1() const;                 // 保存到 roles.json
     void addtoui(const std::shared_ptr<AccountInfo> acc);
-    void refreshRobotList();                 // 刷新左侧机器人列表
+
     void refreshSettingList();               // 刷新右侧全局设定列表
     void refreshSettingCombo();              // 刷新“设定”下拉框
     void onFuncListItemChanged(QTableWidgetItem *item);
@@ -82,20 +116,28 @@ private:
     void onFuncSave();
     void saveToFile();
 
+
+    QString generateHash(const QString &url);
+
+    QString downloadImage(const QString &url, const QString &hash);
+    PendingMessage parseImageTagsAndDownload(const QString &msg);
+
+    void appendPendingMessageToContext(QJsonObject &context, const PendingMessage &pm);
+
+    void trimContextImages(QJsonObject &context, int maxImageMessages = 3);
+    void convertContextImagesToBase64(QJsonObject &context);
+
+
     // --- UI 控件指针 ---
     QTabWidget *tabWidget;
 
-    // ---------- 首页 (tab 1) ----------
-    QListWidget *robotListWidget;      // 左侧机器人列表
-    QPushButton *refreshButton;
-
     QCheckBox *chkGroupChat, *chkGroupPersonal, *chkPrivateChat;
-    QCheckBox *chkNameTrigger, *chkChannel, *chkAtTrigger, *chkFunction, *chkImageRec;
+    QCheckBox *chkNameTrigger, *chkChannel, *chkAtTrigger, *chkChannelPersonal, *chkImageRec;
 
     QLabel *lblRobotName, *lblModel, *lblSetting, *lblContext;
-    QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply;
+    QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply,*lblPplx;
     QLineEdit *editRobotName, *editContext, *editNoReplySeconds, *editNoReplyMinutes, *editDelayReply;
-    QComboBox *comboModel, *comboSetting;
+    QComboBox *comboModel, *comboSetting,*comboPplx;
 
     QListWidget *settingListWidget;    // 全局设定列表
     QTextEdit *settingTextEdit;
@@ -124,7 +166,7 @@ private:
     QList<InterfaceData> globalInterfaces;
     int currentModelRow = -1;
     int currentInterfaceRow = -1; // 当前选中的全局接口索引
-    QString configFilePath2 = "model_config.json";
+    QString configFilePath2 = "data/model_config.json";
 
     void onModelAdd();
     void onModelDelete();
@@ -143,7 +185,7 @@ private:
     void onInterfaceTableCellChanged(int row, int column);
     void onKeyTableCellChanged(int row, int column);
     void onmodelListTableCellChanged(int row, int column) ;
-
+    void 刷新模型();
     // ============== 工具/函数配置 (tab 3) ==============
     QTableWidget *funcListTable;       // 左侧：备注列表
     QPushButton *funcListDelBtn;       // 左侧：删除选中
@@ -161,11 +203,32 @@ private:
     // --- 数据 ---
     QList<FunctionData> functionList;   // 所有函数数据
     int currentRow = -1;                // 当前选中的行索引
-    QString configFilePath = "functions.json"; // 配置文件路径
+    QString configFilePath = "data/functions.json"; // 配置文件路径
 
     QList<RoleSetting> m_globalSettings;     // 全局设定库
     ToolConfig m_toolConfig;                 // 工具配置
     int m_currentRobotIndex = -1;            // 当前选中的机器人appid
+
+
+    struct SessionContext {
+        QTimer* timer = nullptr;
+        int dslx=0; //0常规对话 1定时N秒 1定时N分钟
+        QJsonObject baseContext;              // 存储上下文（包含本地路径）
+        QList<PendingMessage> pendingMessages; // 等待合并的消息
+        bool isProcessing = false;
+        // 发送参数
+        int appid;
+        int type;
+        QString groupId;
+        QString msgId;
+        AccountInfo* accountInfo = nullptr;
+    };
+    QJsonObject buildBaseContext(AccountInfo* info, const QString& openid);
+    void flushPendingMessages(const QString& openid);
+    void trimContextByMessageCount(QJsonObject &context, int maxMessages);
+
+    QMap<QString, SessionContext> m_sessions;   // 以 openid 为键
+    int m_modelStartIndex;                      // 全局轮询下标
 };
 
 #endif // AIWIDGET_H

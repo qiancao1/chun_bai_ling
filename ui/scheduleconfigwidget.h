@@ -113,6 +113,7 @@ struct TimeRule {
 
 struct ScheduleTask {
     bool enabled = true;
+    bool zdsc=false;
     QString remark; //备注
     QList<TimeRule> scheduleTime;
 
@@ -127,6 +128,7 @@ struct ScheduleTask {
     QString addSubscribe_text;      //订阅成功回复
     QString cancelSubscribe_text;    //取消成功回复
     QString groupId;                // 关联的群号（原“数据库标记”）
+
 
     QJsonObject toJson() const {
         QJsonObject obj;
@@ -185,7 +187,7 @@ struct ScheduleTask {
         return time;
     }
 
-    void StringToTime(QString &Str_time)
+    void StringToTime(const QString &Str_time)
     {
         scheduleTime.clear();
         QStringList list = Str_time.split("|");
@@ -208,7 +210,9 @@ public:
     explicit ScheduleConfigWidget(QWidget *parent = nullptr);
     ~ScheduleConfigWidget();
     QString ppzl(const MessageEvent &ev,QString &订阅名);
+    void 列表行被单击(QListWidgetItem *item);
     void 检查定时列表();
+    void add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);
     // 数据
     int currentAppId = 0;
     QMap<int, QList<ScheduleTask>> tasksMap;
@@ -217,8 +221,8 @@ signals:
     void scheduleConfigChanged();
 
 private slots:
-    void refreshRobotList();
-    void onRobotSelectionChanged();
+
+
     void onTableRowSelected(int row);
     void onAddRow();
     void onDeleteRow();
@@ -238,15 +242,14 @@ private:
     void addRowFromTask(const ScheduleTask &task);
     QStringList getTableAsTSV() const;
     void addRowsFromTSV(const QString &tsv);
-    void saveAllTasksToFile(const QString &filePath = "schedule_tasks.json");
-    void loadAllTasksFromFile(const QString &filePath = "schedule_tasks.json");
+    void saveAllTasksToFile(const QString &filePath = "data/schedule_tasks.json");
+    void loadAllTasksFromFile(const QString &filePath = "data/schedule_tasks.json");
     void updateDetailPanelFromTask(const ScheduleTask &task);
     void applyDetailPanelToTask(ScheduleTask &task);
     void clearDetailPanel();
     // UI组件
     QSplitter *mainSplitter;
-    QListWidget *robotListWidget;
-    QPushButton *refreshRobotBtn;
+
 
 
 

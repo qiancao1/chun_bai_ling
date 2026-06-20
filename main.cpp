@@ -23,6 +23,7 @@ LogDB *g_logdb = nullptr;
 QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
 QString g_admin;
+LmdbKV *aidb=nullptr;
 
 void loadconfig()
 {
@@ -146,6 +147,7 @@ int main(int argc, char *argv[]) {
     qputenv("QT_DEBUG_PLUGINS", "1");
     SetUnhandledExceptionFilter(CrashHandler);
     QApplication a(argc, argv);
+    qRegisterMetaType<MessageEvent>("MessageEvent");
     g_totalRuntime = QDateTime::currentSecsSinceEpoch();
     MEMORYSTATUSEX memStatus;
     memStatus.dwLength = sizeof(memStatus);
@@ -188,12 +190,13 @@ int main(int argc, char *argv[]) {
     py::gil_scoped_release release;
     cache_db = new LmdbKV("botdb/file_db");
     g_logdb = new LogDB("botdb/logdb",1000000);
+    g_logdb->open();
     if (QFile::exists("miaomiao32.exe")) {
         bridge = new SharedMemoryBridge;
         bridge->setCallback(myCallback);
         if (!bridge->startServer(false)) qCritical("Bridge start failed");
     }
-
+    aidb= new LmdbKV("botdb/aidb");
     MainWindow w;
     w.show();
     int ret = a.exec();

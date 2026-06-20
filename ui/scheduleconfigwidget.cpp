@@ -23,7 +23,7 @@ ScheduleConfigWidget::ScheduleConfigWidget(QWidget *parent)
 {
     setupUI();
     initTable();
-    refreshRobotList();
+
     loadAllTasksFromFile();
 }
 
@@ -35,20 +35,9 @@ void ScheduleConfigWidget::setupUI()
 {
     mainSplitter = new QSplitter(Qt::Horizontal, this);
 
-    // 左侧：机器人列表
-    QWidget *leftWidget = new QWidget;
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    QLabel *robotLabel = new QLabel("机器人昵称列表");
-    robotListWidget = new QListWidget;
-    refreshRobotBtn = new QPushButton("刷新列表");
-    leftLayout->addWidget(robotLabel);
-    leftLayout->addWidget(robotListWidget);
-    leftLayout->addWidget(refreshRobotBtn);
-
-
-    // 中间：定时任务表格（只有一列：启用+备注）
+    // ---------- 左侧：定时任务表格 ----------
     QWidget *middleWidget = new QWidget;
+    middleWidget->setContentsMargins(0, 0, 0, 0);
     QVBoxLayout *middleLayout = new QVBoxLayout(middleWidget);
     middleLayout->setContentsMargins(0, 0, 0, 0);
 
@@ -59,17 +48,20 @@ void ScheduleConfigWidget::setupUI()
     taskTable->setStyleSheet(
         "QTableWidget::item:selected { background-color: #cce8cf; color: #1e3c2c; }"
         );
-
     middleLayout->addWidget(taskTable);
 
-    // 右侧：详细信息面板
+    // ---------- 右侧：详细信息面板 ----------
     detailPanel = new QWidget;
+    detailPanel->setContentsMargins(0, 0, 0, 0);
     QVBoxLayout *detailLayout = new QVBoxLayout(detailPanel);
     detailLayout->setContentsMargins(0, 0, 0, 0);
+
     QGroupBox *detailGroup = new QGroupBox("定时详细信息");
-    QFormLayout *formLayout = new QFormLayout(detailGroup);
-    formLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    // 创建所有控件
+    detailGroup->setContentsMargins(0, 0, 0, 0);
+    QVBoxLayout *groupLayout = new QVBoxLayout(detailGroup);
+    groupLayout->setSpacing(6);
+
+    // ---------- 1. 创建所有控件 ----------
     scheduleTimeEdit = new QLineEdit;
     scheduleTimeEdit->setPlaceholderText("规则 年,月,日,时,分|分割 如:8,10|-3,10 -3代表 每隔3小时发一次 -4 -5同理");
 
@@ -81,98 +73,117 @@ void ScheduleConfigWidget::setupUI()
     executeTypeCombo = new QComboBox;
     executeTypeCombo->addItems({"每个群执行一次", "只执行一次"});
 
-    // 新增：触发类型下拉框
     triggerTypeCombo = new QComboBox;
     triggerTypeCombo->addItems({"开发者", "管理员", "所有人"});
 
-    // 新增：已执行次数标签
     executedCountLabel = new QLabel("0");
 
-    // 回复内容使用多行文本框
     replyContentEdit = new QTextEdit;
     replyContentEdit->setPlaceholderText(R"(#python 不带这行就是普通信息 注意这里只有appid有值
 api.outlog(f"收到来自 {msg.appid} 的消息")
 __result__ = f"收到来自 {msg.appid} 的消息"
-"""
-[image,path=路径,x=10,y=10] xy可不传 路径可以是链接
-[audio,path=路径] [video,path=路径] [file,path=路径]
 
-蓝字：蓝字请使用 []() 如 [测试](你点击了蓝字)
-同时也是支持 [链接](https://example.com)
-
-按钮挂载：#b:#按钮json#b:# "#b:#"包起来即可
-"""
+#msg.msg #你添加到数据库的 内容 使用|||分割 注意 触发类型必须是"每个群执行一次" 这个保留才他值
+#msg.groupid #注意 触发类型必须是"每个群执行一次" 这个保留才他值
+#[image,path=路径,x=10,y=10] xy可不传 路径可以是链接
+#[audio,path=路径] [video,path=路径] [file,path=路径]
+#蓝字：蓝字请使用 []() 如 [测试](你点击了蓝字)
+#同时也是支持 [链接](https://example.com)
+#按钮挂载：#b:#按钮json#b:# "#b:#"包起来即可
 )");
-    replyContentEdit->setMinimumHeight(250);
-
+    replyContentEdit->setMinimumHeight(200);
 
     addSubscribeEdit = new QLineEdit;
     addSubscribeEdit->setPlaceholderText("订阅测试");
     cancelSubscribeEdit = new QLineEdit;
     cancelSubscribeEdit->setPlaceholderText("取消订阅测试");
+
     addSubscribeReplyEdit = new QTextEdit;
-    addSubscribeReplyEdit->setPlaceholderText("添加订阅后自动回复的内容\n支持py代码");
+    addSubscribeReplyEdit->setPlaceholderText(R"(只支持pyhton代码下面例子
+__result__="添加订阅成功 在特定时间将会推送 订阅内容 记得打开主动功能"
+__ok__="1"#返回1代表成功
+__data__="要添加到数据库内容" #使用|||分割添加多个
+)");
     cancelSubscribeReplyEdit = new QTextEdit;
-    cancelSubscribeReplyEdit->setPlaceholderText("取消订阅后自动回复的内容\n支持py代码");
+    cancelSubscribeReplyEdit->setPlaceholderText(R"(只支持pyhton代码下面例子
+__result__="取消订阅成功"
+__ok__="1" #返回1代表成功
+__data__="要从数据库删除的内容" #使用|||分割删除多个
+#__ok__ 为1时 __data__="" 返回空将清空所有数据
+)");
 
-    formLayout->addRow("定时时间:", scheduleTimeEdit);
+    updateTaskBtn = new QPushButton("更新当前任务");
 
-    QWidget *execCountWidget = new QWidget;
-    QHBoxLayout *execCountLayout = new QHBoxLayout(execCountWidget);
+    // ---------- 2. 组装布局到右侧面板 ----------
 
-    QLabel *La = new QLabel("已执行次数:");
-    La->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    execCountLayout->setContentsMargins(0, 0, 0, 0);
-    execCountLayout->addWidget(executeCountSpin);
-    execCountLayout->addWidget(La);
-    execCountLayout->addWidget(executedCountLabel);
-    formLayout->addRow("执行次数:", execCountWidget);
+    // 第一行：定时时间
+    QHBoxLayout *rowTimeLayout = new QHBoxLayout;
+    rowTimeLayout->addWidget(new QLabel("定时时间:"));
+    rowTimeLayout->addWidget(scheduleTimeEdit);
+    groupLayout->addLayout(rowTimeLayout);
 
-    QWidget *execTypeWidget = new QWidget;
-    QHBoxLayout *execTypeLayout = new QHBoxLayout(execTypeWidget);
-    execTypeLayout->setContentsMargins(0, 0, 0, 0);
-    execTypeLayout->addWidget(executeTypeCombo);
+    // 【核心修改 1】：将红框三行整合进一个 QGridLayout
+    QGridLayout *gridLayout = new QGridLayout;
+    gridLayout->setContentsMargins(0, 0, 0, 0);
+    gridLayout->setVerticalSpacing(6); // 行间距
+    gridLayout->setHorizontalSpacing(10); // 列间距
 
-    execTypeLayout->addWidget(new QLabel("触发类型:"));
-    execTypeLayout->addWidget(triggerTypeCombo);
-    formLayout->addRow("执行类型:", execTypeWidget);
+    // 第 1 行：执行次数
+    gridLayout->addWidget(new QLabel("执行次数:"), 0, 0, 1, 1, Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(executeCountSpin, 0, 1);
+    QLabel *la = new QLabel("已执行次数:");
+    la->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(la, 0, 2);
+    gridLayout->addWidget(executedCountLabel, 0, 3, 1, 1, Qt::AlignLeft | Qt::AlignVCenter);
 
-    QWidget *subscribeWidget = new QWidget;
-    QHBoxLayout *subscribeLayout = new QHBoxLayout(subscribeWidget);
-    subscribeLayout->setContentsMargins(0, 0, 0, 0);
-    subscribeLayout->addWidget(new QLabel("添加订阅指令:"));
-    subscribeLayout->addWidget(addSubscribeEdit);
-    subscribeLayout->addWidget(new QLabel("取消订阅指令:"));
-    subscribeLayout->addWidget(cancelSubscribeEdit);
+    // 第 2 行：执行类型 + 触发类型
+    gridLayout->addWidget(new QLabel("执行类型:"), 1, 0, 1, 1, Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(executeTypeCombo, 1, 1);
+    QLabel *la2 = new QLabel("触发类型:");
+    la2->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(la2, 1, 2);
+    gridLayout->addWidget(triggerTypeCombo, 1, 3);
+
+    // 第 3 行：添加/取消订阅指令
+    gridLayout->addWidget(new QLabel("添加订阅指令:"), 2, 0, 1, 1, Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(addSubscribeEdit, 2, 1);
+    gridLayout->addWidget(new QLabel("取消订阅指令:"), 2, 2, 1, 1, Qt::AlignRight | Qt::AlignVCenter);
+    gridLayout->addWidget(cancelSubscribeEdit, 2, 3);
+
+    // 重要：设置列伸缩，让第1列和第3列的输入框自动平分填满宽度
+    gridLayout->setColumnStretch(0, 0);
+    gridLayout->setColumnStretch(1, 1);
+    gridLayout->setColumnStretch(2, 0);
+    gridLayout->setColumnStretch(3, 1);
+
+    // 把这个网格布局加进主垂直布局中
+    groupLayout->addLayout(gridLayout);
+
+
+    // 第五行：订阅指令回复框 (两个并排)
     QWidget *subscribeWidget2 = new QWidget;
     QHBoxLayout *subscribeLayout2 = new QHBoxLayout(subscribeWidget2);
     subscribeLayout2->setContentsMargins(0, 0, 0, 0);
     subscribeLayout2->addWidget(addSubscribeReplyEdit);
     subscribeLayout2->addWidget(cancelSubscribeReplyEdit);
+    groupLayout->addWidget(subscribeWidget2);
 
+    // 第六行：定时回复内容
+    QVBoxLayout *replyWrapLayout = new QVBoxLayout;
+    replyWrapLayout->addWidget(replyContentEdit);
+    groupLayout->addLayout(replyWrapLayout);
 
-
-    // 该行自带标签，无需额外的行标签
-    formLayout->addRow("", subscribeWidget);
-    formLayout->addRow("", subscribeWidget2);
-    // 5. 定时回复内容（多行，移到订阅指令下方）
-    formLayout->addRow("定时回复内容:", replyContentEdit);
-
-    // 6. 更新任务按钮
-    updateTaskBtn = new QPushButton("更新当前任务");
-    //formLayout->addRow("", updateTaskBtn);
+    // 第七行：更新按钮
+    groupLayout->addWidget(updateTaskBtn);
 
     detailLayout->addWidget(detailGroup);
 
-    // 添加到分割器
-    mainSplitter->addWidget(leftWidget);
+    // ---------- 3. 添加到分割器和底部按钮 ----------
     mainSplitter->addWidget(middleWidget);
     mainSplitter->addWidget(detailPanel);
     mainSplitter->setStretchFactor(0, 1);
     mainSplitter->setStretchFactor(1, 2);
-    mainSplitter->setStretchFactor(2, 3);
 
-    // 底部按钮栏
     QHBoxLayout *bottomLayout = new QHBoxLayout;
     addBtn = new QPushButton("添加");
     deleteBtn = new QPushButton("删除");
@@ -180,7 +191,7 @@ __result__ = f"收到来自 {msg.appid} 的消息"
     copyAllBtn = new QPushButton("复制全部");
     pasteBtn = new QPushButton("粘贴");
     saveBtn = new QPushButton("保存配置");
-    bottomLayout->addWidget(refreshRobotBtn);  // 底部保留刷新按钮（左侧也有，但保留）
+
     bottomLayout->addWidget(addBtn);
     bottomLayout->addWidget(deleteBtn);
     bottomLayout->addWidget(copyRowBtn);
@@ -196,12 +207,12 @@ __result__ = f"收到来自 {msg.appid} 的消息"
     mainLayout->addLayout(bottomLayout);
     setLayout(mainLayout);
 
-    // 信号连接（保持不变）
-    connect(refreshRobotBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::refreshRobotList);
-    connect(robotListWidget, &QListWidget::currentRowChanged, this, &ScheduleConfigWidget::onRobotSelectionChanged);
-    connect(taskTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
-        onTableRowSelected(row);
-    });
+    // ---------- 4. 信号槽连接 ----------
+    // 如果需要恢复监听选中行，解开下面这行注释：
+    // connect(taskTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+    //     onTableRowSelected(row);
+    // });
+
     connect(addBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onDeleteRow);
     connect(copyRowBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onCopyRow);
@@ -209,19 +220,9 @@ __result__ = f"收到来自 {msg.appid} 的消息"
     connect(pasteBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onPasteFromClipboard);
     connect(saveBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onSaveToFile);
     connect(updateTaskBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onUpdateTask);
-
-    // 表格项修改同步
-    connect(taskTable, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
-        if (!item) return;
-        int row = item->row();
-        if (currentAppId == 0 || row < 0) return;
-        if (!tasksMap.contains(currentAppId)) return;
-        QList<ScheduleTask> &tasks = tasksMap[currentAppId];
-        if (row >= tasks.size()) return;
-        tasks[row].enabled = (item->checkState() == Qt::Checked);
-        tasks[row].remark = item->text();
-    });
 }
+
+
 void ScheduleConfigWidget::initTable()
 {
     // 只有一列：启用+备注
@@ -232,36 +233,15 @@ void ScheduleConfigWidget::initTable()
     taskTable->verticalHeader()->setVisible(true);
 }
 
-void ScheduleConfigWidget::refreshRobotList()
+
+
+void ScheduleConfigWidget::列表行被单击(QListWidgetItem *item)
 {
     if (currentAppId != 0)
         saveCurrentTasksToMap();
 
-    robotListWidget->clear();
-    for (const auto &acc : std::as_const(m_accounts)) {
-        if (!acc->nickname.isEmpty()) {
-            QListWidgetItem *item = new QListWidgetItem(acc->nickname);
-            item->setData(Qt::UserRole, acc->appid_int);
-            robotListWidget->addItem(item);
-        }
-    }
-    if (robotListWidget->count() > 0)
-        robotListWidget->setCurrentRow(0);
-    else {
-        currentAppId = 0;
-        taskTable->setRowCount(0);
-        clearDetailPanel();
-    }
-}
-
-void ScheduleConfigWidget::onRobotSelectionChanged()
-{
-    if (currentAppId != 0)
-        saveCurrentTasksToMap();
-
-    QListWidgetItem *cur = robotListWidget->currentItem();
-    if (cur) {
-        currentAppId = cur->data(Qt::UserRole).toInt();
+    if (item) {
+        currentAppId = item->data(Qt::UserRole).toInt();
         loadTasksForRobot(currentAppId);
     } else {
         currentAppId = 0;
@@ -589,7 +569,7 @@ void ___dsrw(){
                 const int chunkSize = 50;
                 for (int i = 0; i < fullList.size(); i += chunkSize) {
                     QStringList subList = fullList.mid(i, chunkSize);
-                    auto *task = new api_dsrw(appid, subList, t.replyContent,text, t.executeType);
+                    auto *task = new api_dsrw(appid, subList, t.replyContent,text, t.executeType,t.mark);
                     QThreadPool::globalInstance()->start(task);
                 }
             }
@@ -597,14 +577,17 @@ void ___dsrw(){
     }
 }
 
-
+int 计数器=0;
 class ___dtrw : public QRunnable {
 public:
     // 通过构造函数把需要的数据传进来（如果有的话）
     ___dtrw() {}
 
     void run() override {
+        计数器++;
         ___dsrw();
+        计数器--;
+        if(计数器<0) 计数器=0;//1分钟才会启动一次的线程
     }
 };
 void ScheduleConfigWidget::检查定时列表()
@@ -615,11 +598,85 @@ void ScheduleConfigWidget::检查定时列表()
     int dqsj=time.minute();
     if (定时检查变量 == dqsj) return;
     定时检查变量 = dqsj;
-    qDebug() <<"开始执行订阅任务";
+    if(计数器==0)
+    {
+        for (auto &tasks : schedule->tasksMap)   // tasks 是一个任务容器（如 vector/list）
+        {
+            for (auto it = tasks.begin(); it != tasks.end(); )  // 改用迭代器
+            {
+                auto &s = *it;
+                if (s.executeCount == -1)   // 设定值为-1，跳过
+                {
+                    ++it;
+                    continue;
+                }
+                if (s.executeCount > s.jis) // 设定值 >= 实际次数，未超标，跳过
+                {
+                    ++it;
+                    continue;
+                }
+                if (s.zdsc)  // 如果允许自动删除
+                {
+                    it = tasks.erase(it);
+                }
+                else
+                {
+                    s.enabled = false;  // 不允许删除，则禁用
+                    ++it;
+                }
+            }
+        }
+    }
     auto *task = new ___dtrw();
     QThreadPool::globalInstance()->start(task);
-
 }
+
+void ScheduleConfigWidget::add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code)
+{
+    ScheduleTask newTask;
+    newTask.enabled = true;
+    newTask.remark = remark;
+    newTask.mark= 0;
+    newTask.StringToTime(时间);
+    newTask.executeCount = 执行次数;
+    newTask.executeType = 0;
+    newTask.zdsc = true;
+    newTask.replyContent = python_code;
+    addRowFromTask(newTask);
+}
+
+QString python_code2(const QString &py_code,const MessageEvent &msg,QString &data,bool &ok)
+{
+    py::gil_scoped_acquire gil;
+    try {
+        py::module_ qiancao = py::module_::import("qiancao_sdk");
+        py::object api = qiancao.attr("QQApi")(g_keyuuid);
+
+        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        exec_globals["__builtins__"] = py::module_::import("builtins");
+        exec_globals["msg"] = py::cast(msg);
+        exec_globals["api"] = api;               // 注入 api 对象
+
+        // 4. 执行用户代码
+        py::exec(py_code.toStdString(), exec_globals);
+
+        // 5. 读取返回值
+        QString ret;
+        if (exec_globals.contains("__result__"))
+            ret = QString::fromStdString(py::str(exec_globals["__result__"]));
+        if (exec_globals.contains("__data__"))
+            data = QString::fromStdString(py::str(exec_globals["__data__"]));
+        if (exec_globals.contains("__ok__"))
+            ok = QString::fromStdString(py::str(exec_globals["__ok__"]))=="1";
+        return ret;
+    } catch (const py::error_already_set &e) {
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
+    } catch (const std::exception &e) {
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
+    }
+    return QString();
+}
+
 QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名)
 {
     if(!tasksMap.contains(ev.appid)) return QString();
@@ -632,21 +689,25 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名)
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[添加订阅：" + t.remark + "|%1ms]";
+            QString data;
+            bool ok=false;
+            QString ret = python_code2(t.addSubscribe_text,ev,data,ok);
+            if(!ok) return ret;
             BotDB *bot = g_botdb[ev.appid];
-            if(bot->addSubscription(t.mark,ev.type,ev.groupId))
-            {
-                if(t.addSubscribe_text.isEmpty()) return "添加订阅成功(这是一串默认内容 证明你没设置成功文本)";
-                return t.addSubscribe_text;
-            }
+            if(bot->addSubscription(t.mark,ev.type,ev.groupId,data.split("|||")))
+                return ret;
             return "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
         }else if(t.cancelSubscribeCmd==ev.msg)
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[删除订阅：" + t.remark + "|%1ms]";
+            QString data;
+            bool ok=false;
+            QString ret = python_code2(t.cancelSubscribe_text,ev,data,ok);
+            if(!ok) return ret;
             BotDB *bot = g_botdb[ev.appid];
-            if(bot->removeSubscription(t.mark,ev.type,ev.groupId)){
-                if(t.addSubscribe_text.isEmpty()) return "取消订阅成功(这是一串默认内容 证明你没设置取消文本)";
-                return t.cancelSubscribe_text;
+            if(bot->removeSubscription(t.mark,ev.type,ev.groupId,data.split("|||"))){
+                return ret;
             }
             return "取消订阅|定时失败 添加数据库返回失败 可能已经取消了不是吗？";
         }

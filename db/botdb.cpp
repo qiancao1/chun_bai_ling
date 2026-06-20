@@ -573,33 +573,192 @@ static QByteArray makeParamPrefix(uint32_t mark, uint8_t param)
 {
     return QString("%1:%2|").arg(mark).arg(param).toUtf8();
 }
-bool BotDB::addSubscription(uint32_t mark, uint8_t param, const QString &groupId)
+
+
+bool BotDB::addSubscription(uint32_t mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
-    if (param > 3 || groupId.isEmpty()) return false;
+    if (param > 3 || groupId.isEmpty() || dataList.isEmpty())
+        return false;
 
     return retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = makeSubKey(mark, param, groupId);
-        uint8_t dummy = 1;
-        MDB_val key, value;
+        MDB_val key;
         key.mv_data = keyData.data();
         key.mv_size = keyData.size();
-        value.mv_data = &dummy;
-        value.mv_size = sizeof(dummy);
-        int rc = mdb_put(txn, m_dbi_subscriptions, &key, &value, MDB_NOOVERWRITE);
-        // 如果键已存在，视为成功（不做任何事）
-        if (rc == MDB_KEYEXIST)
-            return MDB_SUCCESS;
-        return rc;
+
+        // 1. 读取现有数据，解析所有已存在的条目（放入 QSet 用于快速去重）
+        MDB_val existing;
+        existing.mv_data = nullptr;
+        existing.mv_size = 0;
+        int rc = mdb_get(txn, m_dbi_subscriptions, &key, &existing);
+
+        QSet<QByteArray> existingSet;
+        QByteArray oldData;   // 保存原始二进制，用于后续重建
+        if (rc == MDB_SUCCESS) {
+            oldData.append(static_cast<const char*>(existing.mv_data), static_cast<int>(existing.mv_size));
+            const char* raw = oldData.constData();
+            size_t size = oldData.size();
+            size_t offset = 0;
+            while (offset + sizeof(uint32_t) <= size) {
+                uint32_t len;
+                memcpy(&len, raw + offset, sizeof(uint32_t));
+                offset += sizeof(uint32_t);
+                if (len > size - offset)
+                    return MDB_BAD_DBI;
+                existingSet.insert(QByteArray(raw + offset, static_cast<int>(len)));
+                offset += len;
+            }
+        } else if (rc != MDB_NOTFOUND) {
+            return rc;
+        }
+
+        // 2. 构建新数据（先复制旧数据，再追加新条目）
+        QByteArray newData = oldData;   // 包含原有全部条目
+        bool anyAdded = false;
+        for (const QString &str : dataList) {
+            QByteArray bytes = str.toUtf8();
+            if (!existingSet.contains(bytes)) {
+                uint32_t len = static_cast<uint32_t>(bytes.size());
+                newData.append(reinterpret_cast<const char*>(&len), sizeof(uint32_t));
+                newData.append(bytes);
+                existingSet.insert(bytes);   // 防止同一批次中的重复
+                anyAdded = true;
+            }
+        }
+
+        if (!anyAdded)
+            return MDB_SUCCESS;   // 无新条目，无需写入
+
+        // 3. 写回
+        MDB_val value;
+        value.mv_data = newData.data();
+        value.mv_size = newData.size();
+        return mdb_put(txn, m_dbi_subscriptions, &key, &value, 0);
     });
 }
-bool BotDB::removeSubscription(uint32_t mark, uint8_t param, const QString &groupId)
+bool BotDB::removeSubscription(uint32_t mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
-    if (groupId.isEmpty()) return false;
+    if (groupId.isEmpty() || param > 3)
+        return false;
+
+    // dataList 为空：删除整个键
+    if (dataList.isEmpty()) {
+        return retryWrite([&](MDB_txn *txn) -> int {
+            QByteArray keyData = makeSubKey(mark, param, groupId);
+            return delRecord(txn, m_dbi_subscriptions, keyData);
+        });
+    }
+
+    // 将待删除列表转为 QSet 以便快速查找
+    QSet<QByteArray> targets;
+    for (const QString &str : dataList)
+        targets.insert(str.toUtf8());
 
     return retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = makeSubKey(mark, param, groupId);
-        return delRecord(txn, m_dbi_subscriptions, keyData);
+        MDB_val key;
+        key.mv_data = keyData.data();
+        key.mv_size = keyData.size();
+
+        MDB_val existing;
+        existing.mv_data = nullptr;
+        existing.mv_size = 0;
+        int rc = mdb_get(txn, m_dbi_subscriptions, &key, &existing);
+        if (rc == MDB_NOTFOUND)
+            return MDB_SUCCESS;
+        if (rc != MDB_SUCCESS)
+            return rc;
+
+        const char* raw = static_cast<const char*>(existing.mv_data);
+        size_t size = existing.mv_size;
+
+        // 遍历所有条目，保留不在 targets 中的条目
+        QByteArray newData;
+        newData.reserve(static_cast<int>(size)); // 通常只减不增
+        size_t offset = 0;
+        bool anyRemoved = false;
+
+        while (offset + sizeof(uint32_t) <= size) {
+            uint32_t len;
+            memcpy(&len, raw + offset, sizeof(uint32_t));
+            offset += sizeof(uint32_t);
+            if (len > size - offset)
+                return MDB_BAD_DBI;
+
+            QByteArray entry(raw + offset, static_cast<int>(len));
+            if (targets.contains(entry)) {
+                anyRemoved = true;
+                // 跳过此条目，不追加
+            } else {
+                newData.append(reinterpret_cast<const char*>(&len), sizeof(uint32_t));
+                newData.append(entry);
+            }
+            offset += len;
+        }
+
+        if (!anyRemoved)
+            return MDB_SUCCESS;   // 没有匹配项，无需修改
+
+        if (newData.isEmpty()) {
+            return delRecord(txn, m_dbi_subscriptions, keyData);
+        } else {
+            MDB_val value;
+            value.mv_data = newData.data();
+            value.mv_size = newData.size();
+            return mdb_put(txn, m_dbi_subscriptions, &key, &value, 0);
+        }
     });
+}
+QString BotDB::getSubscriptions(uint32_t mark, uint8_t param, const QString &groupId) const
+{
+    QString result;
+    if (groupId.isEmpty() || param > 3)
+        return result;
+
+    // 使用只读事务
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS)
+        return result;
+
+    QByteArray keyData = makeSubKey(mark, param, groupId);
+    MDB_val key;
+    key.mv_data = keyData.data();
+    key.mv_size = keyData.size();
+
+    MDB_val value;
+    value.mv_data = nullptr;
+    value.mv_size = 0;
+    rc = mdb_get(txn, m_dbi_subscriptions, &key, &value);
+
+    if (rc == MDB_SUCCESS && value.mv_data != nullptr && value.mv_size > 0) {
+        const char* raw = static_cast<const char*>(value.mv_data);
+        size_t size = value.mv_size;
+        size_t offset = 0;
+
+        while (offset + sizeof(uint32_t) <= size) {
+            uint32_t len;
+            memcpy(&len, raw + offset, sizeof(uint32_t));
+            offset += sizeof(uint32_t);
+
+            // 数据完整性检查
+            if (len > size - offset)
+                break;   // 数据损坏，停止解析
+
+            QByteArray bytes(raw + offset, static_cast<int>(len));
+            if(result.isEmpty())
+                result.append(QString::fromUtf8(bytes));
+            else {
+                result.append("|||");
+                result.append(QString::fromUtf8(bytes));
+            }
+
+            offset += len;
+        }
+    }
+
+    mdb_txn_abort(txn);   // 只读事务直接 abort 即可
+    return result;
 }
 QStringList BotDB::listSubscriptions(uint32_t mark)
 {
@@ -638,6 +797,7 @@ QStringList BotDB::listSubscriptions(uint32_t mark)
     mdb_txn_abort(txn);
     return result;
 }
+//批量删除
 bool BotDB::clearSubscriptionsByMark(uint32_t mark)
 {
     return retryWrite([&](MDB_txn *txn) -> int {

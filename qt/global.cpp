@@ -172,13 +172,13 @@ QString normalizeNewlinesToCR(const QString &input)
         result =subTextReplace(result,"\\n","\r");
     return result;
 }
-QString python_code(QString &py_code,const MessageEvent &msg);
+QString python_code(const QString &py_code,const MessageEvent &msg);
 //===========================================================================================================================================我猜你在找这个
 void Message(AccountInfo *info,const MessageEvent &ev) {
 
     //================================引用式更新变量
 
-    LogRecord &db = g_logdb->appendLog();
+    LogRecord &db = g_logdb ->appendLog();
     db.appid=info->appid_int;
     db.user = QByteArray::fromHex(ev.user.toUtf8());
     db.groupId = QByteArray::fromHex(ev.groupId.toUtf8());
@@ -201,7 +201,17 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
         return;
     }
     logMessageEvent(info->nickname,ev,text);
-    QString ret = keyword->match(info->appid_int,ev.msg);
+
+
+    QString ret = ai_ui->Ai_post(info,ev);
+    if(!ret.isEmpty())
+    {
+        QQBotClient *client = m_botClients[info->appid_int];
+        if(text.isEmpty()) text = "[Ai|%1ms]";
+        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+        return;
+    }
+    ret = keyword->match(info->appid_int,ev.msg);
     if(ret.isEmpty()) ret = schedule->ppzl(ev,text);
 
     if(!ret.isEmpty())
@@ -496,7 +506,7 @@ QString subTextReplace(const QString &source,const QString &find,const QString &
     if (find.isEmpty())
         return source;          // 空子串无法替换，直接返回
 
-    // 处理起始位置（易语言从1开始，转换为Qt的0基索引）
+
     int idx = startPos - 1;
     if (idx < 0)
         idx = 0;
