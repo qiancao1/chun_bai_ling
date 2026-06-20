@@ -29,7 +29,11 @@ const int API_ID_GET_USER_NAME=9;
 const int API_ID_PYTHON_HTTP=10;
 const int API_ID_GET_USER_ID=11;
 
-
+const int API_ID_HTMLIMG1=12;
+const int API_ID_HTMLIMG2=13;
+const int API_ID_DS=14;
+const int API_ID_AI=15;
+QString renderInThread(const QString &htmlContent,int width = 400) ;
 inline QString toQString(const char* s) {
     return s ? QString::fromUtf8(s) : QString();
 }
@@ -387,6 +391,71 @@ static std::string handleSandboxCallback(int apiId, const char* _1, const char* 
         result = python_http(qurl,method,headersJsonStr,bodyBase64,timeoutSec).toStdString();
         break;
     }
+
+    case API_ID_HTMLIMG1: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="HTMLIMG1参数1为空";
+            break;
+        }
+        result = renderInThread(text,toInt((_2))).toStdString();
+        break;
+    }
+    case API_ID_HTMLIMG2: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="HTMLIMG2参数1为空";
+            break;
+        }
+        result = ScreenA->captureHtmlSync(text,toInt(_2),toInt(_3),toInt(_4)).toStdString();
+        break;
+    }
+    case API_ID_DS: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="添加定时 参数1 备注为空";
+            break;
+        }
+        QString text2 = toQString(_2);
+        if(text2.isEmpty())
+        {
+            result ="添加定时 参数3 定时时间为空";
+            break;
+        }
+        QString text3 = toQString(_4);
+        if(text3.isEmpty())
+        {
+            result ="添加定时 参数3 python代码为空";
+            break;
+        }
+        ScheduleTask newTask;
+        newTask.StringToTime(text2);
+        if(newTask.scheduleTime.isEmpty())
+            result = "定时时间解析失败请确认 格式正确 年,月,日,时,分|||... 添加多个 分是必传 其他可省略 |||分割添加多个时间短触发 -1为每分钟触发一次";
+        else
+            result="定时参数检查无误 沙箱环境不会真的添加";
+
+        break;
+    }
+    case API_ID_AI: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="添加定时 参数1 模型不能是空";
+            break;
+        }
+        QString text2 = toQString(_2);
+        if(text2.isEmpty())
+        {
+            result ="添加定时 参数2 提交AI 内容不能是空";
+            break;
+        }
+        result = ai_ui->Ai_post(text,text2,toInt(_3)).toStdString();
+        break;
+    }
     default:
         QString params;
         Sandbox->appendOutput(QString("[沙盒模拟] 调用了未特别处理的 API: %1，返回成功").arg(apiId));
@@ -447,12 +516,17 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             pname = "["+m_pluginList[i].name+"|%1ms]";
             break;
         }
+        if(apiId==API_ID_AI)
+        {
+            result = "无权限调用内置Ai 请等待授权添加？";
+            return result.c_str();//这里
+        }
     }else{
         pname = "[关键词匹配|%1ms]";
     }
     if(pname.isEmpty()) return result.c_str();
     QQBotClient *client=nullptr;
-    if(apiId!=OUTLOG && apiId!=API_ID_BOT_LIST && apiId!=API_ID_PYTHON_HTTP)
+    if(apiId!=OUTLOG && apiId!=API_ID_BOT_LIST && apiId!=API_ID_PYTHON_HTTP && apiId!=API_ID_HTMLIMG1 && apiId!=API_ID_HTMLIMG2 && apiId!=API_ID_AI)
     {
         bool ok=false;
         for(int i=0;i<m_accounts.size();i++)
@@ -544,9 +618,9 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             break;
         }
         BotDB *db = g_botdb[appid];
-        UserRecord user;
-        db->getUserBySeqId(toInt(_1),user);
-        result =user.invited_group_count;
+        QString user;
+        db->getOpenIdBySeqId(toInt(_1),user);
+        result =user.toStdString();
         break;
     }
     case API_ID_GET_USER_NAME: {
@@ -585,6 +659,64 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QString name;
         uint32_t id=db->getOrUpdateUser(toQString(_1),name);
         result = id;
+        break;
+    }
+    case API_ID_HTMLIMG1: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="HTMLIMG1参数1为空";
+            break;
+        }
+        result = renderInThread(text,toInt((_2))).toStdString();
+        break;
+    }
+    case API_ID_HTMLIMG2: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="HTMLIMG2参数1为空";
+            break;
+        }
+        result = ScreenA->captureHtmlSync(text,toInt(_2),toInt(_3),toInt(_4)).toStdString();
+        break;
+    }
+    case API_ID_DS: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="添加定时 参数1 备注为空";
+            break;
+        }
+        QString text2 = toQString(_2);
+        if(text2.isEmpty())
+        {
+            result ="添加定时 参数3 定时时间为空";
+            break;
+        }
+        QString text3 = toQString(_4);
+        if(text3.isEmpty())
+        {
+            result ="添加定时 参数3 python代码为空";
+            break;
+        }
+        result = schedule->add_byAi(text,appid,text2,toInt(_3),text3).toStdString();
+        break;
+    }
+    case API_ID_AI: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="添加定时 参数1 模型不能是空";
+            break;
+        }
+        QString text2 = toQString(_2);
+        if(text2.isEmpty())
+        {
+            result ="添加定时 参数2 提交AI 内容不能是空";
+            break;
+        }
+        result = ai_ui->Ai_post(text,text2,toInt(_3)).toStdString();
         break;
     }
     default:
@@ -1640,6 +1772,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
         }
     }
     //小尾巴
+
     const QList<zdywb> &wb= m_info->zdywb;
     for (const zdywb &w : wb)
     {
@@ -1681,8 +1814,11 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
             isok=true;
             break;
         }
+
+
         if(isok) break;
     }
+
     if(text.contains("{{appid}}"))
         text=subTextReplace(text,"{{appid}}",m_info->appid);
     if(text.contains("{{botname}}"))

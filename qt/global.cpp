@@ -101,6 +101,7 @@ void logMessageEvent(const QString &botName, const MessageEvent &ev,QString &dir
     ev2.color=Color_1;
     switch (ev.type) {
     case 0: // 群消息
+        if(ev.subType>1)
             ev2.msg = QString("[%1] 群:%2 用户:%3").arg(ev.subType == 2 ? "群成员添加" : "群成员退群", ev.groupId, ev.user);
         break;
     case 1: // 频道消息

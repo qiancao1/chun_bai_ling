@@ -34,6 +34,7 @@
 #include <QFile>
 #include <qgroupbox.h>
 #include "htmltoimagewidget.h"
+#include "plts.h"
 #include "sandboxwindow.h"
 #include "set.h"
 #include "textreplaceconfigwidget.h"
@@ -54,11 +55,13 @@ QString Homev=R"(
 # 更新日志🌸
 ## v1.0.4.5 (2026-06-15)
 - 好好好 茜草改名为 纯白铃
-- 添加 订阅 也可以叫定时 可以推送订阅信息的群
+- 添加 订阅 也可以叫定时 可以推送订阅信息的群 支持自定义提交参数
 - 修复 js子进程不会自动退出问题
 - 优化 适配云崽 【部分】单js插件
 - 添加 Html制图
 - 添加 常用功能Ai
+- 添加 批量推送信息
+- 修复 部分机器人 未下发unid at_you变量一直是true
 
 ## v1.0.3.4 (2026-06-14)
 - 增加对 JS 插件的支持
@@ -103,8 +106,8 @@ AiWidget *ai_ui = nullptr;
 QListWidget *robotListWidget=nullptr;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
-
-
+extern int ts_m_appid;
+extern bool ts_m_stopPush;
 MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(5)
 {
     // 无边框窗口
@@ -226,7 +229,8 @@ void MainWindow::setupUi()
     //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
 
 
-
+    plts *myPlts = new plts(this);   // 创建 plts 对象
+    myPlts->show();
     QGroupBox *configGroupBox = new QGroupBox();   // 分组框，标题可自定义
 
     configGroupBox->setStyleSheet("QGroupBox { padding-top: 5px; margin-top: 0px; border: 0px; }");
@@ -239,6 +243,7 @@ void MainWindow::setupUi()
     robotListWidget->setMaximumWidth(220);
     hxzsy->addWidget(robotListWidget);
     QTabWidget *configTabWidget2 = new QTabWidget;           // 选择夹
+    configTabWidget2->addTab(myPlts, "批量推送");
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");
     configTabWidget2->addTab(keyword, "关键词回复");
@@ -339,11 +344,20 @@ void MainWindow::setupUi()
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
         QListWidgetItem *item = robotListWidget->currentItem();
+
+        if(ts_m_stopPush)
+        {
+            QMessageBox::warning(this,"批量推送中","批量推送信息中展示不能切换 账号");
+            return ;
+        }
+
+        ts_m_appid = item->data(Qt::UserRole).toInt();
         RuleConfigWidget->列表行被单击(item);
         TextReplace->列表行被单击(item);
         keyword->列表行被单击(item);
         schedule->列表行被单击(item);
         ai_ui->列表行被单击(item);
+
     });
     sideLayout->addWidget(btnHome);
     sideLayout->addWidget(btnAccount);

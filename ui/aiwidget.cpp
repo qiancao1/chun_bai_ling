@@ -1731,6 +1731,11 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         aidb->put(openid, "{}");
         return "清空记忆完成";
     }
+    if(ev.type==0 && info->enableGroupChat){}
+    else if(ev.type==1 && info->enableChannel){}
+    else if(ev.type==2 && info->enablePrivateChat){}
+    else return QString();
+
     if(info->atTrigger && ev.at_you){}
     else if(info->pplx == 1 && ev.msg.contains(info->Ai_nickname)){}
     else if(info->pplx == 2 && ev.msg.startsWith(info->Ai_nickname)){}
@@ -1974,9 +1979,6 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         flushPendingMessages(openid);
     }else if(session.dslx==0 && session.accountInfo->nSecondsNoReply>0){
         session.dslx=1;
-        if(session.accountInfo->nSecondsNoReply<=0)
-            session.accountInfo->nSecondsNoReply=1;
-
         PendingMessage pm;
         pm.imagePaths.clear();
         pm.text="[定时器]本条信息为Ai主动信息 用户在"+QString::number(session.accountInfo->nSecondsNoReply)+"秒内没找你对话触发 请无视本条信息 请参考上下文对话";
@@ -1984,9 +1986,6 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         session.timer->start(session.accountInfo->nSecondsNoReply*1000);
     }else if(session.dslx==1 && session.accountInfo->nMinutesNoReply>0){
         session.dslx=2;
-        if(session.accountInfo->nMinutesNoReply<=0)
-            session.accountInfo->nMinutesNoReply=1;
-
         PendingMessage pm;
         pm.imagePaths.clear();
         pm.text="[定时器]本条信息为Ai主动信息 用户在"+QString::number(session.accountInfo->nSecondsNoReply)+"分钟内没找你对话触发 请无视本条信息 请参考上下文对话";
@@ -2061,7 +2060,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
 
         bool ok = false;
         if (!arr2.isEmpty()) {
-            // 中间结果发送（使用 ev 中的参数）
+            //不传递appid 也不会传递 函数所以这里是调不到的
             if (!text.isEmpty() && m_botClients.contains(ev.appid)) {
                 auto &bot = m_botClients[ev.appid];
                 QString pname = "[Ai|%1ms]";
@@ -2102,7 +2101,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
     return QString();
 }
 //============
-QString AiWidget::Ai_post(const MessageEvent &ev,int &模型开始下标,const QString &model,const QString &msg,int timeoutMs)
+QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
 {
     int index=-1;
     for (int i =0;i<modelList.size();++i)
@@ -2113,13 +2112,20 @@ QString AiWidget::Ai_post(const MessageEvent &ev,int &模型开始下标,const Q
             break;
         }
     }
-    if(index==-1) return "触发AI: 但是设置的模型【"+model+"】 在模型列表不存在 请配置模型后试试";
-    if(modelList[index].enabledInterfaceIndices.isEmpty())
-        return "触发AI: 但是设置的模型【"+model+"】 未设置接口 请配置接口后试试";
+    if(index==-1) return "【"+model+"】 在模型列表不存在 请配置模型后试试";
+    if(modelList[index].enabledInterfaceIndices.isEmpty()) return "【"+model+"】 未设置接口 请配置接口后试试";
     QJsonObject obj;
     obj["model"]=model;
-    obj["m"]=msg;
-    return Ai_posts(ev,模型开始下标,index,obj,timeoutMs);
+    QJsonArray msgs;
+    QJsonObject userMsg;
+    userMsg["role"] = "user";
+    userMsg["content"] = msg;
+    msgs.append(userMsg);
+    obj["messages"] = msgs;
+    int index2=0;
+    if(timeoutMs<=0) timeoutMs=30000;
+    if(timeoutMs<=5000) timeoutMs=5000;
+    return Ai_posts(MessageEvent(),index2,index,obj,timeoutMs);
 }
 
 QString AiWidget::Ai_posts(const MessageEvent &ev,int &模型开始下标,int model_index,QJsonObject &sxw,int timeoutMs) //内部使用请勿公开

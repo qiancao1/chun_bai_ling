@@ -136,6 +136,7 @@ else()
             ai.h ai.cpp ai.ui
             ui/aiwidget.h ui/aiwidget.cpp
             qt/Role.h
+            plts.h plts.cpp plts.ui
 
 
 

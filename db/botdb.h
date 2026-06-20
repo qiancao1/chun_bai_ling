@@ -38,7 +38,7 @@ public:
     // 获取某个标记下的所有群ID列表
     QStringList listSubscriptions(uint32_t mark);
     static uint32_t nowMinutes();
-
+    QList<QString> getAllGroupIds();
     uint32_t getOrUpdateUser(const QString &openid, QString &name);
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
     bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
@@ -47,11 +47,11 @@ public:
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
     bool isGroupExist(const QString &groupIdHex);
     bool deleteGroup(const QString &groupIdHex);
-
+    bool getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex);
     bool addFriend(uint32_t userSeqId, uint32_t addTimeMinutes);
     bool removeFriend(uint32_t userSeqId);
     bool isFriend(uint32_t userSeqId);
-    QList<uint32_t> getFriendList();
+    QList<int> getFriendList();
     bool getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes);
 
 private:

@@ -212,7 +212,7 @@ public:
     QString ppzl(const MessageEvent &ev,QString &订阅名);
     void 列表行被单击(QListWidgetItem *item);
     void 检查定时列表();
-    void add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);
+    QString add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);
     // 数据
     int currentAppId = 0;
     QMap<int, QList<ScheduleTask>> tasksMap;
@@ -238,7 +238,7 @@ private:
     void loadTasksForRobot(int appid);
     void saveCurrentTasksToMap();
     void setTaskToRow(int row, const ScheduleTask &task);
-    ScheduleTask getTaskFromRow(int row) const;
+    const ScheduleTask &getTaskFromRow(int row) const;
     void addRowFromTask(const ScheduleTask &task);
     QStringList getTableAsTSV() const;
     void addRowsFromTSV(const QString &tsv);

@@ -420,7 +420,20 @@ bool BotDB::incrementInvitedGroupCount(uint32_t seq_id, int delta)
         return putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
     });
 }
-
+bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
+    if (!m_env) return false;
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return false;
+    QByteArray bin;
+    bool ok = getOpenIdBySeq(txn, seqId, bin);  // 复用私有方法
+    mdb_txn_abort(txn);
+    if (ok) {
+        outOpenidHex = bin.toHex(); // 转为32位Hex字符串
+        return true;
+    }
+    return false;
+}
 bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId)
 {
     return retryWrite([&](MDB_txn *txn) -> int {
@@ -430,7 +443,36 @@ bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint
         return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
     });
 }
+QList<QString> BotDB::getAllGroupIds()
+{
+    QList<QString> result;
+    if (!m_env) return result;
 
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) return result;
+
+    MDB_cursor *cursor = nullptr;
+    if (mdb_cursor_open(txn, m_dbi_groups, &cursor) != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return result;
+    }
+
+    MDB_val key, value;
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        // key 存储的是群 ID 的二进制数据（hex 解码后的字节）
+        QByteArray keyData(static_cast<const char*>(key.mv_data), key.mv_size);
+        // 转为十六进制字符串（与数据库中存储格式一致）
+        QString hexId = keyData.toHex();
+        result.append(hexId);
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
+    return result;
+}
 bool BotDB::getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord)
 {
     if (!m_env) return false;
@@ -515,10 +557,10 @@ bool BotDB::isFriend(uint32_t userSeqId)
     return ok;
 }
 
-QList<uint32_t> BotDB::getFriendList()
+QList<int> BotDB::getFriendList()
 {
 
-    QList<uint32_t> result;
+    QList<int> result;
     if (!m_env) return result;
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);

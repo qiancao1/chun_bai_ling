@@ -272,13 +272,18 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
             const QJsonArray array = d["mentions"].toArray();
             for (const QJsonValue &a : array)
             {
-                if(!a["is_you"].toBool()) continue;
-                ev.at_you = true;
-                client->m_info->unid= a["id"].toString();
+                if(a.isObject())
+                {
+                    QJsonObject arronj = a.toObject();
+                    if(!arronj["is_you"].toBool()) continue;
+                    ev.at_you = true;
+                    client->m_info->unid= arronj["id"].toString();
+                }
                 break;
             }
         }
-        if(ev.msg.contains(client->m_info->unid))
+
+        if(!client->m_info->unid.isEmpty() && ev.msg.contains(client->m_info->unid))
         {
             ev.at_you = true;
             ev.msg = subTextReplace(ev.msg,"<@"+client->m_info->unid+">","");
@@ -680,7 +685,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
     //qDebug() << ev.raw;
-    qDebug() <<"事件："<< ev.msgType <<":" << ev.at_you;
+    //qDebug() <<"事件："<< ev.msgType <<":" << ev.at_you;
     EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
 
         Message(info, event);

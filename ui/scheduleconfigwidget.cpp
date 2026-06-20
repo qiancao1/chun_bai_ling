@@ -209,9 +209,9 @@ __data__="要从数据库删除的内容" #使用|||分割删除多个
 
     // ---------- 4. 信号槽连接 ----------
     // 如果需要恢复监听选中行，解开下面这行注释：
-    // connect(taskTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
-    //     onTableRowSelected(row);
-    // });
+     connect(taskTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+         onTableRowSelected(row);
+     });
 
     connect(addBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onDeleteRow);
@@ -304,31 +304,17 @@ void ScheduleConfigWidget::setTaskToRow(int row, const ScheduleTask &task)
     item->setText(task.remark);
 }
 
-ScheduleTask ScheduleConfigWidget::getTaskFromRow(int row) const
+const ScheduleTask& ScheduleConfigWidget::getTaskFromRow(int row) const
 {
-    ScheduleTask task;
-    if (row < 0 || row >= taskTable->rowCount()) return task;
 
-    QTableWidgetItem *item = taskTable->item(row, COL_ENABLED_REMARK);
-    if (item) {
-        task.enabled = (item->checkState() == Qt::Checked);
-        task.remark = item->text();
-    }
-
-    // 从缓存的完整数据中获取其他字段（因为表格中只存了启用和备注）
     if (currentAppId != 0 && tasksMap.contains(currentAppId)) {
         const auto &tasks = tasksMap[currentAppId];
         if (row < tasks.size()) {
-            const ScheduleTask &full = tasks[row];
-            task.scheduleTime = full.scheduleTime;
-            task.executeCount = full.executeCount;
-            task.executeType = full.executeType;
-            task.replyContent = full.replyContent;
-            task.addSubscribeCmd = full.addSubscribeCmd;
-            task.cancelSubscribeCmd = full.cancelSubscribeCmd;
+            return tasks[row];
         }
     }
-    return task;
+    static const ScheduleTask EMPTY; // 返回一个静态空对象
+    return EMPTY;
 }
 
 void ScheduleConfigWidget::addRowFromTask(const ScheduleTask &task)
@@ -350,8 +336,8 @@ void ScheduleConfigWidget::onTableRowSelected(int row)
         clearDetailPanel();
         return;
     }
-    ScheduleTask task = getTaskFromRow(row);
-    updateDetailPanelFromTask(task);
+
+    updateDetailPanelFromTask(getTaskFromRow(row));
 }
 
 void ScheduleConfigWidget::updateDetailPanelFromTask(const ScheduleTask &task)
@@ -438,9 +424,35 @@ void ScheduleConfigWidget::onAddRow()
     newTask.scheduleTime.clear();
     newTask.executeCount = -1;
     newTask.executeType = 0;
-    newTask.replyContent = "";
     newTask.addSubscribeCmd = "";
     newTask.cancelSubscribeCmd = "";
+
+
+
+    newTask.replyContent = R"(#python 不带这行就是普通信息 注意这里只有appid有值
+api.outlog(f"收到来自 {msg.appid} 的消息")
+__result__ = f"收到来自 {msg.appid} 的消息"
+
+#msg.msg #你添加到数据库的 内容 使用|||分割 注意 触发类型必须是"每个群执行一次" 这个保留才他值
+#msg.groupid #注意 触发类型必须是"每个群执行一次" 这个保留才他值
+#[image,path=路径,x=10,y=10] xy可不传 路径可以是链接
+#[audio,path=路径] [video,path=路径] [file,path=路径]
+#蓝字：蓝字请使用 []() 如 [测试](你点击了蓝字)
+#同时也是支持 [链接](https://example.com)
+#按钮挂载：#b:#按钮json#b:# "#b:#"包起来即可)";
+
+
+    newTask.addSubscribe_text=R"(#只支持pyhton代码下面例子
+__result__="添加订阅成功 在特定时间将会推送 订阅内容 记得打开主动功能"
+__ok__="1"  #返回1代表成功
+__data__="要添加到数据库内容" #使用|||分割添加多个
+)";
+    newTask.cancelSubscribe_text= R"(只支持pyhton代码下面例子
+__result__="取消订阅成功"
+__ok__="1"  #返回1代表成功
+__data__="要从数据库删除的内容"  #使用|||分割删除多个
+#__ok__ 为1时 __data__="" 返回空将清空所有数据
+)";
     addRowFromTask(newTask);
 }
 
@@ -480,7 +492,7 @@ void ScheduleConfigWidget::onCopyRow()
         QMessageBox::information(this, "提示", "请先选中要复制的行");
         return;
     }
-    ScheduleTask task = getTaskFromRow(row);
+    const ScheduleTask task = getTaskFromRow(row);
     // TSV格式：启用(1/0), 备注, 定时时间, 执行次数, 执行类型, 回复内容(可能含换行，用转义), 添加订阅, 取消订阅
     // 对于多行内容，我们用\n转义，或者用Base64？为简单，用特殊分隔符，但这里推荐使用JSON格式复制，但用户习惯TSV，我们用制表符分隔，但回复内容可能包含制表符和换行，所以建议用JSON或者Base64。
     // 为了简单，我们采用JSON单行格式，但之前代码用TSV，我们保持TSV，但将回复内容中的换行替换为\\n，制表符替换为\\t，防止破坏格式。
@@ -631,18 +643,28 @@ void ScheduleConfigWidget::检查定时列表()
     QThreadPool::globalInstance()->start(task);
 }
 
-void ScheduleConfigWidget::add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code)
+QString ScheduleConfigWidget::add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code)
 {
     ScheduleTask newTask;
+    newTask.StringToTime(时间);
+    if(newTask.scheduleTime.isEmpty()) return "定时时间解析失败请确认 格式正确 年,月,日,时,分|||... 添加多个 分是必传 其他可省略 |||分割添加多个时间短触发 -1为每分钟触发一次";
+    if(python_code.isEmpty()) return "添加定时 参数3 python代码为空";
+    if(remark.isEmpty()) return "备注不能为空";
+
     newTask.enabled = true;
     newTask.remark = remark;
     newTask.mark= 0;
-    newTask.StringToTime(时间);
+
+    if(执行次数<=0) 执行次数=1;
     newTask.executeCount = 执行次数;
     newTask.executeType = 0;
     newTask.zdsc = true;
     newTask.replyContent = python_code;
-    addRowFromTask(newTask);
+
+    if (!tasksMap.contains(appid))
+        tasksMap[appid] = QList<ScheduleTask>();
+    tasksMap[appid].append(newTask);
+    return "添加成功";
 }
 
 QString python_code2(const QString &py_code,const MessageEvent &msg,QString &data,bool &ok)

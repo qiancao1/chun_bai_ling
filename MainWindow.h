@@ -12,6 +12,7 @@
 #include <QString>
 #include <qnetworkaccessmanager.h>
 #include "ui_ai.h"
+#include "ui_plts.h"
 
 class HomePage;
 class AccountPage;
@@ -88,6 +89,8 @@ private:
     //QWidget *aiContainer;      // 用来承载 ai.ui 的容器
     //Ui::Ai aiUi;              // UI 对象
     // 其他
+
+
     QTimer *m_heartbeatTimer;
 
     QString m_appliedLogBotId;

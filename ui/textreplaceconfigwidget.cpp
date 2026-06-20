@@ -170,7 +170,7 @@ void TextReplaceConfigWidget::setupUI()
 
 void TextReplaceConfigWidget::initTable()
 {
-    QStringList headers = {"指令|||分割", "文本替换 左边||右边|||分割", "无条件添加文本", "禁止词 |||分割"};
+    QStringList headers = {"指令|||分割", "文本替换 左边||右边|||分割", "直接替换内容", "禁止词 |||分割"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -209,15 +209,7 @@ void TextReplaceConfigWidget::loadRulesForRobot(int appid)
     if (isLoading) return;
     isLoading = true;
 
-    if (!rulesMap.contains(appid)) {
-        TextReplaceRule example;
-        example.enabled = true;
-        example.remark = "示例指令";
-        example.replaceRule = "旧文本||新文本";
-        example.appendText = "（自动添加后缀）";
-        example.forbiddenWords = "禁止词1|||禁止词2";
-        rulesMap[appid] = {example};
-    }
+
     bool wasBlocked = ruleTable->blockSignals(true);
     const QList<TextReplaceRule> &rules = rulesMap[appid];
     ruleTable->setRowCount(rules.size());
@@ -287,7 +279,7 @@ void TextReplaceConfigWidget::onAddRow()
     newItem.enabled = true;
     newItem.remark = "新规则";
     newItem.replaceRule = "left||right";
-    newItem.appendText = "";
+    newItem.appendText = "【*】这里是添加文本";
     newItem.forbiddenWords = "";
     addRowFromRuleItem(newItem);
     onTableDataChanged();  // 保存到 rulesMap

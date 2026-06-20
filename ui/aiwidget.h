@@ -63,7 +63,7 @@ public:
     ~AiWidget();
     QString Ai_post(AccountInfo *info, const MessageEvent &ev);
 
-    QString Ai_post(const MessageEvent &ev, int &模型开始下标, const QString &model, const QString &msg, int timeoutMs);
+    QString Ai_post(const QString &model, const QString &msg, int timeoutMs);
     QString Ai_posts(const MessageEvent &ev, int &模型开始下标, int model_index, QJsonObject &sxw, int timeoutMs);
     QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
     QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);

@@ -734,9 +734,11 @@ bool PluginPage::Reload_Plugin(int index) //32ok
         updatePluginItemInUI(index);
         return true;
     }
-    removePlugin(index);
+
     AppendEventLog("[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+err ,0xff);
     showAutoCloseMessageBox("错误","[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+ err);
+    removePlugin(index);
+
 
     return false;
 }
@@ -980,7 +982,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
             if (obj.contains("icon")) info.icon = obj["icon"].toString();
         } else {
             uninstall_Plugin(info);
-            return info.path + "get_plugin_info 返回的内容非json 或不是标准json";
+            return info.path + " get_plugin_info 返回的内容非json 或不是标准json";
         }
     }
     if(info.name.isEmpty()) return info.path + "get_plugin_info 函数中未正确 返回插件名字";
