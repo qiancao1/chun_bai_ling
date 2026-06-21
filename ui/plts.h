@@ -23,6 +23,7 @@ private slots:
     
 private:
     void extracted(QList<int> &pendingFriends);
+    void extracted(QList<QString> &pendingGroups);
     bool 保存();
     void 加载();
     Ui::plts *ui;

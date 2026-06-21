@@ -171,6 +171,7 @@ else()
     set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/liblmdb.a)
 endif()
 
+
 if(WIN32)
     target_sources(qiancao PRIVATE app.rc)
 endif()

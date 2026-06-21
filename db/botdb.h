@@ -64,7 +64,7 @@ public:
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
     bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
 
-    bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId);
+    bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
     bool isGroupExist(const QString &groupIdHex);
     bool deleteGroup(const QString &groupIdHex);

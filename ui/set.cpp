@@ -110,6 +110,19 @@ void set::setupUI()
 
     remoteLayout1->addWidget(urlLabel5);
     remoteLayout1->addWidget(colorPreview2);
+
+    QHBoxLayout *modeLayout2 = new QHBoxLayout;
+    modeLayout2->setAlignment(Qt::AlignLeft);
+    QLabel *modeLabela = new QLabel("管理员：", this);
+    admin_Edit = new QLineEdit;
+    admin_Edit->setPlaceholderText("写入管理员id 32字节hex 空格分割");
+    admin_but = new QPushButton("确认");
+    admin_Edit->setText(g_admin);
+    modeLayout2->addWidget(modeLabela);
+    modeLayout2->addWidget(admin_Edit);
+    modeLayout2->addWidget(admin_but);
+
+
     // 模式行
     QHBoxLayout *modeLayout = new QHBoxLayout;
     modeLayout->setAlignment(Qt::AlignLeft);
@@ -158,6 +171,7 @@ void set::setupUI()
     localLayout->addWidget(m_portSpin);
     localLayout->addWidget(m_startStopBtn);
     mainVLayout->addLayout(remoteLayout1);
+    mainVLayout->addLayout(modeLayout2);
     mainVLayout->addLayout(modeLayout);
     mainVLayout->addLayout(remoteLayout);
     mainVLayout->addLayout(localLayout);
@@ -222,7 +236,13 @@ void set::setupUI()
         }
         QMessageBox::warning(this,"修改日志数量","修改完成 0不记录日志 同时群聊会话不可用 日志最低记录数量1k防止异常 每次修改都会存在日志重新来 需要重启才能看见内存变化");
     });
+
     connect(m_addTokenBtn, &QPushButton::clicked, this, &set::onAddTokenRow);
+    connect(admin_but, &QPushButton::clicked, [this](){
+        g_admin = admin_Edit->text();
+        g_config["admin"] = g_admin;
+        saveConfig();
+    });
     connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);
     connect(m_saveTokenBtn, &QPushButton::clicked, this, &set::onWhitelistChanged);  // 复用原名槽
 

@@ -454,12 +454,12 @@ bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
     }
     return false;
 }
-bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId)
+bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId,uint32_t bitmap)
 {
     return retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
         if (keyData.isEmpty()) return -1;
-        GroupRecord record{ createTimeMinutes, inviterSeqId };
+        GroupRecord record{ createTimeMinutes, inviterSeqId , bitmap};
         return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
     });
 }

@@ -1546,8 +1546,8 @@ QJsonArray AiWidget::get_tools(AccountInfo *info,bool nir)
         内置函数(toolsArray,"dimg","添加表情包",QStringList()<< "本地或网络路径" << "保存的文件名 如 结婚.gif");
         内置函数(toolsArray,"rimg","删除表情包",QStringList() << "文件名 如 结婚.gif");
     }
-    内置函数(toolsArray,"llwye","浏览网页 返回提取后的文本",QStringList() << "链接 如https://www.baidu.com");
-    内置函数(toolsArray,"byss","必应搜索 返回标题 + 小字 + 链接",QStringList() << "链接 如https://www.baidu.com");
+    内置函数(toolsArray,"llwye","浏览网页 返回提取后的文本 支持必应搜索 或其他搜索",QStringList() << "链接 如https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
+
     return toolsArray;
 
 }
@@ -2421,6 +2421,34 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
     if(g_admin.isEmpty()) return QString();
     if(!g_admin.contains(ev.user)) return QString();
+    if (ev.msg == "开启拟人" || ev.msg == "关闭拟人") {
+        if (ev.type != 0 && ev.type != 1) {
+            return "除群和频道外，其他类型无需手动操作";
+        }
+
+        auto *db = g_botdb[ev.appid];
+        GroupRecord gr;
+        db->getGroupInfo(ev.groupId, gr);
+        bool isEnabled = (gr.bitmap & 1) == 1;  // 当前拟人状态
+
+        if (ev.msg == "开启拟人") {
+            if (isEnabled) {
+                return "本群已开启拟人，无需重复开启";
+            }
+            gr.bitmap |= 1;   // 置位
+            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+            return "拟人已开启";
+        } else { // 关闭拟人
+            if (!isEnabled) {
+                return "本群未开启拟人，无需关闭";
+            }
+            gr.bitmap &= ~1;  // 清除位
+            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+            return "拟人已关闭";
+        }
+    }
+
+
     QString prefix;
     if (ev.msg.startsWith("同意")) {
         prefix = "同意";

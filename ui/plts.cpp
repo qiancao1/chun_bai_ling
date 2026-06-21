@@ -34,6 +34,12 @@ void plts::extracted(QList<int> &pendingFriends) {
             pendingFriends.append(seq);
     }
 }
+void plts::extracted(QList<QString> &pendingGroups) {
+    for (const QString &gid : ts_m_groupStatus) {
+        if (!gid.isEmpty())
+            pendingGroups.append(gid);
+    }
+}
 bool plts::保存() {
     // 好友列表：只保存未完成的（seq != 0）
     QList<int> pendingFriends;
@@ -48,10 +54,7 @@ bool plts::保存() {
 
     // 群列表：只保存未完成的（非空）
     QList<QString> pendingGroups;
-    for (const QString &gid : ts_m_groupStatus) {
-        if (!gid.isEmpty())
-            pendingGroups.append(gid);
-    }
+    extracted(pendingGroups);
 
     QFile gFile(QString("data/%1_g.bin").arg(ts_m_appid));
     if (!gFile.open(QIODevice::WriteOnly))
@@ -61,6 +64,10 @@ bool plts::保存() {
     gFile.close();
     if (pendingGroups.size() == 0 && pendingFriends.size() == 0)
         ts_m_stopPush = false;
+
+    int g_len = ts_m_groupStatus.size();
+    int f_len = ts_m_friendStatus.size();
+    ui->ts_ztbq->setText(QString("群：%1 / %2 好友： %3 / %4").arg(g_len-pendingGroups.size()).arg(g_len).arg(f_len-pendingFriends.size()).arg(f_len));
     return true;
 }
 void plts::加载()
@@ -101,7 +108,10 @@ void plts::on_sctswj_2_clicked(bool checked)
     if(ui->checkBox_tssl->checkState())
         ts_m_friendStatus = db->getFriendList();
     if(ts_m_groupStatus.size()==0 && ts_m_friendStatus.size()==0)
+    {
         QMessageBox::warning(this,"失败","要推送的群或好友为0 生成失败");
+        return ;
+    }
 
     if(保存()) QMessageBox::warning(this,"生成完成","点击开始推送进行推送吧");
     else QMessageBox::warning(this,"生成失败","写出到文件失败");
