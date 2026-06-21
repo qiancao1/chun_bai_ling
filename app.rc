@@ -16,12 +16,12 @@ BEGIN
         BLOCK "080404B0"  // 中文简体，Unicode
         BEGIN
             VALUE "CompanyName",      "💐双月❀❅*"
-            VALUE "FileDescription",  "qiancao"
+            VALUE "FileDescription",  "chun_bai_ling"
             VALUE "FileVersion",      "1.0.0.0"
-            VALUE "InternalName",     "qiancao"
+            VALUE "InternalName",     "chun_bai_ling"
             VALUE "LegalCopyright",   "Copyright © 2026 两个月亮"
-            VALUE "OriginalFilename", "qiancao.exe"
-            VALUE "ProductName",      "qiancao"
+            VALUE "OriginalFilename", "chun_bai_ling.exe"
+            VALUE "ProductName",      "chun_bai_ling"
             VALUE "ProductVersion",   "1.0.0.0"
         END
     END

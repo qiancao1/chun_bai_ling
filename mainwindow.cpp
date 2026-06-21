@@ -1,3 +1,23 @@
+/*
+ * 纯白铃 - QQ 机器人管理平台 - DLL 插件 SDK
+ * [当前文件的简短功能描述]
+ *
+ * Copyright (C) 2026 两个月亮
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 
 
 #include "MainWindow.h"
@@ -174,7 +194,7 @@ void MainWindow::xr()
 
 void showClickableLicenseInfo() {
     QMessageBox msgBox;
-    msgBox.setWindowTitle("关于纯白铃");
+    msgBox.setWindowTitle("关于");
     msgBox.setIcon(QMessageBox::Information);
 
     QString richText =
@@ -198,6 +218,13 @@ void showClickableLicenseInfo() {
         "<b>LMDB (Lightning Memory-Mapped Database)</b><br>"
         "Copyright (c) 2011–2021, Howard Chu, Symas Corp.<br>"
         "采用 <a href=\"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a>（Version 2.8）<br><br>"
+
+        "<b>⚠️ 关于 DLL 插件的开源要求：</b><br>"
+        "本程序支持动态加载第三方 DLL 插件。根据 GPLv3 协议规定，<br>"
+        "与本程序动态链接（通过接口交互）的 DLL 插件，被视为本程序的衍生作品，<br>"
+        "<b>必须同样以 GPLv3 或兼容协议开源其完整源代码</b>。<br>"
+        "请插件作者在发布插件时，一并提供其源码获取方式。<br>"
+        "用户自行下载并使用闭源插件的，相关法律后果由插件作者及用户自行承担。<br><br>"
 
         "<b>其他资源：</b><br>"
         "图标来源：<a href=\"https://icons8.com\">icons8.com</a><br>"

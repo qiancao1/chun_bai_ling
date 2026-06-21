@@ -77,12 +77,21 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(pybind11)
 
 # ==================== 项目源文件列表 ====================
+set(RESOURCE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc")
+if(EXISTS "${RESOURCE_FILE}")
+    set(RESOURCE_SRC resources.qrc)
+    message(STATUS "✅ resources.qrc found")
+else()
+    set(RESOURCE_SRC "")
+    message(STATUS "⏭️ resources.qrc not found, skip")
+endif()
+
 set(PROJECT_SOURCES_ALL
     main.cpp
     mainwindow.cpp
     mainwindow.h
-    resources.qrc
 
+    ${RESOURCE_SRC}
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h
 
     ui/accountpage.cpp ui/accountpage.h ui/addaccountdialog.cpp ui/addaccountdialog.h

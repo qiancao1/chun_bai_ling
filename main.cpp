@@ -1,5 +1,7 @@
 /*
- * 纯白铃 - QQ 机器人管理平台
+ * 纯白铃 - QQ 机器人管理平台 - DLL 插件 SDK
+ * [当前文件的简短功能描述]
+ *
  * Copyright (C) 2026 两个月亮
  *
  * This program is free software: you can redistribute it and/or modify
@@ -9,11 +11,11 @@
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 
