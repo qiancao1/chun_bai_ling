@@ -11,12 +11,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
 
-# ==================== Python 版本选择 ====================
-# ========== Python 版本选择开关 ==========
+# ==================== Python 版本选择 ====================# ========== Python 版本选择开关 ==========
 # 使用 t 版：设为 ON
 # 使用标准版：设为 OFF
 set(USE_FREETHREADING_PYTHON ON)   # <--- 改这一行：ON=t版，OFF=标准版
-# ======================================
+
+set(KEY_CONTENT "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/key.txt")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/key.txt" KEY_CONTENT)
+    string(STRIP "${KEY_CONTENT}" KEY_CONTENT)
+else()
+    message(WARNING "key.txt not found, using EMPTY default key!")
+endif()
+
 
 if(USE_FREETHREADING_PYTHON)
     # ---------- t 版手动配置 ----------
@@ -166,6 +173,7 @@ if(MSVC)
         QT_NO_ACCESSIBILITY
         _SCL_SECURE_NO_WARNINGS
         _CRT_SECURE_NO_WARNINGS
+        ENCRYPTION_KEY="${KEY_CONTENT}"
     )
 else()
     set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/liblmdb.a)

@@ -1225,10 +1225,10 @@ void AiWidget::onKeyDelete() {
     keyTable->removeRow(row);
     saveToFile2();
 }
-
+#include "jjm.h"
 void AiWidget::saveToFile2() {
     QJsonObject root;
-
+    QByteArray keyA = MachineKey::generateKey("000");
     // 保存全局接口列表
     QJsonArray interfacesArray;
     for (const InterfaceData &iface : std::as_const(globalInterfaces)) {
@@ -1240,7 +1240,7 @@ void AiWidget::saveToFile2() {
         QJsonArray keysArray;
         for (const KeyData &key : iface.keys) {
             QJsonObject keyObj;
-            keyObj["key"] = key.key;
+            keyObj["key"] = MachineKey::encrypt(key.key, keyA);
             keyObj["usageCount"] = key.usageCount;
             keyObj["lastUsed"] = key.lastUsed;
             keysArray.append(keyObj);
@@ -1287,7 +1287,7 @@ void AiWidget::loadFromFile3() {
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isObject()) return;
     QJsonObject root = doc.object();
-
+    QByteArray keyA = MachineKey::generateKey("000");
     // 加载全局接口
     globalInterfaces.clear();
     QJsonArray interfacesArray = root["interfaces"].toArray();
@@ -1300,7 +1300,7 @@ void AiWidget::loadFromFile3() {
         for (const QJsonValue &keyVal : keysArray) {
             QJsonObject keyObj = keyVal.toObject();
             KeyData key;
-            key.key = keyObj["key"].toString();
+            key.key = MachineKey::decrypt(keyObj["key"].toString(),keyA);
             key.usageCount = keyObj["usageCount"].toInt();
             key.lastUsed = keyObj["lastUsed"].toString();
             iface.keys.append(key);

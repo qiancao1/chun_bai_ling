@@ -29,13 +29,16 @@
 
 namespace MachineKey {
 static QByteArray generateKey(const QString &appid) {
-    QString machineInfo;
-    machineInfo += QHostInfo::localHostName();
-    machineInfo += QSysInfo::kernelType();
-    machineInfo += QSysInfo::currentCpuArchitecture();
-    machineInfo += QDir::home().absolutePath();
-    machineInfo += appid;
-    return QCryptographicHash::hash(machineInfo.toUtf8(), QCryptographicHash::Sha256);
+    static QString machineInfo;
+    if(machineInfo.isEmpty()){
+        machineInfo += QHostInfo::localHostName();
+        machineInfo += QSysInfo::kernelType();
+        machineInfo += QSysInfo::currentCpuArchitecture();
+        machineInfo += QDir::home().absolutePath();
+        machineInfo += ENCRYPTION_KEY;
+    }
+    QString machineInfo2 = machineInfo+appid;
+    return QCryptographicHash::hash(machineInfo2.toUtf8(), QCryptographicHash::Sha256);
 }
 
 
