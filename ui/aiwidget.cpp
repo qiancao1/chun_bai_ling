@@ -1873,7 +1873,6 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 if((gr.bitmap & 1)==1)
                 {
                     nir= true;
-
                     setting = 拟人人设 + sd.content;
                     break;
                 }

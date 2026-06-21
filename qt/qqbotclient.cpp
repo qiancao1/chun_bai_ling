@@ -674,7 +674,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         {
             BotDB *db = g_botdb[ev.appid];
             if(ev.subType==4)
-                db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int);
+                db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0);
 
             else
                 db->deleteGroup(ev.groupId);
