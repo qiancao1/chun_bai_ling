@@ -28,34 +28,39 @@ plts::~plts()
     delete ui;
 }
 
-
-
-bool plts::保存()
-{
+void plts::extracted(QList<int> &pendingFriends) {
+    for (int seq : std::as_const(ts_m_friendStatus)) {
+        if (seq != 0)
+            pendingFriends.append(seq);
+    }
+}
+bool plts::保存() {
     // 好友列表：只保存未完成的（seq != 0）
     QList<int> pendingFriends;
-    for (int seq : ts_m_friendStatus) {
-        if (seq != 0) pendingFriends.append(seq);
-    }
+    extracted(pendingFriends);
 
     QFile fFile(QString("data/%1_f.bin").arg(ts_m_appid));
-    if (!fFile.open(QIODevice::WriteOnly)) return false;
+    if (!fFile.open(QIODevice::WriteOnly))
+        return false;
     QDataStream out(&fFile);
-    out << pendingFriends;   // 只写未完成的
+    out << pendingFriends; // 只写未完成的
     fFile.close();
 
     // 群列表：只保存未完成的（非空）
     QList<QString> pendingGroups;
     for (const QString &gid : ts_m_groupStatus) {
-        if (!gid.isEmpty()) pendingGroups.append(gid);
+        if (!gid.isEmpty())
+            pendingGroups.append(gid);
     }
 
     QFile gFile(QString("data/%1_g.bin").arg(ts_m_appid));
-    if (!gFile.open(QIODevice::WriteOnly)) return false;
+    if (!gFile.open(QIODevice::WriteOnly))
+        return false;
     QDataStream out2(&gFile);
     out2 << pendingGroups;
     gFile.close();
-    if(pendingGroups.size()==0 && pendingFriends.size()==0) ts_m_stopPush=false;
+    if (pendingGroups.size() == 0 && pendingFriends.size() == 0)
+        ts_m_stopPush = false;
     return true;
 }
 void plts::加载()

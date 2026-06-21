@@ -42,7 +42,9 @@ QJsonObject AccountInfo::toJson() const {
     obj["e_ChannelPersonal"] = enableChannelPersonal;
     obj["e_ImageRec"] = enableImageRec;
     obj["pplx"] = pplx;
+    obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
+
     return obj;
 }
 
@@ -70,7 +72,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.wsIntents = obj["wsIntents"].toInt();
     info.dyindex = obj["dyindex"].toInt();
     info.Ai_nickname = obj["Ainickname"].toString();
-
+    info.niren = obj["niren"].toBool();
     info.model = obj["model"].toString();
     info.setting = obj["setting"].toString();
     info.context_len = obj["context"].toInt();

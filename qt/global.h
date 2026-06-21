@@ -106,6 +106,7 @@ int mapTypeToTabIndex(int type);
 void loadconfig();
 void saveConfig();
 QString extractBetween(const QString &source, const QString &left, const QString &right);//文本取中间
+QStringList takeAllTextMiddle(const QString &original, const QString &leftMarker,const QString &rightMarker,bool includeSides);//文本取中间 批量
 QString replaceBetweenAll(const QString &original,const QString &left,const QString &right,const QString &replacement,int maxReplacements = -1);
 QString replaceFileTag(const QString &content, const QString &format = "[文件]%1(%2)");
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
@@ -114,10 +115,8 @@ QString normalizeNewlinesToCR(const QString &input);//处理换行符
 void botnomsg(int type, const QString &openid, const QString &msgid);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
-
-
-
-
+void doWork(int totalDelay);//延迟 ms
+bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg);
 
 
 

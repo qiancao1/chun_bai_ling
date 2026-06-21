@@ -33,6 +33,8 @@ const int API_ID_HTMLIMG1=12;
 const int API_ID_HTMLIMG2=13;
 const int API_ID_DS=14;
 const int API_ID_AI=15;
+
+
 QString renderInThread(const QString &htmlContent,int width = 400) ;
 inline QString toQString(const char* s) {
     return s ? QString::fromUtf8(s) : QString();
@@ -479,7 +481,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
                        const char* _6, const char* _7, const char* _8) {
     static std::string result="{}";
 
-    qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
+    //qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
     if (apiId == 10000) {
         miaomiao32 = 0;
         return result.c_str();
@@ -719,6 +721,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         result = ai_ui->Ai_post(text,text2,toInt(_3)).toStdString();
         break;
     }
+
     default:
         result = R"({"error":"Unknown apiId"})";
         break;

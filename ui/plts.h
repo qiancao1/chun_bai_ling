@@ -20,12 +20,13 @@ private slots:
     void on_sctswj_2_clicked(bool checked);
     void on_sctswj_clicked(bool checked);
     void on_tzts_clicked(bool checked);
-
+    
 private:
+    void extracted(QList<int> &pendingFriends);
     bool 保存();
     void 加载();
     Ui::plts *ui;
-    QTimer *m_saveTimer;          // 定时保存定时器
+    QTimer *m_saveTimer; // 定时保存定时器
 };
 
 #endif // PLTS_H

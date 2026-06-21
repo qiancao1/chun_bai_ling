@@ -18,6 +18,7 @@ struct UserRecord {
 struct GroupRecord {
     uint32_t create_time;
     uint32_t inviter_seq_id;
+    uint32_t bitmap=0;
 };
 
 class BotDB {

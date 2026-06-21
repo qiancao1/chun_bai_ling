@@ -27,6 +27,7 @@ LmdbKV *aidb=nullptr;
 
 void loadconfig()
 {
+
     bool ok = false;
     QFile file("data/config.json");
     if (file.open(QIODevice::ReadOnly))
@@ -43,6 +44,7 @@ void loadconfig()
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
     g_admin = g_config["admin"].toString();
+    g_admin="603CC2F96C0DD2643931FC61E332128D";
 }
 
 void saveConfig()
@@ -117,6 +119,8 @@ void initdiv()
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
 
+
+
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 {
     // 创建 minidump 文件
@@ -136,12 +140,10 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 }
 
 
-
+QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
 int main(int argc, char *argv[]) {
-
-
 
 
     qputenv("QT_DEBUG_PLUGINS", "1");
@@ -197,6 +199,17 @@ int main(int argc, char *argv[]) {
         if (!bridge->startServer(false)) qCritical("Bridge start failed");
     }
     aidb= new LmdbKV("botdb/aidb");
+
+
+
+
+    //qDebug() << browseWeb("https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
+
+
+
+
+
+
     MainWindow w;
     w.show();
     int ret = a.exec();

@@ -14,19 +14,20 @@ class QQApi:
     API_GET_USER_OPENID=8
     API_GET_USER_NAME=9
     API_HTTP=10
+    
+    API_ID_GET_USER_ID=11;
+    API_ID_HTMLIMG1=12;
+    API_ID_HTMLIMG2=13;
+    API_ID_DS=14;
+    API_ID_AI=15;
+ 
     def __init__(self, uuid: str):
         self.uuid = uuid
 
     def _callback(self, api_id: int, appid: int, *args):
         padded = list(args) + [""] * (8 - len(args))
         padded = [str(x) if x is not None else "" for x in padded]
-        result_str = qq_api.Callback(self.uuid, api_id, appid, *padded)
-        if result_str:
-            try:
-                return json.loads(result_str)
-            except json.JSONDecodeError:
-                return {"error": "Invalid JSON from C++", "raw": result_str}
-        return {}
+        return qq_api.Callback(self.uuid, api_id, appid, *padded)
 
     # ---------- 具体 API 封装 ----------
     def outlog(self, text: str, color_rgb: Optional[int] = None) -> Dict:
@@ -119,4 +120,53 @@ class QQApi:
         headers_json = json.dumps(headers or {})
         body_b64 = base64.b64encode(body).decode('ascii') if body is not None else ""
         return self._callback(self.API_HTTP, 0, url, method.upper(), headers_json, body_b64, str(timeout))
- 
+        
+     # ---------- 补充的 API 封装 ----------
+    def get_user_id(self, appid: int, user: str) -> Dict:
+        """
+        根据用户整数ID获取用户内部ID（或用户信息）
+        :param appid: Bot appid
+        :param user: 32字节那个
+        :return: 整数id
+        """
+        return self._callback(self.API_ID_GET_USER_ID, appid, str(user_id))
+
+    def htmlimg1(self, text: str, width: int) -> Dict:
+        """
+        将HTML文本渲染为图片（方式1）
+        :param text: HTML文本
+        :param width: 图片宽度（或其它整型参数）
+        """
+        return self._callback(self.API_ID_HTMLIMG1, 0, text, str(width))
+
+    def htmlimg2(self, text: str, width: int, height: int, extra: int = 0) -> Dict:
+        """
+        将HTML文本渲染为图片（方式2）
+        :param text: HTML文本
+        :param width: 宽度
+        :param height: 高度
+        :param extra: 额外参数，默认为0（http请求api超时时间）
+        """
+        return self._callback(self.API_ID_HTMLIMG2, 0, text, str(width), str(height), str(extra))
+
+    def add_timer(self, appid: int, remark: str, time_str: str, execute_count: int, code: str) -> Dict:
+        """
+        添加定时任务
+        :param appid: Bot appid
+        :param remark: 备注（参数1）
+        :param time_str: 定时时间（参数2）
+        :param execute_count: 执行次数，超出销毁（参数3）
+        :param code: Python代码（参数4）
+        """
+        return self._callback(self.API_ID_DS, appid, remark, time_str, str(execute_count), code)
+
+    def ai_chat(self,model: str, content: str, timeout: int = 30) -> Dict:
+        """
+        AI对话 本api禁止 外部插件使用 只允许框架内部 py代码使用
+        :param appid: Bot appid
+        :param model: 模型名称（参数1）
+        :param content: 提交内容（参数2）
+        :param timeout: 超时时间（ms），对应C++的_3
+        """
+        return self._callback(self.API_ID_AI, 0, model, content, str(timeout))   
+        

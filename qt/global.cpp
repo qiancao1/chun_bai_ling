@@ -203,8 +203,11 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     }
     logMessageEvent(info->nickname,ev,text);
 
+    QString ret = ai_ui->Ai_qx(info,ev);
+    if(ret.isEmpty() )
+        ret = ai_ui->Ai_post(info,ev);
+    else if(ret=="*") ret =QString();
 
-    QString ret = ai_ui->Ai_post(info,ev);
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
@@ -501,6 +504,76 @@ QString joinIntListFast(const QList<int>& list, const QString& sep) {
 }
 
 
+void doWork(int totalDelay) {
+    if(totalDelay==0) return;
+    const int step = 100;        // 每 100ms 检查一次
+
+    QElapsedTimer timer;
+    timer.start(); // 开始计时
+
+    while (timer.elapsed() < totalDelay) {
+        if (QThread::currentThread()->isInterruptionRequested()) {
+            return;
+        }
+        int remaining = totalDelay - timer.elapsed();
+        if (remaining > step) {
+            QThread::msleep(step);
+        } else {
+            QThread::msleep(remaining);
+        }
+    }
+}
+
+/**
+ * @brief 提取两个标记之间的内容，并可选择是否包含标记本身。
+ * @param original    原始文本
+ * @param leftMarker  左侧标记
+ * @param rightMarker 右侧标记
+ * @param includeSides 若为 true，返回 "左标记 + 中间内容 + 右标记" 的完整子串；
+ *                      若为 false，只返回中间的文本。
+ * @return 提取到的字符串；若未找到标记，返回空字符串。
+ */
+/**
+ * @brief 从原文本中批量提取所有由左右标记包围的内容。
+ * @param original     原始文本
+ * @param leftMarker   左侧标记
+ * @param rightMarker  右侧标记
+ * @param includeSides 若为 true，每个结果包含左右标记；若为 false，只取中间内容。
+ * @return QStringList 包含所有匹配结果的列表（按出现顺序排列）。
+ *         如果未找到任何匹配，返回空列表。
+ */
+QStringList takeAllTextMiddle(const QString &original, const QString &leftMarker,const QString &rightMarker,bool includeSides)
+{
+    QStringList results;
+    int searchStart = 0;
+    int leftLen = leftMarker.length();
+    int rightLen = rightMarker.length();
+
+    while (true) {
+        int leftPos = original.indexOf(leftMarker, searchStart);
+        if (leftPos == -1)
+            break;   // 没有更多左标记
+
+        int rightPos = original.indexOf(rightMarker, leftPos + leftLen);
+        if (rightPos == -1)
+            break;   // 左标记之后没有右标记，后续也不会有，因为右标记必须出现在左标记之后
+
+        // 提取匹配部分
+        if (includeSides) {
+            // 包含左右标记
+            results << original.mid(leftPos, rightPos - leftPos + rightLen);
+        } else {
+            // 只取中间
+            results << original.mid(leftPos + leftLen,
+                                    rightPos - leftPos - leftLen);
+        }
+
+        // 继续从右标记之后查找下一个
+        searchStart = rightPos + rightLen;
+    }
+
+    return results;
+}
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,
                        int replaceCount,int startPos)
 {
@@ -538,4 +611,32 @@ QString subTextReplace(const QString &source,const QString &find,const QString &
     }
 
     return result;
+}
+bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg) {
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(url)));
+
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        errorMsg = reply->errorString();
+        reply->deleteLater();
+        return false;
+    }
+
+    // 读取数据
+    QByteArray data = reply->readAll();
+    reply->deleteLater();
+
+    // 写入文件
+    QFile file(savePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        errorMsg = "无法创建文件: " + savePath;
+        return false;
+    }
+    file.write(data);
+    file.close();
+    return true;
 }

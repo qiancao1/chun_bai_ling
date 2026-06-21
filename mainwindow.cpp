@@ -177,20 +177,33 @@ void showClickableLicenseInfo() {
     msgBox.setWindowTitle("许可证信息");
     msgBox.setIcon(QMessageBox::Information);
     QString richText =
-        "本程序使用 Qt 6.8.0 (LGPLv3)。<br><br>"
-        "源代码、目标文件 (.obj) 及 LGPL 协议全文请访问：<br>"
-        "<a href=\"https://github.com/qiancao1/qiancao/tree/master\">"
-        "GitHub</a> 或 "
-        "<a href=\"https://gitee.com/qiancao1/qiancao\">"
-        "Gitee</a><br><br>"
+        "<h3>本程序 (纯白玲) 许可证信息</h3>"
+        "本程序整体遵循 <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3 协议</a>。<br>"
+        "完整源代码（GPLv3）请访问：<br>"
+        "<a href=\"https://github.com/qiancao1/qiancao/tree/master\">GitHub</a> 或 "
+        "<a href=\"https://gitee.com/qiancao1/qiancao\">Gitee</a><br><br>"
 
-        "Qt 是 The Qt Company 的注册商标。<br>"
-        "本程序遵循 MIT 协议。<br><br>"
-        "icons by <a href=\"https://icons8.com\">https://icons8.com</a><br><br>"
-        "咸鱼Ai中转 <a href=\"https://allgpt.xianyuw.cn\">https://allgpt.xianyuw.cn</a><br><br>"
-        "官方群 <a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a>";
+        "<b>使用的第三方库及许可：</b><br><br>"
 
-    msgBox.setTextFormat(Qt::RichText);          // 设为富文本模式
+        "<b>Qt 6.8.0</b><br>"
+        "• Widgets, Network, WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
+        "• QtCharts 模块：<a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3</a><br>"
+        "（因静态链接 QtCharts，本程序整体采用 GPLv3）<br><br>"
+
+        "<b>pybind11</b><br>"
+        "Copyright (c) 2016–2023 The pybind11 authors.<br>"
+        "采用 <a href=\"https://opensource.org/licenses/BSD-3-Clause\">BSD 3-Clause License</a><br><br>"
+
+        "<b>LMDB (Lightning Memory-Mapped Database)</b><br>"
+        "Copyright (c) 2011–2021, Howard Chu, Symas Corp.<br>"
+        "采用 <a \"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a><br><br>"
+
+        "<b>其他资源：</b><br>"
+        "图标来源：<a href=\"https://icons8.com\">icons8.com</a><br>"
+        "AI 中转服务：<a href=\"https://allgpt.xianyuw.cn\">咸鱼Ai中转</a><br>"
+        "官方 QQ 群：<a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a>";
+
+    msgBox.setTextFormat(Qt::RichText);
     msgBox.setText(richText);
     msgBox.setTextInteractionFlags(Qt::TextBrowserInteraction);
     msgBox.setCursor(Qt::PointingHandCursor);

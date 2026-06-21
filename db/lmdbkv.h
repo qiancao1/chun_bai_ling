@@ -22,6 +22,8 @@ public:
 
     bool remove(const QString &key);
     bool remove(const QByteArray &key);
+    QList<QByteArray> getAllKeysByteArray() const;
+    QStringList getAllKeys() const;
 
 private:
     MDB_env *m_env;

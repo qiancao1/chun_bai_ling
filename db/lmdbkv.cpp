@@ -209,3 +209,46 @@ bool LmdbKV::increaseMapSize()
     qDebug() << "LMDB mapsize 已增加至" << newSize << "字节";
     return true;
 }
+// 获取所有键（返回 QByteArray 列表）
+QList<QByteArray> LmdbKV::getAllKeysByteArray() const
+{
+    QMutexLocker locker(&m_mutex);
+    QList<QByteArray> keys;
+    if (!m_env) return keys;
+
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "getAllKeys: 开启只读事务失败" << mdb_strerror(rc);
+        return keys;
+    }
+
+    MDB_cursor *cursor = nullptr;
+    rc = mdb_cursor_open(txn, m_dbi, &cursor);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "getAllKeys: 打开游标失败" << mdb_strerror(rc);
+        mdb_txn_abort(txn);
+        return keys;
+    }
+
+    MDB_val key, data;
+    while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == MDB_SUCCESS) {
+        keys.append(QByteArray((const char*)key.mv_data, key.mv_size));
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn); // 只读事务 abort 即可
+    return keys;
+}
+
+// 获取所有键（返回 QString 列表）
+QStringList LmdbKV::getAllKeys() const
+{
+    QList<QByteArray> byteKeys = getAllKeysByteArray();
+    QStringList strKeys;
+    strKeys.reserve(byteKeys.size());
+    for (const QByteArray &ba : std::as_const(byteKeys)) {
+        strKeys.append(QString::fromUtf8(ba));
+    }
+    return strKeys;
+}
