@@ -119,12 +119,12 @@ set(PROJECT_SOURCES_ALL
     ui/cpphighlighter.h ui/cpphighlighter.cpp
     ui/htmltoimagewidget.h ui/htmltoimagewidget.cpp
     qt/screenshotsyncclient.h qt/screenshotsyncclient.cpp
-    ui/ai.h ui/ai.ui
     ui/aiwidget.h ui/aiwidget.cpp
     qt/Role.h
     ui/plts.h ui/plts.cpp ui/plts.ui
     ui/aisxw.h ui/aisxw.cpp ui/aisxw.ui
     ui/bqbgl.h ui/bqbgl.cpp ui/bqbgl.ui
+    qt/jjm.h
 )
 
 # 或对于 Qt5: qt5_add_ui(myapp ai.ui)
@@ -139,6 +139,7 @@ else()
         add_library(qiancao SHARED ${PROJECT_SOURCES_ALL})
     else()
         add_executable(qiancao ${PROJECT_SOURCES_ALL}
+
 
 
 

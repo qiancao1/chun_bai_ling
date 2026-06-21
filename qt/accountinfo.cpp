@@ -1,6 +1,6 @@
 #include "accountinfo.h"
 #include <QJsonArray>
-
+#include "jjm.h"
 
 // ============================================================
 

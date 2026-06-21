@@ -3,8 +3,7 @@
 #include <QSettings>
 #include <QMessageBox>
 #include <QTimer>
-#include "accountinfo.h"
-
+#include "jjm.h"
 void stopImageServer();
 bool startImageServer(const QString &ip,quint16 port);
 void setUploadTokens(const QStringList &tokens);

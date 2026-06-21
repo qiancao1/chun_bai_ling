@@ -174,21 +174,22 @@ void MainWindow::xr()
 
 void showClickableLicenseInfo() {
     QMessageBox msgBox;
-    msgBox.setWindowTitle("许可证信息");
+    msgBox.setWindowTitle("关于纯白铃");
     msgBox.setIcon(QMessageBox::Information);
+
     QString richText =
-        "<h3>本程序 (纯白玲) 许可证信息</h3>"
-        "本程序整体遵循 <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3 协议</a>。<br>"
-        "完整源代码（GPLv3）请访问：<br>"
-        "<a href=\"https://github.com/qiancao1/qiancao/tree/master\">GitHub</a> 或 "
+        "<h3>纯白铃 - QQ 机器人管理平台</h3>"
+        "本项目整体基于 <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3 协议</a> 开源。<br>"
+        "完整源代码（含所有修改）请访问：<br>"
+        "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
         "<a href=\"https://gitee.com/qiancao1/qiancao\">Gitee</a><br><br>"
 
         "<b>使用的第三方库及许可：</b><br><br>"
 
-        "<b>Qt 6.8.0</b><br>"
-        "• Widgets, Network, WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
+        "<b>Qt 5.15.3</b>（静态链接）<br>"
+        "• Widgets、Network、WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
         "• QtCharts 模块：<a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3</a><br>"
-        "（因静态链接 QtCharts，本程序整体采用 GPLv3）<br><br>"
+        "（因整体采用 GPLv3，LGPL 的附加要求不适用）<br><br>"
 
         "<b>pybind11</b><br>"
         "Copyright (c) 2016–2023 The pybind11 authors.<br>"
@@ -196,12 +197,14 @@ void showClickableLicenseInfo() {
 
         "<b>LMDB (Lightning Memory-Mapped Database)</b><br>"
         "Copyright (c) 2011–2021, Howard Chu, Symas Corp.<br>"
-        "采用 <a \"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a><br><br>"
+        "采用 <a href=\"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a>（Version 2.8）<br><br>"
 
         "<b>其他资源：</b><br>"
         "图标来源：<a href=\"https://icons8.com\">icons8.com</a><br>"
         "AI 中转服务：<a href=\"https://allgpt.xianyuw.cn\">咸鱼Ai中转</a><br>"
-        "官方 QQ 群：<a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a>";
+        "官方 QQ 群：<a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a><br><br>"
+
+        "本软件为免费开源项目，仅供学习交流使用。";
 
     msgBox.setTextFormat(Qt::RichText);
     msgBox.setText(richText);

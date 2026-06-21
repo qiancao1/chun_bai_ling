@@ -11,8 +11,7 @@
 #include <QToolButton>
 #include <QString>
 #include <qnetworkaccessmanager.h>
-#include "ui_ai.h"
-#include "ui_plts.h"
+
 
 class HomePage;
 class AccountPage;
