@@ -7,14 +7,14 @@
 #include <QCryptographicHash>
 #include <QDir>
 
-// ========== 基于机器特征 + appid 的密钥派生（纯 Qt） ==========
+
 namespace MachineKey {
-// 生成 32 字节密钥：机器特征 + appid 的 SHA256
+
 static QByteArray generateKey(const QString &appid) {
     return QByteArray();
 }
 
-// XOR 加密/解密（对称操作）
+
 static QString encryptDecrypt(const QString &text, const QByteArray &key, bool doEncrypt) {
     return text;
 }
