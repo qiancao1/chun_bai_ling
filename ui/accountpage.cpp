@@ -365,6 +365,15 @@ void AccountPage::onDeleteAccount(int appid) {
             // 2. 删除数据层
             m_accounts.removeAt(i);
 
+            for(int i=0 ;i<robotListWidget->count();++i)
+            {
+                auto *item = robotListWidget->item(i);
+                if(item->data(Qt::UserRole)==appid)
+                {
+                    robotListWidget->takeItem(i);
+                    break;
+                }
+            }
             break;
         }
     }

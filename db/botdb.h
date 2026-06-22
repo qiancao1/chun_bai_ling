@@ -40,7 +40,6 @@ struct GroupRecord {
     uint32_t inviter_seq_id=0;
     uint32_t bitmap=0;
     qint64 xychy_time=0;
-    qint64 xyctq_time=0;
 };
 
 class BotDB {

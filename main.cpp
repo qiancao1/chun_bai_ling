@@ -100,12 +100,9 @@ bool clearPTmpFolder()
 #include <windows.h>
 #include <QProcess>
 QString getPythonExecutable() {
-    // 搜索 python3.14t 可执行文件
+
     QString exePath = QStandardPaths::findExecutable("python3.14t");
-    if (exePath.isEmpty()) {
-        // 降级：尝试搜索 python3.14（无 t）
-        exePath = QStandardPaths::findExecutable("python3.14");
-    }
+
     return exePath;
 }
 
@@ -192,25 +189,33 @@ int main(int argc, char *argv[]) {
     initdiv();
     loadconfig();
     clearPTmpFolder();
-    QString pythonHome= g_config["pythonHome"].toString();
-    if(pythonHome.isEmpty()) pythonHome = getPythonPrefix();
+    QString pythonHome;
+    if(g_config["yiyu"].toInt()!=1)
+    {
+        pythonHome= g_config["pythonHome"].toString();
+        if(pythonHome.isEmpty()) pythonHome = getPythonPrefix();
 
-    if (!pythonHome.isEmpty()) {
-        qputenv("PYTHONHOME", pythonHome.toUtf8());  // Qt 方式
-        g_config["pythonHome"] = pythonHome;
+        if (!pythonHome.isEmpty()) {
+            qputenv("PYTHONHOME", pythonHome.toUtf8());  // Qt 方式
+            g_config["pythonHome"] = pythonHome;
+        }
     }
+    //QMessageBox::warning(nullptr,"",pythonHome);
     std::unique_ptr<py::scoped_interpreter> interpreter;
     try {
         interpreter = std::make_unique<py::scoped_interpreter>();
     } catch (...) {
-        qputenv("PYTHONHOME", QByteArray());
-        try {
-            interpreter = std::make_unique<py::scoped_interpreter>();
-        } catch (...) {
-            // 两次都失败，无法继续
-            QMessageBox::critical(nullptr, "错误", "Python 解释器初始化失败，程序无法运行。 请尝试安装py3.14t 后试试");
-            return -1;
+        QString text ="Python 解释器初始化失败，程序无法运行。 因为设置了py3.14t 路径问题 实际上本程序并不需要服务器安装py环境"
+                       "\n为什么出现这个错误 代表 程序获取到了 你py路径 但是初始化失败了\n\n\n最后 需要不设置 路径运行吗？ 实际上本项设置只是为了找到你pip的包\n"
+                       "如果你可以 设置到lib/site-packages/ 里面也是可以引用到的\n->"+pythonHome;
+        auto res = QMessageBox::critical(nullptr, "错误",text ,QMessageBox::Yes | QMessageBox::No);
+        if(res == QMessageBox::Yes)
+        {
+            g_config["yiyu"] = 1;
+            g_config["pythonHome"] = QString();
+            saveConfig();
         }
+        return -1;
     }
     py::gil_scoped_release release;
     cache_db = new LmdbKV("botdb/file_db");

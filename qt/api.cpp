@@ -1620,7 +1620,7 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
     }
     json["msg_seq"] = m_info->message_sent;
     if (!is_wakeup) {
-        if (msgid.contains("INTERACTION") || msgid.contains("GROUP_ADD_ROBOT") || msgid.contains("FRIEND_ADD"))
+        if (msgid.contains("INTERACTION") || msgid.contains("FRIEND_ADD") || msgid.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
             json["event_id"] = msgid;
         else
             json["msg_id"] = msgid;

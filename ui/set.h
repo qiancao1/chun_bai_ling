@@ -58,8 +58,8 @@ private:
     QRadioButton *m_localRadio;
     QLineEdit    *m_urlEdit , *m_ffmpegpath,*m_日志数量,*m_日志颜色;
     QLineEdit    *m_token;
-    QPushButton  *m_confirmBtn,*admin_but;
-    QLineEdit    *m_addrEdit,*admin_Edit;
+    QPushButton  *m_confirmBtn,*admin_but,*python3_14t_but;
+    QLineEdit    *m_addrEdit,*admin_Edit,*python3_14t;
     QSpinBox     *m_portSpin;
     QPushButton  *m_startStopBtn;
     QTableWidget *m_tokenTable;

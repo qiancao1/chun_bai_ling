@@ -40,7 +40,7 @@ void set::setupUI()
     // 模式行
     QHBoxLayout *remoteLayout1 = new QHBoxLayout;
     remoteLayout1->setAlignment(Qt::AlignLeft);
-    QLabel *urlLabel1 = new QLabel(tr("ffmpeg路径"), this);
+    QLabel *urlLabel1 = new QLabel(tr("ffmpeg路径："), this);
     m_ffmpegpath = new QLineEdit(this);
     m_ffmpegpath->setPlaceholderText("ffmpeg/");
     m_ffmpegpath->setMinimumWidth(250);
@@ -111,17 +111,27 @@ void set::setupUI()
     remoteLayout1->addWidget(urlLabel5);
     remoteLayout1->addWidget(colorPreview2);
 
-    QHBoxLayout *modeLayout2 = new QHBoxLayout;
+    QGridLayout *modeLayout2 = new QGridLayout;
     modeLayout2->setAlignment(Qt::AlignLeft);
     QLabel *modeLabela = new QLabel("管理员：", this);
     admin_Edit = new QLineEdit;
     admin_Edit->setPlaceholderText("写入管理员id 32字节hex 空格分割");
     admin_but = new QPushButton("确认");
     admin_Edit->setText(g_admin);
-    modeLayout2->addWidget(modeLabela);
-    modeLayout2->addWidget(admin_Edit);
-    modeLayout2->addWidget(admin_but);
+    modeLayout2->addWidget(modeLabela,0,0);
+    modeLayout2->addWidget(admin_Edit,0,1);
+    modeLayout2->addWidget(admin_but,0,2);
 
+
+    modeLayout2->setAlignment(Qt::AlignLeft);
+    QLabel *modeLabela2 = new QLabel("py3.14t路径：", this);
+    python3_14t = new QLineEdit;
+    python3_14t->setPlaceholderText("如 [C:/python/] 不需要exe");
+    python3_14t_but = new QPushButton("确认");
+    python3_14t->setText(g_config["pythonHome"].toString());
+    modeLayout2->addWidget(modeLabela2,1,0);
+    modeLayout2->addWidget(python3_14t,1,1);
+    modeLayout2->addWidget(python3_14t_but,1,2);
 
     // 模式行
     QHBoxLayout *modeLayout = new QHBoxLayout;
@@ -172,6 +182,7 @@ void set::setupUI()
     localLayout->addWidget(m_startStopBtn);
     mainVLayout->addLayout(remoteLayout1);
     mainVLayout->addLayout(modeLayout2);
+
     mainVLayout->addLayout(modeLayout);
     mainVLayout->addLayout(remoteLayout);
     mainVLayout->addLayout(localLayout);
@@ -242,6 +253,14 @@ void set::setupUI()
         g_admin = admin_Edit->text();
         g_config["admin"] = g_admin;
         saveConfig();
+    });
+
+
+    connect(python3_14t_but, &QPushButton::clicked, [this](){
+        g_config["yiyu"] = 0;
+        g_config["pythonHome"] = python3_14t->text();
+        saveConfig();
+        QMessageBox::about(this,"","重启生效");
     });
     connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);
     connect(m_saveTokenBtn, &QPushButton::clicked, this, &set::onWhitelistChanged);  // 复用原名槽

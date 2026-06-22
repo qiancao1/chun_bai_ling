@@ -88,7 +88,7 @@ struct AccountInfo {
     QString welcomeMsg;         // 被添加时的欢迎词
     QString fallbackReply;      // 指令未处理时的回应
     QString rqhy; //群成员加群提示文本
-    QString tcts; //群成员退群提示文本
+
     int fasjg=0;
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）

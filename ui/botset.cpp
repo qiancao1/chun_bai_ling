@@ -29,7 +29,7 @@ void botset::列表行被单击(QListWidgetItem *item)
         ui->wclhf->setPlainText(info->fallbackReply);
         ui->textEdit->setPlainText(info->welcomeMsg);
         ui->textEdit_3->setPlainText(info->rqhy);
-        ui->textEdit_4->setPlainText(info->tcts);
+
         ui->lineEdit->setText(QString::number(info->fasjg));
 
     } else {
@@ -52,7 +52,7 @@ void botset::on_pushButton_clicked()
     info->fallbackReply = ui->wclhf->toPlainText();
     info->welcomeMsg= ui->textEdit->toPlainText();
     info->rqhy = ui->textEdit_3->toPlainText();
-    info->tcts = ui->textEdit_4->toPlainText();
+
     info->fasjg = ui->lineEdit->text().toInt();
 }
 

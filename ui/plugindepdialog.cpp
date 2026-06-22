@@ -16,9 +16,8 @@ PluginDepDialog::PluginDepDialog(const QStringList& requires, const QString& plu
     // 查找 python3.14t 的完整路径（避免 QProcess 的 PATH 问题）
     QString pythonCmd = QStandardPaths::findExecutable("python3.14t");
     if (pythonCmd.isEmpty()) {
-        // 如果找不到，回退到短命令（可能会再次失败，但至少尝试）
-        m_pythonCmd = "python3.14t";
-        appendOutput("警告: 未找到 python3.14t 的完整路径，将使用短命令，可能失败。");
+        QMessageBox::warning(this,"缺少python主程序","没有找到 python3.14t路径 不能下载");
+        return ;
     } else {
         m_pythonCmd = pythonCmd;
     }

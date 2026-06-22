@@ -710,7 +710,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    //qDebug() << ev.raw;
+    qDebug() << ev.raw;
     //qDebug() <<"事件："<< ev.msgType <<":" << ev.at_you;
     EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
 

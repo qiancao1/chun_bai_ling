@@ -315,7 +315,7 @@ QString ruqunhy(const AccountInfo *info,const MessageEvent &ev)
         db->getGroupInfo(ev.groupId,gid);
         if (gid.bitmap & 2) return QString(); //已经关闭入群提示
         qint64 now = QDateTime::currentSecsSinceEpoch();
-        qint64 CD=gid.xyctq_time - now;
+        qint64 CD=gid.xychy_time - now;
         if(CD <= 0 || info->fasjg<=0 || CD > info->fasjg)
         {
             if(info->fasjg>0)
@@ -325,24 +325,6 @@ QString ruqunhy(const AccountInfo *info,const MessageEvent &ev)
             }
             if(!info->rqhy.startsWith("#python")) return info->rqhy;
             return python_code(info->rqhy,ev);
-        }
-    }else if(ev.subType==3){
-        if(info->tcts.isEmpty()) return QString();
-        auto *db = g_botdb[info->appid_int];
-        GroupRecord gid;
-        db->getGroupInfo(ev.groupId,gid);
-        if (gid.bitmap & 2) return QString(); //已经关闭入群提示
-        qint64 now = QDateTime::currentSecsSinceEpoch();
-        qint64 CD=gid.xyctq_time - now;
-        if(CD <= 0 || info->fasjg<=0 || CD > info->fasjg)
-        {
-            if(info->fasjg>0)
-            {
-                gid.xyctq_time= now + info->fasjg;
-                db->addGroup(ev.groupId,gid);
-            }
-            if(!info->tcts.startsWith("#python")) return info->tcts;
-            return python_code(info->tcts,ev);
         }
     }
     return QString();

@@ -72,7 +72,7 @@ QJsonObject AccountInfo::toJson() const {
     obj["pplx"] = pplx;
     obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
-    obj["tcts"]=tcts;
+
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
     obj["jiam"]=1;
@@ -100,7 +100,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.wsAddress = obj["wsAddress"].toString();
     info.type = obj["type"].toInt();
 
-    info.tcts = obj["tcts"].toString();
+
     info.fasjg = obj["fasjg"].toInt();
     info.rqhy = obj["rqhy"].toString();
 

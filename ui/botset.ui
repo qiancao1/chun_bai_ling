@@ -14,41 +14,12 @@
    <string>Form</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
-   <property name="spacing">
-    <number>2</number>
-   </property>
-   <property name="leftMargin">
-    <number>2</number>
-   </property>
-   <property name="topMargin">
-    <number>2</number>
-   </property>
-   <property name="rightMargin">
-    <number>2</number>
-   </property>
-   <property name="bottomMargin">
-    <number>2</number>
-   </property>
    <item>
     <layout class="QGridLayout" name="gridLayout">
-     <item row="1" column="0">
-      <widget class="QTextEdit" name="textEdit">
-       <property name="placeholderText">
-        <string>#python 开头为py代码</string>
-       </property>
-      </widget>
-     </item>
      <item row="1" column="1">
       <widget class="QTextEdit" name="wclhf">
        <property name="placeholderText">
         <string>不能执行py代码</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="0">
-      <widget class="QLabel" name="label_2">
-       <property name="text">
-        <string>被邀请加群时：</string>
        </property>
       </widget>
      </item>
@@ -59,7 +30,28 @@
        </property>
       </widget>
      </item>
+     <item row="0" column="0">
+      <widget class="QLabel" name="label_2">
+       <property name="text">
+        <string>被邀请加群时：</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QTextEdit" name="textEdit">
+       <property name="placeholderText">
+        <string>#python 开头为py代码</string>
+       </property>
+      </widget>
+     </item>
     </layout>
+   </item>
+   <item>
+    <widget class="QTextEdit" name="textEdit_3">
+     <property name="placeholderText">
+      <string>用户加群时发送-#python开头为py代码 </string>
+     </property>
+    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_3">
@@ -84,24 +76,6 @@
       <widget class="QPushButton" name="pushButton">
        <property name="text">
         <string>保存页面内容</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_2">
-     <item>
-      <widget class="QTextEdit" name="textEdit_3">
-       <property name="placeholderText">
-        <string>用户加群时发送-#python开头为py代码 </string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QTextEdit" name="textEdit_4">
-       <property name="placeholderText">
-        <string>用户退群时触发..#python开头为py代码</string>
        </property>
       </widget>
      </item>
