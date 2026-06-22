@@ -2580,8 +2580,6 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
             msgs[i] = obj;
             sxw["messages"] = msgs;
             aidb->put(userID, QJsonDocument(sxw).toJson(QJsonDocument::Compact));
-
-
             emit newMessageArrived(info, ev,true,true);
             return "*"; // 立即返回 让本条指令不执行ai
         }
