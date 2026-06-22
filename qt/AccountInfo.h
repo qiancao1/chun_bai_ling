@@ -95,10 +95,10 @@ struct AccountInfo {
     QList<QString> tools;
     QString model;              // 模型名称
     QString setting;            // 选中的全局设定名
-    int context_len=6;            // 上下文
+    int context_len=128;            // 上下文
     int nSecondsNoReply = 0;    // N秒没回复
     int nMinutesNoReply = 0;    // N分钟没回复
-    int delayReplySeconds = 8;  // 延迟回复(秒)
+    int delayReplySeconds = 6;  // 延迟回复(秒)
     int pplx=0;
     int 模型开始下标=0;
 

@@ -85,6 +85,8 @@ QString Homev=R"(
 - 修复 部分机器人 未下发unid at_you变量一直是true
 - 更新 加密算法 使用宏 所以需要更新密码
 - 增加 内置入群欢迎
+- 修复 发送图片时 缓存更新未更新导致发送图片无法查看
+- 修复 聊天室 发送内容异常问题 忘记什么时候改了
 
 ## v1.0.3.4 (2026-06-14)
 - 增加对 JS 插件的支持
@@ -132,6 +134,8 @@ int m_currentBotIndex = -1;
 int 定时检查变量=0;
 extern int ts_m_appid;
 extern bool ts_m_stopPush;
+
+
 MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(5)
 {
     // 无边框窗口
@@ -141,12 +145,9 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     resize(1040, 660);
     setMinimumSize(900, 560);
     setWindowTitle("纯白铃");
-
     setupUi();
     xr();
     applyStyleSheet();
-
-
     // 默认选中首页
     btnHome->setChecked(true);
     stackedWidget->setCurrentIndex(0);

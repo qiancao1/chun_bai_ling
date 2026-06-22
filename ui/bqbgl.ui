@@ -46,7 +46,7 @@
      <item>
       <widget class="QLabel" name="label">
        <property name="text">
-        <string/>
+        <string>请将表情包放置运行目录image/内 如 image/搞笑.jpg</string>
        </property>
       </widget>
      </item>

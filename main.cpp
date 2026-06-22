@@ -46,6 +46,7 @@ QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
 QString g_admin;
 LmdbKV *aidb=nullptr;
+LmdbKV *dsdb=nullptr;
 
 void loadconfig()
 {
@@ -221,13 +222,19 @@ int main(int argc, char *argv[]) {
         if (!bridge->startServer(false)) qCritical("Bridge start failed");
     }
     aidb= new LmdbKV("botdb/aidb");
+    dsdb = new LmdbKV("botdb/dsdb");
 
 
 
 
-    //qDebug() << browseWeb("https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
+    //QString res = browseWeb("https://cn.bing.com/search?q=%e6%b1%bd%e6%b0%b4%e9%9f%b3%e4%b9%90&first=1");
+
+    //qDebug()<< res;
 
 
+    //res = browseWeb("https://cn.bing.com/search?q=%e6%b1%bd%e6%b0%b4%e9%9f%b3%e4%b9%90&first=10");
+
+    //Debug()<< res;
 
 
 

@@ -66,7 +66,7 @@ AiWidget::AiWidget(QWidget *parent)
     : QWidget(parent)
 {
     setupUi();
-
+    内置函数();
 
     connect(btnSaveRobot, &QPushButton::clicked, this, &AiWidget::on_btnSaveRobot_clicked);
     connect(settingListWidget, &QListWidget::currentRowChanged, this, &AiWidget::on_settingListWidget_currentRowChanged);
@@ -1457,8 +1457,9 @@ QString browseWeb(const QString &urlString) {
 
 
 
-void 内置函数(QJsonArray &toolsArray,const QString &Nmae,const QString &remark,const QStringList &params)
+void AiWidget::内置函数(const QString &Nmae,const QString &remark,const QStringList &params)
 {
+
     QJsonObject functionObj;
     functionObj["name"] = Nmae;
     functionObj["description"] = remark;
@@ -1493,17 +1494,22 @@ void 内置函数(QJsonArray &toolsArray,const QString &Nmae,const QString &rema
     QJsonObject toolObj;
     toolObj["type"] = "function";
     toolObj["function"] = functionObj;
-    toolsArray.append(toolObj);
+    m_fun.insert(Nmae,toolObj);
 }
 
 
-QJsonArray AiWidget::get_tools(AccountInfo *info,bool nir)
+QJsonArray AiWidget::get_tools(const AccountInfo *info)
 {
 
     QJsonArray toolsArray;
     for (const auto &fun : std::as_const(functionList)) {
         if(fun.funcName.isEmpty()) continue;
         if(!info->tools.contains(fun.funcName)) continue;
+        if(m_fun.contains(fun.funcName))
+        {
+            toolsArray.append(m_fun[fun.funcName]);
+            continue;
+        }
         QJsonObject functionObj;
         functionObj["name"] = fun.funcName;
         functionObj["description"] = fun.remark;
@@ -1526,7 +1532,6 @@ QJsonArray AiWidget::get_tools(AccountInfo *info,bool nir)
             required.append(pKey);
             ++paramIndex;
         }
-
         if (!properties.isEmpty()) {
             parameters["properties"] = properties;
             parameters["required"] = required;
@@ -1534,24 +1539,29 @@ QJsonArray AiWidget::get_tools(AccountInfo *info,bool nir)
         } else {
             functionObj["parameters"] = QJsonObject(); // 无参数时留空对象
         }
-
         QJsonObject toolObj;
         toolObj["type"] = "function";
         toolObj["function"] = functionObj;
         toolsArray.append(toolObj);
     }
 
-    if(nir) //拟人专属
-    {
-        内置函数(toolsArray,"dimg","添加表情包",QStringList()<< "本地或网络路径" << "保存的文件名 如 结婚.gif");
-        内置函数(toolsArray,"rimg","删除表情包",QStringList() << "文件名 如 结婚.gif");
-    }
-    内置函数(toolsArray,"llwye","浏览网页 返回提取后的文本 支持必应搜索 或其他搜索 当用户发送链接时 可以使用",QStringList() << "链接 如https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
 
     return toolsArray;
 
 }
-QString 内置函数处理(const QString &tool_name,const QString &args)
+
+void AiWidget::内置函数()
+{
+    内置函数("run_python","运行python代码 有审核 请勿违规",QStringList() << "python代码 如 #下面代码由用户要求测试\n__result__='测试'"  );
+    内置函数("dimg","添加表情包",QStringList()<< "本地或网络路径" << "保存的文件名 如 结婚.gif");
+    内置函数("rimg","删除表情包",QStringList() << "文件名 如 结婚.gif");
+    内置函数("dingshy","添加一个定时 在指定时间触发一次主动",QStringList()<< "备注 如 叫xx起床" << "时间 定时时间格式 年,月,日,时,分 如 10,10 每日10点10分 触发一次对话 你可以叫用户起床等");
+    内置函数("getdings","获取与当前用户的定时列表",QStringList() << "无参数");
+    内置函数("redings","删除一个定时",QStringList() << "定时id");
+    内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
+    内置函数("llwye","浏览网页 返回提取后的文本 当用户发送链接时 可以使用",QStringList() << "链接 如 https://www.baidu.com");
+}
+QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const QString &args,const QString &model)
 {
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(args.toUtf8(), &error);
@@ -1585,6 +1595,41 @@ QString 内置函数处理(const QString &tool_name,const QString &args)
         拟人人设=subTextReplace(拟人人设,p1,"");
         res = file.remove() ? "删除成功 上下文可能存在 下回合消失" : "删除失败可能不存在";
     }else if(tool_name == "llwye") res = browseWeb(p1);
+    else if(tool_name=="dingshy")
+    {
+        QString pycode=QString("code_ai|||%1|||%2|||%3|||%4").arg(ev.user,ev.groupId,p1).arg(ev.type);
+        res = schedule->add_byAi(p1,ev.appid,obj["p2"].toString(),1,pycode);
+    }else if(tool_name=="getdings")
+    {
+        QString pycode;
+        res = schedule->get_aids_list(ev.appid,ev.user);
+    }else if(tool_name=="redings")
+    {
+        res = schedule->remov_ds_byai(ev.appid,p1.toInt());
+    }else if(tool_name == "llwye")
+    {
+        int y = obj["p2"].toInt();
+        if(y<=0) y=1;
+        res = browseWeb("https://cn.bing.com/search?q="+ QUrl::toPercentEncoding(p1) +"&first="+QString::number(y*10));
+    }else if(tool_name == "run_python")
+    {
+        QString 设定 =R"(你的主要任务是审核下面python代码，有没有危害系统，恶意删除文件,覆盖某些系统文件,如果执行了 cmd命令 cmd指令有没有危害系统，
+或者尝试下载网络文件 并且执行 等，注意有可能会下载东西 但是不执行就可以
+代码通过 返回 '[通过]'，需要用户确认 返回 '[待确认]+说明可能的危害,因为用户可能也不懂',返回 '[拒绝]+理由\n\n下面是审核的python代码
+
+)";
+        res = ai_ui->Ai_post(model,设定+p1,ev.type);
+        if(res.contains("[通过]"))
+        {
+            res =python_code(p1,ev);
+            if(res.isEmpty())
+                res = "python执行完成 无返回值";
+        }else if(res.contains("[待确认]") || res.contains("[拒绝]"))
+        {}else{
+            res = "[审核异常]" + res;
+        }
+
+    }
     return res;
 }
 
@@ -1757,7 +1802,49 @@ void AiWidget::trimContextImages(QJsonObject &context, int maxUserMessages)
 
     context["messages"] = messages;
 }
+void AiWidget::trimToolResponses(QJsonObject &context, int maxToolMessages, int truncateLimit)
+{
+    if (!context.contains("messages") || !context["messages"].isArray())
+        return;
 
+    QJsonArray messages = context["messages"].toArray();
+    QList<int> toolIndices;
+
+    // 收集所有 tool 消息的索引
+    for (int i = 0; i < messages.size(); ++i) {
+        QJsonObject msg = messages[i].toObject();
+        if (msg["role"].toString() == "tool") {
+            toolIndices.append(i);
+        }
+    }
+
+    int totalTools = toolIndices.size();
+    if (totalTools <= maxToolMessages) {
+        // 数量未超限，无需截断
+        qDebug() << "[trimToolResponses] tool消息数量" << totalTools << "未超过限制" << maxToolMessages;
+        return;
+    }
+
+    // 需要截断较早的 tool 消息（从索引 0 到 totalTools - maxToolMessages - 1）
+    int keepStartIndex = totalTools - maxToolMessages; // 保留最近 maxToolMessages 条
+    for (int i = 0; i < keepStartIndex; ++i) {
+        int msgIndex = toolIndices[i];
+        QJsonObject msg = messages[msgIndex].toObject();
+        if (msg.contains("content") && msg["content"].isString()) {
+            QString content = msg["content"].toString();
+            if (content.length() > truncateLimit) {
+                content = content.left(truncateLimit) + "...(truncated)";
+                msg["content"] = content;
+                messages[msgIndex] = msg;
+                qDebug() << "[trimToolResponses] 截断 tool 消息索引" << msgIndex;
+            }
+        }
+    }
+
+    context["messages"] = messages;
+    qDebug() << "[trimToolResponses] 共" << totalTools << "条 tool 消息，保留最近"
+             << maxToolMessages << "条完整，其余截断至" << truncateLimit << "字节";
+}
 void AiWidget::convertContextImagesToBase64(QJsonObject &context)
 {
     if (!context.contains("messages") || !context["messages"].isArray())
@@ -1855,14 +1942,12 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
     }
     context["model"] = info->model;
 
-
-    bool nir=false;
     QString setting;
     for (const auto &sd : std::as_const(m_globalSettings)) {
         if (sd.name == info->setting) {
             if(info->niren && type==2)
             {
-                nir=true;
+
                 setting = 拟人人设+ sd.content;
                 break;
             }else if(type ==0 || type ==1)
@@ -1872,7 +1957,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 db->getGroupInfo(Gid,gr);
                 if((gr.bitmap & 1)==1)
                 {
-                    nir= true;
+
                     setting = 拟人人设 + sd.content;
                     break;
                 }
@@ -1882,7 +1967,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
             break;
         }
     }
-    QJsonArray arr = get_tools(info,nir);
+    QJsonArray arr = get_tools(info);
     if (!arr.isEmpty())
         context["tools"] = arr;
     QJsonArray msgs;
@@ -1950,12 +2035,12 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         return "触发AI:" + info->Ai_nickname + " 但是设置的模型【" + info->model + "】 未设置接口";
 
     // 发射信号到主线程处理（确保定时器安全）
-    emit newMessageArrived(info, ev,false);
+    emit newMessageArrived(info, ev,false,false);
     return QString(); // 立即返回
 }
 
 // ========== 主线程处理消息（延迟合并） ==========
-void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send)
+void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool notime)
 {
     // 计算 openid
     QString openid;
@@ -1994,7 +2079,7 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send)
     if (session.isProcessing) {
         return;
     }
-    if(send){
+    if(notime){
         flushPendingMessages(openid,send);
         return;
     }
@@ -2054,6 +2139,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 
 
     trimContextImages(session.baseContext, 6);//处理图片
+    trimToolResponses(session.baseContext, 5, 64);
     if(session.accountInfo->context_len<5)
         session.accountInfo->context_len=5;
     trimContextByMessageCount(session.baseContext, session.accountInfo->context_len); //限制上下文
@@ -2108,7 +2194,10 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         emit asyncReplyReceived(openid, reply, mutableContext, oldMsgCount, newStartIndex);
         if (m_botClients.contains(ev.appid)) {
             auto *db = g_botdb[ev.appid];
-
+            if(reply.contains("[image,path"))
+            {
+                reply=subTextReplace(reply,"[image,path=","[image,path=image/");
+            }
             QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid
             if(atlist.size()!=0)
             {
@@ -2121,6 +2210,9 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
             }
             QStringList text = reply.split("|#|#|");
             QString pname = "[Ai系统]";
+            bool isw=false;
+            if(ev.type==2 && ev.msgId.isEmpty())
+                isw=true;
             for (auto &res : text)
             {
 
@@ -2130,7 +2222,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                     doWork(3000);
                     continue;
                 }
-                m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,res , QString(), false, false);
+                m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,res , QString(), isw, false);
 
             }
         }
@@ -2283,60 +2375,56 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
                 QString args = function["arguments"].toString();
                 QString callID = a["id"].toString();
 
-                QString data = 内置函数处理(tool_name,args);
+                QString data = 内置函数处理(ev,tool_name,args,sxw["model"].toString());
                 if(!data.isEmpty())
                 {
-                    AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
+                    AppendEventLog(QString("[%1]执行函数:%2\n参数：%3\n\n结果：%4").arg(ev.appid).arg(tool_name,args,data));
                     QJsonArray msgs = sxw["messages"].toArray();
                     QJsonObject toolMsg;
                     toolMsg["role"] = "tool";
                     toolMsg["content"] = data;
                     toolMsg["tool_call_id"] = callID;
                     toolMsg["name"] = tool_name;
+                    if (tool_name == "run_python" && data.contains("[待确认]"))
+                    {
+                        toolMsg["pycode"]=function;
+                    }
                     msgs.append(toolMsg);
                     sxw["messages"] = msgs;
-                    continue;
-                }
-                for (const auto &fun : std::as_const(functionList)) {
-                    if (fun.funcName != tool_name) continue;
-                    data = _tools(fun.code, args, ev,sxw["model"].toString());
-
-                    if (data.isEmpty()) {
-                        data = "函数返回空";
-                    }
-                   AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
-                    if (sxw.contains("messages") && sxw["messages"].isArray()) {
-                        QJsonArray msgs = sxw["messages"].toArray();
-                        QJsonObject toolMsg;
-                        toolMsg["role"] = "tool";
-                        toolMsg["content"] = data;
-                        toolMsg["tool_call_id"] = callID;
-                        toolMsg["name"] = tool_name;
-                        if (fun.funcName == "python_code" && data.contains("[待确认]"))
-                        {
-                            toolMsg["pycode"]=function;
+                    if (tool_name == "run_python" && data.contains("[待确认]"))
+                    {
+                        QString key;
+                        if (g_admin.isEmpty()) {
+                            key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
+                        } else {
+                            key = R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意%1","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"同意"}},{"action":{"data":"拒绝%2","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"拒绝","style":1,"visited_label":"拒绝"}}]}]}}}#b:#)";
+                            key = key.arg(ev.user, ev.user);
                         }
-
-                        msgs.append(toolMsg);
-                        sxw["messages"] = msgs;
-
-                        if (fun.funcName == "python_code" && data.contains("[待确认]"))
-                        {
-                            QString key;
-                            if (g_admin.isEmpty()) {
-                                key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
-                            } else {
-
-                                key = R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意%1","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"同意"}},{"action":{"data":"拒绝%2","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"拒绝","style":1,"visited_label":"拒绝"}}]}]}}}#b:#)";
-                                key = key.arg(ev.user, ev.user);
-                            }
-                            return data + key;  // 返回审核信息 + 键盘
-                        }
+                        return data + key;  // 返回审核信息 + 键盘
                     }
                     ok = true;
+                }else{
+                    for (const auto &fun : std::as_const(functionList)) {
+                        if (fun.funcName != tool_name) continue;
+                        data = _tools(fun.code, args, ev,sxw["model"].toString());
 
-
-                    break;
+                        if (data.isEmpty()) {
+                            data = "函数返回空";
+                        }
+                        AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
+                        if (sxw.contains("messages") && sxw["messages"].isArray()) {
+                            QJsonArray msgs = sxw["messages"].toArray();
+                            QJsonObject toolMsg;
+                            toolMsg["role"] = "tool";
+                            toolMsg["content"] = data;
+                            toolMsg["tool_call_id"] = callID;
+                            toolMsg["name"] = tool_name;
+                            msgs.append(toolMsg);
+                            sxw["messages"] = msgs;
+                        }
+                        ok = true;
+                        break;
+                    }
                 }
             }
             if (ok) continue;
@@ -2494,7 +2582,7 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
             aidb->put(userID, QJsonDocument(sxw).toJson(QJsonDocument::Compact));
 
 
-            emit newMessageArrived(info, ev,true);
+            emit newMessageArrived(info, ev,true,true);
             return "*"; // 立即返回 让本条指令不执行ai
         }
     }

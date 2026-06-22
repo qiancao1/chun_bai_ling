@@ -53,6 +53,8 @@ struct Ai_Fun {
     QString p1,p2,p3,p4,p5,p6,p7,p8;
 
 };
+
+
 struct SessionContext {
     QTimer* timer = nullptr;
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
@@ -80,21 +82,24 @@ public:
     QString Ai_posts(const MessageEvent &ev, int &模型开始下标, int model_index, QJsonObject &sxw, int timeoutMs);
     QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
     QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
-    QJsonArray get_tools(AccountInfo *info, bool nir);
+    QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
     void 列表行被单击(QListWidgetItem *item); // 切换机器人
     QMap<QString, SessionContext> m_sessions;   // 以 openid 为键
 
+public slots:
+    void onNewMessage(AccountInfo* info, MessageEvent ev, bool send, bool notime);
+
 
 signals:
-    void newMessageArrived(AccountInfo* info, MessageEvent ev, bool send);
+    void newMessageArrived(AccountInfo* info, MessageEvent ev, bool send,bool notime);
     void asyncReplyReceived(const QString &openid, const QString &reply,
                             const QJsonObject &updatedContext,       // mutableContext（含 AI 回复）
                             int oldMsgCount,
                             int newStartIndex);
 
 private slots:
-    void onNewMessage(AccountInfo* info, MessageEvent ev, bool send);
+
 
     void onAsyncReply(const QString &openid, const QString &reply,
                       const QJsonObject &updatedContext,    // baseContextCopy
@@ -117,7 +122,7 @@ private:
     void loadFromFile();                     // 加载 roles.json
     void saveToFile1() const;                 // 保存到 roles.json
     void addtoui(const std::shared_ptr<AccountInfo> acc);
-
+    void trimToolResponses(QJsonObject &context, int maxToolMessages, int truncateLimit);
     void refreshSettingList();               // 刷新右侧全局设定列表
     void refreshSettingCombo();              // 刷新“设定”下拉框
     void onFuncListItemChanged(QTableWidgetItem *item);
@@ -200,6 +205,8 @@ private:
     void onKeyTableCellChanged(int row, int column);
     void onmodelListTableCellChanged(int row, int column) ;
     void 刷新模型();
+    void 内置函数();
+    void 内置函数(const QString &Nmae,const QString &remark,const QStringList &params);
     // ============== 工具/函数配置 (tab 3) ==============
     QTableWidget *funcListTable;       // 左侧：备注列表
     QPushButton *funcListDelBtn;       // 左侧：删除选中
@@ -222,7 +229,7 @@ private:
     QList<RoleSetting> m_globalSettings;     // 全局设定库
     ToolConfig m_toolConfig;                 // 工具配置
     int m_currentRobotIndex = -1;            // 当前选中的机器人appid
-
+    QHash<QString,QJsonObject> m_fun;
 
 
     QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type);

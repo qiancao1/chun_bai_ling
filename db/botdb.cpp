@@ -627,7 +627,7 @@ bool BotDB::getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes)
     return ok;
 }
 // 构造 Key
-static QByteArray makeSubKey(uint32_t mark, uint8_t param, const QString &groupId)
+static QByteArray makeSubKey(const QString &mark, uint8_t param, const QString &groupId)
 {
     return QString("%1:%2|%3").arg(mark).arg(param).arg(groupId).toUtf8();
 }
@@ -645,7 +645,7 @@ static QByteArray makeParamPrefix(uint32_t mark, uint8_t param)
 }
 
 
-bool BotDB::addSubscription(uint32_t mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
+bool BotDB::addSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
     if (param > 3 || groupId.isEmpty() || dataList.isEmpty())
         return false;
@@ -706,7 +706,7 @@ bool BotDB::addSubscription(uint32_t mark, uint8_t param, const QString &groupId
         return mdb_put(txn, m_dbi_subscriptions, &key, &value, 0);
     });
 }
-bool BotDB::removeSubscription(uint32_t mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
+bool BotDB::removeSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
     if (groupId.isEmpty() || param > 3)
         return false;
@@ -779,7 +779,7 @@ bool BotDB::removeSubscription(uint32_t mark, uint8_t param, const QString &grou
         }
     });
 }
-QString BotDB::getSubscriptions(uint32_t mark, uint8_t param, const QString &groupId) const
+QString BotDB::getSubscriptions(const QString &mark, uint8_t param, const QString &groupId) const
 {
     QString result;
     if (groupId.isEmpty() || param > 3)
@@ -830,12 +830,12 @@ QString BotDB::getSubscriptions(uint32_t mark, uint8_t param, const QString &gro
     mdb_txn_abort(txn);   // 只读事务直接 abort 即可
     return result;
 }
-QStringList BotDB::listSubscriptions(uint32_t mark)
+QStringList BotDB::listSubscriptions(const QString &mark)
 {
     QStringList result;
     if (!m_env) return result;
-
-    QByteArray prefix = makeSubPrefix(mark);
+    QString ke=mark+":";
+    QByteArray prefix = ke.toUtf8();
     MDB_txn *txn = nullptr;
     if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
         return result;
@@ -868,10 +868,11 @@ QStringList BotDB::listSubscriptions(uint32_t mark)
     return result;
 }
 //批量删除
-bool BotDB::clearSubscriptionsByMark(uint32_t mark)
+bool BotDB::clearSubscriptionsByMark(const QString &mark)
 {
     return retryWrite([&](MDB_txn *txn) -> int {
-        QByteArray prefix = makeSubPrefix(mark);  // "标记:"
+        QString k = mark+":";
+        QByteArray prefix =  k.toUtf8();  // "标记:"
         MDB_cursor *cursor = nullptr;
         int rc = mdb_cursor_open(txn, m_dbi_subscriptions, &cursor);
         if (rc != MDB_SUCCESS) return rc;

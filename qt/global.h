@@ -96,6 +96,7 @@ extern int miaomiao32;
 extern int miaomiao;
 extern LmdbKV *cache_db;
 extern LmdbKV *aidb;
+extern LmdbKV *dsdb;
 extern LogDB *g_logdb;
 extern RingBuffer<LogEntry> m_logStore[5];
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
@@ -270,6 +271,7 @@ private:
     QPointer<NodeProcess> m_proc;
 };
 QString python_code(const QString &py_code,const MessageEvent &msg);
+
 class api_dsrw : public QRunnable {
 public:
     api_dsrw(int appid,const QStringList &list, const QString &data,const QString &订阅名,int 发送类型,int biaoji)
@@ -282,6 +284,7 @@ public:
         bool ok = m_data.startsWith("#python");
         MessageEvent ev{};
         ev.appid = m_appid;
+
         if(ok && m_发送类型 == 0) m_data = python_code(m_data,ev);
         else ok = m_发送类型 == 1 && ok;
         QQBotClient *client = m_botClients[m_appid];
@@ -296,7 +299,7 @@ public:
             {
                 ev.type = type;
                 ev.groupId = li[1];
-                ev.msg = db->getSubscriptions(m_biaoji,type,li[1]);
+                ev.msg = db->getSubscriptions(QString("t_%1_%2").arg(ev.appid).arg(m_biaoji),type,li[1]);
                 data = python_code(data,ev);
             }
             bool is_wakeup=false;

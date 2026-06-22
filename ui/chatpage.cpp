@@ -1553,15 +1553,14 @@ void ChatPage::onSendClicked()
         return;
     }
     QString text = inputEdit->toHtml();
-    qDebug() << text;
-    text = extractBetween(text,"style:normal;\">",
-                   "</p></body></html>" );
-    text = subTextReplace(text,"<img src=\"","[image,path=");
-    text = subTextReplace(text,"\" alt=\"本地图片\" width=\"64\" />","]");
-    text = subTextReplace(text,"</p>","");
-    text = subTextReplace(text,"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">","");
-    text = text.trimmed();
-    onSendmsg(text);
+    QString t2= inputEdit->toPlainText();
+    qDebug() <<t2;
+    const QStringList list = takeAllTextMiddle(text,"<img src=\"","\" alt=\"本地图片\" width=\"64\" />",false);
+    for(const auto &t : list)
+    {
+        t2 = subTextReplace(t2,"￼","[image,path="+t+"]");
+    }
+    onSendmsg(t2);
 
 }
 void ChatPage::onSendImage()

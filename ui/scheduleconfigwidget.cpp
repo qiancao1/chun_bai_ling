@@ -21,6 +21,7 @@
 ScheduleConfigWidget::ScheduleConfigWidget(QWidget *parent)
     : QWidget(parent)
 {
+    qDebug() << "界面";
     setupUI();
     initTable();
 
@@ -212,17 +213,43 @@ __data__="要从数据库删除的内容" #使用|||分割删除多个
      connect(taskTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
          onTableRowSelected(row);
      });
+    connect(taskTable, &QTableWidget::itemChanged, this, &ScheduleConfigWidget::onTableItemChanged);
+
 
     connect(addBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onAddRow);
     connect(deleteBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onDeleteRow);
     connect(copyRowBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onCopyRow);
     connect(copyAllBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onCopyAllRows);
     connect(pasteBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onPasteFromClipboard);
-    connect(saveBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onSaveToFile);
     connect(updateTaskBtn, &QPushButton::clicked, this, &ScheduleConfigWidget::onUpdateTask);
 }
+void ScheduleConfigWidget::onTableItemChanged(QTableWidgetItem *item)
+{
+    if (!item || currentAppId == 0 || !tasksMap.contains(currentAppId))
+        return;
 
+    int row = item->row();
+    int col = item->column();
+    if (row < 0 || row >= taskTable->rowCount() || col != COL_ENABLED_REMARK)
+        return;
 
+    QList<ScheduleTask> &tasks = tasksMap [currentAppId];
+    if (row >= tasks.size())
+        return;
+
+    ScheduleTask &task = tasks[row];
+    task.enabled = (item->checkState() == Qt::Checked);
+    task.remark = item->text();
+
+    // 立即写入数据库
+    if (dsdb) {
+        QString key = QString("task_%1_%2").arg(currentAppId).arg(task.mark);
+        QByteArray jsonData = QJsonDocument(task.toJson()).toJson(QJsonDocument::Indented);
+        if (!dsdb->put(key, jsonData)) {
+            qWarning() << "Failed to update task" << key << "to LMDB";
+        }
+    }
+}
 void ScheduleConfigWidget::initTable()
 {
     // 只有一列：启用+备注
@@ -237,8 +264,7 @@ void ScheduleConfigWidget::initTable()
 
 void ScheduleConfigWidget::列表行被单击(QListWidgetItem *item)
 {
-    if (currentAppId != 0)
-        saveCurrentTasksToMap();
+
 
     if (item) {
         currentAppId = item->data(Qt::UserRole).toInt();
@@ -260,20 +286,13 @@ void ScheduleConfigWidget::clearDetailPanel()
     cancelSubscribeEdit->clear();
 }
 
-void ScheduleConfigWidget::saveCurrentTasksToMap()
-{
-    if (currentAppId == 0) return;
-    QList<ScheduleTask> tasks;
-    for (int row = 0; row < taskTable->rowCount(); ++row)
-        tasks.append(getTaskFromRow(row));
-    tasksMap[currentAppId] = tasks;
-}
 
 void ScheduleConfigWidget::loadTasksForRobot(int appid)
 {
 
     bool wasBlocked = taskTable->blockSignals(true);
     const QList<ScheduleTask> &tasks = tasksMap[appid];
+
     taskTable->setRowCount(tasks.size());
     for (int i = 0; i < tasks.size(); ++i) {
         setTaskToRow(i, tasks[i]);
@@ -396,6 +415,11 @@ void ScheduleConfigWidget::onUpdateTask()
     // 但更好的做法是：先保存表格的启用备注，然后重新设置行。
     bool wasBlocked = taskTable->blockSignals(true);
     setTaskToRow(row, tasks[row]); // 刷新显示
+
+    QString key = QString("task_%1_%2").arg(currentAppId).arg(tasks[row].mark);
+    QByteArray jsonData = QJsonDocument(tasks[row].toJson()).toJson(QJsonDocument::Indented);
+    dsdb->put(key, jsonData);
+
     taskTable->blockSignals(wasBlocked);
     taskTable->selectRow(row);
     //QMessageBox::information(this, "提示", "任务已更新");
@@ -403,19 +427,40 @@ void ScheduleConfigWidget::onUpdateTask()
 
 void ScheduleConfigWidget::onAddRow()
 {
+    if(currentAppId==0) return ;
     ScheduleTask newTask;
     newTask.enabled = true;
     newTask.remark = "新定时任务";
-    for( auto &acc:m_accounts)
-    {
-        if(acc->appid_int==currentAppId)
-        {
-            acc->dyindex++;
-            newTask.mark = acc->dyindex;
-            accountPage->saveAccounts();
-            break;
+    int mark = 0;
+    QSet<int> usedMarks;
+    if (tasksMap.contains(currentAppId)) {
+        for (const ScheduleTask &t : tasksMap[currentAppId]) {
+            usedMarks.insert(t.mark);
         }
     }
+    // 最多尝试 100 次
+    for (int i = 0; i < 100; ++i) {
+        quint64 now = QDateTime::currentMSecsSinceEpoch();
+        int candidate = static_cast<int>(now & 0x7FFFFFFF) + (qrand() % 10000);
+        if (!usedMarks.contains(candidate)) {
+            mark = candidate;
+            break;
+        }
+        // 如果冲突，等待 1ms 再试（避免连续碰撞）
+        QThread::msleep(1);
+    }
+    if (mark == 0) {
+        // 极端情况：仍然冲突，用时间戳+循环递增
+        quint64 base = QDateTime::currentMSecsSinceEpoch();
+        for (int offset = 0; offset < 1000; ++offset) {
+            int candidate = static_cast<int>((base + offset) & 0x7FFFFFFF);
+            if (!usedMarks.contains(candidate)) {
+                mark = candidate;
+                break;
+            }
+        }
+    }
+    newTask.mark=mark;
     if(newTask.mark<=0)
     {
         QMessageBox::warning(this,"添加失败","没有找到选中的机器人 请刷新列表重新选择机器人");
@@ -426,9 +471,6 @@ void ScheduleConfigWidget::onAddRow()
     newTask.executeType = 0;
     newTask.addSubscribeCmd = "";
     newTask.cancelSubscribeCmd = "";
-
-
-
     newTask.replyContent = R"(#python 不带这行就是普通信息 注意这里只有appid有值
 api.outlog(f"收到来自 {msg.appid} 的消息")
 __result__ = f"收到来自 {msg.appid} 的消息"
@@ -453,7 +495,17 @@ __ok__="1"  #返回1代表成功
 __data__="要从数据库删除的内容"  #使用|||分割删除多个
 #__ok__ 为1时 __data__="" 返回空将清空所有数据
 )";
-    addRowFromTask(newTask);
+
+
+    if (!tasksMap.contains(currentAppId))
+        tasksMap[currentAppId] = QList<ScheduleTask>();
+    bool shua_xin =tasksMap[currentAppId].size()!=taskTable->rowCount();
+    tasksMap[currentAppId].append(newTask);
+
+    QString key = QString("task_%1_%2").arg(currentAppId).arg(newTask.mark);
+    QByteArray jsonData = QJsonDocument(newTask.toJson()).toJson(QJsonDocument::Indented);
+    dsdb->put(key, jsonData);
+    if(shua_xin) loadTasksForRobot(currentAppId);
 }
 
 void ScheduleConfigWidget::onDeleteRow()
@@ -464,18 +516,46 @@ void ScheduleConfigWidget::onDeleteRow()
         return;
     }
     if (currentAppId == 0 || !tasksMap.contains(currentAppId)) return;
-    if(QMessageBox::warning(this,"确认删除","确认删除吗？ 删除将清空订阅的使用群数据")!=QMessageBox::Yes) return;
-    QList<ScheduleTask> &t = tasksMap[currentAppId];
+
+    if(tasksMap[currentAppId].size()!=taskTable->rowCount())//在下面必定弹窗前增加
+    {
+        loadTasksForRobot(currentAppId);
+        QMessageBox::warning(this,"失败","检查到 ui变量 和 内存变量数据不一致 请重新刷新列表"
+                                           "\n为什么会这样子 因为内部定时自动删除类变量 在定时任务完成时 被删除了"
+                                           "\n目前来说强制删除会删错误数据或者报错\n现在为你重新加载列表 如果你还找得到就可以删");
+        return;
+    }
+    if(QMessageBox::warning(this,"确认删除","确认删除吗？ 删除将清空订阅的使用群数据",QMessageBox::Yes | QMessageBox::No)!=QMessageBox::Yes) return;
+
+    if(tasksMap[currentAppId].size()!=taskTable->rowCount())//在下面必定弹窗前增加
+    {
+        loadTasksForRobot(currentAppId);
+        QMessageBox::warning(this,"失败","检查到 ui变量 和 内存变量数据不一致 请重新刷新列表"
+                                           "\n为什么会这样子 因为内部定时自动删除类变量 在定时任务完成时 被删除了"
+                                           "\n目前来说强制删除会删错误数据或者报错\n现在为你重新加载列表 如果你还找得到就可以删");
+        return;
+    }
+
+
+
+    QList<ScheduleTask> &t = tasksMap [currentAppId];
     if(!g_botdb.contains(currentAppId))
     {
         BotDB *client = new BotDB(QString("botdb/%1_db").arg(currentAppId));
         client->open();
         g_botdb[currentAppId] = client;
     }
+
+    int mark = tasksMap[currentAppId][row].mark;
     auto *db =g_botdb[currentAppId];
-    db->clearSubscriptionsByMark(t[row].mark);
+    db->clearSubscriptionsByMark(QString("t_%1_%2").arg(currentAppId).arg(t[row].mark));
     taskTable->removeRow(row);
     tasksMap[currentAppId].removeAt(row);
+
+
+    QString key = QString("task_%1_%2").arg(currentAppId).arg(mark);
+    dsdb->remove(key);
+
     if (taskTable->rowCount() > 0) {
         int newRow = qMin(row, taskTable->rowCount() - 1);
         taskTable->selectRow(newRow);
@@ -541,13 +621,13 @@ void ScheduleConfigWidget::onPasteFromClipboard()
     }
     addRowsFromTSV(text);
 }
-
+int accinfo(int appid);
 void ___dsrw(){
     QDateTime now = QDateTime::currentDateTime();
     const QTime time = now.time();
     const QDate date = now.date();
 
-    // ① 把 constBegin/constEnd 改成 begin/end（去掉 const）
+
     for (auto it = schedule->tasksMap.begin(); it != schedule->tasksMap.end(); ++it) {
         int appid = it.key();
         bool ok = false;
@@ -560,23 +640,43 @@ void ___dsrw(){
         if(!ok) continue;
         if(!m_botClients.contains(appid)) continue;
         if(!g_botdb.contains(appid)) continue;
-
-        // ② 这里取非 const 引用（因为迭代器已经不是 const 了）
         QList<ScheduleTask> &list = it.value();
-
-        // ③ 内部循环也去掉 const
-        for(auto &t : list) {   // 注意 auto &t 而不是 const auto &t
+        for(auto &t : list) {
             if(!t.enabled) continue;
             for (const TimeRule &rule : std::as_const(t.scheduleTime)) {
                 if (!rule.matches(date, time)) continue;
 
-                // ④ 现在可以修改了
-
                 if(t.jis>t.executeCount && t.executeCount!=-1) break;
                 t.jis++;
+                if(t.zdsc)
+                {
+                    if(t.replyContent.startsWith("code_ai|||"))
+                    {
+                        int index =accinfo(appid);
+                        if(index !=-1)
+                        {
+                            QMetaObject::invokeMethod(ai_ui, [index, replyContent = t.replyContent]() {
+
+                                MessageEvent ev;
+                                QStringList list = replyContent.split("|||");
+                                if(list.size()<5) return ;
+                                AccountInfo *info = m_accounts[index].get();
+                                ev.appid = info->appid_int;
+                                ev.user =list[1];
+                                ev.groupId =list[2];
+                                ev.msg =list[3];
+                                ev.type = list[4].toInt();
+                                ai_ui->onNewMessage(info, ev,false,true);
+                            }, Qt::QueuedConnection);
+                        }
+                        return;
+                    }
+                }
+
+
                 QString text =  "[订阅推送:" + t.remark + "]";
                 auto *db = g_botdb[appid];
-                QStringList fullList = db->listSubscriptions(t.mark);
+                QStringList fullList = db->listSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark));
                 AppendEventLog(text+" 群数："+QString::number(fullList.size()),0x35E496);
                 const int chunkSize = 50;
                 for (int i = 0; i < fullList.size(); i += chunkSize) {
@@ -617,6 +717,24 @@ void ScheduleConfigWidget::检查定时列表()
             for (auto it = tasks.begin(); it != tasks.end(); )  // 改用迭代器
             {
                 auto &s = *it;
+                bool ok=true;
+                if (s.zdsc) // 允许自动删除
+                {
+                    for(auto & time : s.scheduleTime) //时间大于显示时间
+                    {
+                        if(!time.isExpired(now))
+                        {
+                            ok=false;
+                            break;
+                        }
+                    }
+                    if(ok)
+                    {
+                        it = tasks.erase(it);
+                        continue;
+                    }
+                }
+
                 if (s.executeCount == -1)   // 设定值为-1，跳过
                 {
                     ++it;
@@ -643,28 +761,149 @@ void ScheduleConfigWidget::检查定时列表()
     QThreadPool::globalInstance()->start(task);
 }
 
-QString ScheduleConfigWidget::add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code)
+QString ScheduleConfigWidget::add_byAi(const QString &remark, int appid, const QString &时间, int 执行次数, const QString &python_code)
 {
+    // 1. 解析定时时间
     ScheduleTask newTask;
     newTask.StringToTime(时间);
-    if(newTask.scheduleTime.isEmpty()) return "定时时间解析失败请确认 格式正确 年,月,日,时,分|||... 添加多个 分是必传 其他可省略 |||分割添加多个时间短触发 -1为每分钟触发一次";
-    if(python_code.isEmpty()) return "添加定时 参数3 python代码为空";
-    if(remark.isEmpty()) return "备注不能为空";
-
+    if (newTask.scheduleTime.isEmpty())
+        return "定时时间解析失败，请确认格式正确（年,月,日,时,分|||...）";
+    if (python_code.isEmpty())
+        return "定时参数 定时内容 不能为空";
+    if (remark.isEmpty())
+        return "备注不能为空";
+    int mark = 0;
+    QSet<int> usedMarks;
+    if (tasksMap.contains(appid)) {
+        for (const ScheduleTask &t : tasksMap[appid]) {
+            usedMarks.insert(t.mark);
+        }
+    }
+    for (int i = 0; i < 100; ++i) {
+        quint64 now = QDateTime::currentMSecsSinceEpoch();
+        int candidate = static_cast<int>(now & 0x7FFFFFFF) + (qrand() % 10000);
+        if (!usedMarks.contains(candidate)) {
+            mark = candidate;
+            break;
+        }
+        QThread::msleep(1);
+    }
+    if (mark == 0) {
+        quint64 base = QDateTime::currentMSecsSinceEpoch();
+        for (int offset = 0; offset < 1000; ++offset) {
+            int candidate = static_cast<int>((base + offset) & 0x7FFFFFFF);
+            if (!usedMarks.contains(candidate)) {
+                mark = candidate;
+                break;
+            }
+        }
+    }
+    if (mark == 0) {
+        return "生成唯一 mark 失败，请稍后重试";
+    }
     newTask.enabled = true;
     newTask.remark = remark;
-    newTask.mark= 0;
-
-    if(执行次数<=0) 执行次数=1;
-    newTask.executeCount = 执行次数;
+    newTask.mark = mark;
+    newTask.executeCount = (执行次数 <= 0) ? 1 : 执行次数;
     newTask.executeType = 0;
     newTask.zdsc = true;
     newTask.replyContent = python_code;
 
+    // 4. 添加到内存 tasksMap
     if (!tasksMap.contains(appid))
         tasksMap[appid] = QList<ScheduleTask>();
     tasksMap[appid].append(newTask);
+
+    // 5. 立即写入数据库（单条存储）
+    if (dsdb) {
+        QString key = QString("task_%1_%2").arg(appid).arg(mark);
+        QByteArray jsonData = QJsonDocument(newTask.toJson()).toJson(QJsonDocument::Indented);
+        if (!dsdb->put(key, jsonData)) {
+            qWarning() << "Failed to save task" << key << "to LMDB";
+            // 可以回滚内存添加，但为了简单，只记录日志
+        }
+    }
+
+    if (appid == currentAppId) {
+        QMetaObject::invokeMethod(this, [this, newTask]() {
+            int row = taskTable->rowCount();
+            taskTable->insertRow(row);
+            setTaskToRow(row, newTask);
+            taskTable->selectRow(row);
+            onTableRowSelected(row);
+        }, Qt::QueuedConnection);
+    }
+
     return "添加成功";
+}
+QString ScheduleConfigWidget::get_aids_list(int appid,const QString &openid)
+{
+    if(!tasksMap.contains(appid)) return "暂时没有对该用户定时信息";
+    const auto &tasks = tasksMap[appid];
+    QString tab= QString("[code_ai]%1").arg((openid));
+    QString res;
+    for (const auto &t : tasks)
+    {
+        if(t.replyContent.startsWith(tab))
+        {
+            res+=QString("mark:%1 备注：%2\n").arg(t.mark).arg(t.remark);
+        }
+    }
+    return res;
+}
+
+QString ScheduleConfigWidget::remov_ds_byai(int appid, int mark)
+{
+    if (!tasksMap.contains(appid)) {
+        return "删除失败：该机器人没有定时任务";
+    }
+
+    QList<ScheduleTask> &tasks = tasksMap[appid];
+    int removeIndex = -1;
+    for (int i = 0; i < tasks.size(); ++i) {
+        if (tasks[i].mark == mark) {
+            removeIndex = i;
+            break;
+        }
+    }
+
+    if (removeIndex == -1) {
+        return "删除失败：未找到 mark=" + QString::number(mark) + " 的任务";
+    }
+
+    // 保存一份副本（用于可能的回滚，但此处直接删除）
+    ScheduleTask removedTask = tasks[removeIndex];
+    tasks.removeAt(removeIndex);
+
+    // 从数据库删除
+    if (dsdb) {
+        QString key = QString("task_%1_%2").arg(appid).arg(mark);
+        if (!dsdb->remove(key)) {
+            // 删除失败，回滚内存并返回错误
+            tasks.insert(removeIndex, removedTask);
+            qWarning() << "Failed to remove task key" << key << "from LMDB";
+            return "删除失败：数据库删除操作出错";
+        }
+    }
+
+    // 如果当前界面显示的是该机器人，则更新表格（必须在主线程）
+    if (appid == currentAppId) {
+        QMetaObject::invokeMethod(this, [this, removeIndex]() {
+            if (removeIndex < taskTable->rowCount()) {
+                taskTable->removeRow(removeIndex);
+                // 调整选中行
+                if (taskTable->rowCount() > 0) {
+                    int newRow = qMin(removeIndex, taskTable->rowCount() - 1);
+                    taskTable->selectRow(newRow);
+                    onTableRowSelected(newRow);
+                } else {
+                    clearDetailPanel();
+                }
+            }
+        }, Qt::QueuedConnection);
+    }
+
+    return "删除定时成功";
 }
 
 QString python_code2(const QString &py_code,const MessageEvent &msg,QString &data,bool &ok)
@@ -716,7 +955,7 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名)
             QString ret = python_code2(t.addSubscribe_text,ev,data,ok);
             if(!ok) return ret;
             BotDB *bot = g_botdb[ev.appid];
-            if(bot->addSubscription(t.mark,ev.type,ev.groupId,data.split("|||")))
+            if(bot->addSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||")))
                 return ret;
             return "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
         }else if(t.cancelSubscribeCmd==ev.msg)
@@ -728,7 +967,7 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名)
             QString ret = python_code2(t.cancelSubscribe_text,ev,data,ok);
             if(!ok) return ret;
             BotDB *bot = g_botdb[ev.appid];
-            if(bot->removeSubscription(t.mark,ev.type,ev.groupId,data.split("|||"))){
+            if(bot->removeSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||"))){
                 return ret;
             }
             return "取消订阅|定时失败 添加数据库返回失败 可能已经取消了不是吗？";
@@ -776,53 +1015,44 @@ void ScheduleConfigWidget::addRowsFromTSV(const QString &tsv)
     }
 }
 
-void ScheduleConfigWidget::onSaveToFile()
-{
-    if (currentAppId != 0)
-        saveCurrentTasksToMap();
-    saveAllTasksToFile();
-    emit scheduleConfigChanged();
-    QMessageBox::information(this, "保存成功", "定时任务配置已保存到 schedule_tasks.json");
-}
 
-void ScheduleConfigWidget::saveAllTasksToFile(const QString &filePath)
+
+
+
+void ScheduleConfigWidget::loadAllTasksFromFile()
 {
-    QJsonObject root;
-    for (auto it = tasksMap.begin(); it != tasksMap.end(); ++it) {
-        QJsonArray arr;
-        for (const ScheduleTask &task : it.value())
-            arr.append(task.toJson());
-        root[QString::number(it.key())] = arr;
-    }
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qWarning() << "Cannot save schedule tasks to" << filePath;
+    if (!dsdb) {
+        qWarning() << "LMDB database not initialized, cannot load tasks.";
         return;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-}
 
-void ScheduleConfigWidget::loadAllTasksFromFile(const QString &filePath)
-{
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly))
-        return;
-    QByteArray data = file.readAll();
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (!doc.isObject()) return;
-    QJsonObject root = doc.object();
     tasksMap.clear();
-    for (auto it = root.begin(); it != root.end(); ++it) {
-        int appid = it.key().toInt();
-        const QJsonArray arr = it.value().toArray();
-        QList<ScheduleTask> tasks;
-        for (const QJsonValue &val : arr) {
-            if (val.isObject())
-                tasks.append(ScheduleTask::fromJson(val.toObject()));
-        }
-        tasksMap[appid] = tasks;
+
+
+    const QList<QByteArray> allKeys = dsdb->getAllKeysByteArray();
+    const QString prefix = "task_";
+    for (const QByteArray &keyBA : allKeys) {
+        QString key = QString::fromUtf8(keyBA);
+        if (!key.startsWith(prefix))
+            continue;
+
+        QByteArray value = dsdb->get(keyBA);
+        if (value.isEmpty())
+            continue;
+
+        QJsonDocument doc = QJsonDocument::fromJson(value);
+        if (!doc.isObject())
+            continue;
+
+        ScheduleTask task = ScheduleTask::fromJson(doc.object());
+        int appid = key.mid(prefix.size()).split('_').first().toInt();
+        tasksMap[appid].append(task);
+
+
     }
-    // 刷新当前显示的机器人
+
+
+
     if (currentAppId != 0)
         loadTasksForRobot(currentAppId);
 }

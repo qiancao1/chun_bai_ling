@@ -1195,7 +1195,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                         QString cacheKey = QString("imageB_%1").arg(fileMd5);
                         QString cached = cache_db->get(cacheKey);
                         if (!cached.isEmpty()) {
-                            int timeIdx = cached.lastIndexOf(",time=");
+                            int timeIdx = cached.lastIndexOf(",Time=");
                             if (timeIdx != -1) {
                                 qint64 expire = cached.mid(timeIdx + 6).toLongLong();
                                 if (QDateTime::currentSecsSinceEpoch() < expire) {
@@ -1226,7 +1226,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     markdownImg = QStringLiteral("![#%1px #%2px](%3)")
                     .arg(tag.img.x).arg(tag.img.y).arg(url);
                 } else {
-                    markdownImg = QStringLiteral("![#1000px #0px](%1)").arg(url);
+                    markdownImg = QStringLiteral("![#500px #0px](%1)").arg(url);
                 }
                 result.append(markdownImg);
             }

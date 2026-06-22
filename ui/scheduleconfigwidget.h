@@ -33,6 +33,57 @@ struct TimeRule {
     int day = -1;     // 日：>0 指定号数，<0 表示间隔（如 -3 每3天），-1 表示不限（每天）
     int hour = -1;    // 时：>0 指定小时，<0 表示间隔（如 -4 每4小时），-1 表示不限（但一般会设为0）
     int minute = -1;  // 分：>=0 指定，一般不支持间隔
+
+    bool isExpired(const QDateTime &now) const {
+        QDate date = now.date();
+        QTime time = now.time();
+
+        // 按优先级从高到低检查
+        // 年
+        if (year > 0) {
+            if (year < date.year()) return true;   // 已过该年
+            if (year > date.year()) return false;  // 还没到该年
+            // 相等则继续检查月
+        } else if (year < 0) {
+            // 不限 → 永远有效
+            return false;
+        }
+
+        // 月
+        if (month > 0) {
+            if (month < date.month()) return true;
+            if (month > date.month()) return false;
+        } else if (month < 0) {
+            return false;
+        }
+
+        // 日
+        if (day > 0) {
+            if (day < date.day()) return true;
+            if (day > date.day()) return false;
+        } else if (day < 0) {
+            return false;
+        }
+
+        // 时
+        if (hour > 0) {
+            if (hour < time.hour()) return true;
+            if (hour > time.hour()) return false;
+        } else if (hour < 0) {
+            return false;
+        }
+
+        // 分（注意 minute 可为 0，视为指定值）
+        if (minute >= 0) {
+            if (minute < time.minute()) return true;
+            if (minute > time.minute()) return false;
+        } else if (minute < 0) {
+            return false;
+        }
+
+        // 所有字段均相等（或没有正数），未过期
+        return false;
+    }
     static TimeRule fromInputArray(const QString &input, bool &ok) {
         ok = true;
         TimeRule rule;
@@ -59,27 +110,22 @@ struct TimeRule {
 
 
     bool matches(const QDate &date, const QTime &time) const {
-        // 1. 检查年份：-1 表示不限制（每年都触发），正数精确匹配
         if (year == -1) {
-            // 不限制，跳过
         } else if (year > 0 && date.year() != year) {
             return false;
         }else if(year <-1)
         {
             if (qAbs(date.year()) % (-year) != 0) return false;
         }
-        // 2. 检查月份：-1 表示不限制（每月都触发），正数精确匹配
         if (month == -1) {
-            // 不限制，跳过
+
         } else if (month > 0 && date.month() != month) {
             return false;
         }else if(month <-1)
         {
             if (qAbs(date.month()) % (-month) != 0) return false;
         }
-        // 3. 检查日：-1 表示不限制（每天），正数精确，小于 -1 为间隔（如 -2 隔天）
         if (day == -1) {
-            // 不限制，跳过
         } else if (day > 0) {
             if (date.day() != day) return false;
         } else if (day < -1) {
@@ -87,19 +133,15 @@ struct TimeRule {
             int daysDiff = base.daysTo(date);
             if (qAbs(daysDiff) % (-day) != 0) return false;
         }
-
-        // 4. 检查小时：-1 表示不限制（每小时都触发），正数精确，小于 -1 为间隔
         if (hour == -1) {
-            // 不限制，跳过（实现了你说的 -1:10，即小时任意，分钟固定10分）
         } else if (hour > 0) {
             if (time.hour() != hour) return false;
         } else if (hour < -1) {
-            // 间隔小时：如 -2 表示偶数小时触发，且必须落在整点（分秒为0）
             if (time.minute() != 0 || time.second() != 0) return false;
             if (time.hour() % (-hour) != 0) return false;
         }
 
-        // 5. 检查分钟：-1 表示不限制（每分钟都触发），>=0 精确匹配
+
         if (minute == -1) {
             // 不限制，跳过
         } else if (minute >= 0 && time.minute() != minute) {
@@ -113,7 +155,7 @@ struct TimeRule {
 
 struct ScheduleTask {
     bool enabled = true;
-    bool zdsc=false;
+    bool zdsc=false; //ai的
     QString remark; //备注
     QList<TimeRule> scheduleTime;
 
@@ -144,12 +186,18 @@ struct ScheduleTask {
         obj["text3"] = cancelSubscribe_text;
         obj["groupId"] = groupId;
         obj["jis"] = jis;
+        obj["mark"] = mark;
+        obj["zdsc"] = zdsc;
+        obj["role"] = role;
         return obj;
     }
     static ScheduleTask fromJson(const QJsonObject &obj) {
         ScheduleTask task;
         task.enabled = obj["enabled"].toBool(true);
         task.remark = obj["remark"].toString();
+        task.role= obj["role"].toInt();
+        task.zdsc= obj["zdsc"].toBool();
+
         QString Str_time =obj["scheduleTime"].toString();
         QStringList list = Str_time.split("|");
         if(list.size()>0)
@@ -171,6 +219,7 @@ struct ScheduleTask {
         task.cancelSubscribe_text = obj["text3"].toString();
         task.groupId = obj["groupId"].toString();
         task.jis = obj["jis"].toInt();
+        task.mark = obj["mark"].toInt();
         return task;
     }
     QString TimetoString() const
@@ -178,10 +227,10 @@ struct ScheduleTask {
         QString time;
         for(auto &t : scheduleTime)
         {
-            if(t.year!=-1) time+=QString("%1,%1,%1,%1,%1|").arg(t.year).arg(t.month).arg(t.day).arg(t.hour).arg(t.minute);
-            else if(t.month!=-1) time+=QString("%1,%1,%1,%1|").arg(t.month).arg(t.day).arg(t.hour).arg(t.minute);
-            else if(t.day!=-1) time+=QString("%1,%1,%1|").arg(t.day).arg(t.hour).arg(t.minute);
-            else if(t.hour!=-1) time+=QString("%1,%1|").arg(t.hour).arg(t.minute);
+            if(t.year!=-1) time+=QString("%1,%2,%3,%4,%5|").arg(t.year).arg(t.month).arg(t.day).arg(t.hour).arg(t.minute);
+            else if(t.month!=-1) time+=QString("%1,%2,%3,%4|").arg(t.month).arg(t.day).arg(t.hour).arg(t.minute);
+            else if(t.day!=-1) time+=QString("%1,%2,%3|").arg(t.day).arg(t.hour).arg(t.minute);
+            else if(t.hour!=-1) time+=QString("%1,%2|").arg(t.hour).arg(t.minute);
             else time+=QString("%1|").arg(t.minute);
         }
         return time;
@@ -213,37 +262,38 @@ public:
     void 列表行被单击(QListWidgetItem *item);
     void 检查定时列表();
     QString add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);
+    QString get_aids_list(int appid,const QString &openid);
+    QString remov_ds_byai(int appid,int mark);
     // 数据
     int currentAppId = 0;
     QMap<int, QList<ScheduleTask>> tasksMap;
         QTableWidget *taskTable;            // 中间表格：只有一列，包含复选框+备注
-signals:
-    void scheduleConfigChanged();
+
 
 private slots:
 
-
+    void onTableItemChanged(QTableWidgetItem *item);
     void onTableRowSelected(int row);
     void onAddRow();
     void onDeleteRow();
     void onCopyRow();
     void onCopyAllRows();
     void onPasteFromClipboard();
-    void onSaveToFile();
+
     void onUpdateTask();                // 从右侧面板更新当前任务
 
 private:
     void setupUI();
     void initTable();
     void loadTasksForRobot(int appid);
-    void saveCurrentTasksToMap();
+
     void setTaskToRow(int row, const ScheduleTask &task);
     const ScheduleTask &getTaskFromRow(int row) const;
     void addRowFromTask(const ScheduleTask &task);
     QStringList getTableAsTSV() const;
     void addRowsFromTSV(const QString &tsv);
-    void saveAllTasksToFile(const QString &filePath = "data/schedule_tasks.json");
-    void loadAllTasksFromFile(const QString &filePath = "data/schedule_tasks.json");
+
+    void loadAllTasksFromFile();
     void updateDetailPanelFromTask(const ScheduleTask &task);
     void applyDetailPanelToTask(ScheduleTask &task);
     void clearDetailPanel();
