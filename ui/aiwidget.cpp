@@ -1546,7 +1546,7 @@ QJsonArray AiWidget::get_tools(AccountInfo *info,bool nir)
         内置函数(toolsArray,"dimg","添加表情包",QStringList()<< "本地或网络路径" << "保存的文件名 如 结婚.gif");
         内置函数(toolsArray,"rimg","删除表情包",QStringList() << "文件名 如 结婚.gif");
     }
-    内置函数(toolsArray,"llwye","浏览网页 返回提取后的文本 支持必应搜索 或其他搜索",QStringList() << "链接 如https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
+    内置函数(toolsArray,"llwye","浏览网页 返回提取后的文本 支持必应搜索 或其他搜索 当用户发送链接时 可以使用",QStringList() << "链接 如https://cn.bing.com/search?pglt=41&q=%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90&PC=NMTS&FORM=ANSPA1");
 
     return toolsArray;
 
@@ -2215,7 +2215,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         }
     }
 
-    for(int i=0; i<3; ++i) {
+    for(int i=0; i<10; ++i) {
         QJsonObject obj;
         for(int i2=0; i2<3; ++i2) {
             //qDebug() << "上下文" << sxw;
@@ -2282,9 +2282,11 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
                 QString tool_name = function["name"].toString();
                 QString args = function["arguments"].toString();
                 QString callID = a["id"].toString();
+
                 QString data = 内置函数处理(tool_name,args);
                 if(!data.isEmpty())
                 {
+                    AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
                     QJsonArray msgs = sxw["messages"].toArray();
                     QJsonObject toolMsg;
                     toolMsg["role"] = "tool";
@@ -2302,6 +2304,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
                     if (data.isEmpty()) {
                         data = "函数返回空";
                     }
+                   AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
                     if (sxw.contains("messages") && sxw["messages"].isArray()) {
                         QJsonArray msgs = sxw["messages"].toArray();
                         QJsonObject toolMsg;

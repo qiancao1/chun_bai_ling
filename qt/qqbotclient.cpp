@@ -359,25 +359,29 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         if (ev.user.isEmpty()) ev.user = d.value("op_member_openid").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = ev.groupId;
-
+        client->m_info->今日加群数量++;
     }
     else if (ev.msgType == "GROUP_DEL_ROBOT") { //被踢出群
         ev.type = 4; ev.subType = 5;
         ev.groupId = d.value("group_openid").toString();
         ev.user = d.value("op_member_openid").toString();
         ev.msgId = d.value("id").toString();
+        client->m_info->今日退群数量++;
     }
     else if (ev.msgType == "FRIEND_ADD") { //好友增加
         ev.type = 5; ev.subType = 6;
         ev.user = d.value("openid").toString();
         ev.groupId = ev.user;
         ev.msgId = d.value("id").toString();
+        client->m_info->今日好友数量++;
+
     }
     else if (ev.msgType == "FRIEND_DEL") { //好友删除
         ev.type = 5; ev.subType = 7;
         ev.user = d.value("openid").toString();
         ev.groupId = ev.user;
         ev.msgId = d.value("id").toString();
+        client->m_info->今日删除好友数量++;
     }
     else if (ev.msgType == "C2C_MSG_REJECT") {
         ev.type = 5; ev.subType = 8;
@@ -403,6 +407,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.guildId = d.value("id").toString();
         ev.user = d.value("op_user_id").toString();
         ev.msg = d.value("name").toString();
+        client->m_info->今日频道数量++;
     }
     else if (ev.msgType == "GUILD_UPDATE") {
         ev.type = 11; ev.subType = 2;
@@ -413,6 +418,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.type = 11; ev.subType = 3;
         ev.guildId = d.value("id").toString();
         ev.user = d.value("op_user_id").toString();
+        client->m_info->今日退出频道数量++;
     }
     // ========== 4. 子频道事件 ==========
     else if (ev.msgType == "CHANNEL_CREATE") {

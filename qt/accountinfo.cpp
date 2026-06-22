@@ -44,6 +44,14 @@ QJsonObject AccountInfo::toJson() const {
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
+
+    obj["g_add"]=今日加群数量;
+    obj["g_sub"]=今日退群数量;
+    obj["f_add"]=今日好友数量;
+    obj["f_sub"]=今日删除好友数量;
+    obj["r_jis"]=日计时变量;
+    obj["c_add"]=今日频道数量;
+    obj["c_sub"]=今日退出频道数量;
     obj["fallbackReply"] = fallbackReply;
     obj["wsIntents"] = wsIntents;
     obj["Ainickname"] = Ai_nickname;
@@ -64,7 +72,10 @@ QJsonObject AccountInfo::toJson() const {
     obj["pplx"] = pplx;
     obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
-
+    obj["tcts"]=tcts;
+    obj["fasjg"]=fasjg;
+    obj["rqhy"]=rqhy;
+    obj["jiam"]=1;
     return obj;
 }
 
@@ -72,9 +83,13 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     AccountInfo info;
     info.appid = obj["appid"].toString();
     info.appid_int = info.appid.toInt();
-
-    // 用相同的机器特征 + appid 派生密钥，解密 secret
-    QByteArray key = MachineKey::generateKey(info.appid);
+    QByteArray key;
+    if(obj["jiam"].toInt()==0)
+    {
+        key = MachineKey::generateKey_old(info.appid);
+    }else{
+        key = MachineKey::generateKey(info.appid);
+    }
     info.secret = MachineKey::decrypt(obj["secret"].toString(), key);
     info.ark = obj["ark"].toBool();
     info.markdown = obj["markdown"].toBool();
@@ -84,10 +99,40 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.avatarPath = obj["avatarPath"].toString();
     info.wsAddress = obj["wsAddress"].toString();
     info.type = obj["type"].toInt();
+
+    info.tcts = obj["tcts"].toString();
+    info.fasjg = obj["fasjg"].toInt();
+    info.rqhy = obj["rqhy"].toString();
+
     info.message_received = obj["message_received"].toInt();
     info.message_sent = obj["message_sent"].toInt();
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
+
+
+
+    info.今日加群数量 = obj["g_add"].toInt();
+    info.今日退群数量 = obj["g_sub"].toInt();
+    info.今日好友数量 = obj["f_add"].toInt();
+    info.今日删除好友数量 = obj["f_sub"].toInt();
+    info.日计时变量 = obj["r_jis"].toInt();
+    info.今日频道数量= obj["c_add"].toInt();
+    info.今日退出频道数量= obj["c_sub"].toInt();
+
+
+    qint64 now = QDateTime::currentSecsSinceEpoch(); // 你已经有这个了
+    QDateTime dt = QDateTime::fromSecsSinceEpoch(now);
+    int day = dt.date().day();
+    if(info.日计时变量!=day)
+    {
+        info.今日加群数量 = 0;
+        info.今日退群数量 = 0;
+        info.今日好友数量 = 0;
+        info.今日删除好友数量 = 0;
+        info.今日频道数量=0;
+        info.今日退出频道数量=0;
+        info.日计时变量=day;
+    }
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();
     info.dyindex = obj["dyindex"].toInt();

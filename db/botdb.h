@@ -36,9 +36,11 @@ struct UserRecord {
 };
 
 struct GroupRecord {
-    uint32_t create_time;
-    uint32_t inviter_seq_id;
+    uint32_t create_time=0;
+    uint32_t inviter_seq_id=0;
     uint32_t bitmap=0;
+    qint64 xychy_time=0;
+    qint64 xyctq_time=0;
 };
 
 class BotDB {
@@ -65,6 +67,7 @@ public:
     bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
 
     bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap);
+    bool addGroup(const QString &groupIdHex,const GroupRecord &record);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
     bool isGroupExist(const QString &groupIdHex);
     bool deleteGroup(const QString &groupIdHex);

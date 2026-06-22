@@ -32,6 +32,7 @@
 #include "ScheduleConfigWidget.h"
 #include "ScreenshotSyncClient.h"
 #include "botruleconfigwidget.h"
+#include "botset.h"
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
 #include "global.h"
@@ -79,10 +80,11 @@ QString Homev=R"(
 - 修复 js子进程不会自动退出问题
 - 优化 适配云崽 【部分】单js插件
 - 添加 Html制图
-- 添加 常用功能Ai 内置 联网函数 特殊函数执行py代码 可以控制你电脑
+- 添加 常用功能Ai 内置 联网函数 特殊函数执行py代码 可以控制你电脑 拟人状态可以自己添加删除表情包
 - 添加 批量推送信息
 - 修复 部分机器人 未下发unid at_you变量一直是true
 - 更新 加密算法 使用宏 所以需要更新密码
+- 增加 内置入群欢迎
 
 ## v1.0.3.4 (2026-06-14)
 - 增加对 JS 插件的支持
@@ -125,6 +127,7 @@ HtmlToImageWidget *htmltoimg =nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
 AiWidget *ai_ui = nullptr;
 QListWidget *robotListWidget=nullptr;
+botset *refset=nullptr;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
 extern int ts_m_appid;
@@ -275,6 +278,8 @@ void MainWindow::setupUi()
 
     plts *myPlts = new plts(this);   // 创建 plts 对象
     myPlts->show();
+    refset = new botset(this);   // 创建 plts 对象
+    refset->show();
     QGroupBox *configGroupBox = new QGroupBox();   // 分组框，标题可自定义
 
     configGroupBox->setStyleSheet("QGroupBox { padding-top: 5px; margin-top: 0px; border: 0px; }");
@@ -293,6 +298,8 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(keyword, "关键词回复");
     configTabWidget2->addTab(schedule, "订阅");
     configTabWidget2->addTab(ai_ui, "Ai");
+    configTabWidget2->addTab(refset,"回复设置");
+
     hxzsy->addWidget(configTabWidget2);
 
 
@@ -401,7 +408,7 @@ void MainWindow::setupUi()
         keyword->列表行被单击(item);
         schedule->列表行被单击(item);
         ai_ui->列表行被单击(item);
-
+        refset->列表行被单击(item);
     });
     sideLayout->addWidget(btnHome);
     sideLayout->addWidget(btnAccount);

@@ -28,6 +28,18 @@
 #include <QDir>
 
 namespace MachineKey {
+static QByteArray generateKey_old(const QString &appid) {
+    static QString machineInfo;
+    if(machineInfo.isEmpty()){
+        machineInfo += QHostInfo::localHostName();
+        machineInfo += QSysInfo::kernelType();
+        machineInfo += QSysInfo::currentCpuArchitecture();
+        machineInfo += QDir::home().absolutePath();
+    }
+    QString machineInfo2 = machineInfo+appid;
+    return QCryptographicHash::hash(machineInfo2.toUtf8(), QCryptographicHash::Sha256);
+}
+
 static QByteArray generateKey(const QString &appid) {
     static QString machineInfo;
     if(machineInfo.isEmpty()){

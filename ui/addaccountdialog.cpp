@@ -35,8 +35,8 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
 
     m_arkCheckBox->setChecked(info.ark);
     m_markdownCheckBox->setChecked(info.markdown);
-    m_welcomeEdit->setPlainText(info.welcomeMsg);
-    m_fallbackEdit->setPlainText(info.fallbackReply);
+    //m_welcomeEdit->setPlainText(info.welcomeMsg);
+    //m_fallbackEdit->setPlainText(info.fallbackReply);
 
 
     setIntentsMask(info.wsIntents);
@@ -46,7 +46,7 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
 
 void AddAccountDialog::setupUI() {
     setWindowTitle("账号详细设置");
-    resize(760, 738);
+    resize(760, 540);
     setModal(true);
 
 
@@ -262,7 +262,7 @@ void AddAccountDialog::setupUI() {
     contentLayout->addWidget(m_wsIntentsGroup);
     contentLayout->addWidget(m_wsConfigWidget);
 
-
+/*
     QGroupBox *replyGroup = new QGroupBox("回复设置");
     QGridLayout *replyLayout = new QGridLayout(replyGroup);
     replyLayout->setContentsMargins(4, 4, 4, 4);
@@ -283,6 +283,7 @@ void AddAccountDialog::setupUI() {
     replyLayout->setColumnStretch(0, 1);
     replyLayout->setColumnStretch(1, 1);
     contentLayout->addWidget(replyGroup);
+*/
     contentLayout->addStretch();
 
     formScroll->setWidget(contentWidget);
@@ -394,8 +395,8 @@ AccountInfo AddAccountDialog::getAccountInfo() const {
     info.markdown = m_markdownCheckBox->isChecked();
 
 
-    info.welcomeMsg = m_welcomeEdit->toPlainText();
-    info.fallbackReply = m_fallbackEdit->toPlainText();
+    //info.welcomeMsg = m_welcomeEdit->toPlainText();
+    //info.fallbackReply = m_fallbackEdit->toPlainText();
     info.wsIntents = computeIntentsMask();
 
 

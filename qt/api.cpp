@@ -201,8 +201,11 @@ QString convertMarkdownLinksToXml(const QString &input)
 QString botlist()
 {
     qint64 now = QDateTime::currentSecsSinceEpoch();
+    QDateTime dt = QDateTime::fromSecsSinceEpoch(now);
+    int day = dt.date().day();
+
     QJsonArray array;
-    for(const auto &info : std::as_const(m_accounts))
+    for(auto &info : m_accounts)
     {
         if (!info) continue;
         QJsonObject obj;
@@ -218,6 +221,23 @@ QString botlist()
         obj["id"] = info->pduid; //频道id
         obj["union_openid"]=info->unid;   //QQid
         obj["time"] = formatDuration(now-info->startup_time);
+
+        if(info->日计时变量!=day)
+        {
+            info->今日加群数量 = 0;
+            info->今日退群数量 = 0;
+            info->今日好友数量 = 0;
+            info->今日删除好友数量 = 0;
+            info->日计时变量 = day;
+            info->今日频道数量=0;
+            info->今日退出频道数量=0;
+        }
+        obj["today_join_count"] = info->今日加群数量;       // 今日加群
+        obj["today_leave_count"] = info->今日退群数量;       // 今日退群
+        obj["today_friend_count"] = info->今日好友数量;      // 今日新增好友
+        obj["today_del_friend_count"] = info->今日删除好友数量; // 今日删除好友
+        obj["today_channel_join_count"] = info->今日频道数量;    // 今日加入频道
+        obj["today_channel_leave_count"] = info->今日退出频道数量; // 今日退出频道
         array.append(obj);
 
     }

@@ -73,6 +73,11 @@ struct AccountInfo {
     int wsIntents = 0;          // 订阅事件的位掩码
     int 今日加群数量=0;
     int 今日退群数量=0;
+    int 今日好友数量=0;
+    int 今日删除好友数量=0;
+    int 今日频道数量=0;
+    int 今日退出频道数量=0;
+    int 日计时变量=0;
     bool autoConnect = false;
     bool online = false;
     bool ark=false;
@@ -82,7 +87,9 @@ struct AccountInfo {
 
     QString welcomeMsg;         // 被添加时的欢迎词
     QString fallbackReply;      // 指令未处理时的回应
-
+    QString rqhy; //群成员加群提示文本
+    QString tcts; //群成员退群提示文本
+    int fasjg=0;
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;

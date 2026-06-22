@@ -463,6 +463,14 @@ bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint
         return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
     });
 }
+bool BotDB::addGroup(const QString &groupIdHex,const GroupRecord &record)
+{
+    return retryWrite([&](MDB_txn *txn) -> int {
+        QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
+        if (keyData.isEmpty()) return -1;
+        return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+    });
+}
 QList<QString> BotDB::getAllGroupIds()
 {
     QList<QString> result;

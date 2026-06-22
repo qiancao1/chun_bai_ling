@@ -16,6 +16,13 @@
 
 QList<std::shared_ptr<AccountInfo>> m_accounts;
 extern HomePage *homePage;
+
+int accinfo(int appid) {
+    for (int i =0;i<m_accounts.size();++i) {
+        if(m_accounts[i]->appid_int == appid) return i;
+    }
+    return -1;
+}
 void AccountPage::extracted(int &curTotalReceived, int &curTotalSent) {
     for (const auto &acc : std::as_const(m_accounts)) {
         curTotalReceived += acc->message_received;
@@ -166,6 +173,7 @@ void AccountPage::loadAccounts() {
     QByteArray data = file.readAll();
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isArray()) return;
+
     const QJsonArray arr = doc.array();
     for (const QJsonValue &val : arr) {
         if (val.isObject()) {
@@ -175,7 +183,9 @@ void AccountPage::loadAccounts() {
                 );
             m_accounts.append(infoPtr);
         }
+
     }
+
 }
 void AccountPage::saveAccounts() {
 

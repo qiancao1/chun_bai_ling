@@ -155,6 +155,7 @@ else()
         add_library(qiancao SHARED ${PROJECT_SOURCES_ALL})
     else()
         add_executable(qiancao ${PROJECT_SOURCES_ALL}
+            ui/botset.h ui/botset.cpp ui/botset.ui
 
 
 

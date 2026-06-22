@@ -152,6 +152,18 @@ void logMessageEvent(const QString &botName, const MessageEvent &ev,QString &dir
         ev2.msg = QString("[审核事件] %1 消息:%2 原因:%3")
                           .arg(ev.subType == 1 ? "通过" : "拒绝", ev.msgId, ev.msg);
         break;
+
+    case 11: // 审核事件
+        ev2.msgid = ev.msgId;
+        ev2.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
+                      .arg(ev.subType == 1 ? "机器人被邀请进入" : "机器人被踢出频道", ev.groupId, ev.user);
+        break;
+    case 13: // 审核事件
+        ev2.msgid = ev.msgId;
+        ev2.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
+                      .arg(ev.subType == 1 ? "成员加入" : "成员离开", ev.groupId, ev.user);
+        break;
+
     default:
         ev2.msg = QString("[未处理事件] 类型:%1").arg(ev.msgType);
         break;
@@ -194,6 +206,7 @@ QString normalizeNewlinesToCR(const QString &input)
     return result;
 }
 QString python_code(const QString &py_code,const MessageEvent &msg);
+QString ruqunhy(const AccountInfo *info,const MessageEvent &ev);
 //===========================================================================================================================================我猜你在找这个
 void Message(AccountInfo *info,const MessageEvent &ev) {
 
@@ -207,11 +220,16 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     db.type= ev.type;
     if(ev.type ==4 && ev.subType==4 || ev.type==5 && ev.subType==6)
     {
-        if(m_botClients.contains(info->appid_int))
+        if(!info->welcomeMsg.isEmpty())
         {
-            QQBotClient *client = m_botClients[info->appid_int];
-            QString text = "[欢迎语]";
-            client->send_messages(ev.type,ev.groupId,text,info->welcomeMsg,ev.msgId);
+            QString ret = info->welcomeMsg;
+            if(info->welcomeMsg.startsWith("#python")) ret = python_code(ret,ev);
+            if(m_botClients.contains(info->appid_int))
+            {
+                QQBotClient *client = m_botClients[info->appid_int];
+                QString text = "[欢迎语]";
+                client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+            }
         }
     }
 
@@ -222,8 +240,15 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
         return;
     }
     logMessageEvent(info->nickname,ev,text);
-
-    QString ret = ai_ui->Ai_qx(info,ev);
+    QString ret =ruqunhy(info,ev);
+    if(!ret.isEmpty())
+    {
+        QQBotClient *client = m_botClients[info->appid_int];
+        if(text.isEmpty()) text = "[入群提示|%1ms]";
+        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+        return;
+    }
+    ret = ai_ui->Ai_qx(info,ev);
     if(ret.isEmpty() )
         ret = ai_ui->Ai_post(info,ev);
     else if(ret=="*") ret =QString();
@@ -257,6 +282,74 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     pluginPage->dispatch_message(ev.raw,ev);
     if(ev.at_you || !ev.fullType) botnomsg(ev.type,ev.groupId,ev.msgId);
 }
+QString ruqunhy(const AccountInfo *info,const MessageEvent &ev)
+{
+    if(ev.type!=0) return QString(); //0代表群
+    if(ev.member_role<2)//设置入群提示,取消入群提示 0群主 1管理 2群成员
+    {
+        if(ev.msg=="设置入群提示")
+        {
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId,gid);
+            if (!(gid.bitmap & 2))  return "当前已经设置 入群提示"; //已经关闭入群提示
+            gid.bitmap &= ~2;
+            db->addGroup(ev.groupId,gid);
+            return "设置入群提示成功";
+
+        }else if(ev.msg=="取消入群提示"){
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId,gid);
+            if (gid.bitmap & 2)  return "当前没有设置 入群提示"; //已经关闭入群提示
+            gid.bitmap |= 2;
+            db->addGroup(ev.groupId,gid);
+            return "取消入群提示成功 如需打开 请发送 [设置入群提示]()";
+        }
+    }
+    if(ev.subType==2)
+    {
+        if(info->rqhy.isEmpty()) return QString();
+        auto *db = g_botdb[info->appid_int];
+        GroupRecord gid;
+        db->getGroupInfo(ev.groupId,gid);
+        if (gid.bitmap & 2) return QString(); //已经关闭入群提示
+        qint64 now = QDateTime::currentSecsSinceEpoch();
+        qint64 CD=gid.xyctq_time - now;
+        if(CD <= 0 || info->fasjg<=0 || CD > info->fasjg)
+        {
+            if(info->fasjg>0)
+            {
+                gid.xychy_time= now + info->fasjg;
+                db->addGroup(ev.groupId,gid);
+            }
+            if(!info->rqhy.startsWith("#python")) return info->rqhy;
+            return python_code(info->rqhy,ev);
+        }
+    }else if(ev.subType==3){
+        if(info->tcts.isEmpty()) return QString();
+        auto *db = g_botdb[info->appid_int];
+        GroupRecord gid;
+        db->getGroupInfo(ev.groupId,gid);
+        if (gid.bitmap & 2) return QString(); //已经关闭入群提示
+        qint64 now = QDateTime::currentSecsSinceEpoch();
+        qint64 CD=gid.xyctq_time - now;
+        if(CD <= 0 || info->fasjg<=0 || CD > info->fasjg)
+        {
+            if(info->fasjg>0)
+            {
+                gid.xyctq_time= now + info->fasjg;
+                db->addGroup(ev.groupId,gid);
+            }
+            if(!info->tcts.startsWith("#python")) return info->tcts;
+            return python_code(info->tcts,ev);
+        }
+    }
+    return QString();
+}
+
+
+
 QString extractBetween(const QString &source, const QString &left, const QString &right) {
     int start = source.indexOf(left);
     if (start == -1) return QString();

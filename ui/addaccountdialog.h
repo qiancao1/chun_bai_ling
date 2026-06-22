@@ -42,8 +42,8 @@ private:
 
 
     // 回复设置控件
-    QTextEdit *m_welcomeEdit;
-    QTextEdit *m_fallbackEdit;
+    //QTextEdit *m_welcomeEdit;
+    //QTextEdit *m_fallbackEdit;
 
     QCheckBox* m_arkCheckBox;
     QCheckBox* m_markdownCheckBox;
