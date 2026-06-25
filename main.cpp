@@ -77,7 +77,7 @@ void saveConfig()
     if(框架退出) return;
     QFile file("data/config.json");
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QJsonDocument(g_config).toJson(QJsonDocument::Compact));
+        file.write(QJsonDocument(g_config).toJson(QJsonDocument::Indented));
         file.close();
     }
 }

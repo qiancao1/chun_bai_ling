@@ -50,8 +50,8 @@ void set::setupUI()
     QPushButton *bt = new QPushButton(tr("确认"), this);
     QLabel *urlLabel3 = new QLabel(tr("日志数量"), this);
     m_日志数量 = new QLineEdit(this);
-    m_日志数量->setPlaceholderText("默认5w条 看你电脑配置来");
-    m_日志数量->setText(QString::number(g_config["logs"].toInt(50000)));
+    m_日志数量->setPlaceholderText("默认10w条 看你电脑配置来 是永久缓存 这样子可用存更多聊天信息");
+    m_日志数量->setText(QString::number(g_config["logs"].toInt(100000)));
     m_日志数量->setMinimumWidth(100);
     QPushButton *bt2 = new QPushButton(tr("确认"), this);
 

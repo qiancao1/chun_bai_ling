@@ -22,10 +22,11 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
     g_logdb[0]->cleanDatabase(24);
     Message mes;
     mes.Color_0=0xF3312F;
-
+    int logs = g_config["logs"].toInt(100000);
     for(int i=0 ;i<5;++i)
     {
-
+        if(i>0)
+            g_logdb[0]->cleanDatabase(logs);
         g_logdb[i]->appendLog("0","0",mes);
 
     }
@@ -518,6 +519,7 @@ void LogPage::setupUi()
         });
 
         // 滚动加载更多
+        /*
         connect(view->verticalScrollBar(), &QScrollBar::valueChanged,
                 this, [this, view](int value) {
                     QScrollBar *bar = view->verticalScrollBar();
@@ -525,7 +527,7 @@ void LogPage::setupUi()
                         loadMore();
                     }
                 });
-
+        */
         tabStack->addWidget(view);
     };
 
