@@ -52,7 +52,7 @@ public:
 
     // 重新构建某个机器人的匹配器（规则改变后调用）
     void buildMatcherForRobot(int appid);
-    void 列表行被单击(QListWidgetItem *item);
+    void 列表行被单击();
     // 将当前机器人规则应用到全局 m_accounts（可选）
     void oninitbot();
 
@@ -108,7 +108,7 @@ private:
     QPushButton *moveUpBtn = nullptr;
     QPushButton *moveDownBtn = nullptr;
 
-    int currentRobotId = 0;
+
     QMap<int, QList<KeywordMatchRule>> rulesMap;   // 原始规则存储
 
     // 高性能匹配相关（静态成员，所有实例共享）

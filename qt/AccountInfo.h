@@ -31,6 +31,7 @@
 #include <QHostInfo>
 #include <QSysInfo>
 #include <QDir>
+#include <qtimer.h>
 
 struct mdbtn {
     QStringList zl; //指令
@@ -49,7 +50,11 @@ struct zdywb {
     QString data;//直接替换词
     int pplx=0;
 };
-
+struct UserStat {
+    QVector<quint32> buffer;
+    quint8 head = 0;
+    quint8 count = 0;
+};
 struct AccountInfo {
     QString appid;
 
@@ -78,18 +83,24 @@ struct AccountInfo {
     int 今日频道数量=0;
     int 今日退出频道数量=0;
     int 日计时变量=0;
+    int fasjg=0;
+    int times =5;//检测时间
+    int tiaoshu=5; //刷屏条数
+    QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
     bool autoConnect = false;
     bool online = false;
     bool ark=false;
     bool markdown=false;
-
+    bool e_bai=true;
+    bool shuap=false;//刷屏检测
     qint64 startup_time = 0;
-
     QString welcomeMsg;         // 被添加时的欢迎词
     QString fallbackReply;      // 指令未处理时的回应
     QString rqhy; //群成员加群提示文本
+    QString bai_sr,bai_sc,bai_qy;
 
-    int fasjg=0;
+
+
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;
@@ -113,8 +124,9 @@ struct AccountInfo {
     bool enableImageRec = false;
     bool niren=false;
 
-    QJsonObject toJson() const;
+    QString toJson() const;
     static AccountInfo fromJson(const QJsonObject &obj);
+
 };
 struct RoleSetting {
     QString name;

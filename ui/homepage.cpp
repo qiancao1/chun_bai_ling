@@ -641,7 +641,7 @@ void HomePage::refreshRuntimeStats()
         messageCount += account->received + account->sent;
     }
     const int pluginCount = m_pluginList.size();
-    const int logCount = logPage && logPage->eventModel ? logPage->eventModel->count() : 0;
+    int logCount=0;
     if (m_todayMessageValue) m_todayMessageValue->setText(QString::number(messageCount));
     if (m_onlineAccountValue) m_onlineAccountValue->setText(QString::number(onlineCount));
     if (m_logCountValue) m_logCountValue->setText(QString::number(logCount));

@@ -242,10 +242,7 @@ void set::setupUI()
         g_config["logs"]= configCapacity;
         saveConfig();
         if(configCapacity<=0) configCapacity=1000;
-        for (int i = 0; i < 5; ++i) {
-            m_logStore[i].setCapacity(configCapacity);
-        }
-        QMessageBox::warning(this,"修改日志数量","修改完成 0不记录日志 同时群聊会话不可用 日志最低记录数量1k防止异常 每次修改都会存在日志重新来 需要重启才能看见内存变化");
+        QMessageBox::warning(this,"修改日志数量","修改完成 这里是修改数据库日志保留数据 日志不保存在内存");
     });
 
     connect(m_addTokenBtn, &QPushButton::clicked, this, &set::onAddTokenRow);

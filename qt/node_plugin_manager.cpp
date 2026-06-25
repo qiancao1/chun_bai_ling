@@ -152,16 +152,7 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
     }
 
 
-    if (api_id == 10002) {
 
-        if (params.size() >= 3) {
-            int type = params[0].toInt();
-            QString groupId = params[1].toString();
-            QString msgId = params[2].toString();
-            botnomsg(type, groupId, msgId);
-        }
-        return "{}";
-    }
 
     bool hasAppid = true;
     if (api_id == 1  // outlog
@@ -183,7 +174,16 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
         else if (val.isString()) appid = val.toString().toInt();
         startIdx = 1;
     }
+    if (api_id == 10002) {
 
+        if (params.size() >= 3) {
+            int type = params[0].toInt();
+            QString groupId = params[1].toString();
+            QString msgId = params[2].toString();
+            botnomsg(appid,type, groupId, msgId);
+        }
+        return "{}";
+    }
     // 提取剩余参数 (最多8个)
     for (int i = startIdx; i < qMin(params.size(), startIdx + 8); ++i) {
         QJsonValue val = params[i];

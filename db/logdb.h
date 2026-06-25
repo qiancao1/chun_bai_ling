@@ -1,99 +1,142 @@
-/*
- * 纯白铃 - QQ 机器人管理平台 - DLL 插件 SDK
- * [当前文件的简短功能描述]
- *
- * Copyright (C) 2026 两个月亮
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 #ifndef LOGDB_H
 #define LOGDB_H
 
+#include "chatpage.h"
 #include <QObject>
 #include <QString>
-#include <QByteArray>
-#include <QMutex>
-#include <QTimer>
 #include <QList>
+#include <QStringList>
+#include <QMutex>
+#include <atomic>
 #include <lmdb.h>
 
-// 日志记录结构体（分钟级时间戳 + 变长消息）
-struct LogRecord {
-    int time;                 // 分钟级时间戳（time(nullptr)/60）
-    int appid;                // 机器人账号ID（虽然目录已隔离，仍保留）
-    int type=0;
-    QByteArray user;      // 固定16字节
-    QByteArray groupId;       // 固定16字节
-    QString msg;          // 日志内容
-};
-
-// 日志数据库类（每个机器人账号独立实例）
 class LogDB : public QObject
 {
     Q_OBJECT
-
 public:
-    // dbPath: 数据库目录路径（例如 "logs/account_123"）
-    // flushIntervalMs: 定时刷盘间隔（毫秒），默认5000
-    explicit LogDB(const QString &dbPath, int flushIntervalMs = 5000, QObject *parent = nullptr);
+    explicit LogDB(const QString &dbPath, QObject *parent = nullptr);
     ~LogDB();
 
-    // 打开数据库（必须调用）
+    // 打开/关闭数据库
     bool open();
-
-    // 关闭数据库（会刷盘）
     void close();
 
-    // 追加一条日志（线程安全）
-    LogRecord& appendLog();
+    // 添加日志，返回分配的序号（全局唯一递增），失败返回 0
+    uint64_t appendLog(const QString &appid, const QString &groupId, const Message &msg);
 
-    // 强制将缓冲区中所有日志写入磁盘（线程安全）
-    void flush();
+    // 获取指定 appid:groupId 最近 N 条（按序号从大到小，即最新在前）
+    QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int N) const;
 
-    // 获取当前账号（appid）的最近 N 条日志（按时间倒序，即最新在前）
-    QList<LogRecord> getRecentLogs(int limit = 5000) const;
+    // 获取所有 key（格式 "appid:groupId:序号"）的列表
+    QStringList getAllKeys() const;
+    QStringList getLatestKeys(int N) const;
 
-private slots:
-    void onFlushTimer();      // 定时器触发
+    // 修改指定 key 对应的 Message
+    bool updateLog(const QString &appid, const QString &groupId, uint64_t seq, const Message &msg);
+
+    // 读取指定 key 对应的 Message
+    bool readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const;
+
+    // 清理数据库，保留全局最新 N 条，删除其余
+    bool cleanDatabase(int keepN);
+
+    // ---- 环形缓冲区公开接口 ----
+    // 设置序号对应的字节值
+    // ---- 环形缓冲区公开接口（改为 8 字节） ----
+    // 设置完整的 64 位值
+    void setBufferRaw(uint64_t seq, uint64_t value) {
+        m_buffer[seq % m_bufferSize].store(value, std::memory_order_release);
+    }
+    // 读取完整的 64 位值
+    uint64_t getBufferRaw(uint64_t seq) const {
+        return m_buffer[seq % m_bufferSize].load(std::memory_order_acquire);
+    }
+
+    // 便捷接口：设置时间戳（微秒）和状态（1字节）
+    void setBufferTimeAndStatus(uint64_t seq, uint64_t timeUs, uint8_t status) {
+        uint64_t value = (timeUs << 8) | (status & 0xFF);
+        setBufferRaw(seq, value);
+    }
+
+    uint64_t setBuffer_255(uint64_t seq, bool &ok)
+    {
+        size_t idx = seq % m_bufferSize;
+        uint64_t old = m_buffer[idx].load(std::memory_order_acquire);
+        while (true) {
+            uint8_t status = static_cast<uint8_t>(old & 0xFF);
+            if (status == 255) {
+                ok = false;
+                return old >> 8;   // 返回时间
+            }
+            uint64_t newVal = (old & ~0xFFULL) | 255ULL;  // 保留时间，状态设为255
+            // 尝试原子交换
+            if (m_buffer[idx].compare_exchange_weak(old, newVal,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
+                ok = true;
+                return newVal >> 8;   // 返回时间（与 old >> 8 相同）
+            }
+            // 如果 CAS 失败，old 已被更新为当前值，继续循环
+        }
+    }
+
+    // 获取时间戳（微秒）
+    uint64_t getBufferTime(uint64_t seq) const {
+        return getBufferRaw(seq) >> 8;
+    }
+
+    // 获取状态
+    uint8_t getBufferStatus(uint64_t seq) const {
+        return static_cast<uint8_t>(getBufferRaw(seq) & 0xFF);
+    }
+
+    // 更新状态（不影响时间）
+    void updateBufferStatus(uint64_t seq, uint8_t newStatus) {
+        size_t index = seq % m_bufferSize;
+        uint64_t oldValue = m_buffer[index].load(std::memory_order_acquire);
+        uint64_t newValue = (oldValue & ~0xFFULL) | (newStatus & 0xFFULL);
+        m_buffer[index].store(newValue, std::memory_order_release);
+    }
+
+    // 原子加1（对状态位加1，溢出时饱和为255）
+    uint8_t incrementBufferStatus(uint64_t seq) {
+        size_t index = seq % m_bufferSize;
+        uint64_t oldValue = m_buffer[index].load(std::memory_order_acquire);
+        uint8_t oldStatus = static_cast<uint8_t>(oldValue & 0xFF);
+        if (oldStatus >= 255) return 255;
+        uint8_t newStatus = oldStatus + 1;
+        uint64_t newValue = (oldValue & ~0xFFULL) | (newStatus & 0xFFULL);
+        m_buffer[index].store(newValue, std::memory_order_release);
+        return newStatus;
+    }
+
+    size_t bufferSize() const { return m_bufferSize; }
+    QList<QPair<QString, Message>> getLatestMessagesWithOffset(int appid, int limit, int offset) const;
 
 private:
-    // 执行实际的写入（将 m_readBuf 写入 LMDB，并清空 m_readBuf）
-    // 返回 true 表示成功，false 表示失败（失败时数据保留在 m_readBuf 中，下次继续重试）
-    bool writeReadBuffer();
+    // ---- 环形缓冲区成员 ----
+    size_t m_bufferSize;
+    std::atomic<uint64_t>* m_buffer;   // 改为 8 字节原子类型
 
-    // 交换读写缓冲区（加锁）
-    void swapBuffers();
-
-    // LMDB 相关辅助
-    bool increaseMapSize();          // 翻倍扩容
-    bool reopenEnvironment();        // 重新打开环境（扩容后调用）
-
+    // ---- 数据库成员 ----
     QString m_dbPath;
-    int m_flushIntervalMs;
     MDB_env *m_env;
-    MDB_dbi  m_dbi_logs;      // 日志表
-    MDB_dbi  m_dbi_meta;      // 元数据表（存储下一个自增ID）
+    MDB_dbi m_dbi_main;
+    MDB_dbi m_dbi_meta;
+    mutable QMutex m_mutex;
 
-    // 双缓冲
-    QList<LogRecord> m_writeBuf;    // 写缓冲（接收 appendLog）
-    QList<LogRecord> m_readBuf;     // 读缓冲（待写入 LMDB）
-    mutable QMutex   m_mutex;       // 保护两个缓冲区的交换操作
+    // 辅助函数
+    QString makeKey(const QString &appid, const QString &groupId, uint64_t seq) const;
+    bool getNextId(uint64_t &nextId) const;
+    bool updateNextId(uint64_t nextId);
+    bool serializeMessage(const Message &msg, QByteArray &data) const;
+    bool deserializeMessage(const QByteArray &data, Message &msg) const;
 
-    QTimer *m_timer;
-    uint64_t m_nextId;              // 下一个可用的自增ID
-    size_t   m_currentMapSize;      // 当前 mapsize（用于扩容）
+
+
+    // 禁用拷贝
+    LogDB(const LogDB&) = delete;
+    LogDB& operator=(const LogDB&) = delete;
 };
 
 #endif // LOGDB_H

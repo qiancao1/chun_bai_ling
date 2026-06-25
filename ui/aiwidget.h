@@ -84,7 +84,7 @@ public:
     QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
     QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
-    void 列表行被单击(QListWidgetItem *item); // 切换机器人
+    void 列表行被单击(); // 切换机器人
     QMap<QString, SessionContext> m_sessions;   // 以 openid 为键
 
 public slots:
@@ -150,12 +150,13 @@ private:
     // --- UI 控件指针 ---
     QTabWidget *tabWidget;
 
-    QCheckBox *chkGroupChat, *chkGroupPersonal, *chkPrivateChat;
+    QCheckBox *feibaimd,*chkGroupChat, *chkGroupPersonal, *chkPrivateChat;
     QCheckBox *chkNameTrigger, *chkChannel, *chkAtTrigger, *chkChannelPersonal, *chkImageRec,*chkniren;
 
     QLabel *lblRobotName, *lblModel, *lblSetting, *lblContext;
     QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply,*lblPplx;
     QLineEdit *editRobotName, *editContext, *editNoReplySeconds, *editNoReplyMinutes, *editDelayReply;
+    QLineEdit *set_zl, *set_sc,*set_qy;
     QComboBox *comboModel, *comboSetting,*comboPplx;
 
     QListWidget *settingListWidget;    // 全局设定列表
@@ -228,7 +229,7 @@ private:
 
     QList<RoleSetting> m_globalSettings;     // 全局设定库
     ToolConfig m_toolConfig;                 // 工具配置
-    int m_currentRobotIndex = -1;            // 当前选中的机器人appid
+
     QHash<QString,QJsonObject> m_fun;
 
 

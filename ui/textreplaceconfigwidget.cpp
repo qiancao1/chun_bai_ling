@@ -179,27 +179,23 @@ void TextReplaceConfigWidget::initTable()
 
 
 
-void TextReplaceConfigWidget::列表行被单击(QListWidgetItem *item)
+void TextReplaceConfigWidget::列表行被单击()
 {
-    if (currentAppId != 0)
-        saveCurrentRulesToMap();
+    if (g_appid!=0) {
 
-
-    if (item) {
-        currentAppId = item->data(Qt::UserRole).toInt();
-        emit needLoadRules(currentAppId);   // 发射信号，稍后加载
+        emit needLoadRules(g_appid);   // 发射信号，稍后加载
     } else {
-        currentAppId = 0;
+
         ruleTable->setRowCount(0);
     }
 }
 void TextReplaceConfigWidget::saveCurrentRulesToMap()
 {
-    if (currentAppId == 0) return;
+    if (g_appid == 0) return;
     QList<TextReplaceRule> rules;
     for (int row = 0; row < ruleTable->rowCount(); ++row)
         rules.append(getRuleItemFromRow(row));
-    rulesMap[currentAppId] = rules;
+    rulesMap[g_appid] = rules;
 }
 
 void TextReplaceConfigWidget::loadRulesForRobot(int appid)
@@ -345,11 +341,11 @@ void TextReplaceConfigWidget::onMoveRowUp()
         return;
     }
     saveCurrentRulesToMap();   // 先保存当前状态
-    if (!rulesMap.contains(currentAppId)) return;
-    QList<TextReplaceRule> &rules = rulesMap[currentAppId];
+    if (!rulesMap.contains(g_appid)) return;
+    QList<TextReplaceRule> &rules = rulesMap[g_appid];
     if (row >= rules.size()) return;
     qSwap(rules[row], rules[row-1]);
-    loadRulesForRobot(currentAppId);
+    loadRulesForRobot(g_appid);
     ruleTable->selectRow(row-1);
 }
 
@@ -361,19 +357,19 @@ void TextReplaceConfigWidget::onMoveRowDown()
         return;
     }
     saveCurrentRulesToMap();
-    if (!rulesMap.contains(currentAppId)) return;
-    QList<TextReplaceRule> &rules = rulesMap[currentAppId];
+    if (!rulesMap.contains(g_appid)) return;
+    QList<TextReplaceRule> &rules = rulesMap[g_appid];
     if (row+1 >= rules.size()) return;
     qSwap(rules[row], rules[row+1]);
-    loadRulesForRobot(currentAppId);
+    loadRulesForRobot(g_appid);
     ruleTable->selectRow(row+1);
 }
 
 void TextReplaceConfigWidget::onRowsSwapped(int fromRow, int toRow)
 {
-    if (currentAppId == 0) return;
-    if (rulesMap.contains(currentAppId)) {
-        QList<TextReplaceRule> &rules = rulesMap[currentAppId];
+    if (g_appid == 0) return;
+    if (rulesMap.contains(g_appid)) {
+        QList<TextReplaceRule> &rules = rulesMap[g_appid];
         if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {
 
             TextReplaceRule movingRule = rules.takeAt(fromRow);
@@ -385,19 +381,19 @@ void TextReplaceConfigWidget::onRowsSwapped(int fromRow, int toRow)
         }
     }
     disconnect(ruleTable, &QTableWidget::itemChanged, this, &TextReplaceConfigWidget::onTableDataChanged);
-    emit needLoadRules(currentAppId);
+    emit needLoadRules(g_appid);
     ruleTable->selectRow(toRow);
 }
 
 void TextReplaceConfigWidget::onTableDataChanged()
 {
-        if (currentAppId == 0) return;
+        if (g_appid == 0) return;
         saveCurrentRulesToMap();
 }
 
 void TextReplaceConfigWidget::onSaveToFile()
 {
-    if (currentAppId != 0)
+    if (g_appid != 0)
         saveCurrentRulesToMap();
     saveAllRulesToFile();
     oninitbot();
@@ -405,11 +401,11 @@ void TextReplaceConfigWidget::onSaveToFile()
 }
 void TextReplaceConfigWidget::oninitbot()
 {
-    if (currentAppId == 0) return;
-    const QList<TextReplaceRule>& rules = rulesMap[currentAppId];
+    if (g_appid == 0) return;
+    const QList<TextReplaceRule>& rules = rulesMap[g_appid];
     if (rules.isEmpty()) return;
     for (auto& account : m_accounts) {
-        if (account->appid_int != currentAppId) continue;
+        if (account->appid_int != g_appid) continue;
         account->zdywb.clear();
         for (const auto& rule : rules) {
             if(rule.remark.isEmpty() || rule.appendText.isEmpty()) continue;
@@ -523,7 +519,6 @@ void TextReplaceConfigWidget::loadAllRulesFromFile(const QString &filePath)
 
     }
     oninitbot();
-    if (currentAppId != 0)
-        loadRulesForRobot(currentAppId);
+
 }
 

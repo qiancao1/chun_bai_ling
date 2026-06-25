@@ -161,46 +161,62 @@ AccountPage::AccountPage(QWidget *parent)
 }
 
 AccountPage::~AccountPage() {
-    saveAccounts();
 
 }
 
 
 
 void AccountPage::loadAccounts() {
+    // 1. 迁移旧文件（如果存在）
     QFile file("data/accounts.json");
-    if (!file.open(QIODevice::ReadOnly)) return;
-    QByteArray data = file.readAll();
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (!doc.isArray()) return;
-
-    const QJsonArray arr = doc.array();
-    for (const QJsonValue &val : arr) {
-        if (val.isObject()) {
-
-            auto infoPtr = std::make_shared<AccountInfo>(
-                AccountInfo::fromJson(val.toObject())
-                );
-            m_accounts.append(infoPtr);
+    if (file.exists()) {
+        if (file.open(QIODevice::ReadOnly)) {
+            QByteArray data = file.readAll();
+            file.close();
+            QJsonDocument doc = QJsonDocument::fromJson(data);
+            if (doc.isArray()) {
+                QJsonArray arr = doc.array();
+                for (const QJsonValue &val : std::as_const(arr)) {
+                    if (val.isObject()) {
+                        QJsonObject obj = val.toObject();
+                        QString appid = obj["appid"].toString();
+                        if(!appid.isEmpty())
+                        accdb->put(appid, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+                    }
+                }
+                qDebug() << "旧文件数据已迁移到数据库，共" << arr.size() << "条";
+            }
+            if (!file.remove()) {
+                qWarning() << "无法删除旧文件，请手动处理";
+            }
+        } else {
+            qWarning() << "无法打开旧文件，继续从数据库加载";
         }
 
     }
 
+    // 2. 从数据库加载所有数据到 m_accounts
+    m_accounts.clear();
+    QStringList appidList = accdb->getAllKeys();
+    for (const QString &key : std::as_const(appidList)) {
+        if (key.isEmpty()) continue;
+        QByteArray value = accdb->get(key).toUtf8();  // 通过 key 获取值
+        if (value.isEmpty()) continue;
+
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(value, &err);
+        if (err.error != QJsonParseError::NoError) continue;
+        QJsonObject obj = doc.object();
+        auto infoPtr = std::make_shared<AccountInfo>(AccountInfo::fromJson(obj));
+        m_accounts.append(infoPtr);
+    }
+    qDebug() << "从数据库加载了" << m_accounts.size() << "条数据";
 }
-void AccountPage::saveAccounts() {
+void AccountPage::saveAccounts(const AccountInfo *info) {
 
     if(框架退出) return;
-    QJsonArray arr;
-    for (const auto& infoPtr : std::as_const(m_accounts)) {
-        arr.append(infoPtr->toJson());
-    }
-
-    QJsonDocument doc(arr);
-    qDebug() << "保存时间" << QDateTime::currentDateTime().toString();
-    QFile file("data/accounts.json");
-    if (file.open(QIODevice::WriteOnly)) {
-        file.write(doc.toJson());
-    }
+    qDebug() << "保存acc";
+    accdb->put(info->appid,info->toJson());
 }
 void AccountPage::refreshCards2(AccountInfo *info) {
     // 1. 添加新卡片（不影响已有卡片）
@@ -336,10 +352,11 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
 
         // 更新
         oldInfo = newInfo;
+        saveAccounts(&oldInfo);
     }
 
 
-    saveAccounts();
+
     if (homePage) homePage->refreshRuntimeStats();
 }
 
@@ -363,6 +380,8 @@ void AccountPage::onDeleteAccount(int appid) {
                 card->deleteLater();                   // 安全删除（或在当前函数 delete card）
             }
             // 2. 删除数据层
+
+            accdb->remove(m_accounts[i]->appid);
             m_accounts.removeAt(i);
 
             for(int i=0 ;i<robotListWidget->count();++i)
@@ -374,15 +393,16 @@ void AccountPage::onDeleteAccount(int appid) {
                     break;
                 }
             }
+
             break;
         }
     }
-    saveAccounts();
+
     if (homePage) homePage->refreshRuntimeStats();
 }
 
 void AccountPage::onLoginStateChanged(int appid) {
-    saveAccounts();
+
     if (homePage) homePage->refreshRuntimeStats();
 }
 

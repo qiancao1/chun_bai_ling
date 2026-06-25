@@ -29,15 +29,15 @@
 
 struct UserRecord {
     uint32_t seq_id;
-    uint32_t reserved_qq;
+    uint32_t bitmap;
     uint32_t record_time;
-    uint32_t invited_group_count;
+    uint32_t invited_group_count; //邀请请群数
     char nickname[64];
 };
 
 struct GroupRecord {
-    uint32_t create_time=0;
-    uint32_t inviter_seq_id=0;
+    uint32_t create_time=0; //加群时间
+    uint32_t inviter_seq_id=0; //邀请人id
     uint32_t bitmap=0;
     qint64 xychy_time=0;
 };
@@ -64,7 +64,8 @@ public:
     uint32_t getOrUpdateUser(const QString &openid, QString &name);
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
     bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
-
+    bool updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord);
+    bool updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater);
     bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap);
     bool addGroup(const QString &groupIdHex,const GroupRecord &record);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
@@ -76,6 +77,13 @@ public:
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
     bool getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes);
+
+
+
+
+
+
+
 
 private:
     // 内部辅助函数（原有）

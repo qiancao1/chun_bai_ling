@@ -259,13 +259,13 @@ public:
     explicit ScheduleConfigWidget(QWidget *parent = nullptr);
     ~ScheduleConfigWidget();
     QString ppzl(const MessageEvent &ev,QString &订阅名);
-    void 列表行被单击(QListWidgetItem *item);
-    void 检查定时列表();
+    void 列表行被单击();
+    void jiancha();
     QString add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);
     QString get_aids_list(int appid,const QString &openid);
     QString remov_ds_byai(int appid,int mark);
     // 数据
-    int currentAppId = 0;
+
     QMap<int, QList<ScheduleTask>> tasksMap;
         QTableWidget *taskTable;            // 中间表格：只有一列，包含复选框+备注
 

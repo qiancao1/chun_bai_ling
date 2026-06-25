@@ -34,8 +34,7 @@
 #include <QInputDialog>
 #include <QDesktopServices>
 #include <QUrl>
-#include <QProcess>
-#include <QMessageBox>
+
 static QCache<QString, QPixmap> avatarCache;
 static QCache<QString, QStringList> s_wrapCache; //行数缓存
 static const int WRAP_CACHE_SIZE = 500;
@@ -226,57 +225,6 @@ static void downloadImageIfNeeded(const QString &url, const QPersistentModelInde
         downloadingSet().remove(url);
         reply->deleteLater();
     });
-}
-
-static QList<Message> readLatestMessagesFromBuffer(RingBuffer<LogEntry>& buffer,
-                                                   int maxMessages,
-                                                   const QString& contactId,
-                                                   int appid2,
-                                                   bool checkAppid,
-                                                   QString* lastMsgId = nullptr)
-{
-    QList<Message> result;
-    if (buffer.capacity() == 0) return result;
-    int head = buffer.totalWritten(); // 需要用 totalWritten()
-    if (head == 0) return result;
-
-    int capacity = buffer.capacity();
-    int firstLogical = (head > capacity) ? (head - capacity) : 0;
-    QVector<Message> temp;
-    temp.reserve(maxMessages);
-
-    for (int logical = head - 1; logical >= firstLogical && temp.size() < maxMessages; --logical) {
-        const LogEntry& e = buffer.at(logical % capacity);
-        if (checkAppid && e.appid != appid2) continue;
-        if (e.groupId != contactId) continue;
-        if (!e.direction.isEmpty() && temp.size() < maxMessages) {
-            if (!e.direction.startsWith("[黑名单]")) {
-                Message me;
-                me.msg = e.direction;
-                me.user = e.user;
-                me.timestamp = e.time;
-                me.isSelf = true;
-                me.hf = e.hf;
-                me.ch = e.deleteid;
-                temp.append(me);
-            }
-        }
-        if (!e.msg.isEmpty() && temp.size() < maxMessages) {
-            Message me;
-            me.msg = e.msg;
-            me.user = e.user;
-            me.timestamp = e.time;
-            me.name = e.user_name;
-            me.hf = e.hf;
-            temp.append(me);
-            if (lastMsgId && lastMsgId->isEmpty()) {
-                *lastMsgId = e.msgid;
-            }
-        }
-    }
-    std::reverse(temp.begin(), temp.end());
-    result = temp.toList();
-    return result;
 }
 
 
@@ -475,8 +423,8 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     int bubbleWidth = textWidth + 28;
     if (imageWidth > bubbleWidth - 24) // 让图片宽度不超过气泡内边距
         bubbleWidth = imageWidth + 24;
-    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth);
-
+    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+20;
+    bubbleWidth = qMax(bubbleWidth,130);
     QRect avatarRect;
     QRect bubbleRect;
     const int avatarTopMargin = 4;
@@ -535,13 +483,13 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     // ---------- 绘制内容 ----------
     painter->save();
     painter->translate(bubbleRect.topLeft() + QPoint(12, 6));
-    int yOffset = 0;
+    //int yOffset = 0;
 
     if (!isSelf) {
         painter->setFont(nameFont);
         painter->setPen(QColor(136,136,136));
         painter->drawText(0, 4, name);
-        yOffset += nameHeight;
+        //yOffset += nameHeight;
     }
 
     // 绘制文本
@@ -1029,8 +977,9 @@ void ChatPage::initUI()
     inputEdit->setObjectName("chatInput");
     inputEdit->setPlaceholderText("输入消息(ctrl+回车键)发送...");
     inputEdit->setMaximumHeight(90);
-    containerLayout->addWidget(inputEdit);
     inputEdit->installEventFilter(this);
+    containerLayout->addWidget(inputEdit);
+
     // 底部工具栏
     QHBoxLayout *toolLayout = new QHBoxLayout;
     toolLayout->setSpacing(2);
@@ -1205,7 +1154,7 @@ void ChatPage::btnsetChecked()
     updateAllContactLists(mode);
     isGroupMode = mode;
 }
-
+QString getBotName(int appid);
 void ChatPage::updateAllContactLists(int index)
 {
     int bufferIdx=0;
@@ -1221,8 +1170,10 @@ void ChatPage::updateAllContactLists(int index)
             c.id = it.key();
             c.name = customGroupNames.value(c.id);       // 没有 name，就用 key
             if(c.name.isEmpty()) c.name=it.key();
+            int appid =it.value();
+            c.name =getBotName(appid)+":"+ c.name;
             c.lastMsgTime = "猜猜我是谁";      // 忽略
-            appendContactCard(it.value(), c,0);
+            appendContactCard(appid, c,0);
         }
         return;
     case 1: bufferIdx=1;break;// 普通群
@@ -1231,12 +1182,13 @@ void ChatPage::updateAllContactLists(int index)
     case 4: bufferIdx=4;break;// 频道私聊
     case 5:
         for (auto it = 最近对话.begin(); it != 最近对话.end(); ++it) {
-            Contact c;
-            c.id = it.key();
-            c.name = customGroupNames.value(c.id);       // 没有 name，就用 key
-            c.lastMsgTime = "";      // 忽略
             int appid=0,type=0;
             parseFromId(it.value(),appid,type);
+            Contact c;
+            c.id = it.key();
+            c.name = getBotName(appid)+":"+customGroupNames.value(c.id);       // 没有 name，就用 key
+            c.lastMsgTime = "";      // 忽略
+
             appendContactCard(appid, c,type);
         }
         return;
@@ -1244,37 +1196,54 @@ void ChatPage::updateAllContactLists(int index)
         return;
     }
     int type=0;
-    int total = m_logStore[bufferIdx].totalWritten();
-    if (total <= 0) return;
-    const QVector<LogEntry> &entries = m_logStore[bufferIdx].readLatest(total);
-    for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
-        const LogEntry& e = *it;
-        int appid = e.appid;
+
+    QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
+    QSet<QPair<int, QString>> seen;
+    for (const QString &keyStr : list) {
+        QStringList parts = keyStr.split(':');
+        if (parts.size() != 3) continue;
+
+        bool ok;
+        int appid = parts[1].toInt(&ok);
+        if (!ok) continue;
+
+        QString groupId = parts[2];
+
+        uint64_t seq = parts[0].toULongLong(&ok);
+        if (!ok) continue;
+
         if (m_currentBotIndex != -1) {
             if (appid != m_accounts[m_currentBotIndex]->appid_int) continue;
         }
-        QPair<int, QString> key(appid, e.groupId);
-        if (seen.contains(key)) continue;
-        seen.insert(key);
-        Contact c;
-        c.id = e.groupId;
 
-        if (bufferIdx == 3 || bufferIdx == 4)
-        {
-            c.name = e.user_name;
+        QPair<int, QString> key(appid, groupId);
+        if (seen.contains(key)) continue;  // 每个群组只取最新一条
+        seen.insert(key);
+        Message msg;
+        if (!g_logdb[bufferIdx]->readLog(QString::number(appid), groupId, seq, msg)) {
+            qWarning() << "读取消息失败:" << keyStr;
+            continue;
+        }
+
+        Contact c;
+        c.id = groupId;
+
+        if (bufferIdx == 3 || bufferIdx == 4) {
+            c.name = msg.name;           // 发送人昵称
             if (!c.id.isEmpty()) {
-                downloadAvatarIfNeeded(appid,c.id);
+                downloadAvatarIfNeeded(appid, c.id);
             }
-            c.lastMsgTime = e.msg;
-        }else{
-            c.name = customGroupNames.value(e.groupId);
-            c.lastMsgTime = e.user_name + ": " + e.msg;
+            c.lastMsgTime = msg.msg;     // 最新消息内容
+        } else {
+            c.name = customGroupNames.value(groupId);
+            c.lastMsgTime = msg.name + ": " + msg.msg;
         }
-        if(c.name.isEmpty())
-        {
-            c.name=c.id;
+
+        if (c.name.isEmpty()) {
+            c.name = c.id;
         }
-        appendContactCard(appid, c,bufferIdx-1);
+        c.name = getBotName(appid)+":"+c.name;
+        appendContactCard(appid, c, bufferIdx - 1);
     }
 }
 void ChatPage::appendContactCard(int appid,Contact c,int type)
@@ -1288,21 +1257,24 @@ void ChatPage::appendContactCard(int appid,Contact c,int type)
     contactList->addItem(item);
     contactList->setItemWidget(item, widget);
 }
-void ChatPage::addContact(int type, int appid, const QString& id,const QString &openid, const QString& name ,const QString &msg,const QString &msgid,const QString &hf)
+void ChatPage::addContact(int type, const MessageEvent &ev)
 {
     if (isGroupMode == type || type==0) {
         if (m_currentBotIndex != -1) {
-            if (m_appid != appid) return;
+            if (m_appid != ev.appid) return;
         }
-        if(id==currentContactId)
+        if(ev.groupId==currentContactId)
         {
-            m_msgid = msgid;
-            addMessage(Message(openid,msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),name.isEmpty() ? openid : name,hf,""));
+            m_msgid = ev.msgId;
+            QMetaObject::invokeMethod(this, [=]() {
+                addMessage(Message(ev.user,ev.msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),ev.nickname.isEmpty() ? ev.user : ev.nickname,ev.replyTo,ev.msgId));
+            });
+
         }
         if(type==0)
         {
-            if(全量群.contains(id)) return;
-            全量群.insert(id,appid);
+            if(全量群.contains(ev.groupId)) return;
+            全量群.insert(ev.groupId,ev.appid);
             QFile file("data/全量群.hash");
             if (file.open(QIODevice::WriteOnly)) {
                 QDataStream out(&file);
@@ -1311,33 +1283,36 @@ void ChatPage::addContact(int type, int appid, const QString& id,const QString &
                 file.close();
             }
         }else{
-            QPair<int, QString> key(appid, id);
+            QPair<int, QString> key(ev.appid, ev.groupId);
             if (seen.contains(key)) return;  // 已存在，不重复添加
             seen.insert(key);
         }
         Contact c;
-        c.id = id;                     // 这个 id 将用作头像文件名和 URL 中的 openid
+        c.id = ev.groupId;                     // 这个 id 将用作头像文件名和 URL 中的 openid
 
 
-        if(name.isEmpty())
-            c.lastMsgTime = msg;
+        if(ev.nickname.isEmpty())
+            c.lastMsgTime = ev.msg;
         else
-            c.lastMsgTime = name+": "+msg;
+            c.lastMsgTime = ev.nickname+": "+ev.msg;
         if(type==3){
-            c.name = name.isEmpty() ? openid : name;
+            c.name = ev.nickname.isEmpty() ? ev.user : ev.nickname;
             if (!c.id.isEmpty()) {
-                downloadAvatarIfNeeded(appid,c.id);
+                downloadAvatarIfNeeded(ev.appid,c.id);
             }
         }else
         {
-            c.name = customGroupNames.value(id);
+            c.name = customGroupNames.value(ev.groupId);
         }
         if(c.name.isEmpty())
         {
             c.name=c.id;
         }
         if(type!=0)type--;
-        appendContactCard(appid,c,type);
+        QMetaObject::invokeMethod(this, [=]() {
+           appendContactCard(ev.appid,c,type);
+        });
+
 
     }
 }
@@ -1472,11 +1447,18 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
         return;
     }
     QString lastMsgId;
-QList<Message> msg = readLatestMessagesFromBuffer(m_logStore[bufferIdx], 100,
-                                                      contactId, appid2, (m_currentBotIndex != -1), &lastMsgId);
-    m_msgid = lastMsgId;
+    QList<Message> msg = g_logdb[bufferIdx]->getRecentLogs(QString::number(appid2),contactId,100);
+    m_msgid.clear();  // 默认清空
+    for (int i = 0; i < msg.size(); ++i) {
+        if (!msg[i].isSelf) {
+            m_msgid = msg[i].ch;
+            break;
+        }
+    }
+
 
     if (msg.size()!=0) {
+
         msgModel->setMessages(std::move(msg));
     } else {
         msgModel->clear();

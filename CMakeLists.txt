@@ -125,7 +125,7 @@ set(PROJECT_SOURCES_ALL
     qt/accountinfo.cpp qt/AccountInfo.h
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
     qt/python_api.cpp
-    qt/RingBuffer.h
+
     qt/ahocorasick.h
     qt/ffmpeg_silk.cpp
     qt/node_process.h qt/node_process.cpp
@@ -156,6 +156,9 @@ else()
     else()
         add_executable(qiancao ${PROJECT_SOURCES_ALL}
             ui/botset.h ui/botset.cpp ui/botset.ui
+            ui/qunguan.h ui/qunguan.cpp ui/qunguan.ui
+
+
 
 
 

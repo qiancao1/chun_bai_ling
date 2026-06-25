@@ -219,24 +219,23 @@ void KeywordMatchConfigWidget::initTable() {
 
 
 
-void KeywordMatchConfigWidget::列表行被单击(QListWidgetItem *item) {
-    if (currentRobotId != 0) saveCurrentRulesToMap();
+void KeywordMatchConfigWidget::列表行被单击() {
 
-    if (item) {
-        currentRobotId = item->data(Qt::UserRole).toInt();
-        emit needLoadRules(currentRobotId);
+    if (g_appid!=0) {
+
+        emit needLoadRules(g_appid);
     } else {
-        currentRobotId = 0;
+
         ruleTable->setRowCount(0);
     }
 }
 
 void KeywordMatchConfigWidget::saveCurrentRulesToMap() {
-    if (currentRobotId == 0) return;
+    if (g_appid == 0) return;
     QList<KeywordMatchRule> rules;
     for (int row = 0; row < ruleTable->rowCount(); ++row)
         rules.append(getRuleItemFromRow(row));
-    rulesMap[currentRobotId] = rules;
+    rulesMap[g_appid] = rules;
 }
 
 void KeywordMatchConfigWidget::loadRulesForRobot(int robotId) {
@@ -252,7 +251,7 @@ void KeywordMatchConfigWidget::loadRulesForRobot(int robotId) {
     ruleTable->blockSignals(wasBlocked);
     isLoading = false;
 
-    // 构建该机器人的高性能匹配器
+
     buildMatcherForRobot(robotId);
 }
 
@@ -387,11 +386,11 @@ void KeywordMatchConfigWidget::onMoveRowUp() {
         return;
     }
     saveCurrentRulesToMap();
-    if (!rulesMap.contains(currentRobotId)) return;
-    QList<KeywordMatchRule> &rules = rulesMap[currentRobotId];
+    if (!rulesMap.contains(g_appid)) return;
+    QList<KeywordMatchRule> &rules = rulesMap[g_appid];
     if (row >= rules.size()) return;
     qSwap(rules[row], rules[row-1]);
-    loadRulesForRobot(currentRobotId);
+    loadRulesForRobot(g_appid);
     ruleTable->selectRow(row-1);
 }
 
@@ -402,18 +401,18 @@ void KeywordMatchConfigWidget::onMoveRowDown() {
         return;
     }
     saveCurrentRulesToMap();
-    if (!rulesMap.contains(currentRobotId)) return;
-    QList<KeywordMatchRule> &rules = rulesMap[currentRobotId];
+    if (!rulesMap.contains(g_appid)) return;
+    QList<KeywordMatchRule> &rules = rulesMap[g_appid];
     if (row+1 >= rules.size()) return;
     qSwap(rules[row], rules[row+1]);
-    loadRulesForRobot(currentRobotId);
+    loadRulesForRobot(g_appid);
     ruleTable->selectRow(row+1);
 }
 
 void KeywordMatchConfigWidget::onRowsSwapped(int fromRow, int toRow) {
-    if (currentRobotId == 0) return;
-    if (rulesMap.contains(currentRobotId)) {
-        QList<KeywordMatchRule> &rules = rulesMap[currentRobotId];
+    if (g_appid == 0) return;
+    if (rulesMap.contains(g_appid)) {
+        QList<KeywordMatchRule> &rules = rulesMap[g_appid];
         if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {
             KeywordMatchRule moving = rules.takeAt(fromRow);
             int insertPos = toRow;
@@ -422,21 +421,21 @@ void KeywordMatchConfigWidget::onRowsSwapped(int fromRow, int toRow) {
         }
     }
     disconnect(ruleTable, &QTableWidget::itemChanged, this, &KeywordMatchConfigWidget::onTableDataChanged);
-    loadRulesForRobot(currentRobotId);
+    loadRulesForRobot(g_appid);
     ruleTable->selectRow(toRow);
 }
 
 void KeywordMatchConfigWidget::onTableDataChanged() {
-    if (currentRobotId == 0) return;
+    if (g_appid == 0) return;
     saveCurrentRulesToMap();
-    buildMatcherForRobot(currentRobotId);
+    buildMatcherForRobot(g_appid);
 }
 
 void KeywordMatchConfigWidget::onSaveToFile() {
-    if (currentRobotId == 0) return;
+    if (g_appid == 0) return;
     saveCurrentRulesToMap();
     saveAllRulesToFile();
-    buildMatcherForRobot(currentRobotId);
+    buildMatcherForRobot(g_appid);
     QMessageBox::information(this, "保存成功", "关键词匹配规则已保存到 keyword_match_rules.json");
 }
 
@@ -519,9 +518,6 @@ void KeywordMatchConfigWidget::loadAllRulesFromFile(const QString &filePath) {
         rulesMap[robotId] = rules;
         buildMatcherForRobot(robotId);
     }
-
-    if (currentRobotId != 0)
-        loadRulesForRobot(currentRobotId);
 }
 
 // ---------- 高性能匹配器构建 ----------

@@ -19,11 +19,10 @@
  */
 
 #include "global.h"
-#include "LogPage.h"
 #include <QMessageBox>
 #include <qtcpserver.h>
 #include <QNetworkReply>
-
+#include "chatpage.h"
 
 bool 框架退出=false;
 int miaomiao32=0;
@@ -47,20 +46,22 @@ int mapTypeToTabIndex(int type)
 }
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 int plugin_n=0;
-void botnomsg(int type,const QString &openid,const QString &msgid)
+void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
 {
-    if(m_logStore[0].capacity()==0) return ;
+
     int tabIndex=type + 1;
     if(tabIndex<1 || tabIndex>5) return;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    if(index<0 || index>=m_logStore[tabIndex].capacity()) return;
-    LogEntry& entry =  m_logStore[tabIndex].at(index);
-    if(!entry.direction.isEmpty()) return;
-    entry.n++;
+    if(index<0) return;
+
+
+    int n = g_logdb[tabIndex]->incrementBufferStatus(index);
+    if(n == 255) return; //255代表被处理了
     //qDebug()<< "未回应计数：" <<entry.n;
-    if(entry.n>=plugin_n && m_botClients.contains(entry.appid))
+    if(n>=plugin_n && m_botClients.contains(appid))
     {
-        QQBotClient *c =  m_botClients[entry.appid];
+
+        QQBotClient *c =  m_botClients[appid];
         if(c->m_info->fallbackReply.isEmpty()) return;
         QString text="[未被处理回应]";
         c->send_messages(type,openid,text,c->m_info->fallbackReply,msgid);
@@ -70,22 +71,14 @@ void botnomsg(int type,const QString &openid,const QString &msgid)
 
 void AppendEventLog(const QString &msg,int color)
 {
-    LogEntry* ev2 = m_logStore[0].allocate2();
-    if (!ev2) return;
-    ev2->botName = QString();
-    ev2->appid = 0;
-    ev2->time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-    ev2->color = color;  // 默认颜色
-    ev2->user = QString();
-    ev2->user_name = QString();
-    ev2->groupId = QString();
-    if(msg.contains("%1"))
-        ev2->msg = msg.arg("0");
-    else
-        ev2->msg = msg;
-    ev2->msgid = QString();
-    ev2->deleteid = QString();
-    ev2->direction=QString();
+
+
+    Message m;
+    m.msg= msg;
+    m.Color_0=color;
+    m.timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    g_logdb[0]->appendLog("0","0",m);
+    logPage->onNewLogAdded(0,0,0,"",m);
 
 }
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs)
@@ -97,78 +90,6 @@ void showAutoCloseMessageBox(const QString &title, const QString &text, int time
     QTimer::singleShot(timeoutMs, msgBox, &QMessageBox::close);
 }
 
-void logMessageEvent(const QString &botName, const MessageEvent &ev,QString &direction) {
-    int tabIndex = mapTypeToTabIndex(ev.type);  // 默认全部
-
-    LogEntry &ev2 = m_logStore[tabIndex].at(ev.log);
-    ev2.n=0;
-    ev2.dirState=0;
-    ev2.fullType=ev.fullType;
-    ev2.botName = botName;
-    ev2.appid = ev.appid;
-    ev2.time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-    ev2.color = 0;  // 默认颜色
-    ev2.hf=ev.replyTo;
-    ev2.user = ev.user;
-    ev2.user_name = ev.nickname;
-    ev2.groupId = ev.groupId;
-    ev2.msg = ev.msg;
-    ev2.msgid = ev.msgId;
-    ev2.deleteid = QString();
-    ev2.direction = direction;
-    auto now = std::chrono::steady_clock::now();
-    ev2.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    ev2.color=Color_1;
-    switch (ev.type) {
-    case 0: // 群消息
-        if(ev.subType>1)
-            ev2.msg = QString("[%1] 群:%2 用户:%3").arg(ev.subType == 2 ? "群成员添加" : "群成员退群", ev.groupId, ev.user);
-        break;
-    case 1: // 频道消息
-        break;
-    case 2: // 私聊消息
-        break;
-    case 3: // 频道私聊消息
-        break;
-    case 4: // 群事件
-        ev2.msg = QString("[群事件] %1 群:%2 操作者:%3")
-                          .arg(ev.subType == 4 ? "被邀请进群" : "被踢出群", ev.groupId, ev.user);
-        break;
-    case 5: // 好友事件
-        ev2.user = ev.user;
-        ev2.msg = QString("[好友事件] %1 用户:%2")
-                          .arg(ev.subType == 6 ? "添加好友" : "删除好友", ev.user);
-        break;
-    case 6: // 频道成员事件
-        ev2.user = ev.user;
-        ev2.msg = QString("[频道成员事件] %1 频道:%2 用户:%3")
-                          .arg(ev.subType == 1 ? "加入" : "离开", ev.guildId, ev.user);
-        break;
-    case 7: // 回调事件
-        ev2.msg = QString("[回调事件] 类型:%1 数据:%2").arg(ev.callbackType).arg(ev.msg);
-        break;
-    case 8: // 审核事件
-        ev2.msgid = ev.msgId;
-        ev2.msg = QString("[审核事件] %1 消息:%2 原因:%3")
-                          .arg(ev.subType == 1 ? "通过" : "拒绝", ev.msgId, ev.msg);
-        break;
-
-    case 11: // 审核事件
-        ev2.msgid = ev.msgId;
-        ev2.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
-                      .arg(ev.subType == 1 ? "机器人被邀请进入" : "机器人被踢出频道", ev.groupId, ev.user);
-        break;
-    case 13: // 审核事件
-        ev2.msgid = ev.msgId;
-        ev2.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
-                      .arg(ev.subType == 1 ? "成员加入" : "成员离开", ev.groupId, ev.user);
-        break;
-
-    default:
-        ev2.msg = QString("[未处理事件] 类型:%1").arg(ev.msgType);
-        break;
-    }
-}
 
 
 /**
@@ -208,16 +129,8 @@ QString normalizeNewlinesToCR(const QString &input)
 QString python_code(const QString &py_code,const MessageEvent &msg);
 QString ruqunhy(const AccountInfo *info,const MessageEvent &ev);
 //===========================================================================================================================================我猜你在找这个
-void Message(AccountInfo *info,const MessageEvent &ev) {
+void Messages(AccountInfo *info,MessageEvent &ev) {
 
-    //================================引用式更新变量
-
-    LogRecord &db = g_logdb ->appendLog();
-    db.appid=info->appid_int;
-    db.user = QByteArray::fromHex(ev.user.toUtf8());
-    db.groupId = QByteArray::fromHex(ev.groupId.toUtf8());
-    db.time = QDateTime::currentSecsSinceEpoch()/60;
-    db.type= ev.type;
     if(ev.type ==4 && ev.subType==4 || ev.type==5 && ev.subType==6)
     {
         if(!info->welcomeMsg.isEmpty())
@@ -236,10 +149,8 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     QString text;
     if(m_blacklist.contains(ev.groupId) || m_blacklist.contains(ev.user)) { //黑名单
         text="[黑名单]群或用户";
-        logMessageEvent(info->nickname,ev,text);
         return;
     }
-    logMessageEvent(info->nickname,ev,text);
     QString ret =ruqunhy(info,ev);
     if(!ret.isEmpty())
     {
@@ -280,8 +191,60 @@ void Message(AccountInfo *info,const MessageEvent &ev) {
     }
 
     pluginPage->dispatch_message(ev.raw,ev);
-    if(ev.at_you || !ev.fullType) botnomsg(ev.type,ev.groupId,ev.msgId);
+    if(ev.at_you || !ev.fullType) botnomsg(ev.appid,ev.type,ev.groupId,ev.msgId);
 }
+quint32 getTimestampMs() {
+    using namespace std::chrono;
+    // 取 steady_clock（单调时钟，不受系统时间调整影响，适合做差值计算）
+    auto now = steady_clock::now();
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count();
+    return static_cast<quint32>(ms);
+}
+void addMessage(UserStat &stat,quint32 now) {
+    int capacity = stat.buffer.size();
+    if (capacity == 0) return; // 防御性检查
+
+    int writePos = (stat.head + stat.count) % capacity;
+    stat.buffer[writePos] = now;
+
+    if (stat.count < capacity) {
+        stat.count++;
+    } else {
+        stat.head = (stat.head + 1) % capacity;
+    }
+}
+
+bool isSpam(const UserStat &stat, quint32 now, int threshold,int times) {
+    if (stat.count < threshold) return false;
+
+    int capacity = stat.buffer.size();
+    int validCount = 0;
+    for (int i = 0; i < stat.count; ++i) {
+        int idx = (stat.head + i) % capacity;
+        if ((now - stat.buffer[idx]) <= times) {
+            if (++validCount >= threshold) return true;
+        }
+    }
+    return false;
+}
+bool shuaping(AccountInfo *info, const MessageEvent &ev) {
+
+    auto it = info->stat.find(ev.user_int);
+    if (it == info->stat.end()) {
+        UserStat newStat;
+        newStat.buffer.resize(info->tiaoshu + 1);
+        it = info->stat.insert(ev.user_int, newStat);
+    }
+    UserStat &stat = it.value();
+    quint32 now = getTimestampMs();
+    addMessage(stat,now);
+    if (isSpam(stat, now, info->tiaoshu,info->times)) {
+
+        return true;
+    }
+    return false;
+}
+
 QString ruqunhy(const AccountInfo *info,const MessageEvent &ev)
 {
     if(ev.type!=0) return QString(); //0代表群
@@ -735,3 +698,8 @@ bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg
     file.close();
     return true;
 }
+
+
+
+
+

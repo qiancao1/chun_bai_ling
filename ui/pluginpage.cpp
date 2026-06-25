@@ -24,11 +24,6 @@
 
 #include <QListWidget>
 
-QList<LogEntry> g_EventLogs;
-QList<LogEntry> g_channelLogs;
-QList<LogEntry> g_privateLogs;
-QList<LogEntry> g_channel_privateLogs;
-QList<LogEntry> g_groupLogs;
 
 static void safeCall(const py::object &func) {
     if (func.is_none()) return;
@@ -592,7 +587,7 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
     else if(msg.at_you || !msg.fullType)
-        botnomsg(msg.type,msg.groupId,msg.msgId);
+        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
 
 }
 
@@ -1216,7 +1211,7 @@ void PluginPage::loadPlugins() {
         {
             AppendEventLog("[载入插件] 错误："+err ,0xff);
         }else{
-            AppendEventLog("[载入插件] 成功："+path);
+            AppendEventLog("[载入插件] 成功："+path,0x35E496);
         }
     }
 }

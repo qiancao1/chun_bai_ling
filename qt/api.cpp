@@ -538,7 +538,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
     }
     if(apiId==10002)
     {
-        botnomsg(toInt(_1),toQString(_2),toQString(_3));
+        botnomsg(appid,toInt(_1),toQString(_2),toQString(_3));
         return result.c_str();
     }
     if(!g_sandboxuuid.isEmpty() && uuid==g_sandboxuuid)
@@ -773,7 +773,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
 
 void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QString &text,qint64 now_us,int type,QString &msgid,const QString &openid)
 {
-    if(m_logStore[0].capacity()==0) return ;
+
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
     QJsonObject obj = doc.object();
     QString deleteid = obj["id"].toString();
@@ -783,84 +783,58 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
     int tabIndex = mapTypeToTabIndex(type);
     m_info->message_sent++;
     m_info->sent++;
-    if (index >= 0 && index <  m_logStore[tabIndex].capacity() ) {
-        LogEntry& entry =  m_logStore[tabIndex].at(index);
-        qint64 diff_us = now_us - entry.timestamp_us;
-        double diff_ms = diff_us / 1000.0;
-        int expected = 0;
-        bool success = entry.dirState.testAndSetOrdered(expected, 1);
+    double diff_ms;
+            bool ok=false;
+    if(index>0)
+    {
 
-        if(success)
-        {
-            entry.deleteid = deleteid;
-            if(!ref.isEmpty())
-                entry.hf="[ref,msg_idx="+ref+"]";
-            else
-                entry.hf.clear();
-            if(pname.contains("%1"))
-                entry.direction = pname.arg(diff_ms) + text;
-            else
-                entry.direction = pname + text;
-            entry.color = Color_0;
-            if (deleteid.isEmpty() && message != "消息提交安全审核成功")
-            {
-                entry.direction+="\n\n--------------------------\n\n"+response;
-                entry.color = 0xff0000;
-            }
-        }else{
+        qint64 us = g_logdb[tabIndex]->setBuffer_255(index,ok);
 
-            LogEntry* e =  m_logStore[tabIndex].allocate2();
-            e->deleteid = deleteid;
-            if(pname.contains("%1"))
-                e->direction = pname.arg(diff_ms) + text;
-            else
-                e->direction = pname + text;
-            if(!ref.isEmpty())
-                e->hf="[ref,msg_idx="+ref+"]";
-            else
-                e->hf.clear();
-            e->botName = m_info->nickname;
-            e->appid =m_info->appid_int;
-            e->time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-            e->msg = "[多条回复] "+entry.msg;
-            e->user =entry.user;
-            e->user_name =entry.user_name;
-            e->groupId = entry.groupId;
-            e->msgid = entry.msgid;
-            e->color = Color_0;
-            if (deleteid.isEmpty() && message != "消息提交安全审核成功")
-            {
-                e->direction+="\n\n--------------------------\n\n"+response;
-                e->color = 0xff0000;
-            }
-        }
 
-    }else{
-        LogEntry* entry =  m_logStore[tabIndex].allocate2();
-        entry->deleteid = deleteid;
+        qint64 diff_us = now_us - us;
+        diff_ms = diff_us / 1000.0;
+    }
+
+    Message msg;
+    if(ok)
+    {
+        g_logdb[tabIndex]->readLog(m_info->appid,openid,index,msg);
+        msg.plugin_ch = deleteid;
         if(pname.contains("%1"))
-            entry->direction = pname.arg("0") + text;
+            msg.direction = pname.arg(diff_ms) + text;
         else
-            entry->direction = pname + text;
-        if(!ref.isEmpty())
-            entry->hf="[ref,msg_idx="+ref+"]";
-        else
-            entry->hf.clear();
-        entry->botName = m_info->nickname;
-        entry->appid =m_info->appid_int;
-        entry->time = QDateTime::currentDateTime().toString("dd hh:mm:ss");
-        entry->msg = QString();
-        entry->user = QString();
-        entry->user_name = QString();
-        entry->groupId = openid;
-        entry->msgid = msgid;
-        entry->color = Color_0;
+            msg.direction = pname + text;
+
+        msg.Color_0 = Color_0;
         if (deleteid.isEmpty() && message != "消息提交安全审核成功")
         {
-            entry->direction+="\n\n--------------------------\n\n"+response;
-            entry->color = 0xff0000;
+            msg.direction+="\n\n--------------------------\n\n"+response;
+            msg.Color_0 = 0xff0000;
         }
+        g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
+        logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
+        return ;
     }
+    msg.isSelf=true;
+    msg.ch = deleteid;
+
+    if(!ref.isEmpty())
+        msg.hf="[ref,msg_idx="+ref+"]";
+    else
+        msg.hf.clear();
+    if(pname.contains("%1"))
+        msg.msg = pname.arg(diff_ms) + text;
+    else
+        msg.msg = pname + text;
+    msg.Color_0 = Color_0;
+    if (deleteid.isEmpty() && message != "消息提交安全审核成功")
+    {
+        msg.msg+="\n\n--------------------------\n\n"+response;
+        msg.Color_0 = 0xff0000;
+    }
+    g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
+    logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
+
 }
 
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
@@ -1732,15 +1706,15 @@ QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     result["rows"] = rowsArray;
     return result;
 }
-void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJsonArray &prompt_keyboard)
+void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJsonArray &prompt_keyboard,const QString &openid)
 {
     QString keyboard_data = extractBetween(text,"#b:#","#b:#");
     if(!keyboard_data.isEmpty())
         text=replaceBetweenAll(text,"#b:#","#b:#","");
     int index = mapTypeToTabIndex(type);
-    static LogEntry emptyLogEntry;
-    bool logValid = (log >= 0 && log < m_logStore[index].capacity());
-    LogEntry &log2 = logValid ? m_logStore[index].at(log) : emptyLogEntry;
+
+    Message log2;
+    g_logdb[index]->readLog(m_info->appid,openid,log,log2);
     const QList<mdbtn> &bts = m_info->mdbtn;
     for (const mdbtn &bt : bts)
     {
@@ -1867,15 +1841,20 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
     if(text.contains("{{botname}}"))
         text=subTextReplace(text,"{{botname}}",m_info->nickname);
     if(text.contains("{{name}}"))
-        text=subTextReplace(text,"{{name}}",log2.user_name);
+    {
+        auto *db = g_botdb [m_info->appid_int];
+        QString username;
+        db->getOrUpdateUser(openid,username);
+        text=subTextReplace(text,"{{name}}",username);
+    }
     if(text.contains("{{group}}"))
-        text=subTextReplace(text,"{{group}}",log2.groupId);
+        text=subTextReplace(text,"{{group}}",openid);
     if(text.contains("{{user}}"))
         text=subTextReplace(text,"{{user}}",log2.user);
     if(text.contains("{{msg}}"))
         text=subTextReplace(text,"{{msg}}",log2.msg);
     if(text.contains("{{msgid}}"))
-        text=subTextReplace(text,"{{msgid}}",log2.msgid);
+        text=subTextReplace(text,"{{msgid}}",log2.ch);
 
 }
 
@@ -1898,7 +1877,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
 
         QString textB=normalizeNewlinesToCR(text); //处理换行
 
-        bianl(type,index,textB,keyboard,prompt_keyboard);//挂载按钮解析 小尾巴
+        bianl(type,index,textB,keyboard,prompt_keyboard,openid);//挂载按钮解析 小尾巴
         if(textB.isEmpty())
         {
             QString response = R"({"message":"发送内容不能为空"})";
@@ -2004,7 +1983,8 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 //撤回信息
 QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid)
 {
-    QString url = get_url(type, openid, "messages", msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    QString url = get_url(type, openid, "messages", realMsgId);
 
     QNetworkRequest request;
     request.setUrl(QUrl(url));
@@ -2022,10 +2002,7 @@ QString QQBotClient::delete_messages(int type, const QString &openid, const QStr
     timer.start(30000);  // 30秒超时，可根据需要调整
     loop.exec();
 
-    QByteArray result;
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        result = reply->readAll();
-    }
+    QByteArray result = reply->readAll();
     reply->deleteLater();
     return QString::fromUtf8(result);
 }

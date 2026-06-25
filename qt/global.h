@@ -43,6 +43,7 @@
 #include "qqbotclient.h"
 #include "botdb.h"
 #include "lmdbkv.h"
+
 #include "sandboxwindow.h"
 #include "set.h"
 class Global
@@ -78,17 +79,13 @@ extern set *setA;
 extern QStackedWidget *stackedWidget;
 extern ForbiddenWordPage *forbidden;
 extern int m_currentBotIndex;
-extern QList<LogEntry> g_EventLogs;
-extern QList<LogEntry> g_channelLogs;
-extern QList<LogEntry> g_privateLogs;
-extern QList<LogEntry> g_channel_privateLogs;
-extern QList<LogEntry> g_groupLogs;
+
 extern int g_EventLogs_index;
 extern int g_channelLogs_index_index;
 extern int g_privateLogs_index;
 extern int g_channel_privateLogs_index;
 extern int g_groupLogs_index;
-
+extern int g_appid;
 extern int Color_0;//默认
 extern int Color_1;//默认
 extern ScheduleConfigWidget *schedule;
@@ -97,8 +94,10 @@ extern int miaomiao;
 extern LmdbKV *cache_db;
 extern LmdbKV *aidb;
 extern LmdbKV *dsdb;
-extern LogDB *g_logdb;
-extern RingBuffer<LogEntry> m_logStore[5];
+extern LmdbKV *accdb;
+
+extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
+
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
 extern SharedMemoryBridge *bridge;
 extern QJsonObject g_config;
@@ -133,7 +132,7 @@ QString replaceFileTag(const QString &content, const QString &format = "[文件]
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
-void botnomsg(int type, const QString &openid, const QString &msgid);
+void botnomsg(int appid,int type, const QString &openid, const QString &msgid);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms
@@ -317,6 +316,84 @@ private:
 };
 
 
+#include <QString>
+#include <QList>
+#include <QChar>
 
+// ----- 字符分类（同前） -----
+enum CharCategory { CatUnknown, CatChinese, CatLetter, CatDigit, CatSymbol };
+
+static CharCategory getCategory(const QChar &ch) {
+    if (ch.isDigit()) return CatDigit;
+    if (ch.isLetter() && ch.unicode() < 128) return CatLetter;
+    if (ch.script() == QChar::Script_Han) return CatChinese;
+    return CatSymbol;
+}
+
+// ----- 核心提取函数（模板） -----
+template<typename... Args>
+int extractParams(const QString &text, const QString &cmd, int filter, Args&... args) {
+    // 1. 检查指令
+    if (!text.startsWith(cmd)) return -1;
+
+    // 2. 解析所有参数到 QList（自动按类型分割）
+    QList<QString> params;
+    int start = cmd.length();
+    if (start < text.length()) {
+        int paramStart = start, paramLen = 0;
+        CharCategory currentType = CatUnknown;
+        for (int i = start; i < text.length(); ++i) {
+            QChar ch = text[i];
+            CharCategory cat = getCategory(ch);
+            if (cat != currentType) {
+                if (paramLen > 0)
+                    params.append(text.mid(paramStart, paramLen));
+                paramStart = i;
+                paramLen = 0;
+                currentType = cat;
+            }
+            bool skip = false;
+            switch (cat) {
+            case CatChinese: skip = (filter & 4); break;
+            case CatLetter:  skip = (filter & 1); break;
+            case CatDigit:   skip = (filter & 2); break;
+            case CatSymbol:  skip = !(filter & 8); break;
+            default: break;
+            }
+            if (!skip) ++paramLen;
+        }
+        if (paramLen > 0)
+            params.append(text.mid(paramStart, paramLen));
+    }
+
+    // 3. 将参数分配给变量（最后一个变量收尾）
+    constexpr int varCount = sizeof...(Args);
+    if (varCount == 0) return params.size();
+
+    // 辅助递归函数：idx 为当前变量索引，varCount 为总变量数
+    auto assignRecursive = [&](auto&& self, int idx, int varCnt, const QList<QString> &p, auto& first, auto&... rest) -> void {
+        if (idx == varCnt - 1) {
+            // 最后一个变量：将 p 从 idx 起的所有元素用空格连接
+            QStringList remaining;
+            for (int i = idx; i < p.size(); ++i)
+                remaining << p[i];
+            first = remaining.join(" ");
+            return; // 没有后续变量了
+        } else {
+            // 非最后一个变量：只取对应位置的一个参数
+            if (idx < p.size())
+                first = p[idx];
+            // 继续处理下一个变量
+            if constexpr (sizeof...(rest) > 0) {
+                self(self, idx + 1, varCnt, p, rest...);
+            }
+        }
+    };
+
+    // 启动递归
+    assignRecursive(assignRecursive, 0, varCount, params, args...);
+
+    return params.size(); // 返回实际提取的参数个数
+}
 
 #endif // GLOBAL_H

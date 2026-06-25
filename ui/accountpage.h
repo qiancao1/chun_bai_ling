@@ -16,7 +16,7 @@ public:
     void refreshCards2(AccountInfo *info);
     void refreshCards();
     void extracted(QJsonArray &arr);
-    void saveAccounts();
+    void saveAccounts(const AccountInfo *info);
 
 private slots:
     void onAddAccount();

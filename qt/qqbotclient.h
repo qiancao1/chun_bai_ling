@@ -27,6 +27,17 @@
 #include <QTimer>
 #include "AccountInfo.h"
 #include <QColor>
+struct logdb
+{
+    QString groupId;     // 群id / 子频道id / 私聊对方的id
+    QString user;       // 发送人id (用户openid或member_openid) hex32字节
+    QString msgId;      // 消息id
+    QString msg;        // 消息内容 (已去除@前缀等)
+    QString nickname;       // 发送人昵称
+    QString replyTo;        // 引用回复的消息id (message_scene字段)
+    int member_role=-1;     //0群主 1管理 2群成员
+};
+
 
 struct MessageEvent
 {
@@ -34,7 +45,6 @@ struct MessageEvent
     QString user;       // 发送人id (用户openid或member_openid)
     QString msgId;          // 消息id
     QString msg;        // 消息内容 (已去除@前缀等)
-
     qint64 seq = 0;         // 消息序号 (用于去重/过滤)
     int appid = 0;
     int user_int=0;
@@ -44,7 +54,6 @@ struct MessageEvent
     int member_role=-1;     //0群主 1管理 2群成员
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
-
     QString nickname;       // 发送人昵称
     QString guildId;        // 频道id (仅频道消息有效)
     QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")
@@ -52,8 +61,7 @@ struct MessageEvent
     QString raw;        // 原始JSON (d对象)
     QString callbackId;     // 回调事件id (用于INTERACTION_CREATE)
     QString replyTo;        // 引用回复的消息id (message_scene字段)
-    int log=0;
-    // 辅助函数：将结构体转为可读字符串 (调试用)
+    uint64_t log=0;
     QString toString() const;
 };
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
@@ -72,7 +80,7 @@ public:
     bool isOnline() const { return m_info->online; }
     AccountInfo *m_info;                // 指向外部原始 AccountInfo
     int m_reconnectAttempts;
-
+    void onTextMessage(const QString &message);
     // 发送消息接口
     QString send_messages(int type, const QString &openid, QString &pname, QString &text, const QString &msgid=QString(),
                           bool is_wakeup=false, bool mode=false);
@@ -118,6 +126,7 @@ private slots:
 
 private:
     // 网关和 token
+    void parseMessageEvent(QJsonObject &payload,const QString &text);
     QString fetchGatewayUrl();
     bool refreshAccessToken();
     void initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup);
@@ -128,7 +137,7 @@ private:
                             qint64& expireTime,QString &md5, bool &ok);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
     void addmsglog(QString &response, int index, QString &pname, const QString &text, qint64 now_us, int type, QString &msgid, const QString &openid);
-    void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard);
+    void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid);
     // WebSocket 协议
     void sendIdentify();
     void sendHeartbeat();

@@ -229,7 +229,8 @@ void CardWidget::onBotLoginSuccess()
 {
     refreshDisplay();
     emit loginClicked(m_info->appid_int);
-    AppendEventLog((m_info->nickname.isEmpty() ? m_info->appid : m_info->nickname) + "->登录成功", Qt::green);
+    accountPage->saveAccounts(m_info);
+    AppendEventLog((m_info->nickname.isEmpty() ? m_info->appid : m_info->nickname) + "->登录成功", 0xF83834);
 }
 
 //断开

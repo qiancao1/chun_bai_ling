@@ -15,14 +15,14 @@ class botset : public QWidget
 public:
     explicit botset(QWidget *parent = nullptr);
     ~botset();
-    void 列表行被单击(QListWidgetItem *item);
+    void 列表行被单击();
 
 private slots:
     void on_pushButton_clicked();
 
 private:
     Ui::botset *ui;
-    int m_appid=0;
+
 };
 
 #endif // BOTSET_H

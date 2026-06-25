@@ -56,6 +56,7 @@
 #include <qgroupbox.h>
 #include "htmltoimagewidget.h"
 #include "plts.h"
+#include "qunguan.h"
 #include "sandboxwindow.h"
 #include "set.h"
 #include "textreplaceconfigwidget.h"
@@ -74,7 +75,14 @@
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.0.4.5 (2026-06-15)
+## v1.0.5.10 (2026-06-25)
+- 修复 回复设置未保存问题
+- 增加 刷屏检测
+- 增加 ai白名单 模式 以及设置开启等指令
+- 重写 日志系统 减少内存消耗
+- 移除 使用了 GPLv3 协议的库(强制开源) 框架整体使用LGPL协议(非强制开源)
+
+## v1.0.4.5 (2026-06-23)
 - 好好好 茜草改名为 纯白铃
 - 添加 订阅 也可以叫定时 可以推送订阅信息的群 支持自定义提交参数
 - 修复 js子进程不会自动退出问题
@@ -128,14 +136,35 @@ ScheduleConfigWidget *schedule=nullptr;
 HtmlToImageWidget *htmltoimg =nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
 AiWidget *ai_ui = nullptr;
+qunguan *ui_qunguan=nullptr;
+
+
 QListWidget *robotListWidget=nullptr;
 botset *refset=nullptr;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
 extern int ts_m_appid;
 extern bool ts_m_stopPush;
-
-
+quint32 getLastTimestamp(const UserStat &stat) {
+    if (stat.count == 0) return 0;  // 无数据，当作过期
+    int capacity = stat.buffer.size();
+    int lastIdx = (stat.head + stat.count - 1) % capacity;
+    return stat.buffer[lastIdx];
+}
+quint32 getTimestampMs();
+void cleanInactiveUsers(QHash<int,UserStat> *hash, quint32 now, quint32 expireMs) {
+    if (!hash) return;
+    QMutableHashIterator<int,UserStat> it(*hash);
+    while (it.hasNext()) {
+        it.next();
+        const UserStat &stat = it.value();
+        quint32 last = getLastTimestamp(stat);
+        // 如果从未发言（last==0）或者距离现在超过 expireMs 毫秒，删除
+        if (last == 0 || (now - last) > expireMs) {
+            it.remove();
+        }
+    }
+}
 MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(5)
 {
     // 无边框窗口
@@ -162,7 +191,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
                 if (card) card->onTimeRefresh();
             }
         }
-        schedule->检查定时列表();
+        schedule->jiancha();
         if(ss==homePage) homePage->refreshRuntimeStats();
         if (!bridge) return;
         if (miaomiao32 >= 2)
@@ -180,6 +209,18 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
             pluginPage->syncPluginsTo32();
     });
     m_heartbeatTimer->start();
+
+
+    QTimer *cleanTimer = new QTimer();
+    QObject::connect(cleanTimer, &QTimer::timeout, [=]() {
+        quint32 now = getTimestampMs();
+        for(auto &acc : m_accounts)
+        {
+            cleanInactiveUsers(&acc->stat, now, 30 * 60 * 1000); // 30分钟
+        }
+    });
+    cleanTimer->start(60000); // 每60秒检查一次
+
 }
 
 void MainWindow::xr()
@@ -272,7 +313,7 @@ void MainWindow::setupUi()
     schedule =new ScheduleConfigWidget;
     htmltoimg = new HtmlToImageWidget(this);
     ai_ui = new AiWidget;
-
+    ui_qunguan = new qunguan;
     //aiContainer = new QWidget(this);          // 容器
     //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
 
@@ -281,6 +322,10 @@ void MainWindow::setupUi()
     myPlts->show();
     refset = new botset(this);   // 创建 plts 对象
     refset->show();
+
+
+
+
     QGroupBox *configGroupBox = new QGroupBox();   // 分组框，标题可自定义
 
     configGroupBox->setStyleSheet("QGroupBox { padding-top: 5px; margin-top: 0px; border: 0px; }");
@@ -300,7 +345,7 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(schedule, "订阅");
     configTabWidget2->addTab(ai_ui, "Ai");
     configTabWidget2->addTab(refset,"回复设置");
-
+    configTabWidget2->addTab(ui_qunguan,"刷屏检测");
     hxzsy->addWidget(configTabWidget2);
 
 
@@ -396,20 +441,19 @@ void MainWindow::setupUi()
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
         QListWidgetItem *item = robotListWidget->currentItem();
-
         if(ts_m_stopPush)
         {
             QMessageBox::warning(this,"批量推送中","批量推送信息中展示不能切换 账号");
             return ;
         }
-
-        ts_m_appid = item->data(Qt::UserRole).toInt();
-        RuleConfigWidget->列表行被单击(item);
-        TextReplace->列表行被单击(item);
-        keyword->列表行被单击(item);
-        schedule->列表行被单击(item);
-        ai_ui->列表行被单击(item);
-        refset->列表行被单击(item);
+        g_appid = item->data(Qt::UserRole).toInt();
+        RuleConfigWidget->列表行被单击();
+        TextReplace->列表行被单击();
+        keyword->列表行被单击();
+        schedule->列表行被单击();
+        ai_ui->列表行被单击();
+        refset->列表行被单击();
+        ui_qunguan->列表行被单击();
     });
     sideLayout->addWidget(btnHome);
     sideLayout->addWidget(btnAccount);

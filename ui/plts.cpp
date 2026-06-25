@@ -8,7 +8,7 @@ QList<QString> ts_m_groupStatus;
 QString ts_m_text= QString();
 bool ts_m_stopPush = false;
 
-int ts_m_appid=0;                      // 应用ID，用于文件名
+                    // 应用ID，用于文件名
 plts::plts(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::plts)
@@ -45,7 +45,7 @@ bool plts::保存() {
     QList<int> pendingFriends;
     extracted(pendingFriends);
 
-    QFile fFile(QString("data/%1_f.bin").arg(ts_m_appid));
+    QFile fFile(QString("data/%1_f.bin").arg(g_appid));
     if (!fFile.open(QIODevice::WriteOnly))
         return false;
     QDataStream out(&fFile);
@@ -56,7 +56,7 @@ bool plts::保存() {
     QList<QString> pendingGroups;
     extracted(pendingGroups);
 
-    QFile gFile(QString("data/%1_g.bin").arg(ts_m_appid));
+    QFile gFile(QString("data/%1_g.bin").arg(g_appid));
     if (!gFile.open(QIODevice::WriteOnly))
         return false;
     QDataStream out2(&gFile);
@@ -75,13 +75,13 @@ void plts::加载()
     ts_m_friendStatus.clear();
     ts_m_groupStatus.clear();
 
-    QFile fFile(QString("data/%1_f.bin").arg(ts_m_appid));
+    QFile fFile(QString("data/%1_f.bin").arg(g_appid));
     if (fFile.open(QIODevice::ReadOnly)) {
         QDataStream in(&fFile);
         in >> ts_m_friendStatus;
         fFile.close();
     }
-    QFile gFile(QString("data/%1_g.bin").arg(ts_m_appid));
+    QFile gFile(QString("data/%1_g.bin").arg(g_appid));
     if (gFile.open(QIODevice::ReadOnly)) {
         QDataStream in(&gFile);
         in >> ts_m_groupStatus;
@@ -95,12 +95,12 @@ void plts::on_sctswj_2_clicked(bool checked)
         QMessageBox::warning(this,"已经在运行","已经在群发中 点击这个按钮无效");
         return;
     }
-    if(!g_botdb.contains(ts_m_appid))
+    if(!g_botdb.contains(g_appid))
     {
         QMessageBox::warning(this,"生成失败","请登录账号 自动打开数据库后再试试");
         return;
     }
-    auto *db = g_botdb[ts_m_appid];
+    auto *db = g_botdb[g_appid];
     ts_m_friendStatus.clear();
     ts_m_groupStatus.clear();
     if(ui->checkBox_tsq->checkState())
@@ -124,8 +124,8 @@ void plts::on_sctswj_clicked(bool checked)
         return;
     }
 
-    QFile::remove(QString("data/%1_f.bin").arg(ts_m_appid));
-    QFile::remove(QString("data/%1_g.bin").arg(ts_m_appid));
+    QFile::remove(QString("data/%1_f.bin").arg(g_appid));
+    QFile::remove(QString("data/%1_g.bin").arg(g_appid));
 
 }
 void plts::on_tzts_clicked(bool checked)
@@ -144,8 +144,8 @@ public:
     ___tsnr_f(int index):m_index(index) {}
 
     void run() override {
-        auto *db = g_botdb[ts_m_appid];
-        QQBotClient *bot = m_botClients[ts_m_appid];
+        auto *db = g_botdb[g_appid];
+        QQBotClient *bot = m_botClients[g_appid];
         int i2=0;
         QString pname="[批量推送]";
         int len = ts_m_friendStatus.size();
@@ -173,7 +173,7 @@ public:
 
     void run() override {
 
-        QQBotClient *bot = m_botClients[ts_m_appid];
+        QQBotClient *bot = m_botClients[g_appid];
         int i2=0;
         QString pname="[批量推送]";
          int len = ts_m_groupStatus.size();
@@ -201,12 +201,12 @@ void plts::on_ksts_clicked(bool checked)
         QMessageBox::warning(this,"已经在运行","还点启动呢 都快发完了");
         return;
     }
-    if(!m_botClients.contains(ts_m_appid))
+    if(!m_botClients.contains(g_appid))
     {
         QMessageBox::warning(this,"开始失败","指定appid 机器人没登录");
         return;
     }
-    if(!m_botClients[ts_m_appid]->isOnline())
+    if(!m_botClients[g_appid]->isOnline())
     {
         QMessageBox::warning(this,"开始失败","指定appid 机器人没登录");
         return;

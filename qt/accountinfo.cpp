@@ -20,11 +20,12 @@
 
 #include "accountinfo.h"
 #include <QJsonArray>
+#include <qjsondocument.h>
 #include "jjm.h"
 
 // ============================================================
 
-QJsonObject AccountInfo::toJson() const {
+QString AccountInfo::toJson() const {
     QJsonObject obj;
     obj["appid"] = appid;
 
@@ -76,7 +77,16 @@ QJsonObject AccountInfo::toJson() const {
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
     obj["jiam"]=1;
-    return obj;
+
+    obj["e_bai"]=e_bai;
+    obj["bai_sr"]=bai_sr;
+    obj["bai_sc"]=bai_sc;
+    obj["bai_qy"]=bai_qy;
+    obj["times"] = times;
+    obj["shuap"]=shuap;
+    obj["tiaoshu"]=tiaoshu;
+
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
 AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
@@ -119,6 +129,15 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.今日频道数量= obj["c_add"].toInt();
     info.今日退出频道数量= obj["c_sub"].toInt();
 
+    info.times = obj["times"].toInt(5);
+    info.shuap = obj["shuap"].toBool();
+    info.tiaoshu = obj["tiaoshu"].toInt(5);
+
+    //ai白名单
+    info.e_bai = obj["e_bai"].toBool();
+    info.bai_sr = obj["bai_sr"].toString();
+    info.bai_sc = obj["bai_sc"].toString();
+    info.bai_qy = obj["bai_qy"].toString();
 
     qint64 now = QDateTime::currentSecsSinceEpoch(); // 你已经有这个了
     QDateTime dt = QDateTime::fromSecsSinceEpoch(now);

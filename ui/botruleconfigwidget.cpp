@@ -175,7 +175,7 @@ void BotRuleConfigWidget::setupUI()
 
 void BotRuleConfigWidget::initTable()
 {
-    QStringList headers = {"备注", "禁止词", "按钮文本", "匹配类型", "候选词"};
+    QStringList headers = {"备注", "禁止词", "按钮JSON", "匹配类型", "候选词"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -186,28 +186,27 @@ void BotRuleConfigWidget::initTable()
 }
 
 
-void BotRuleConfigWidget::列表行被单击(QListWidgetItem *item)
+void BotRuleConfigWidget::列表行被单击()
 {
-    if (m_currentRobotId != 0)
-        saveCurrentRulesToMap();
 
 
-    if (item) {
-        m_currentRobotId = item->data(Qt::UserRole).toInt();
-        emit needLoadBotRules(m_currentRobotId);   // 队列加载
+
+    if (g_appid!=0) {
+
+        emit needLoadBotRules(g_appid);   // 队列加载
     } else {
-        m_currentRobotId = 0;
+
         ruleTable->setRowCount(0);
     }
 }
 
 void BotRuleConfigWidget::saveCurrentRulesToMap()
 {
-    if (m_currentRobotId == 0) return;
+    if (g_appid == 0) return;
     QList<BotRuleItem> rules;
     for (int row = 0; row < ruleTable->rowCount(); ++row)
         rules.append(getRuleItemFromRow(row));
-    m_ruleMap[m_currentRobotId] = rules;
+    m_ruleMap[g_appid] = rules;
 }
 
 void BotRuleConfigWidget::loadRulesForRobot(int robotId)
@@ -309,9 +308,9 @@ void BotRuleConfigWidget::onAddRow()
 {
     BotRuleItem newItem;
     newItem.enabled = true;
-    newItem.remark = "新规则";
+    newItem.remark = "菜单";
     newItem.jzc = "";
-    newItem.buttonText = "新按钮";
+    newItem.buttonText =R"({"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"例子","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"例子","style":1,"visited_label":"按钮1"}}]}]}}})";
     newItem.matchType = 0;
     newItem.candidateWords = "";
     addRowFromRuleItem(newItem);
@@ -381,11 +380,11 @@ void BotRuleConfigWidget::onMoveRowUp()
         return;
     }
     saveCurrentRulesToMap();
-    if (!m_ruleMap.contains(m_currentRobotId)) return;
-    QList<BotRuleItem> &rules = m_ruleMap[m_currentRobotId];
+    if (!m_ruleMap.contains(g_appid)) return;
+    QList<BotRuleItem> &rules = m_ruleMap[g_appid];
     if (row >= rules.size()) return;
     qSwap(rules[row], rules[row-1]);
-    emit needLoadBotRules(m_currentRobotId);
+    emit needLoadBotRules(g_appid);
     ruleTable->selectRow(row-1);
 }
 
@@ -397,19 +396,19 @@ void BotRuleConfigWidget::onMoveRowDown()
         return;
     }
     saveCurrentRulesToMap();
-    if (!m_ruleMap.contains(m_currentRobotId)) return;
-    QList<BotRuleItem> &rules = m_ruleMap[m_currentRobotId];
+    if (!m_ruleMap.contains(g_appid)) return;
+    QList<BotRuleItem> &rules = m_ruleMap[g_appid];
     if (row+1 >= rules.size()) return;
     qSwap(rules[row], rules[row+1]);
-    emit needLoadBotRules(m_currentRobotId);
+    emit needLoadBotRules(g_appid);
     ruleTable->selectRow(row+1);
 }
 
 void BotRuleConfigWidget::onRowsSwapped(int fromRow, int toRow)
 {
-    if (m_currentRobotId == 0) return;
-    if (m_ruleMap.contains(m_currentRobotId)) {
-        QList<BotRuleItem> &rules = m_ruleMap[m_currentRobotId];
+    if (g_appid == 0) return;
+    if (m_ruleMap.contains(g_appid)) {
+        QList<BotRuleItem> &rules = m_ruleMap[g_appid];
         if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {
             BotRuleItem moving = rules.takeAt(fromRow);
             int insertPos = toRow;
@@ -421,19 +420,19 @@ void BotRuleConfigWidget::onRowsSwapped(int fromRow, int toRow)
     }
     // 断开 itemChanged 信号，避免加载时触发保存
     disconnect(ruleTable, &QTableWidget::itemChanged, this, &BotRuleConfigWidget::onTableDataChanged);
-    emit needLoadBotRules(m_currentRobotId);
+    emit needLoadBotRules(g_appid);
     ruleTable->selectRow(toRow);
 }
 
 void BotRuleConfigWidget::onTableDataChanged()
 {
-    if (m_currentRobotId == 0) return;
+    if (g_appid == 0) return;
     saveCurrentRulesToMap();
 }
 
 void BotRuleConfigWidget::onSaveToFile()
 {
-    if (m_currentRobotId != 0)
+    if (g_appid != 0)
         saveCurrentRulesToMap();
     saveAllRulesToFile();
     oninitbot();
@@ -508,11 +507,11 @@ void BotRuleConfigWidget::saveAllRulesToFile(const QString &filePath)
 
 void BotRuleConfigWidget::oninitbot()
 {
-    if (m_currentRobotId == 0) return;
-    const QList<BotRuleItem>& rules = m_ruleMap[m_currentRobotId];
+    if (g_appid == 0) return;
+    const QList<BotRuleItem>& rules = m_ruleMap[g_appid];
     if (rules.isEmpty()) return;
     for (auto& account : m_accounts) {
-        if (account->appid_int != m_currentRobotId) continue;
+        if (account->appid_int != g_appid) continue;
         account->mdbtn.clear();
         for (const auto& rule : rules) {
             QJsonParseError parseError;
@@ -557,10 +556,7 @@ void BotRuleConfigWidget::loadAllRulesFromFile(const QString &filePath)
                 items.append(BotRuleItem::fromJson(val.toObject()));
         }
         m_ruleMap[robotId] = items;
-        m_currentRobotId=robotId;
+
         oninitbot();
     }
-
-    if (m_currentRobotId != 0)
-        loadRulesForRobot(m_currentRobotId);
 }

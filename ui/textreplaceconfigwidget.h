@@ -47,7 +47,7 @@ public:
     explicit TextReplaceConfigWidget(QWidget *parent = nullptr);
     ~TextReplaceConfigWidget();
     void oninitbot();
-    void 列表行被单击(QListWidgetItem *item);   // 切换机器人
+    void 列表行被单击();   // 切换机器人
 
 
 signals:
@@ -87,7 +87,7 @@ private:
 
     // 数据
     QHash<int, QList<TextReplaceRule>> rulesMap;   // appid_int -> 规则列表
-    int currentAppId = 0;
+
 
     // 列索引
     static constexpr int COL_ENABLED = 0;

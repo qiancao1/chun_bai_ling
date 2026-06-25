@@ -15,35 +15,27 @@ botset::~botset()
     delete ui;
 }
 int accinfo(int appid);
-void botset::列表行被单击(QListWidgetItem *item)
+void botset::列表行被单击()
 {
-    if (item) {
-        m_appid = item->data(Qt::UserRole).toInt();
+    if (g_appid!=0) {
+        int index=accinfo(g_appid);
+        if(index==-1) return;
 
-        int index=accinfo(m_appid);
-        if(index==-1){
-            QMessageBox::warning(this,"失败","保存失败 保存的指定机器人 好像不在于账号列表 请重新选择 机器人");
-            return;
-        }
         auto &info = m_accounts [index];
         ui->wclhf->setPlainText(info->fallbackReply);
         ui->textEdit->setPlainText(info->welcomeMsg);
         ui->textEdit_3->setPlainText(info->rqhy);
-
         ui->lineEdit->setText(QString::number(info->fasjg));
-
-    } else {
-        m_appid = 0;
     }
 }
 void botset::on_pushButton_clicked()
 {
-    if(m_appid<=0)
+    if(g_appid<=0)
     {
         QMessageBox::warning(this,"还没选中机器人","请选中一个机器人再点击保存");
         return;
     }
-    int index=accinfo(m_appid);
+    int index=accinfo(g_appid);
     if(index==-1){
         QMessageBox::warning(this,"失败","保存失败 保存的指定机器人 好像不在于账号列表 请重新选择 机器人");
         return;
@@ -54,5 +46,6 @@ void botset::on_pushButton_clicked()
     info->rqhy = ui->textEdit_3->toPlainText();
 
     info->fasjg = ui->lineEdit->text().toInt();
+    accountPage->saveAccounts(info.get());
 }
 

@@ -12,22 +12,24 @@
 #include <QStyledItemDelegate>
 #include <QListWidget>
 #include <qlabel.h>
-#include "placeholderlineedit.h"
+#include "QQBotClient.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
 
-// 全局替换宏
-#define QLineEdit PlaceholderLineEdit
-#define QTextEdit PlaceholderTextEdit
+
 // 消息结构
 struct Message {
     QString user;
     QString msg;
-
-    bool isSelf=false;
     QString timestamp;
     QString name;
-    QString hf;
-    QString ch;
+    QString hf; //回复用
+    QString ch; //撤回消息用
+    QString plugin_ch;
+    QString direction;
+
+    int Color_0=0;
+    bool isSelf=false;
+
     Message() {}
     Message(const QString& s, const QString& c, bool self,const QString &t,const QString &n,const QString &hf,const QString &ch)
         : user(s), msg(c), isSelf(self), timestamp(t) , name(n),hf(hf),ch(ch) {}
@@ -97,11 +99,11 @@ public:
     ~ChatPage();
     void btnsetChecked();
     void updateAllContactLists(int index);
-    void addContact(int type, int appid, const QString& id, const QString& openid , const QString& name, const QString &msg, const QString &msgid, const QString &hf);
+    void addContact(int type, const MessageEvent &ev);
     int m_appid=0;
     int m_type=0;
     void addMessage(const Message &msg);
-    QTextEdit *inputEdit;
+    PlaceholderTextEdit *inputEdit;
     QHash<QString,int> 全量群;
     QHash<QString,QString> customGroupNames;
     QHash<QString,qint64> 最近对话;

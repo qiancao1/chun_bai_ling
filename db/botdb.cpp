@@ -357,7 +357,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
             uint32_t newSeq = getNextSeqId(txn);
             if (newSeq == 0) return -1;
             record.seq_id = newSeq;
-            record.reserved_qq = 0;
+
             record.record_time = nowMinutes();
             record.invited_group_count = 0;
 
@@ -422,7 +422,55 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
     mdb_txn_abort(txn);
     return false;
 }
+bool BotDB::updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord)
+{
+    // 拷贝一份，确保 record_time 被刷新
+    UserRecord toWrite = newRecord;
+    toWrite.record_time = nowMinutes();   // 强制更新时间
+    return updateUserBySeqId(seq_id, [&](UserRecord &r) {
+        r = toWrite;
+    });
+}
+bool BotDB::updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater)
+{
+    if (!m_env) return false;
 
+    bool success = retryWrite([&](MDB_txn *txn) -> int {
+        // 1. 通过 seq_id 获取对应的 openid 二进制
+        QByteArray openidBin;
+        if (!getOpenIdBySeq(txn, seq_id, openidBin)) {
+            return MDB_NOTFOUND;   // 没有该 seq_id
+        }
+
+        // 2. 用 openid 作为 key 读取原始记录
+        MDB_val key, value;
+        key.mv_data = openidBin.data();
+        key.mv_size = openidBin.size();
+
+        int rc = mdb_get(txn, m_dbi_users, &key, &value);
+        if (rc != MDB_SUCCESS) {
+            return rc;
+        }
+        if (value.mv_size != sizeof(UserRecord)) {
+            return -1;   // 数据损坏
+        }
+
+        // 3. 拷贝出记录并调用用户提供的修改函数
+        UserRecord record;
+        memcpy(&record, value.mv_data, sizeof(UserRecord));
+
+        updater(record);   // 外部修改字段
+
+        // 4. 更新修改时间（强制记录最后修改时间）
+        record.record_time = nowMinutes();
+
+        // 5. 写回数据库
+        rc = putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
+        return rc;
+    });
+
+    return success;
+}
 bool BotDB::incrementInvitedGroupCount(uint32_t seq_id, int delta)
 {
     return retryWrite([&](MDB_txn *txn) -> int {

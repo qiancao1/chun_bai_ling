@@ -28,14 +28,13 @@
 #include "global.h"
 #include <QNetworkReply>
 #include <QCoreApplication>
-#include "eventtask.h"
 #include <QFile>
 #include <QDir>
 
 // 在文件头部包含 WinHttpClient 封装
 
 
-
+bool shuaping(AccountInfo *info, const MessageEvent &ev);
 
 QHash<int, QQBotClient*> m_botClients;
 
@@ -64,7 +63,7 @@ void QQBotClient::start()
     if (m_info->online || m_isConnecting)
         return;
     m_isConnecting = true;
-    AppendEventLog(QString("正在启动机器人 %1 ...").arg(m_info->appid), 0x0082FD);
+    AppendEventLog(QString("尝试登录：%1(%2)").arg(m_info->nickname,m_info->appid), 0x0082FD);
 
     if (!refreshAccessToken()) {
         emit loginFailed("获取 access_token 失败，请检查 appid/secret 或网络");
@@ -245,9 +244,62 @@ void QQBotClient::onError(QAbstractSocket::SocketError error)
 {
     AppendEventLog("WebSocket 错误: " + m_webSocket.errorString(),0xff);
 }
-void Message(AccountInfo *info,const MessageEvent &ev);
+void Messages(AccountInfo *info, MessageEvent &ev);
 int mapTypeToTabIndex(int type);
-void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *client)
+
+void logMessageEvent(const QString &botName, MessageEvent &ev) {
+
+
+    switch (ev.type) {
+    case 0: // 群消息
+        if(ev.subType>1)
+            ev.msg = QString("%1").arg(ev.subType == 2 ? "群成员添加" : "群成员退群", ev.user);
+        break;
+    case 1: // 频道消息
+        break;
+    case 2: // 私聊消息
+        break;
+    case 3: // 频道私聊消息
+        break;
+    case 4: // 群事件
+        ev.msg = QString("[群事件] %1 操作者:%2")
+                      .arg(ev.subType == 4 ? "被邀请进群" : "被踢出群", ev.groupId, ev.user);
+        break;
+    case 5: // 好友事件
+
+        ev.msg = QString("[好友事件] %1 用户:%2")
+                      .arg(ev.subType == 6 ? "添加好友" : "删除好友", ev.user);
+        break;
+    case 6: // 频道成员事件
+        ev.msg = QString("[频道成员事件] %1 频道:%2 用户:%3")
+                      .arg(ev.subType == 1 ? "加入" : "离开", ev.guildId, ev.user);
+        break;
+    case 7: // 回调事件
+        ev.msg = QString("[回调事件] 类型:%1 数据:%2").arg(ev.callbackType).arg(ev.msg);
+        break;
+    case 8: // 审核事件
+
+        ev.msg = QString("[审核事件] %1 消息:%2 原因:%3")
+                      .arg(ev.subType == 1 ? "通过" : "拒绝", ev.msgId, ev.msg);
+        break;
+
+    case 11: // 审核事件
+        ev.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
+                      .arg(ev.subType == 1 ? "机器人被邀请进入" : "机器人被踢出频道", ev.groupId, ev.user);
+        break;
+    case 13: // 审核事件
+        ev.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
+                      .arg(ev.subType == 1 ? "成员加入" : "成员离开", ev.groupId, ev.user);
+        break;
+
+    default:
+        ev.msg = QString("[未处理事件] 类型:%1").arg(ev.msgType);
+        break;
+    }
+}
+
+
+void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 {
     MessageEvent ev;
     ev.raw = text;
@@ -287,7 +339,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
 
-        if(client->m_info->unid.isEmpty())
+        if(m_info->unid.isEmpty())
         {
             const QJsonArray array = d["mentions"].toArray();
             for (const QJsonValue &a : array)
@@ -297,16 +349,16 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
                     QJsonObject arronj = a.toObject();
                     if(!arronj["is_you"].toBool()) continue;
                     ev.at_you = true;
-                    client->m_info->unid= arronj["id"].toString();
+                    m_info->unid= arronj["id"].toString();
                 }
                 break;
             }
         }
 
-        if(!client->m_info->unid.isEmpty() && ev.msg.contains(client->m_info->unid))
+        if(!m_info->unid.isEmpty() && ev.msg.contains(m_info->unid))
         {
             ev.at_you = true;
-            ev.msg = subTextReplace(ev.msg,"<@"+client->m_info->unid+">","");
+            ev.msg = subTextReplace(ev.msg,"<@"+m_info->unid+">","");
         }
 
     }
@@ -332,10 +384,10 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
-        if(ev.msg.contains(client->m_info->pduid))
+        if(ev.msg.contains(m_info->pduid))
         {
             ev.at_you = true;
-            ev.msg = subTextReplace(ev.msg,"<@!"+client->m_info->pduid+">","");
+            ev.msg = subTextReplace(ev.msg,"<@!"+m_info->pduid+">","");
         }
     }
     else if (ev.msgType == "DIRECT_MESSAGE_CREATE") {
@@ -359,21 +411,21 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         if (ev.user.isEmpty()) ev.user = d.value("op_member_openid").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = ev.groupId;
-        client->m_info->今日加群数量++;
+        m_info->今日加群数量++;
     }
     else if (ev.msgType == "GROUP_DEL_ROBOT") { //被踢出群
         ev.type = 4; ev.subType = 5;
         ev.groupId = d.value("group_openid").toString();
         ev.user = d.value("op_member_openid").toString();
         ev.msgId = d.value("id").toString();
-        client->m_info->今日退群数量++;
+        m_info->今日退群数量++;
     }
     else if (ev.msgType == "FRIEND_ADD") { //好友增加
         ev.type = 5; ev.subType = 6;
         ev.user = d.value("openid").toString();
         ev.groupId = ev.user;
         ev.msgId = d.value("id").toString();
-        client->m_info->今日好友数量++;
+        m_info->今日好友数量++;
 
     }
     else if (ev.msgType == "FRIEND_DEL") { //好友删除
@@ -381,7 +433,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.user = d.value("openid").toString();
         ev.groupId = ev.user;
         ev.msgId = d.value("id").toString();
-        client->m_info->今日删除好友数量++;
+        m_info->今日删除好友数量++;
     }
     else if (ev.msgType == "C2C_MSG_REJECT") {
         ev.type = 5; ev.subType = 8;
@@ -407,7 +459,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.guildId = d.value("id").toString();
         ev.user = d.value("op_user_id").toString();
         ev.msg = d.value("name").toString();
-        client->m_info->今日频道数量++;
+        m_info->今日频道数量++;
     }
     else if (ev.msgType == "GUILD_UPDATE") {
         ev.type = 11; ev.subType = 2;
@@ -418,7 +470,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
         ev.type = 11; ev.subType = 3;
         ev.guildId = d.value("id").toString();
         ev.user = d.value("op_user_id").toString();
-        client->m_info->今日退出频道数量++;
+        m_info->今日退出频道数量++;
     }
     // ========== 4. 子频道事件 ==========
     else if (ev.msgType == "CHANNEL_CREATE") {
@@ -652,7 +704,7 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
             i++;
         }
     }
-    ev.appid = client->m_info->appid_int;
+    ev.appid = m_info->appid_int;
     if (g_botdb.contains(ev.appid))
         ev.user_int = g_botdb[ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
     int tabIndex= mapTypeToTabIndex(ev.type);
@@ -661,15 +713,15 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     }
     if(ev.type<=3)
     {
-        client->m_info->message_received++;
-        client->m_info->received++;
+        m_info->message_received++;
+        m_info->received++;
         if(ev.fullType && ev.type==0)
         {
-            chatPage->addContact(0,ev.appid,ev.groupId,ev.user,ev.nickname,ev.msg,ev.msgId,ev.replyTo); //为对话聊天增加 新成员
+            chatPage->addContact(0,ev); //为对话聊天增加 新成员
         }
         else
         {
-            chatPage->addContact(tabIndex,ev.appid,ev.groupId,ev.user,ev.nickname,ev.msg,ev.msgId,ev.replyTo); //为对话聊天增加 新成员
+            chatPage->addContact(tabIndex,ev); //为对话聊天增加 新成员
         }
     }
 
@@ -697,10 +749,24 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
                 db->removeFriend(ev.user_int);
         }
     }
-    if(m_logStore[0].capacity()>=1000)
-        ev.log = m_logStore[tabIndex].allocate();
-    else
-        ev.log=-1;
+    logMessageEvent(m_info->nickname,ev);
+
+    QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    Message mes{ev.user,ev.msg,false,tiems,ev.nickname,ev.replyTo,ev.msgId};
+    ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
+    logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
+    if (ev.type == 0 && ev.fullType)
+    {
+        if(shuaping(m_info,ev))
+        {
+            QString res = delete_messages(ev.type,ev.groupId,ev.msgId);
+            qDebug() << res;
+
+            return;
+        }
+    }
+
+
     ev.msgId= "|"+QString::number(ev.log)+"|"+ev.msgId;
     d["content"] = ev.msg;
     d["id"] = ev.msgId;
@@ -710,20 +776,34 @@ void parseMessageEvent(QJsonObject &payload,const QString &text, QQBotClient *cl
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    qDebug() << ev.raw;
-    //qDebug() <<"事件："<< ev.msgType <<":" << ev.at_you;
-    EventTask *task = new EventTask(std::move(ev), [client, info = client->m_info](const MessageEvent &event) {
-
-        Message(info, event);
-
-    });
-    QThreadPool::globalInstance()->start(task);
-
+    Messages(m_info, ev);
     return ;
 }
 
+class ___tdxx : public QRunnable {
+public:
+    ___tdxx(QQBotClient *c, const QString &m) : m_client(c), m_msg(m) {
+        setAutoDelete(true);
+    }
 
-void QQBotClient::onTextMessageReceived(const QString &message)
+    void run() override {
+
+        QString msg = m_msg;
+        m_client->onTextMessage(msg);
+
+    }
+
+private:
+    QQBotClient *m_client;
+    QString m_msg;
+};
+
+void QQBotClient::onTextMessageReceived(const QString &message) {
+    auto *task = new ___tdxx(this, message);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void QQBotClient::onTextMessage(const QString &message)
 {
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &err);
@@ -740,7 +820,11 @@ void QQBotClient::onTextMessageReceived(const QString &message)
     case 10: { // Hello
         int interval = obj.value("d").toObject().value("heartbeat_interval").toInt(30000);
         m_heartbeatIntervalSec = interval / 1000;
-        startHeartbeatTimer(m_heartbeatIntervalSec);
+        QMetaObject::invokeMethod(this, [=]() {
+            startHeartbeatTimer(m_heartbeatIntervalSec);
+        });
+
+
         break;
     }
     case 11: // Heartbeat ACK
@@ -752,8 +836,11 @@ void QQBotClient::onTextMessageReceived(const QString &message)
             m_sessionId = obj.value("d").toObject().value("session_id").toString();
             m_info->online = true;
             m_isConnecting = false;
-            resetReconnectAttempts();
-            fetchSelfInfo();
+            QMetaObject::invokeMethod(this, [=]() {
+                resetReconnectAttempts();
+                fetchSelfInfo();
+            });
+
 
 
             return;
@@ -764,17 +851,23 @@ void QQBotClient::onTextMessageReceived(const QString &message)
             emit loginSuccess();
             return;
         }
-        parseMessageEvent(obj,message,this);
+        parseMessageEvent(obj,message);
         break;
     }
     case 9: // Invalid Session
         AppendEventLog("鉴权失败：可能订阅了不允许的事件或 token 无效" ,0xff);
-        stop();
-        scheduleReconnect(10);
+        QMetaObject::invokeMethod(this, [=]() {
+            stop();
+            scheduleReconnect(10);
+        });
         break;
     case 7: // Reconnect
-        stopHeartbeatTimer();
-        m_webSocket.close();
+
+        QMetaObject::invokeMethod(this, [=]() {
+            stopHeartbeatTimer();
+            m_webSocket.close();
+        });
+
         break;
     default:
         AppendEventLog(QString("未处理的 op=%1").arg(op) ,0xff);
@@ -846,7 +939,7 @@ void QQBotClient::startHeartbeatTimer(int intervalSec)
     stopHeartbeatTimer();
     if (intervalSec > 0) {
         m_heartbeatTimer.start(intervalSec * 1000);
-        AppendEventLog(QString("心跳定时器已启动，间隔 %1 秒").arg(intervalSec),0x28BF74);
+
     }
 }
 
@@ -941,7 +1034,7 @@ void QQBotClient::fetchSelfInfo()
             QListWidgetItem *item = robotListWidget->item(i);
             if (item->data(Qt::UserRole).toInt() == m_info->appid_int) {
                 item->setText(nickname);               // 更新显示名称
-                // 如果 appid_int 可能变化，也可以重新设置（但通常不变）
+
                 item->setData(Qt::UserRole, m_info->appid_int);
                 break;
             }

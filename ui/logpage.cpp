@@ -9,240 +9,29 @@
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QThread>
+#include <QInputDialog>
+#include <QDateTime>
 #include "global.h"
 
-
-RingBuffer<LogEntry> m_logStore[5];
 int Color_0=0;
 int Color_1=0;
 
-LogListModel::LogListModel(const QList<LogColumn> &columns, RingBuffer<LogEntry> *buffer, QObject *parent)
-    : QAbstractTableModel(parent), m_columns(columns), m_buffer(buffer)
-{
-    m_syncTimer = new QTimer(this);
-    connect(m_syncTimer, &QTimer::timeout, this, &LogListModel::onSyncTimer);
-    rebuildAll();
-}
-
-LogListModel::~LogListModel()
-{
-    stopAutoSync();
-}
-
-void LogListModel::setFilter(int botId, bool enable)
-{
-    m_filterBotId = botId;
-    m_filterEnabled = enable;
-    m_needFullRebuild = true;
-    // 下次定时器触发时会全量重建
-    if (m_syncTimer->isActive())
-        onSyncTimer(); // 立即触发
-    else
-        rebuildAll();
-}
-
-void LogListModel::startAutoSync(int intervalMs)
-{
-    m_syncTimer->start(intervalMs);
-}
-
-void LogListModel::stopAutoSync()
-{
-    m_syncTimer->stop();
-}
-
-void LogListModel::onSyncTimer()
-{
-    if (m_needFullRebuild) {
-        rebuildAll();
-        m_needFullRebuild = false;
-    } else {
-        syncWithBuffer();
-    }
-}
-
-void LogListModel::rebuildAll()
-{
-    int head = m_buffer->totalWritten();
-    if (head == 0) {
-        beginResetModel();
-        m_logicalIndices.clear();
-        m_lastHead = 0;
-        m_lastFirstLogical = 0;
-        endResetModel();
-        return;
-    }
-
-    int capacity = m_buffer->capacity();
-    int firstLogical = (head > capacity) ? (head - capacity) : 0;
-    int totalAvailable = head - firstLogical;
-    const int MAX_DISPLAY = 500;  // 最大显示条数，可配置
-    int displayCount = qMin(totalAvailable, MAX_DISPLAY);
-    int startLogical = head - displayCount;
-
-    QVector<int> indices;
-    indices.reserve(displayCount);
-    for (int logical = startLogical; logical < head; ++logical) {
-        const LogEntry &entry = m_buffer->at(logical % capacity);
-        if (!m_filterEnabled || matchesFilter(entry)) {
-            indices.append(logical);
-        }
-    }
-
-    beginResetModel();
-    m_logicalIndices.swap(indices);
-    m_lastHead = head;
-    m_lastFirstLogical = firstLogical;
-    endResetModel();
-}
-
-void LogListModel::syncWithBuffer()
-{
-    int head = m_buffer->totalWritten();
-    int capacity = m_buffer->capacity();
-    if(capacity==0) return;
-    int firstLogical = (head > capacity) ? (head - capacity) : 0;
-
-
-    if (head == m_lastHead && firstLogical == m_lastFirstLogical)
-        return;
-
-    if (firstLogical > m_lastFirstLogical) {
-        auto it = std::lower_bound(m_logicalIndices.begin(), m_logicalIndices.end(), firstLogical);
-        int removePos = it - m_logicalIndices.begin();
-        if (removePos > 0) {
-            beginRemoveRows(QModelIndex(), 0, removePos - 1);
-            m_logicalIndices.erase(m_logicalIndices.begin(), it);
-            endRemoveRows();
-        }
-    }
-
-
-    if (head > m_lastHead) {
-        int newCount = head - m_lastHead;
-
-        const int MAX_DISPLAY = 500;
-        QVector<int> newIndices;
-        newIndices.reserve(newCount);
-        for (int logical = m_lastHead; logical < head; ++logical) {
-            const LogEntry &entry = m_buffer->at(logical % capacity);
-            if (!m_filterEnabled || matchesFilter(entry)) {
-                newIndices.append(logical);
-            }
-        }
-        if (!newIndices.isEmpty()) {
-            int startRow = m_logicalIndices.size();
-            beginInsertRows(QModelIndex(), startRow, startRow + newIndices.size() - 1);
-            m_logicalIndices.append(newIndices);
-            endInsertRows();
-        }
-        // 如果总行数超过 MAX_DISPLAY，需要移除最旧的行
-        if (m_logicalIndices.size() > MAX_DISPLAY) {
-            int removeCount = m_logicalIndices.size() - MAX_DISPLAY;
-            beginRemoveRows(QModelIndex(), 0, removeCount - 1);
-            m_logicalIndices.erase(m_logicalIndices.begin(), m_logicalIndices.begin() + removeCount);
-            endRemoveRows();
-        }
-    }
-
-    // 更新记录的状态
-    m_lastHead = head;
-    m_lastFirstLogical = firstLogical;
-}
-void LogListModel::refreshNow()
-{
-
-    rebuildAll();
-}
-bool LogListModel::matchesFilter(const LogEntry &entry) const
-{
-    if (!m_filterEnabled) return true;
-    if (m_filterBotId==0) return true;
-    return entry.appid == m_filterBotId;
-}
-
-int LogListModel::rowCount(const QModelIndex &parent) const
-{
-    return parent.isValid() ? 0 : m_logicalIndices.size();
-}
-
-int LogListModel::columnCount(const QModelIndex &parent) const
-{
-    Q_UNUSED(parent);
-    return m_columns.size();
-}
-
-QVariant LogListModel::headerData(int section, Qt::Orientation orientation, int role) const
-{
-    if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
-        return QVariant();
-    if (section < 0 || section >= m_columns.size())
-        return QVariant();
-    return m_columns.at(section).title;
-}
-
-QVariant LogListModel::data(const QModelIndex &index, int role) const
-{
-    if (!index.isValid() || index.row() >= m_logicalIndices.size())
-        return QVariant();
-
-    int logical = m_logicalIndices.at(index.row());
-    const LogEntry &entry = m_buffer->at(logical % m_buffer->capacity());
-    int col = index.column();
-    if (col < 0 || col >= m_columns.size())
-        return QVariant();
-
-    LogField field = m_columns.at(col).field;
-
-    if (role == Qt::DisplayRole) {
-        switch (field) {
-        case Field_Time:     return entry.time;
-        case Field_BotName:  return entry.botName.isEmpty() ? "-" : entry.botName;
-        case Field_TargetId: return entry.groupId;
-        case Field_SenderId: return entry.user_name.isEmpty() ? (entry.user.isEmpty() ? "-" : entry.user) : entry.user_name;
-        case Field_Content:  return entry.msg;
-        case Field_Direction:return entry.direction;
-        default: return QVariant();
-        }
-    }
-    if (role == Qt::ForegroundRole) {
-        return QColor(entry.color);
-    }
-    if (role == Qt::TextAlignmentRole) {
-        if (field == Field_Content || field == Field_Direction) {
-            return int(Qt::AlignLeft | Qt::AlignVCenter);
-        }
-        return int(Qt::AlignCenter);
-    }
-    if (role == Qt::ToolTipRole && field == Field_Content) {
-        return entry.msg;
-    }
-    return QVariant();
-}
-
-LogEntry LogListModel::entryAt(int row) const
-{
-    if (row < 0 || row >= m_logicalIndices.size())
-        return LogEntry();
-    int logical = m_logicalIndices.at(row);
-    return m_buffer->at(logical % m_buffer->capacity());
-}
-
-// ---------- LogPage 实现 ----------
 LogPage::LogPage(QWidget *parent) : QWidget(parent)
 {
-    int configCapacity = g_config.value("logs").toInt(100000);  // 不存在时默认 100000
-    if(configCapacity<1000 && configCapacity>0)
-        configCapacity=1000;
-    if(configCapacity>0)
-    {
-        for (int i = 0; i < 5; ++i) {
-            m_logStore[i].setCapacity(configCapacity);
-        }
-    }
+    m_model = new QStandardItemModel(this); //先加载 因为setipUi 会动这个 类
+    g_logdb[0]->cleanDatabase(24);
+    Message mes;
+    mes.Color_0=0xF3312F;
 
+    for(int i=0 ;i<5;++i)
+    {
+
+        g_logdb[i]->appendLog("0","0",mes);
+
+    }
     setupUi();
-    applyStyleSheet();   // 你的样式设置函数
+    applyStyleSheet();
+
 }
 
 LogPage::~LogPage() {}
@@ -250,6 +39,7 @@ LogPage::~LogPage() {}
 void LogPage::switchTab(int index)
 {
     currentTabIndex = index;
+
     tabStack->setCurrentIndex(index);
 
     QList<QPushButton*> btns = {btnEventTab, btnGroupTab, btnPrivateTab, btnChannelTab, btnChannelPrivateTab};
@@ -257,57 +47,342 @@ void LogPage::switchTab(int index)
         btns[i]->setChecked(i == index);
     }
 
-    // 更新当前模型的过滤条件
-    LogListModel *model = currentModel();
-    if (model) {
-        bool needFilter = (currentTabIndex != 0 && m_currentBotId!=0);
-        model->setFilter(m_currentBotId, needFilter);
-    }
+    // 重置分页状态，重新加载
+    resetAndLoad();
 }
 
 void LogPage::setCurrentBot(int botId, const QString &botName)
 {
     m_currentBotId = botId;
     m_currentBotName = botName;
-    LogListModel *model = currentModel();
-    if (model && m_active) {
-        bool needFilter = (currentTabIndex != 0 && m_currentBotId!=0);
-        model->setFilter(m_currentBotId, needFilter);
+    // 如果当前页面是激活的，刷新
+    if (m_active) {
+        resetAndLoad();
     }
-    //chatPage->btnsetChecked();
 }
-
 
 void LogPage::setActive(bool active)
 {
     m_active = active;
-}
-
-bool LogPage::entryMatchesCurrentBot(const LogEntry &entry) const
-{
-    return m_currentBotId==0 || entry.appid==0 || entry.appid == m_currentBotId;
-}
-
-QString LogPage::currentBotLabel() const
-{
-    if (m_currentBotId==0) return "全部机器人";
-    if (!m_currentBotName.isEmpty()) return m_currentBotName;
-    return QString::number(m_currentBotId);
-}
-
-void LogPage::updateCountDisplay()
-{
-    LogListModel *model = currentModel();
-    if (model) {
-        logCountLabel->setText(QString("当前机器人: %1  日志条数: %2")
-                                   .arg(currentBotLabel())
-                                   .arg(model->count()));
+    if (m_active) {
+        resetAndLoad();
     }
 }
 
-// ---------- UI 初始化（基本保持原样，只删除滚动加载绑定）----------
+void LogPage::resetAndLoad()
+{
+    m_offset = 0;
+    m_hasMore = true;
+    m_loading = false;
+    if (m_model) {
+        m_model->clear();
+    }
+    setTableHeaders();
+    loadMore(); // 初始加载最新一批
+}
+int accinfo(int appid);
+QString getBotName(int appid){
+    int index=accinfo(appid);
+    if(index==-1) return "-";
+    return m_accounts[index]->nickname;
+}
+
+void LogPage::loadMore()
+{
+    if (m_loading || !m_hasMore) return;
+    m_loading = true;
+
+    LogDB *db = g_logdb [currentTabIndex].get();
+    if (!db) {
+        m_loading = false;
+        return;
+    }
+
+    int limit = BATCH_SIZE;
+    int appidFilter = m_currentBotId; // 0 表示全部
+    QList<QPair<QString, Message>> data = db-> getLatestMessagesWithOffset(appidFilter, limit, m_offset);
+
+
+
+    if (data.size() < limit) {
+        m_hasMore = false;
+    }
+
+    for (const auto &pair : std::as_const(data)) {
+        const QString &key = pair.first;
+        const Message &msg = pair.second;
+
+        QStringList parts = key.split(':');
+        if (parts.size() != 3) continue;
+        int appid = parts[1].toInt();
+        QString groupId;
+        if(parts[2]!="0") groupId = parts[2];
+        //uint64_t seq = parts[2].toULongLong();
+
+        QString botName = getBotName(appid);
+
+        QList<QStandardItem*> rowItems;
+        switch (currentTabIndex) {
+        case 0: // 事件
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(groupId)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg);
+            break;
+        case 1:
+        case 2: {
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(groupId)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg)
+                     << new QStandardItem(msg.direction);
+            break;
+        }
+        case 3:
+        case 4: {
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg)
+                     << new QStandardItem(msg.direction);
+            break;
+        }
+        default: break;
+        }
+        if(msg.Color_0!=0)
+        {
+            //QColor rowColor = QColor(msg.Color_0);
+            //qDebug() << "Color_0:" << msg.Color_0 << "rowColor:" << rowColor;
+            //for (QStandardItem *item : std::as_const(rowItems)) {
+            //    item->setBackground(rowColor);
+            //}
+            QColor textColor = QColor(msg.Color_0); // 如果 Color_0 是文本颜色值
+            if (textColor.isValid() && textColor.alpha() > 0) {
+                for (QStandardItem *item : rowItems) {
+                    if (item) {
+                        item->setForeground(textColor);
+                    }
+                }
+            }
+        }
+        // 创建 rowItems 后
+        if(currentTabIndex>=2 || currentTabIndex==0)
+        {
+
+            for (int i=0;i< 4;++i) {
+                    rowItems[i]->setTextAlignment(Qt::AlignCenter);
+
+            }
+        }else{
+            for (int i=0;i< 5;++i) {
+                rowItems[i]->setTextAlignment(Qt::AlignCenter);
+
+            }
+        }
+        // 然后 appendRow
+        m_model->appendRow(rowItems);
+    }
+
+    m_offset += data.size();
+    m_loading = false;
+
+    // 如果数据很少，但还有更多，可以再自动加载一批（可选）
+    if (m_hasMore && m_model->rowCount() < 50) {
+        loadMore();
+    }
+}// 设置表头（根据 currentTabIndex）
+
+void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg)
+{
+    // 1. 页面可见性 或 类型tab是否对得上
+    if (!m_active || currentTabIndex != type) return;
+    if(type!=0)
+    {
+        if (m_currentBotId != 0 && appid != m_currentBotId) return;
+    }
+    QString botName = getBotName(appid);
+    QMetaObject::invokeMethod(this, [=]() {
+        QList<QStandardItem*> rowItems;
+        switch (currentTabIndex) {
+        case 1: // 群聊
+        case 2: // 频道（群聊类似）
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(groupId)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg)
+                     << new QStandardItem(msg.direction); // 可能为空
+            break;
+        case 3: // 私聊
+        case 4: // 频道私聊
+        case 0:
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg)
+                     << new QStandardItem(msg.direction);
+            break;
+        default:
+            return;
+        }
+        if(msg.Color_0!=0)
+        {
+            QColor textColor = QColor(msg.Color_0); // 如果 Color_0 是文本颜色值
+            if (textColor.isValid() && textColor.alpha() > 0) {
+                for (QStandardItem *item : rowItems) {
+                    if (item) {
+                        item->setForeground(textColor);
+                    }
+                }
+            }
+        }
+
+        if(currentTabIndex>=2 || currentTabIndex==0)
+        {
+            for (int i=0;i< 4;++i) {
+                rowItems[i]->setTextAlignment(Qt::AlignCenter);
+
+            }
+        }else{
+            for (int i=0;i< 5;++i) {
+                rowItems[i]->setTextAlignment(Qt::AlignCenter);
+
+            }
+        }
+
+        m_model->appendRow(rowItems);
+        int newRow = m_model->rowCount() - 1;   // 获取最新行号
+        QModelIndex idx = m_model->index(newRow, 0);
+        m_model->setData(idx,seq,Qt::UserRole + 1);
+        m_offset++;
+        QTableView* view = currentListView();
+        if (view) {
+            view->scrollToBottom();
+        }
+    });
+
+}
+
+
+QTableView* LogPage::currentListView()
+{
+    switch (currentTabIndex) {
+    case 0: return eventListView;
+    case 1: return groupListView;
+    case 2: return channelListView;
+    case 3: return privateListView;
+    case 4: return channelPrivateListView;
+    default: return nullptr;
+    }
+}
+
+void LogPage::findRowBySeq(int type, int appid, uint64_t targetSeq, const QString &direction)
+{
+    if (!m_active || currentTabIndex != type) return;
+    if (m_currentBotId != 0 && appid != m_currentBotId) return;
+
+    QMetaObject::invokeMethod(this, [=]() {
+        for (int row = m_model->rowCount() - 1; row >= 0; --row) {
+            QModelIndex idx = m_model->index(row, 0);
+            uint64_t seq = m_model->data(idx, Qt::UserRole + 1).toULongLong();
+            if (seq == targetSeq) {
+                int col = m_model->columnCount() - 1; // direction 列
+                QStandardItem *item = m_model->item(row, col);
+                if (item) item->setText(direction);
+                return;
+            }
+        }
+    });
+}
+
+void LogPage::setTableHeaders()
+{
+    QStringList headers;
+    switch (currentTabIndex) {
+    case 0: headers << "时间" << "机器人" << "群/目标 ID" << "发送人 ID" << "消息内容"; break;
+    case 1:
+    case 2: headers << "时间" << "机器人" << "群号" << "发送人" << "接收内容" << "回应"; break;
+    case 3:
+    case 4: headers << "时间" << "机器人" << "发送人" << "接收内容" << "回应"; break;
+    default: headers.clear(); break;
+    }
+
+    m_model->setHorizontalHeaderLabels(headers);
+
+    // --- 在此处设置列宽 ---
+    QTableView* view = currentListView();
+    if (!view) return;
+
+    QHeaderView* hHeader = view->horizontalHeader();
+    hHeader->setStretchLastSection(false);   // 不要自动拉伸最后一列
+
+    int colCount = m_model->columnCount();
+    // 为每一列设置固定宽度，可根据实际需要调整数值
+    if (colCount >= 1) view->setColumnWidth(0, 170);
+    if (colCount >= 2) view->setColumnWidth(1, 120);
+
+    if(currentTabIndex==1 || currentTabIndex==2)
+
+        hHeader->setSectionResizeMode(5, QHeaderView::Stretch);
+    else
+        hHeader->setSectionResizeMode(4, QHeaderView::Stretch);
+}
+int LogPage::getColumnIndex(LogField field) const
+{
+    switch (currentTabIndex) {
+    case 0: // 事件
+        switch (field) {
+        case Field_Time: return 0;
+        case Field_BotName: return 1;
+        case Field_TargetId: return 2;
+        case Field_Sender: return 3;
+        case Field_Content: return 4;
+        default: return -1;
+        }
+    case 1: // 群聊
+    case 2: // 频道
+        switch (field) {
+        case Field_Time: return 0;
+        case Field_BotName: return 1;
+        case Field_TargetId: return 2;
+        case Field_Sender: return 3;
+        case Field_Content: return 4;
+        case Field_Direction: return 5;
+        default: return -1;
+        }
+    case 3: // 私聊
+    case 4: // 频道私聊
+        switch (field) {
+        case Field_Time: return 0;
+        case Field_BotName: return 1;
+        case Field_Sender: return 2;
+        case Field_Content: return 3;
+        case Field_Direction: return 4;
+        default: return -1;
+        }
+    default:
+        return -1;
+    }
+}
+
+QString LogPage::getFieldText(int row, LogField field) const
+{
+    int col = getColumnIndex(field);
+    if (col < 0 || row < 0 || row >= m_model->rowCount()) return QString();
+    QModelIndex idx = m_model->index(row, col);
+    return m_model->data(idx, Qt::DisplayRole).toString();
+}
+
+
+// ---------- UI 初始化 ----------
 void LogPage::setupUi()
 {
+    // 创建模型（所有表格共用同一个模型，切换时更换表头和数据）
+    m_model = new QStandardItemModel(this);
+
+    // ---------- 标签按钮 ----------
     auto makeTabBtn = [&](const QString &text) {
         QPushButton *btn = new QPushButton(text);
         btn->setCheckable(true);
@@ -321,6 +396,7 @@ void LogPage::setupUi()
     btnChannelPrivateTab = makeTabBtn("频道私聊");
     btnEventTab->setChecked(true);
 
+    // ---------- 主布局 ----------
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(4, 4, 4, 4);
     mainLayout->setSpacing(0);
@@ -331,6 +407,7 @@ void LogPage::setupUi()
     panelLayout->setContentsMargins(4, 4, 4, 4);
     panelLayout->setSpacing(4);
 
+    // 标签栏
     QHBoxLayout *tabLayout = new QHBoxLayout;
     tabLayout->setContentsMargins(0, 0, 0, 0);
     tabLayout->setSpacing(4);
@@ -342,218 +419,128 @@ void LogPage::setupUi()
     tabLayout->addStretch();
     panelLayout->addLayout(tabLayout);
 
+    // ---------- 堆叠窗口 ----------
     tabStack = new QStackedWidget;
     tabStack->setObjectName("logStack");
 
-    auto createLogView = [&](QTableView *&view, LogListModel *&model, int tabIdx) {
-        QList<LogColumn> columns;
-        switch (tabIdx) {
-        case 0:
-            columns = {
-                {Field_Time,     "时间",        100},
-                {Field_BotName,  "机器人",      110},
-                {Field_TargetId, "群/目标 ID",  148},
-                {Field_SenderId, "发送人 ID",   140},
-                {Field_Content,  "消息内容",    300}
-            };
-            break;
-        case 1:
-        case 2:
-            columns = {
-                {Field_Time,     "时间",        100},
-                {Field_BotName,  "机器人",      110},
-                {Field_TargetId, "群号",        140},
-                {Field_SenderId, "发送人",      140},
-                {Field_Content,  "接收内容",    150},
-                {Field_Direction,"回应",        300}
-            };
-            break;
-        case 3:
-        case 4:
-            columns = {
-                {Field_Time,     "时间",        100},
-                {Field_BotName,  "机器人",      110},
-                {Field_SenderId, "发送人",      140},
-                {Field_Content,  "接收内容",    150},
-                {Field_Direction,"回应",        300}
-            };
-            break;
-        default: break;
-        }
-
-        model = new LogListModel(columns, &m_logStore[tabIdx], this);
-        model->startAutoSync(500);   // 每500ms检查一次环形缓冲区变化，增量更新
-
+    // ---------- 创建5个表格视图（懒加载，共用模型） ----------
+    auto createLogView = [&](QTableView *&view, int tabIdx) {
         view = new QTableView;
-        view->setModel(model);
-
-
+        view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setSelectionBehavior(QAbstractItemView::SelectRows);
         view->setSelectionMode(QAbstractItemView::ExtendedSelection);
         view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
         view->setFocusPolicy(Qt::NoFocus);
         view->setShowGrid(true);
         view->setGridStyle(Qt::SolidLine);
-        view->setAlternatingRowColors(true);
+        //view->setAlternatingRowColors(true);
         view->setWordWrap(false);
         view->setObjectName("logTableView");
         view->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         view->verticalHeader()->hide();
         view->horizontalHeader()->setStretchLastSection(false);
         view->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
-
-        for (int i = 0; i < columns.size(); ++i)
-            view->setColumnWidth(i, columns.at(i).defaultWidth);
-        if (columns.size() > 0)
-            view->horizontalHeader()->setStretchLastSection(true);
-
         view->verticalHeader()->setDefaultSectionSize(28);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
+        view->horizontalHeader()->setStretchLastSection(false);
+        // 为每列设置固定宽度
+        //view->setColumnWidth(0, 180);
+        //view->setColumnWidth(1, 150);
+
+
+        // 设置模型
+        view->setModel(m_model);
+
+        // 双击事件
         connect(view, &QTableView::doubleClicked,
-                this, [this, view, model](const QModelIndex &index) {
-                    if (!index.isValid())
-                        return;
-                    const LogEntry entry = model->entryAt(index.row());
-                    QString text = entry.msg + "\n\n-----------------------------------\n\n" + entry.direction;
+                this, [this, view](const QModelIndex &index) {
+                    if (!index.isValid()) return;
+                    int row = index.row();
+
+                    QString content = getFieldText(row, Field_Content);
+                    QString direction = getFieldText(row, Field_Direction);
+                    if (direction.isEmpty()) {
+                        // 如果没有 direction 列，可能显示其他内容，或者从数据库读取
+                    }
+                    QString text = content + "\n\n-----------------------------------\n\n" + direction;
                     QMessageBox::information(this, "消息内容", text);
                 });
-        // 右键菜单（代码与原有一致，略作简化）
-        connect(view, &QTableView::customContextMenuRequested, this, [this, view, model](const QPoint &pos) {
+
+        // 右键菜单（简化版，因为黑名单等需要额外数据，只保留复制和查看）
+        connect(view, &QTableView::customContextMenuRequested, this, [this, view](const QPoint &pos) {
             QModelIndex index = view->indexAt(pos);
             if (!index.isValid()) return;
-            const LogEntry entry = model->entryAt(index.row());
+
             QMenu menu(view);
-            QAction *qlrhmd = menu.addAction("将群拉入黑名单");
-            QAction *qychmd = menu.addAction("将群移出黑名单");
-            QAction *lrhmd = menu.addAction("将用户拉入黑名单");
-            QAction *ychmd = menu.addAction("将用户移出黑名单");
-            menu.addSeparator();
             QAction *copyContent = menu.addAction("复制消息内容");
             QAction *copyTargetId = menu.addAction("复制群id");
             QAction *copySenderId = menu.addAction("复制发送人id");
             QAction *copyRow = menu.addAction("复制整行内容");
             menu.addSeparator();
-            QAction *zdhh = menu.addAction("转到会话");
             QAction *viewContent = menu.addAction("查看消息内容");
+
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
             if (!selected) return;
             if (selected == copyContent) {
-                QApplication::clipboard()->setText(entry.msg);
+                QString content = getFieldText(index.row(), Field_Content);
+                QApplication::clipboard()->setText(content);
             } else if (selected == copyTargetId) {
-                QApplication::clipboard()->setText(entry.groupId);
+                QString targetId = getFieldText(index.row(), Field_TargetId);
+                QApplication::clipboard()->setText(targetId);
             } else if (selected == copySenderId) {
-                QApplication::clipboard()->setText(entry.user);
+                QString sender = getFieldText(index.row(), Field_Sender);
+                QApplication::clipboard()->setText(sender);
             } else if (selected == copyRow) {
                 QStringList parts;
-                for (int col = 0; col < model->columnCount(); ++col) {
-                    QModelIndex idx = model->index(index.row(), col);
-                    parts << model->data(idx, Qt::DisplayRole).toString();
+                for (int col = 0; col < m_model->columnCount(); ++col) {
+                    QModelIndex idx = m_model->index(index.row(), col);
+                    parts << m_model->data(idx, Qt::DisplayRole).toString();
                 }
                 QApplication::clipboard()->setText(parts.join(" | "));
             } else if (selected == viewContent) {
-                QString text = entry.msg +"\n\n-----------------------------------\n\n"+entry.direction;
+                QString content = getFieldText(index.row(), Field_Content);
+                QString direction = getFieldText(index.row(), Field_Direction);
+                QString text = content + "\n\n-----------------------------------\n\n" + direction;
                 QMessageBox::information(this, "消息内容", text);
-            }else if (selected == qlrhmd) {
-                bool ok;
-                QString multiLineText = QInputDialog::getMultiLineText(
-                    this,                         // 父窗口
-                    "输入备注",                    // 对话框标题
-                    "拉入黑名单备注",
-                    "默认内容\n第二行",&ok);
-                if(!ok) return;
-                QDateTime now = QDateTime::currentDateTime();
-                QString dateTimeText = now.toString("yyyy-MM-dd hh:mm:ss")+"\n"+multiLineText;
-
-                m_blacklist.insert(entry.groupId,multiLineText);
-                Black->saveToFile();
-            }
-            else if (selected == qychmd) {
-                m_blacklist.remove(entry.groupId);
-                Black->saveToFile();
-            }
-            else if (selected == lrhmd) {
-                bool ok;
-                QString multiLineText = QInputDialog::getMultiLineText(this,"输入备注","拉入黑名单备注",
-                    "无备注\n无备注",&ok);
-                if(!ok) return;
-                QDateTime now = QDateTime::currentDateTime();
-                QString dateTimeText = now.toString("yyyy-MM-dd hh:mm:ss")+"\n"+multiLineText;
-                m_blacklist.insert(entry.user,dateTimeText);
-                Black->saveToFile();
-
-            }
-            else if (selected == ychmd) {
-                m_blacklist.remove(entry.user);
-                Black->saveToFile();
-
-            }else if (selected == zdhh) {
-                if(currentTabIndex==0) return;
-                stackedWidget->setCurrentIndex(4);
-                if(currentTabIndex==1)
-                    chatPage->onGroupChatClicked();
-                else if(currentTabIndex==2)
-                    chatPage->onChannelChatClicked();
-                else if(currentTabIndex==3)
-                    chatPage->onPrivateChatClicked();
-                else if(currentTabIndex==4)
-                    chatPage->onChannelPrivateClicked();
-                chatPage->onContactItemClicked2(entry.appid,entry.groupId,currentTabIndex-1);
             }
         });
+
+        // 滚动加载更多
+        connect(view->verticalScrollBar(), &QScrollBar::valueChanged,
+                this, [this, view](int value) {
+                    QScrollBar *bar = view->verticalScrollBar();
+                    if (bar->value() == bar->minimum() && !m_loading && m_hasMore) {
+                        loadMore();
+                    }
+                });
 
         tabStack->addWidget(view);
     };
 
-    createLogView(eventListView, eventModel, 0);
-    createLogView(groupListView, groupModel, 1);
-    createLogView(channelListView, channelModel, 2);
-    createLogView(privateListView, privateModel, 3);
-    createLogView(channelPrivateListView, channelPrivateModel, 4);
+    // 创建各个标签页的视图
+    createLogView(eventListView, 0);
+    createLogView(groupListView, 1);
+    createLogView(channelListView, 2);
+    createLogView(privateListView, 3);
+    createLogView(channelPrivateListView, 4);
 
-    // 按钮信号
+
+
+    panelLayout->addWidget(tabStack, 1);
+    mainLayout->addWidget(tablePanel, 1);
+
+    // ---------- 按钮信号 ----------
     connect(btnEventTab, &QPushButton::clicked, this, [this]{ switchTab(0); });
     connect(btnGroupTab, &QPushButton::clicked, this, [this]{ switchTab(1); });
     connect(btnPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(2); });
     connect(btnChannelTab, &QPushButton::clicked, this, [this]{ switchTab(3); });
     connect(btnChannelPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(4); });
 
-    panelLayout->addWidget(tabStack, 1);
-
-    logCountLabel = new QLabel("日志条数: 0");
-    logCountLabel->setObjectName("logCountLabel");
-
-    QHBoxLayout *bottomLayout = new QHBoxLayout;
-    bottomLayout->addWidget(logCountLabel);
-    bottomLayout->addStretch();
-    panelLayout->addLayout(bottomLayout);
-
-    mainLayout->addWidget(tablePanel, 1);
-    switchTab(0);  // 初始显示全部tab
+    // 默认选中第一个
+    switchTab(0);
 }
 
-LogListModel* LogPage::currentModel()
-{
-    switch (currentTabIndex) {
-    case 0: return eventModel;
-    case 1: return groupModel;
-    case 2: return channelModel;
-    case 3: return privateModel;
-    case 4: return channelPrivateModel;
-    default: return nullptr;
-    }
-}
 
-QTableView* LogPage::currentListView()
-{
-    switch (currentTabIndex) {
-    case 0: return eventListView;
-    case 1: return groupListView;
-    case 2: return channelListView;
-    case 3: return privateListView;
-    case 4: return channelPrivateListView;
-    default: return nullptr;
-    }
-}
 void LogPage::applyStyleSheet()
 {
     setObjectName("logPage");

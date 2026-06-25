@@ -47,7 +47,7 @@ class BotRuleConfigWidget : public QWidget {
 public:
     explicit BotRuleConfigWidget(QWidget *parent = nullptr);
     ~BotRuleConfigWidget();
-    void 列表行被单击(QListWidgetItem *item);
+    void 列表行被单击();
 
 
 private slots:
@@ -85,7 +85,7 @@ private:
 
     // 数据存储: robotId (appid_int) -> 规则列表
     QHash<int, QList<BotRuleItem>> m_ruleMap;
-    int m_currentRobotId = 0;
+
 
     // 列索引
     static constexpr int COL_ENABLED = 0;

@@ -41,13 +41,15 @@ namespace py = pybind11;
 QJsonObject g_config;
 QList<PluginInfo> m_pluginList;
 LmdbKV *cache_db=nullptr;
-LogDB *g_logdb = nullptr;
+std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
 QString g_admin;
 LmdbKV *aidb=nullptr;
 LmdbKV *dsdb=nullptr;
+LmdbKV *accdb=nullptr;
 
+int g_appid;
 void loadconfig()
 {
 
@@ -160,6 +162,18 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 }
 
 
+void initDBs() {
+    for (int i = 0; i < 5; ++i) {
+        auto db = std::make_unique<LogDB>(QString("botdb/logdb_%1").arg(i));
+        if (!db->open()) {
+            qCritical() << "打开数据库" << i << "失败";
+            // 可以选择继续或退出
+        } else {
+            g_logdb[i] = std::move(db);
+        }
+    }
+}
+
 QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
@@ -219,8 +233,7 @@ int main(int argc, char *argv[]) {
     }
     py::gil_scoped_release release;
     cache_db = new LmdbKV("botdb/file_db");
-    g_logdb = new LogDB("botdb/logdb",1000000);
-    g_logdb->open();
+    initDBs();
     if (QFile::exists("miaomiao32.exe")) {
         bridge = new SharedMemoryBridge;
         bridge->setCallback(myCallback);
@@ -228,7 +241,7 @@ int main(int argc, char *argv[]) {
     }
     aidb= new LmdbKV("botdb/aidb");
     dsdb = new LmdbKV("botdb/dsdb");
-
+    accdb = new LmdbKV("botdb/accountinfo");
 
 
 
