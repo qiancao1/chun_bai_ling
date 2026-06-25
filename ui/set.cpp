@@ -2,6 +2,8 @@
 #include "global.h"
 #include <QSettings>
 #include <QMessageBox>
+#include <QHeaderView>
+#include <QColorDialog>
 #include <QTimer>
 #include "jjm.h"
 void stopImageServer();

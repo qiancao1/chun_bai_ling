@@ -753,6 +753,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     Message mes{ev.user,ev.msg,false,tiems,ev.nickname,ev.replyTo,ev.msgId};
+    mes.Color_0 = Color_1;
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if (ev.type == 0 && ev.fullType)

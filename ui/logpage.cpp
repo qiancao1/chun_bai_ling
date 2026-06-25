@@ -49,6 +49,10 @@ void LogPage::switchTab(int index)
 
     // 重置分页状态，重新加载
     resetAndLoad();
+    QTableView* view = currentListView();
+    if (view) {
+        view->scrollToBottom();
+    }
 }
 
 void LogPage::setCurrentBot(int botId, const QString &botName)
@@ -183,6 +187,11 @@ void LogPage::loadMore()
         }
         // 然后 appendRow
         m_model->appendRow(rowItems);
+        int newRow = m_model->rowCount() - 1;   // 获取最新行号
+        QModelIndex idx = m_model->index(newRow, 0);
+
+        m_model->setData(idx,msg.user,Qt::UserRole);
+
     }
 
     m_offset += data.size();
@@ -192,7 +201,7 @@ void LogPage::loadMore()
     if (m_hasMore && m_model->rowCount() < 50) {
         loadMore();
     }
-}// 设置表头（根据 currentTabIndex）
+}
 
 void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg)
 {
@@ -255,6 +264,8 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
         m_model->appendRow(rowItems);
         int newRow = m_model->rowCount() - 1;   // 获取最新行号
         QModelIndex idx = m_model->index(newRow, 0);
+
+        m_model->setData(idx,msg.user,Qt::UserRole);
         m_model->setData(idx,seq,Qt::UserRole + 1);
         m_offset++;
         QTableView* view = currentListView();
@@ -488,7 +499,8 @@ void LogPage::setupUi()
                 QString targetId = getFieldText(index.row(), Field_TargetId);
                 QApplication::clipboard()->setText(targetId);
             } else if (selected == copySenderId) {
-                QString sender = getFieldText(index.row(), Field_Sender);
+                QModelIndex idx = m_model->index(index.row(), 0);
+                QString sender = m_model->data(idx, Qt::UserRole).toString();
                 QApplication::clipboard()->setText(sender);
             } else if (selected == copyRow) {
                 QStringList parts;

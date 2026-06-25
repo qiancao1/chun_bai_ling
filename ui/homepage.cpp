@@ -1,5 +1,5 @@
 #include "HomePage.h"
-#include <QtCharts>        // 确保在 .cpp 中也包含
+
 
 #define PSAPI_VERSION 2
 
@@ -230,7 +230,7 @@ QFrame* HomePage::createChartPanel() {
     chartLayout->setContentsMargins(4, 4, 4, 4);
     chartLayout->setSpacing(1);
 
-    // 标题行
+    // 标题行（保持不变）
     auto chartTop = new QHBoxLayout;
     chartTop->addWidget(createLabel("消息趋势", "sectionTitle"));
     chartTop->addStretch();
@@ -240,77 +240,31 @@ QFrame* HomePage::createChartPanel() {
     // 图表容器
     auto chartAreaLayout = new QVBoxLayout();
     chartAreaLayout->setContentsMargins(2, 2, 2, 2);
-    chartLayout->setSpacing(4);
+    // 注意：原代码写成了 chartLayout->setSpacing(4)，应该是 chartAreaLayout->setSpacing(4)
+    chartAreaLayout->setSpacing(4);
 
-    // ---------- 创建两个系列 ----------
-    m_receiveSeries = new QLineSeries();
-    m_receiveSeries->setName("接收");
-    m_receiveSeries->setColor(QColor(0x52C41A));  // 绿色
-    m_receiveSeries->setPointsVisible(true);
+    // ---------- 使用 StatusChartWidget 替代 QChartView ----------
+    m_chartWidget = new StatusChartWidget(this);
+    m_chartWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // 可以设置固定高度或让布局自动拉伸
+    // m_chartWidget->setMinimumHeight(200);
 
-    m_sendSeries = new QLineSeries();
-    m_sendSeries->setName("发送");
-    m_sendSeries->setColor(QColor(0xFF4D4F));     // 红色
-    m_sendSeries->setPointsVisible(true);
-
-    QChart *chart = new QChart();
-    chart->addSeries(m_receiveSeries);
-    chart->addSeries(m_sendSeries);
-    chart->setAnimationOptions(QChart::SeriesAnimations);
-    chart->setTheme(QChart::ChartThemeLight);
-    chart->setBackgroundBrush(Qt::NoBrush);
-    chart->legend()->setVisible(true);            // 显示图例，区分两条线
-    chart->legend()->setAlignment(Qt::AlignTop);
-
-    // X轴：0~23小时
-    m_axisX = new QValueAxis();
-    m_axisX->setTitleText("小时");
-    m_axisX->setLabelFormat("%d");
-    m_axisX->setTickCount(24);  // 0,1,...,24 共25个刻度
-    m_axisX->setRange(0, 23);
-    m_axisX->setGridLineVisible(true);
-
-    // Y轴：动态调整，先设默认范围
-    m_axisY = new QValueAxis();
-    m_axisY->setTitleText("消息数");
-    m_axisY->setLabelFormat("%d");
-    m_axisY->setRange(0, 100);
-    m_axisY->setGridLineVisible(true);
-
-    chart->addAxis(m_axisX, Qt::AlignBottom);
-    chart->addAxis(m_axisY, Qt::AlignLeft);
-    m_receiveSeries->attachAxis(m_axisX);
-    m_receiveSeries->attachAxis(m_axisY);
-    m_sendSeries->attachAxis(m_axisX);
-    m_sendSeries->attachAxis(m_axisY);
-
-    // 压缩边距
-    chart->setMargins(QMargins(0, 0, 0, 0));
-    chart->layout()->setContentsMargins(0, 0, 0, 0);
-
-    m_chartView = new QChartView(chart);
-    m_chartView->setRenderHint(QPainter::Antialiasing);
-    m_chartView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_chartView->viewport()->setStyleSheet("QWidget { padding: 0; margin: 0; }");
-
-    chartAreaLayout->addWidget(m_chartView, 1);
+    chartAreaLayout->addWidget(m_chartWidget, 1);
     chartLayout->addLayout(chartAreaLayout, 1);
 
-    // 初次加载数据
+    // 初次加载数据（需要在类中实现 updateChartData 的新版本）
     updateChartData();
 
     return chartPanel;
 }
-void HomePage::updateChartData() {
 
+void HomePage::updateChartData() {
     extern QJsonObject g_config;
 
     QDate today = QDate::currentDate();
     QString dateStr = today.toString(Qt::ISODate);  // "2026-06-04"
 
-    m_receiveSeries->clear();
-    m_sendSeries->clear();
-
+    // 读取接收数组
     QJsonArray receiveArray;
     if (g_config.contains("Received")) {
         QJsonObject recvObj = g_config["Received"].toObject();
@@ -328,23 +282,22 @@ void HomePage::updateChartData() {
         }
     }
 
-    // 确保数组长度至少24
-    int maxY = 0;
+    // 构建两个 QVector<int>，长度为24
+    QVector<int> receiveData(24, 0);
+    QVector<int> sendData(24, 0);
+
     for (int hour = 0; hour < 24; ++hour) {
-        int recv = (hour < receiveArray.size()) ? receiveArray[hour].toInt() : 0;
-        int sent = (hour < sendArray.size()) ? sendArray[hour].toInt() : 0;
-
-        m_receiveSeries->append(hour, recv);
-        m_sendSeries->append(hour, sent);
-
-        maxY = qMax(maxY, qMax(recv, sent));
+        if (hour < receiveArray.size()) {
+            receiveData[hour] = receiveArray[hour].toInt();
+        }
+        if (hour < sendArray.size()) {
+            sendData[hour] = sendArray[hour].toInt();
+        }
     }
 
-    // 动态调整Y轴范围（留10%余量）
-    if (maxY > 0) {
-        m_axisY->setRange(0, maxY * 1.1);
-    } else {
-        m_axisY->setRange(0, 100);
+    // 更新柱状图
+    if (m_chartWidget) {
+        m_chartWidget->setData(receiveData, sendData);
     }
 }
 

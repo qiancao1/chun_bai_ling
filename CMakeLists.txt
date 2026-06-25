@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
-
+add_definitions(-DNOMINMAX)
 # ==================== Python 版本选择 ====================# ========== Python 版本选择开关 ==========
 # 使用 t 版：设为 ON
 # 使用标准版：设为 OFF
@@ -71,8 +71,8 @@ if(USE_FREETHREADING_PYTHON)
 endif()
 
 # ==================== Qt 查找 ====================
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebSockets Network Charts)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebSockets Network Charts)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebSockets Network)
 
 # ==================== pybind11（自动下载） ====================
 include(FetchContent)
@@ -157,6 +157,7 @@ else()
         add_executable(qiancao ${PROJECT_SOURCES_ALL}
             ui/botset.h ui/botset.cpp ui/botset.ui
             ui/qunguan.h ui/qunguan.cpp ui/qunguan.ui
+            ui/statuschartwidget.h ui/statuschartwidget.cpp
 
 
 
@@ -194,7 +195,6 @@ target_link_libraries(qiancao PRIVATE
     Qt${QT_VERSION_MAJOR}::WebSockets
     Qt${QT_VERSION_MAJOR}::Network
     ${LMDB_LIB_PATH}
-    Qt${QT_VERSION_MAJOR}::Charts
     pybind11::module
     ${Python_LIBRARIES}
 )

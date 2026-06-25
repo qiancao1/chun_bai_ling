@@ -1,7 +1,7 @@
 #include "aisxw.h"
 #include "global.h"
 #include "ui_aisxw.h"
-
+#include <QMessageBox>
 aisxw::aisxw(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::aisxw)

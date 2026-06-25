@@ -1,7 +1,8 @@
 
 #ifndef HOMEPAGE_H
 #define HOMEPAGE_H
-#include <QtCharts>                // 必须包含此头文件
+#include "StatusChartWidget.h"
+
 
 
 #include <QWidget>
@@ -12,7 +13,7 @@
 #include <QString>
 #include <QTimer>
 #include <QLabel>
-#include <QLineSeries>
+
 #include <QProgressBar>
 
 
@@ -80,15 +81,11 @@ private:
     QLabel *m_diskStatusValue = nullptr;
     QLabel *m_pluginCountValue = nullptr;
 
-    QChartView *m_chartView = nullptr;
-    QLineSeries *m_receiveSeries = nullptr;   // 接收曲线
-    QLineSeries *m_sendSeries = nullptr;      // 发送曲线
-    QValueAxis *m_axisX = nullptr;
-    QValueAxis *m_axisY = nullptr;
+    StatusChartWidget *m_chartWidget = nullptr;  // 替换原来的 m_chartView
 
 
 
-    QLineSeries *m_series = nullptr;
+
     int m_messageDataCount = 0;      // 数据点序号，用作 X 轴
     QTimer *m_chartUpdateTimer = nullptr;  // 可选，模拟动态数据
 

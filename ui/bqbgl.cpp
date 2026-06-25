@@ -84,8 +84,12 @@ void bqbgl::on_pushButton_clicked()
 }
 extern QString 拟人人设;
 extern QString 拟人人设2;
+extern QString 拟人人设_私聊;
+extern QString 拟人人设1;
+
 void bqbgl::on_pushButton_2_clicked()
 {
 
     拟人人设=subTextReplace(拟人人设2,"【表情包】","【表情包】"+meiju());
+    拟人人设_私聊=subTextReplace(拟人人设1,"【表情包】","【表情包】"+meiju());
 }

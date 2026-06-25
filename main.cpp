@@ -33,8 +33,8 @@
 #include <QResource>
 #include "lmdbkv.h"
 #include "logdb.h"
-
-
+#include <QStandardPaths>
+#include <QMessageBox>
 
 namespace py = pybind11;
 
@@ -157,7 +157,7 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
     }
 
 
-    QMessageBox::about(NULL,  "Error","程序崩溃，已生成 crash.dmp");
+    QMessageBox::about(NULL,  "Error","程序崩溃，已生成 crash.dmp 如果你是第一次 运行时报错这个 请按照微软运行库 请打开 下崽器 输入1 下载安装");
     return EXCEPTION_EXECUTE_HANDLER; // 终止进程
 }
 
@@ -214,7 +214,7 @@ int main(int argc, char *argv[]) {
             g_config["pythonHome"] = pythonHome;
         }
     }
-    //QMessageBox::warning(nullptr,"",pythonHome);
+
     std::unique_ptr<py::scoped_interpreter> interpreter;
     try {
         interpreter = std::make_unique<py::scoped_interpreter>();
@@ -231,30 +231,21 @@ int main(int argc, char *argv[]) {
         }
         return -1;
     }
+
     py::gil_scoped_release release;
+
     cache_db = new LmdbKV("botdb/file_db");
     initDBs();
+
     if (QFile::exists("miaomiao32.exe")) {
         bridge = new SharedMemoryBridge;
         bridge->setCallback(myCallback);
         if (!bridge->startServer(false)) qCritical("Bridge start failed");
     }
+
     aidb= new LmdbKV("botdb/aidb");
     dsdb = new LmdbKV("botdb/dsdb");
     accdb = new LmdbKV("botdb/accountinfo");
-
-
-
-    //QString res = browseWeb("https://cn.bing.com/search?q=%e6%b1%bd%e6%b0%b4%e9%9f%b3%e4%b9%90&first=1");
-
-    //qDebug()<< res;
-
-
-    //res = browseWeb("https://cn.bing.com/search?q=%e6%b1%bd%e6%b0%b4%e9%9f%b3%e4%b9%90&first=10");
-
-    //Debug()<< res;
-
-
 
     MainWindow w;
     w.show();

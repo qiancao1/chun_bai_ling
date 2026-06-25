@@ -29,7 +29,7 @@
 #include "ScheduleConfigWidget.h"
 #include "ScreenshotSyncClient.h"
 #include "SharedMemoryBridge.h"
-
+#include <QMessageBox>
 #include "cardwidget.h"
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
@@ -38,12 +38,14 @@
 #include "logdb.h"
 #include "LogPage.h"
 #include <QJsonObject>
+#include <qapplication.h>
+#include <qjsondocument.h>
 #include "node_plugin_manager.h"
 #include "node_process.h"
 #include "qqbotclient.h"
 #include "botdb.h"
 #include "lmdbkv.h"
-
+#include <QPointer>
 #include "sandboxwindow.h"
 #include "set.h"
 class Global

@@ -1,6 +1,7 @@
 #include "plts.h"
 #include "global.h"
 #include "ui_plts.h"
+#include <QMessageBox>
 int 成功数量f=0;
 int 成功数量g=0;
 QList<int> ts_m_friendStatus;

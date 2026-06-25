@@ -19,6 +19,7 @@
  */
 
 #include "global.h"
+#include <QtCore>
 
 QByteArray convertMp3ToSilk(const QByteArray &mp3Data)
 {

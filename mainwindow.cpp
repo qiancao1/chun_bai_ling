@@ -27,7 +27,7 @@
 #include "HomePage.h"
 #include "AccountPage.h"
 #include "PluginPage.h"
-
+#include <QGraphicsOpacityEffect>
 #include "LogPage.h"
 #include "ScheduleConfigWidget.h"
 #include "ScreenshotSyncClient.h"
@@ -53,6 +53,7 @@
 #include <QPixmap>
 #include <QPainter>
 #include <QFile>
+#include <QtCore>
 #include <qgroupbox.h>
 #include "htmltoimagewidget.h"
 #include "plts.h"
@@ -63,6 +64,7 @@
 #include "keywordmatchconfigwidget.h"
 #include <QNetworkReply>
 #include <QProgressDialog>
+#include <qmessagebox.h>
 
 
 
@@ -245,7 +247,7 @@ void showClickableLicenseInfo() {
 
     QString richText =
         "<h3>纯白铃 - QQ 机器人管理平台</h3>"
-        "本项目整体基于 <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3 协议</a> 开源。<br>"
+        "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
         "完整源代码（含所有修改）请访问：<br>"
         "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
         "<a href=\"https://gitee.com/qiancao1/qiancao\">Gitee</a><br><br>"
@@ -254,8 +256,7 @@ void showClickableLicenseInfo() {
 
         "<b>Qt 5.15.3</b>（静态链接）<br>"
         "• Widgets、Network、WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
-        "• QtCharts 模块：<a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">GPLv3</a><br>"
-        "（因整体采用 GPLv3，LGPL 的附加要求不适用）<br><br>"
+        "（LGPL 静态链接需遵循相关条款，如提供目标文件以便用户重新链接）<br><br>"
 
         "<b>pybind11</b><br>"
         "Copyright (c) 2016–2023 The pybind11 authors.<br>"
@@ -265,12 +266,12 @@ void showClickableLicenseInfo() {
         "Copyright (c) 2011–2021, Howard Chu, Symas Corp.<br>"
         "采用 <a href=\"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a>（Version 2.8）<br><br>"
 
-        "<b>⚠️ 关于 DLL 插件的开源要求：</b><br>"
-        "本程序支持动态加载第三方 DLL 插件。根据 GPLv3 协议规定，<br>"
-        "与本程序动态链接（通过接口交互）的 DLL 插件，被视为本程序的衍生作品，<br>"
-        "<b>必须同样以 GPLv3 或兼容协议开源其完整源代码</b>。<br>"
-        "请插件作者在发布插件时，一并提供其源码获取方式。<br>"
-        "用户自行下载并使用闭源插件的，相关法律后果由插件作者及用户自行承担。<br><br>"
+        "<b>📦 关于 DLL 插件（LGPL 合规说明）：</b><br>"
+        "本程序支持动态加载第三方 DLL 插件。<br>"
+        "• 若插件与主程序采用动态链接（通过接口交互），则插件无需开源，<br>"
+        "  其许可证由插件作者自行决定。<br>"
+        "• 若插件与主程序静态链接，则需遵守 LGPL 条款（提供重新链接所需的目标文件）。<br>"
+        "用户自行下载和使用插件的，相关责任由插件作者及用户承担。<br><br>"
 
         "<b>其他资源：</b><br>"
         "图标来源：<a href=\"https://icons8.com\">icons8.com</a><br>"
@@ -285,7 +286,6 @@ void showClickableLicenseInfo() {
     msgBox.setCursor(Qt::PointingHandCursor);
     msgBox.exec();
 }
-
 MainWindow::~MainWindow()
 {
 }

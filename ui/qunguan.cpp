@@ -1,6 +1,7 @@
 #include "qunguan.h"
 #include "global.h"
 #include "ui_qunguan.h"
+#include <QMessageBox>
 int accinfo(int appid);
 qunguan::qunguan(QWidget *parent)
     : QWidget(parent)

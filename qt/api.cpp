@@ -20,7 +20,7 @@
 
 
 #include "qqbotclient.h"
-
+#include <QRandomGenerator>
 #include <string>
 #include "global.h"
 #include <QFile>
