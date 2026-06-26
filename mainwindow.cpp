@@ -257,9 +257,9 @@ void showClickableLicenseInfo() {
 
         "<b>使用的第三方库及许可：</b><br><br>"
 
-        "<b>Qt 5.15.3</b>（静态链接）<br>"
+        "<b>Qt 5.15.3</b>（动态链接）<br>"
         "• Widgets、Network、WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
-        "（LGPL 静态链接需遵循相关条款，如提供目标文件以便用户重新链接）<br><br>"
+        "（动态链接下，LGPL 要求提供 Qt 库的源代码，并允许用户修改库后重新链接；无需提供您的目标文件）<br><br>"
 
         "<b>pybind11</b><br>"
         "Copyright (c) 2016–2023 The pybind11 authors.<br>"
@@ -289,6 +289,7 @@ void showClickableLicenseInfo() {
     msgBox.setCursor(Qt::PointingHandCursor);
     msgBox.exec();
 }
+
 MainWindow::~MainWindow()
 {
 }
@@ -443,8 +444,6 @@ void MainWindow::setupUi()
                 if (logPage)
                 {
                     logPage->setActive(id == 2);
-                }else{
-                    logPage->modle_clear();
                 }
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){

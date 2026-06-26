@@ -42,7 +42,7 @@ public:
     void switchTabEx(int index,int limit);
     void setCurrentBot(int botId, const QString &botName);
     void setActive(bool active);
-    void modle_clear();
+
     void onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg);
     void findRowBySeq(int type,int appid,uint64_t targetSeq,const QString &direction);
     // 环形缓冲区（5个tab的数据源）

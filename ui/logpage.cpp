@@ -78,12 +78,7 @@ void LogPage::setCurrentBot(int botId, const QString &botName)
         resetAndLoad(BATCH_SIZE);
     }
 }
-void LogPage::modle_clear()
-{
-    if (m_model) {
-        m_model->clear();
-    }
-}
+
 void LogPage::setActive(bool active)
 {
     m_active = active;
@@ -92,6 +87,10 @@ void LogPage::setActive(bool active)
         QTableView* view = currentListView();
         if (view) {
             view->scrollToBottom();
+        }
+    }else{
+        if (m_model) {
+            m_model->clear();
         }
     }
 }
