@@ -601,7 +601,7 @@ void HomePage::refreshRuntimeStats()
     int logCount=0;
     if (m_todayMessageValue) m_todayMessageValue->setText(QString::number(messageCount));
     if (m_onlineAccountValue) m_onlineAccountValue->setText(QString("%1 / %2").arg(onlineCount).arg(m_accounts.size()));
-    if (m_logCountValue) m_logCountValue->setText(QString("退%1 加%2").arg(tq).arg(jiaq));
+    if (m_logCountValue) m_logCountValue->setText(QString::number(jiaq));
     if (m_pluginCountValue) m_pluginCountValue->setText(QString::number(pluginCount));
 
 

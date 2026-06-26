@@ -336,6 +336,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         else if(role == "member")
             ev.member_role = 2;
         ev.nickname = author.value("username").toString();
+        ev.bot = author.value("bot").toBool();
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
 
@@ -774,7 +775,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }
 
-
+    if(m_info->pbbot && ev.bot) return;
     ev.msgId= "|"+QString::number(ev.log)+"|"+ev.msgId;
     d["content"] = ev.msg;
     d["id"] = ev.msgId;

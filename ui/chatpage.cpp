@@ -248,6 +248,11 @@ void MessageListModel::setMessages(QList<Message> &&msgs)
 
 void MessageListModel::addMessage(const Message &msg)
 {
+    if (m_messages.size() >= 200) {
+        beginRemoveRows(QModelIndex(), 0, 0);
+        m_messages.removeFirst();
+        endRemoveRows();
+    }
     beginInsertRows(QModelIndex(), m_messages.size(), m_messages.size());
     m_messages.append(msg);
     endInsertRows();
@@ -1277,9 +1282,12 @@ void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
         if(ev.groupId==currentContactId)
         {
             m_msgid = ev.msgId;
-            QMetaObject::invokeMethod(this, [=]() {
-                addMessage(Message(ev.user,ev.msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),name.isEmpty() ? ev.user : name,ev.replyTo,ev.msgId));
-            });
+            if(存在)
+            {
+                QMetaObject::invokeMethod(this, [=]() {
+                    addMessage(Message(ev.user,ev.msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),name.isEmpty() ? ev.user : name,ev.replyTo,ev.msgId));
+                });
+            }
 
         }
         if(type==0)
@@ -1298,6 +1306,8 @@ void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
             if (seen.contains(key)) return;  // 已存在，不重复添加
             seen.insert(key);
         }
+        if(!存在)  return;
+
         Contact c;
         c.id = ev.groupId;                     // 这个 id 将用作头像文件名和 URL 中的 openid
 

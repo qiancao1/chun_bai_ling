@@ -445,6 +445,7 @@ void MainWindow::setupUi()
                 {
                     logPage->setActive(id == 2);
                 }
+                chatPage->存在= (id==4);
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
         QListWidgetItem *item = robotListWidget->currentItem();

@@ -54,6 +54,7 @@ struct MessageEvent
     int member_role=-1;     //0群主 1管理 2群成员
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
+    bool bot=false;         //true时 为机器人
     QString nickname;       // 发送人昵称
     QString guildId;        // 频道id (仅频道消息有效)
     QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")

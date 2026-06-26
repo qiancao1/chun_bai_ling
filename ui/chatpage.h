@@ -111,6 +111,7 @@ public:
     QHash<QString,qint64> 最近对话;
     QString currentContactId;
     int isGroupMode=0;
+    bool 存在=false;
     void onContactItemClicked2(int appid, const QString &id, int type);
 
 public slots:
