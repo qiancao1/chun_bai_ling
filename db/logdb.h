@@ -40,10 +40,7 @@ public:
     // 清理数据库，保留全局最新 N 条，删除其余
     bool cleanDatabase(int keepN);
 
-    // ---- 环形缓冲区公开接口 ----
-    // 设置序号对应的字节值
-    // ---- 环形缓冲区公开接口（改为 8 字节） ----
-    // 设置完整的 64 位值
+
     void setBufferRaw(uint64_t seq, uint64_t value) {
         m_buffer[seq % m_bufferSize].store(value, std::memory_order_release);
     }

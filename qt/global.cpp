@@ -50,12 +50,12 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
 {
 
     int tabIndex=type + 1;
-    if(tabIndex<1 || tabIndex>5) return;
+    if(tabIndex<1 || tabIndex>4) return;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     if(index<0) return;
 
 
-    int n = g_logdb[tabIndex]->incrementBufferStatus(index);
+    int n = g_logdb [tabIndex]->incrementBufferStatus(index);
     if(n == 255) return; //255代表被处理了
     //qDebug()<< "未回应计数：" <<entry.n;
     if(n>=plugin_n && m_botClients.contains(appid))

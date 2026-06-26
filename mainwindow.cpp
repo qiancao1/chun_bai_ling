@@ -72,12 +72,12 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.0.4.5"
-#define APP_BUILD_NUMBER 5
+#define APP_VERSION_STR "v1.1.0.10"
+#define APP_BUILD_NUMBER 10
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.0.5.10 (2026-06-26)
+## v1.1.0.10 (2026-06-26)
 - 修复 回复设置未保存问题
 - 增加 刷屏检测
 - 增加 ai白名单 模式 以及设置开启等指令
