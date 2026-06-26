@@ -40,5 +40,20 @@ void qunguan::列表行被单击()
         ui->time_Edit->setText(QString::number(info->times));
         ui->tiao_Edit->setText(QString::number(info->tiaoshu));
         ui->checkBox->setChecked(info->shuap);
+        ui->checkBox_2->setChecked(info->pbbot);
     }
 }
+void qunguan::on_checkBox_2_checkStateChanged(const Qt::CheckState &arg1)
+{
+    if (g_appid!=0) {
+        int index=accinfo(g_appid);
+        if(index==-1){
+            QMessageBox::warning(this,"失败","保存失败 保存的指定机器人 好像不在于账号列表 请重新选择 机器人");
+            return;
+        }
+        auto &info = m_accounts [index];
+        info->pbbot=ui->checkBox_2->isChecked();
+        accountPage->saveAccounts(info.get());
+    }
+}
+

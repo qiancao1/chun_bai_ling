@@ -87,6 +87,7 @@ struct AccountInfo {
     int times =5;//检测时间
     int tiaoshu=5; //刷屏条数
     QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
+    bool pbbot=false;
     bool autoConnect = false;
     bool online = false;
     bool ark=false;

@@ -85,7 +85,7 @@ QString AccountInfo::toJson() const {
     obj["times"] = times;
     obj["shuap"]=shuap;
     obj["tiaoshu"]=tiaoshu;
-
+    obj["pbbot"]=pbbot;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -131,6 +131,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
 
     info.times = obj["times"].toInt(5);
     info.shuap = obj["shuap"].toBool();
+    info.pbbot =obj["pbbot"].toBool();
     info.tiaoshu = obj["tiaoshu"].toInt(5);
 
     //ai白名单

@@ -1426,7 +1426,7 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                 if (h > 0) {
                     markdownImg = QStringLiteral("![#%1px #%2px](%3)").arg(w).arg(h).arg(newUrl);
                 } else {
-                    markdownImg = QStringLiteral("![#%1px](%2)").arg(w).arg(newUrl);
+                    markdownImg = QStringLiteral("![#%1px #0px](%2)").arg(w).arg(newUrl);
                 }
                 text.replace(tag.start, tag.length, markdownImg);
             }
@@ -1441,7 +1441,7 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                 if (h > 0) {
                     markdownImg = QStringLiteral("![#%1px #%2px](%3)").arg(w).arg(h).arg(newUrl);
                 } else {
-                    markdownImg = QStringLiteral("![#%1px](%2)").arg(w).arg(newUrl);
+                    markdownImg = QStringLiteral("![#%1px #0px](%2)").arg(w).arg(newUrl);
                 }
                 text.replace(tag.start, tag.length, markdownImg);
             }

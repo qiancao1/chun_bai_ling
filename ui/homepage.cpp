@@ -221,7 +221,7 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
     createStatCard(0, "💬", "今日消息数", "0", "等待真实消息", "#E8F4FD");
     createStatCard(1, "👤", "在线账号数", "0", "等待账号登录", "#E8F8EE");
     createStatCard(2, "🧩", "插件数量", QString::number(m_pluginList.size()), "来自已加载配置", "#FFF3E0");
-    createStatCard(3, "📋", "日志数量", "0", "等待运行日志", "#F3E5F5");
+    createStatCard(3, "📋", "加群数量", "0", "等待运行日志", "#F3E5F5");
 }
 
 QFrame* HomePage::createChartPanel() {
