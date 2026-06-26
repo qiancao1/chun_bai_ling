@@ -8,7 +8,8 @@
 #include <QLabel>
 #include <QTimer>
 #include <QPushButton>
-#include <qstandarditemmodel.h>
+#include <qlineedit.h>
+#include <QStandardItemModel>
 
 
 // 列字段类型枚举
@@ -38,8 +39,10 @@ public:
     ~LogPage();
 
     // 设置当前选中的机器人
+    void switchTabEx(int index,int limit);
     void setCurrentBot(int botId, const QString &botName);
     void setActive(bool active);
+    void modle_clear();
     void onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg);
     void findRowBySeq(int type,int appid,uint64_t targetSeq,const QString &direction);
     // 环形缓冲区（5个tab的数据源）
@@ -71,7 +74,8 @@ private:
     QPushButton *btnPrivateTab = nullptr;
     QPushButton *btnChannelTab = nullptr;
     QPushButton *btnChannelPrivateTab = nullptr;
-
+    QLineEdit *logs;
+    QPushButton *qbload = nullptr;
     // 五个Tab对应的View和Model
     QTableView *eventListView = nullptr;
     QTableView *groupListView = nullptr;
@@ -91,8 +95,8 @@ private:
     bool m_hasMore = true;
     const int BATCH_SIZE = 200;
     void setTableHeaders();
-    void loadMore();
-    void resetAndLoad();
+    void loadMore(int limit);
+    void resetAndLoad(int limit);
     void onScrollBarValueChanged(int value);
 };
 

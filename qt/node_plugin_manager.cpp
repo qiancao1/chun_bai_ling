@@ -25,7 +25,6 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QJsonDocument>
-#include <QDebug>
 #include <QThread>
 #include <qjsonarray.h>
 #include <QtConcurrent/QtConcurrent>
@@ -146,6 +145,11 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
     else if (method == "get_user_name") api_id = 9;
     else if (method == "http_request") api_id = 10;
     else if (method == "get_user_id") api_id = 11;
+    else if (method == "html_t_img1") api_id = 12;
+    else if (method == "html_to_img2") api_id = 13;
+    else if (method == "addScheduledTask") api_id = 14;
+
+
     else if (method == "ok") api_id = 10002;
     else {
         return QString("Unknown method: %1").arg(method);

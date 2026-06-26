@@ -151,6 +151,7 @@ private:
     void downloadAvatar(const QString &url, const QString &savePath);
     QString _Post(const QString &url,const QJsonObject &json, int timeoutMs = 30000);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
+    QString processImageTags2(QString &text, int type, QString &info,int targetType, const QString &openid,QString &message_reference);
 
 private:
 

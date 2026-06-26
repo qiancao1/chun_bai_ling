@@ -12,7 +12,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
-#include <QDebug>
+
 
 // ---------- TextReplaceRule 序列化 ----------
 QJsonObject TextReplaceRule::toJson() const
@@ -373,7 +373,6 @@ void TextReplaceConfigWidget::onRowsSwapped(int fromRow, int toRow)
         if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {
 
             TextReplaceRule movingRule = rules.takeAt(fromRow);
-            qDebug() << fromRow << "||" <<  toRow;
             int insertPos = toRow;
             if(toRow>=fromRow && insertPos<rules.size())
                 insertPos++;

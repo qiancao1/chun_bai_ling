@@ -34,7 +34,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QTextStream>
-#include <QDebug>
+
 #include <QDir>
 #include <QUuid>
 #include <QDateTime>
@@ -49,7 +49,6 @@
 #include <QJsonObject>
 #include <QUrl>
 #include <QFileInfo>
-#include <QDebug>
 
 // 全局服务器指针和端口
 QTcpServer *g_server = nullptr;

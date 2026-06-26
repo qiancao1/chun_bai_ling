@@ -705,27 +705,40 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }
     ev.appid = m_info->appid_int;
-    if (g_botdb.contains(ev.appid))
-        ev.user_int = g_botdb[ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
+    ev.user_int=-1;
+
+    if (g_botdb.contains(ev.appid) && ev.subType<=1)
+        ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
+
     int tabIndex= mapTypeToTabIndex(ev.type);
     if (!extraInfo.isEmpty()) {
         ev.msg += extraInfo;   // 若已有其他 extra 内容，可改为 ev.extra += extraInfo;
     }
+
+    ev.msg = ev.msg.trimmed();
+    logMessageEvent(m_info->nickname,ev);
+
+    QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    Message mes{ev.user,ev.msg,false,tiems,"",ev.replyTo,ev.msgId};
+    mes.Color_0 = Color_1;
+    mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
+    ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
+    logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if(ev.type<=3)
     {
         m_info->message_received++;
         m_info->received++;
         if(ev.fullType && ev.type==0)
         {
-            chatPage->addContact(0,ev); //为对话聊天增加 新成员
+            chatPage->addContact(0,ev,mes.name); //为对话聊天增加 新成员
         }
         else
         {
-            chatPage->addContact(tabIndex,ev); //为对话聊天增加 新成员
+            chatPage->addContact(tabIndex,ev,mes.name); //为对话聊天增加 新成员
         }
     }
 
-    ev.msg = ev.msg.trimmed();
+
     if(ev.type ==4 && ev.subType==4 || ev.subType==5)
     {
         if(g_botdb.contains(ev.appid))
@@ -749,13 +762,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
                 db->removeFriend(ev.user_int);
         }
     }
-    logMessageEvent(m_info->nickname,ev);
 
-    QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
-    Message mes{ev.user,ev.msg,false,tiems,ev.nickname,ev.replyTo,ev.msgId};
-    mes.Color_0 = Color_1;
-    ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
-    logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if (ev.type == 0 && ev.fullType)
     {
         if(shuaping(m_info,ev))

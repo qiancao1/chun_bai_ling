@@ -70,7 +70,7 @@ static bool extractImageInfo(const QString &content, bool &isLocalPath, QString 
 
     tag = extractBetween(content, "url=", ",");
     tag2 = extractBetween(content, "url=", "]");
-    if(tag.size()>tag2.size() && tag2.size()>10)
+    if(tag.isEmpty() && !tag2.isEmpty())
         tag=tag2;
     if (tag.isEmpty()) return false;
 
@@ -190,7 +190,6 @@ static void downloadAvatarIfNeeded(int appid,const QString &openid) {
         reply->deleteLater();
     });
 }
-// 从消息内容中提取图片信息（支持 [image,path=...] 或 [image,url=...] 以及 [p,...] [v,...] 等）
 
 // 图片缓存（用于消息中的图片，避免重复加载）
 static QCache<QString, QPixmap> &imageCache() {
@@ -269,12 +268,22 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
     const Message &msg = m_messages[index.row()];
     switch (role) {
     case SenderRole: return msg.user;
-    case ContentRole: return msg.msg;
+    case ContentRole:
+        if(msg.isSelf)
+        {
+            return msg.direction;
+        }
+        return msg.msg;
     case IsSelfRole: return msg.isSelf;
     case TimestampRole: return msg.timestamp;
     case name : return msg.name.isEmpty() ? msg.user : msg.name;
     case hf : return msg.hf;
-    case ch : return msg.ch;
+    case ch :
+        if(msg.isSelf)
+        {
+            return msg.plugin_ch;
+        }
+        return msg.ch;
     default: return QVariant();
     }
 }
@@ -423,7 +432,7 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     int bubbleWidth = textWidth + 28;
     if (imageWidth > bubbleWidth - 24) // 让图片宽度不超过气泡内边距
         bubbleWidth = imageWidth + 24;
-    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+20;
+    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+10;
     bubbleWidth = qMax(bubbleWidth,130);
     QRect avatarRect;
     QRect bubbleRect;
@@ -1197,7 +1206,7 @@ void ChatPage::updateAllContactLists(int index)
     }
     int type=0;
 
-    QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
+    const QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
     QSet<QPair<int, QString>> seen;
     for (const QString &keyStr : list) {
         QStringList parts = keyStr.split(':');
@@ -1244,6 +1253,8 @@ void ChatPage::updateAllContactLists(int index)
         }
         c.name = getBotName(appid)+":"+c.name;
         appendContactCard(appid, c, bufferIdx - 1);
+
+
     }
 }
 void ChatPage::appendContactCard(int appid,Contact c,int type)
@@ -1257,7 +1268,7 @@ void ChatPage::appendContactCard(int appid,Contact c,int type)
     contactList->addItem(item);
     contactList->setItemWidget(item, widget);
 }
-void ChatPage::addContact(int type, const MessageEvent &ev)
+void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
 {
     if (isGroupMode == type || type==0) {
         if (m_currentBotIndex != -1) {
@@ -1267,7 +1278,7 @@ void ChatPage::addContact(int type, const MessageEvent &ev)
         {
             m_msgid = ev.msgId;
             QMetaObject::invokeMethod(this, [=]() {
-                addMessage(Message(ev.user,ev.msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),ev.nickname.isEmpty() ? ev.user : ev.nickname,ev.replyTo,ev.msgId));
+                addMessage(Message(ev.user,ev.msg,false, QDateTime::currentDateTime().toString("hh:mm:ss"),name.isEmpty() ? ev.user : name,ev.replyTo,ev.msgId));
             });
 
         }
@@ -1520,7 +1531,7 @@ void ChatPage::onSendmsg(QString &text)
     QString contactId = currentContactId;
     QString msgText = text;
     QString msgIdNormal = m_msgid;   // 第一次发送用的 msgId
-    QString msgIdRetry = (isGroupMode == 0) ? QString() : m_msgid;
+    QString msgIdRetry = QString();
     QString nickname = client->m_info->nickname;
 
     SendMessageTask *task = new SendMessageTask(client, msgType, contactId, msgText,
@@ -1540,7 +1551,7 @@ void ChatPage::onSendClicked()
     const QStringList list = takeAllTextMiddle(text,"<img src=\"","\" alt=\"本地图片\" width=\"64\" />",false);
     for(const auto &t : list)
     {
-        t2 = subTextReplace(t2,"￼","[image,path="+t+"]");
+        t2 = subTextReplace(t2,"￼","![img]("+t+")");
     }
     onSendmsg(t2);
 
@@ -1550,7 +1561,7 @@ void ChatPage::onSendImage()
     if (currentContactId.isEmpty()) return;
     QString path = QFileDialog::getOpenFileName(this, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.wepb *.ico *.gif *.jxr);;所有文件 (*.*)");
     if (!path.isEmpty()) {
-        //QString text=QString("[image,path=%1]").arg(path);
+
         //<img src="C:/Users/Airuan/Pictures/AI绘画/下载.png" alt="本地图片" />
         QString text = QString("<img src=\"%1\" width=\"64\" alt=\"本地图片\" />").arg(path);
         QTextCursor cursor = inputEdit->textCursor();

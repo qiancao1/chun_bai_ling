@@ -19,16 +19,21 @@ int Color_1=0;
 LogPage::LogPage(QWidget *parent) : QWidget(parent)
 {
     m_model = new QStandardItemModel(this); //先加载 因为setipUi 会动这个 类
-    g_logdb[0]->cleanDatabase(24);
+    g_logdb[0]->cleanDatabase(200);
     Message mes;
     mes.Color_0=0xF3312F;
     int logs = g_config["logs"].toInt(100000);
     for(int i=0 ;i<5;++i)
     {
         if(i>0)
-            g_logdb[0]->cleanDatabase(logs);
-        g_logdb[i]->appendLog("0","0",mes);
-
+            g_logdb[i]->cleanDatabase(logs);
+        QList<QPair<QString, Message>> list = g_logdb[i]->getLatestMessagesWithOffset(0,1,0);
+        if (!list.isEmpty()) {
+            QPair<QString, Message> pair = list.first();
+            Message m = pair.second;
+            if(!m.msg.isEmpty())
+                g_logdb[i]->appendLog("0", "0", mes);
+        }
     }
     setupUi();
     applyStyleSheet();
@@ -49,32 +54,49 @@ void LogPage::switchTab(int index)
     }
 
     // 重置分页状态，重新加载
-    resetAndLoad();
+    resetAndLoad(BATCH_SIZE);
     QTableView* view = currentListView();
     if (view) {
         view->scrollToBottom();
     }
 }
-
+void LogPage::switchTabEx(int index,int limit)
+{
+    if(limit<=0) limit =0;
+    resetAndLoad(limit);
+    QTableView* view = currentListView();
+    if (view) {
+        view->scrollToBottom();
+    }
+}
 void LogPage::setCurrentBot(int botId, const QString &botName)
 {
     m_currentBotId = botId;
     m_currentBotName = botName;
     // 如果当前页面是激活的，刷新
     if (m_active) {
-        resetAndLoad();
+        resetAndLoad(BATCH_SIZE);
     }
 }
-
+void LogPage::modle_clear()
+{
+    if (m_model) {
+        m_model->clear();
+    }
+}
 void LogPage::setActive(bool active)
 {
     m_active = active;
     if (m_active) {
-        resetAndLoad();
+        resetAndLoad(BATCH_SIZE);
+        QTableView* view = currentListView();
+        if (view) {
+            view->scrollToBottom();
+        }
     }
 }
 
-void LogPage::resetAndLoad()
+void LogPage::resetAndLoad(int limit)
 {
     m_offset = 0;
     m_hasMore = true;
@@ -83,7 +105,8 @@ void LogPage::resetAndLoad()
         m_model->clear();
     }
     setTableHeaders();
-    loadMore(); // 初始加载最新一批
+    if(limit<=0) return;
+    loadMore(limit); // 初始加载最新一批
 }
 int accinfo(int appid);
 QString getBotName(int appid){
@@ -92,7 +115,7 @@ QString getBotName(int appid){
     return m_accounts[index]->nickname;
 }
 
-void LogPage::loadMore()
+void LogPage::loadMore(int limit)
 {
     if (m_loading || !m_hasMore) return;
     m_loading = true;
@@ -103,7 +126,7 @@ void LogPage::loadMore()
         return;
     }
 
-    int limit = BATCH_SIZE;
+
     int appidFilter = m_currentBotId; // 0 表示全部
     QList<QPair<QString, Message>> data = db-> getLatestMessagesWithOffset(appidFilter, limit, m_offset);
 
@@ -124,6 +147,12 @@ void LogPage::loadMore()
         if(parts[2]!="0") groupId = parts[2];
         //uint64_t seq = parts[2].toULongLong();
 
+
+        if(!groupId.isEmpty() && chatPage)
+        {
+            QString &name = chatPage->customGroupNames[groupId];
+            if(!name.isEmpty()) groupId = name;
+        }
         QString botName = getBotName(appid);
 
         QList<QStandardItem*> rowItems;
@@ -159,7 +188,7 @@ void LogPage::loadMore()
         if(msg.Color_0!=0)
         {
             //QColor rowColor = QColor(msg.Color_0);
-            //qDebug() << "Color_0:" << msg.Color_0 << "rowColor:" << rowColor;
+
             //for (QStandardItem *item : std::as_const(rowItems)) {
             //    item->setBackground(rowColor);
             //}
@@ -192,7 +221,7 @@ void LogPage::loadMore()
         QModelIndex idx = m_model->index(newRow, 0);
 
         m_model->setData(idx,msg.user,Qt::UserRole);
-
+        m_model->setData(idx,groupId,Qt::UserRole+2);
     }
 
     m_offset += data.size();
@@ -200,7 +229,7 @@ void LogPage::loadMore()
 
     // 如果数据很少，但还有更多，可以再自动加载一批（可选）
     if (m_hasMore && m_model->rowCount() < 50) {
-        loadMore();
+        loadMore(limit);
     }
 }
 
@@ -215,12 +244,18 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
     QString botName = getBotName(appid);
     QMetaObject::invokeMethod(this, [=]() {
         QList<QStandardItem*> rowItems;
+        QString openid = groupId;
+        if(!openid.isEmpty())
+        {
+            QString name = chatPage->customGroupNames.value(openid);
+            if(!name.isEmpty()) openid = name;
+        }
         switch (currentTabIndex) {
         case 1: // 群聊
         case 2: // 频道（群聊类似）
             rowItems << new QStandardItem(msg.timestamp)
                      << new QStandardItem(botName)
-                     << new QStandardItem(groupId)
+                     << new QStandardItem(openid)
                      << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
                      << new QStandardItem(msg.msg)
                      << new QStandardItem(msg.direction); // 可能为空
@@ -268,6 +303,7 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
 
         m_model->setData(idx,msg.user,Qt::UserRole);
         m_model->setData(idx,seq,Qt::UserRole + 1);
+        m_model->setData(idx,openid,Qt::UserRole + 2);
         m_offset++;
         QTableView* view = currentListView();
         if (view) {
@@ -318,7 +354,7 @@ void LogPage::setTableHeaders()
     case 2: headers << "时间" << "机器人" << "群号" << "发送人" << "接收内容" << "回应"; break;
     case 3:
     case 4: headers << "时间" << "机器人" << "发送人" << "接收内容" << "回应"; break;
-    default: headers.clear(); break;
+    default: headers.clear(); return;
     }
 
     m_model->setHorizontalHeaderLabels(headers);
@@ -335,6 +371,8 @@ void LogPage::setTableHeaders()
     if (colCount >= 1) view->setColumnWidth(0, 170);
     if (colCount >= 2) view->setColumnWidth(1, 120);
 
+    if (colCount >= 3) view->setColumnWidth(2, 120);
+    if (colCount >= 4) view->setColumnWidth(3, 120);
     if(currentTabIndex==1 || currentTabIndex==2)
 
         hHeader->setSectionResizeMode(5, QHeaderView::Stretch);
@@ -406,8 +444,11 @@ void LogPage::setupUi()
     btnPrivateTab = makeTabBtn("频道");
     btnChannelTab = makeTabBtn("私聊");
     btnChannelPrivateTab = makeTabBtn("频道私聊");
-    btnEventTab->setChecked(true);
+    qbload = makeTabBtn("加载这些数量");
 
+    btnEventTab->setChecked(true);
+    logs = new QLineEdit();
+    logs->setText("10000");
     // ---------- 主布局 ----------
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(4, 4, 4, 4);
@@ -429,6 +470,8 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnChannelTab);
     tabLayout->addWidget(btnChannelPrivateTab);
     tabLayout->addStretch();
+    tabLayout->addWidget(logs);
+    tabLayout->addWidget(qbload);
     panelLayout->addLayout(tabLayout);
 
     // ---------- 堆叠窗口 ----------
@@ -497,8 +540,9 @@ void LogPage::setupUi()
                 QString content = getFieldText(index.row(), Field_Content);
                 QApplication::clipboard()->setText(content);
             } else if (selected == copyTargetId) {
-                QString targetId = getFieldText(index.row(), Field_TargetId);
-                QApplication::clipboard()->setText(targetId);
+                QModelIndex idx = m_model->index(index.row(), 0);
+                QString sender = m_model->data(idx, Qt::UserRole+2).toString();
+                QApplication::clipboard()->setText(sender);
             } else if (selected == copySenderId) {
                 QModelIndex idx = m_model->index(index.row(), 0);
                 QString sender = m_model->data(idx, Qt::UserRole).toString();
@@ -549,6 +593,8 @@ void LogPage::setupUi()
     connect(btnPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(2); });
     connect(btnChannelTab, &QPushButton::clicked, this, [this]{ switchTab(3); });
     connect(btnChannelPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(4); });
+
+    connect(qbload, &QPushButton::clicked, this, [this]{ switchTabEx(currentTabIndex,logs->text().toInt()); });
 
     // 默认选中第一个
     switchTab(0);

@@ -1,6 +1,6 @@
 #include "StatusChartWidget.h"
 #include <QPainter>
-#include <QDebug>
+
 
 StatusChartWidget::StatusChartWidget(QWidget *parent)
     : QWidget(parent), m_maxValue(120)

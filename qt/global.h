@@ -139,8 +139,8 @@ qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms
 bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg);
-
-
+QByteArray R_file(const QString &path);
+bool W_file(const QString &path,const QByteArray &data);
 
 
 
@@ -180,7 +180,7 @@ public:
         bool zh=false;
         for (int attempt = 0; attempt < 2; ++attempt) {
             QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
-            QString txt = "[沙箱|%1ms]";
+            QString txt = "[沙箱]";
             QString rawData = client->send_messages(m_msgType,m_contactId,txt, m_text, currentMsgId,zh,mode);
 
             QJsonParseError error;
@@ -192,7 +192,7 @@ public:
                 QJsonObject obj2 =obj["ext_info"].toObject();
                 ref = obj2["ref_idx"].toString();
                 if(!ref.isEmpty()) ref = "[ref,msg_idx="+ref+"]";
-                if (!deleteid.isEmpty() || msg == "消息提交安全审核成功") {
+                if (!deleteid.isEmpty() || msg == "消息提交安全审核成功") { //检查发送成功 或主动推送
                     success = true;
                     break;
                 }
@@ -203,6 +203,7 @@ public:
                     continue;
                 }
                 finalDisplayText = sentText + rawData;
+                continue;
             } else {
                 finalDisplayText = sentText + rawData;
             }
@@ -214,19 +215,10 @@ public:
             if (success) {
                 // 发送成功：清空输入框，添加自己的消息
                 chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
-                chatPage->addMessage(Message("", sentText, true,
-                                             QDateTime::currentDateTime().toString("hh:mm:ss"),
-                                             nickname,ref,deleteid));
-            } else {
-                // 发送失败：显示错误信息
-                Message m{};
-                m.isSelf=true;
-                m.msg="[发送失败]"+finalDisplayText;
-                m.timestamp=QDateTime::currentDateTime().toString("hh:mm:ss");
-                m.name="我";
-                chatPage->addMessage(m);
 
             }
+
+
         });
     }
 

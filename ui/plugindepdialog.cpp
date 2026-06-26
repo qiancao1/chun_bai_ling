@@ -3,7 +3,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QProcess>
-#include <QDebug>
+
 #include <QCoreApplication>
 #include <QStandardPaths>   // 新增：用于查找可执行文件
 

@@ -783,8 +783,8 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
     int tabIndex = mapTypeToTabIndex(type);
     m_info->message_sent++;
     m_info->sent++;
-    double diff_ms;
-            bool ok=false;
+    double diff_ms=0;
+    bool ok=false;
     if(index>0)
     {
 
@@ -794,7 +794,26 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
         qint64 diff_us = now_us - us;
         diff_ms = diff_us / 1000.0;
     }
+    if(openid == chatPage->currentContactId)
+    {
 
+        QMetaObject::invokeMethod(this, [=]() {
+            Message m("","",true, QDateTime::currentDateTime().toString("hh:mm:ss"),"","[ref,msg_idx="+ref+"]","");
+
+            if(pname.contains("%1"))
+                m.direction = pname.arg(diff_ms) + text;
+            else
+                m.direction = pname + text;
+            if (deleteid.isEmpty() && message != "消息提交安全审核成功")
+            {
+                m.direction+="\n\n--------------------------\n\n"+response;
+
+            }
+            m.plugin_ch =deleteid;
+            chatPage->addMessage(m);
+        });
+
+    }
     Message msg;
     if(ok)
     {
@@ -815,23 +834,26 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
         logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
         return ;
     }
+
     msg.isSelf=true;
     msg.ch = deleteid;
-
+    msg.Color_0 = Color_0;
     if(!ref.isEmpty())
         msg.hf="[ref,msg_idx="+ref+"]";
     else
         msg.hf.clear();
+
     if(pname.contains("%1"))
-        msg.msg = pname.arg(diff_ms) + text;
+        msg.direction = pname.arg(diff_ms) + text;
     else
-        msg.msg = pname + text;
-    msg.Color_0 = Color_0;
+        msg.direction = pname + text;
+
     if (deleteid.isEmpty() && message != "消息提交安全审核成功")
     {
-        msg.msg+="\n\n--------------------------\n\n"+response;
+        msg.direction+="\n\n--------------------------\n\n"+response;
         msg.Color_0 = 0xff0000;
     }
+
     g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
     logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
 
@@ -1015,40 +1037,6 @@ static ImageInfo parseImageTagContent(QStringView tagContent) {
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                           int targetType, const QString &openid,
                                           QString &message_reference) {
-    // ---------- 1. 处理 [ref,...] 标签（只处理第一个） ----------
-
-    int refStart = text.indexOf(QLatin1String("[ref,"), 0, Qt::CaseInsensitive);
-    if (refStart != -1) {
-        int refEnd = text.indexOf(']', refStart);
-        if (refEnd != -1) {
-            // 提取标签内完整内容（不含 "[ref," 和 "]"）
-            QStringView tagContent = QStringView(text).mid(refStart + 5, refEnd - refStart - 5);
-
-            // 直接查找 "msg_idx="（同时匹配 msg_idx= 和 ref_msg_idx=）
-            int idxPos = tagContent.indexOf(QLatin1String("msg_idx="), 0, Qt::CaseInsensitive);
-            if (idxPos != -1) {
-                int valStart = idxPos + 8; // "msg_idx=" 长度为 8
-                int valEnd = tagContent.size();
-                int commaPos = tagContent.indexOf(',', valStart);
-                if (commaPos != -1) valEnd = commaPos;
-                // 去除尾部空格
-                while (valEnd > valStart && tagContent[valEnd - 1].isSpace()) --valEnd;
-
-                if (valEnd > valStart) {
-                    message_reference = tagContent.mid(valStart, valEnd - valStart).toString();
-                } else {
-                    message_reference.clear();
-                }
-            } else {
-                message_reference.clear();
-            }
-
-            // 删除整个标签
-            text.remove(refStart, refEnd - refStart + 1);
-        }
-    }
-
-
     struct TagPos {
         int start;      // 标签起始索引
         int length;     // 标签总长度
@@ -1151,7 +1139,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         }
         text = convertMdLinksKeepHttp(text);
     }
-    else if (type == 1) {
+    else if (type == 1) { //md语法处理
         // 构建新字符串，一次性分配足够内存
         QString result;
         result.reserve(text.size());
@@ -1186,7 +1174,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                         if (!uploadedUrl.isEmpty()) url = uploadedUrl;
                         if(!url.isEmpty())
                         {
-                            fileInfo =  QString("[image,path=%1,Time=%2]").arg(url).arg(QDateTime::currentSecsSinceEpoch()+1440*60);
+                            fileInfo =  QString("%1||||%2").arg(QDateTime::currentSecsSinceEpoch()+1440*60).arg(url);
                             cache_db->put(QString("imageB_%1").arg(fileMd5), fileInfo);
                         }
 
@@ -1213,6 +1201,259 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
     return text;
 }
 
+
+QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
+                                      int targetType, const QString &openid,
+                                      QString &message_reference)
+{
+    // ---------- 1. 处理 [ref,...] 标签（只处理第一个） ----------
+    int refStart = text.indexOf(QLatin1String("[ref,"), 0, Qt::CaseInsensitive);
+    if (refStart != -1) {
+        int refEnd = text.indexOf(']', refStart);
+        if (refEnd != -1) {
+            QStringView tagContent = QStringView(text).mid(refStart + 5, refEnd - refStart - 5);
+            int idxPos = tagContent.indexOf(QLatin1String("msg_idx="), 0, Qt::CaseInsensitive);
+            if (idxPos != -1) {
+                int valStart = idxPos + 8;
+                int valEnd = tagContent.size();
+                int commaPos = tagContent.indexOf(',', valStart);
+                if (commaPos != -1) valEnd = commaPos;
+                while (valEnd > valStart && tagContent[valEnd - 1].isSpace()) --valEnd;
+                if (valEnd > valStart) {
+                    message_reference = tagContent.mid(valStart, valEnd - valStart).toString();
+                } else {
+                    message_reference.clear();
+                }
+            } else {
+                message_reference.clear();
+            }
+            text.remove(refStart, refEnd - refStart + 1);
+        }
+    }
+
+    // ---------- 2. 定义统一的图片标签结构 ----------
+    struct ImgTag {
+        int start;      // 起始位置
+        int length;     // 原始长度
+        QString url;    // 图片路径或 URL
+        int width;      // 宽度（像素）
+        int height;     // 高度（像素）
+    };
+    QList<ImgTag> allTags;
+
+    // ---------- 3. 解析 [image,...] 标签 ----------
+    int searchFrom = 0;
+    while (true) {
+        int imgStart = text.indexOf(QLatin1String("[image"), searchFrom, Qt::CaseInsensitive);
+        if (imgStart == -1) break;
+
+        int imgEnd = imgStart + 1;
+        int bracketDepth = 1;
+        while (imgEnd < text.size() && bracketDepth > 0) {
+            if (text[imgEnd] == '[') bracketDepth++;
+            else if (text[imgEnd] == ']') bracketDepth--;
+            ++imgEnd;
+        }
+        if (bracketDepth != 0) break;
+
+        int tagLen = imgEnd - imgStart;
+        int contentStart = imgStart + 6; // "[image"
+        while (contentStart < imgEnd - 1 && (text[contentStart].isSpace() || text[contentStart] == ','))
+            ++contentStart;
+        int contentLen = tagLen - (contentStart - imgStart) - 1;
+        if (contentLen < 0) contentLen = 0;
+        QStringView tagContentView = QStringView(text).mid(contentStart, contentLen);
+
+        ImageInfo imgInfo = parseImageTagContent(tagContentView);
+        if (!imgInfo.urlOrPath.isEmpty()) {
+            ImgTag tag;
+            tag.start = imgStart;
+            tag.length = tagLen;
+            tag.url = imgInfo.urlOrPath;
+            tag.width = imgInfo.x;   // 若有 x,y 则使用，否则为 0
+            tag.height = imgInfo.y;
+            allTags.append(tag);
+        }
+        searchFrom = imgEnd;
+    }
+
+    // ---------- 4. 解析 Markdown 图片标签 ![]() ----------
+    QRegularExpression mdImgRe(R"(!\[([^\]]*)\]\(([^)]*)\))");
+    QRegularExpressionMatchIterator it = mdImgRe.globalMatch(text);
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString alt = match.captured(1).trimmed();
+        QString url = match.captured(2).trimmed();
+        if (url.isEmpty()) continue;
+
+        // 从 alt 中提取尺寸 #数字px
+        int width = 0, height = 0;
+        QRegularExpression sizeRe(R"(#(\d+)px)");
+        QRegularExpressionMatchIterator sizeIt = sizeRe.globalMatch(alt);
+        if (sizeIt.hasNext()) {
+            width = sizeIt.next().captured(1).toInt();
+            if (sizeIt.hasNext()) {
+                height = sizeIt.next().captured(1).toInt();
+            }
+        }
+
+        ImgTag tag;
+        tag.start = match.capturedStart();
+        tag.length = match.capturedLength();
+        tag.url = url;
+        tag.width = width;
+        tag.height = height;
+        allTags.append(tag);
+    }
+
+    // ---------- 5. 若没有任何图片标签，处理其他 Markdown 链接后返回 ----------
+    if (allTags.isEmpty()) {
+        if (type == 0)
+            text = convertMdLinksKeepHttp(text);
+        else
+            text = convertMarkdownLinksToXml(text);
+        return text;
+    }
+
+    // ---------- 按起始位置降序排序（从后往前替换） ----------
+    std::sort(allTags.begin(), allTags.end(),
+              [](const ImgTag &a, const ImgTag &b) { return a.start > b.start; });
+
+    bool firstProcessed = false;  // 用于 type==0 只处理第一个标签
+
+    for (int idx = 0; idx < allTags.size(); ++idx) {
+        const ImgTag &tag = allTags[idx];
+        QString newUrl = tag.url;
+        bool isHttp = newUrl.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
+                      newUrl.startsWith(QLatin1String("https://"), Qt::CaseInsensitive);
+
+        // 仅对本地非 HTTP 路径执行上传（HTTP 直接使用原链接）
+        if (!isHttp && !newUrl.isEmpty()) {
+            QString fileMd5 = calculateFileMD5(newUrl);   // 计算文件 MD5
+
+            if (type == 0) {
+                // ========== 类型 0：富媒体上传，只处理第一个标签 ==========
+                if (!firstProcessed) {
+                    firstProcessed = true;
+
+                    QString cacheKey = "imageA_" + fileMd5;
+                    bool cacheValid = false;
+                    QString cachedUrl;
+
+                    // 检查缓存（新格式：timestamp||||url）
+                    if (cache_db && !fileMd5.isEmpty()) {
+                        QString cached = cache_db->get(cacheKey);
+                        if (!cached.isEmpty()) {
+                            int sepIdx = cached.lastIndexOf("||||");
+                            if (sepIdx != -1) {
+                                qint64 expireTime = cached.left(sepIdx).toLongLong();
+                                cachedUrl = cached.mid(sepIdx + 4);
+                                if (QDateTime::currentSecsSinceEpoch() < expireTime) {
+                                    cacheValid = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (cacheValid) {
+                        newUrl = cachedUrl;
+                    } else {
+                        // 上传富媒体
+                        bool ok = false;
+                        QString fileInfo = uploadRichMediaA(targetType, openid, 1, newUrl, ok);
+                        if (ok) {
+                            QString path = extractBetween(fileInfo, "path=", ",");
+                            if (!path.isEmpty()) {
+                                newUrl = path;
+                                // 存入缓存
+                                qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60; // 24小时
+                                cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                            } else {
+                                newUrl = tag.url; // 提取失败，回退
+                            }
+                        } else {
+                            newUrl = tag.url; // 上传失败，保留原路径
+                        }
+                    }
+
+                    // 将 info 赋值为最终路径（仅第一个）
+                    info = newUrl;
+                }
+
+                // 类型 0：所有图片标签均被删除（替换为空字符串）
+                text.replace(tag.start, tag.length, QString());
+            }
+            else if (type == 1) {
+                // ========== 类型 1：图床上传，每个标签单独处理 ==========
+                QString cacheKey = "imageB_" + fileMd5;
+                bool cacheValid = false;
+                QString cachedUrl;
+
+                // 检查缓存
+                if (cache_db && !fileMd5.isEmpty()) {
+                    QString cached = cache_db->get(cacheKey);
+                    if (!cached.isEmpty()) {
+                        int sepIdx = cached.lastIndexOf("||||");
+                        if (sepIdx != -1) {
+                            qint64 expireTime = cached.left(sepIdx).toLongLong();
+                            cachedUrl = cached.mid(sepIdx + 4);
+                            if (QDateTime::currentSecsSinceEpoch() < expireTime) {
+                                cacheValid = true;
+                            }
+                        }
+                    }
+                }
+
+                if (cacheValid) {
+                    newUrl = cachedUrl;
+                } else {
+                    // 上传图床
+                    QString uploadedUrl = uploadImageToCdn(newUrl);
+                    if (!uploadedUrl.isEmpty()) {
+                        newUrl = uploadedUrl;
+                        // 存入缓存
+                        qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
+                        cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                    } else {
+                        newUrl = tag.url; // 上传失败，保留原路径
+                    }
+                }
+
+                // 重组为 Markdown 图片格式
+                int w = (tag.width > 0) ? tag.width : 1000;
+                int h = tag.height;
+                QString markdownImg;
+                if (h > 0) {
+                    markdownImg = QStringLiteral("![#%1px #%2px](%3)").arg(w).arg(h).arg(newUrl);
+                } else {
+                    markdownImg = QStringLiteral("![#%1px](%2)").arg(w).arg(newUrl);
+                }
+                text.replace(tag.start, tag.length, markdownImg);
+            }
+        }
+        else {
+            if (type == 0) {
+                text.replace(tag.start, tag.length, QString());
+            } else if (type == 1) {
+                int w = (tag.width > 0) ? tag.width : 1000;
+                int h = tag.height;
+                QString markdownImg;
+                if (h > 0) {
+                    markdownImg = QStringLiteral("![#%1px #%2px](%3)").arg(w).arg(h).arg(newUrl);
+                } else {
+                    markdownImg = QStringLiteral("![#%1px](%2)").arg(w).arg(newUrl);
+                }
+                text.replace(tag.start, tag.length, markdownImg);
+            }
+        }
+    }
+    if (type == 0)
+        text = convertMdLinksKeepHttp(text);
+    else
+        text = convertMarkdownLinksToXml(text);
+
+    return text;
+}
 QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok)
 {
     qint64 expireTime=0;
@@ -1887,7 +2128,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         QString response,fileinfo;
         if(!mode && m_info->markdown || mode && 聊天发送模式==1)
         {
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if(textB.contains("[image,path="))
+                textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
 
             QString textA = forbidden->filterText(textB);
             response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
@@ -1900,7 +2143,10 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
 
 
         }else{
-            textB=processImageTags(textB,0,fileinfo,type,openid,message_reference);
+            textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if(textB.contains("[image,path="))
+                textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+
 
             QString textA = forbidden->filterText(textB);
             response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup);

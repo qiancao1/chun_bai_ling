@@ -73,6 +73,7 @@ PYBIND11_EMBEDDED_MODULE(qq_api, m, py::mod_gil_not_used()) {
         .def_readwrite("msg", &MessageEvent::msg)
         .def_readwrite("seq", &MessageEvent::seq)
         .def_readwrite("appid", &MessageEvent::appid)
+        .def_readwrite("user_id", &MessageEvent::user_int)
         .def_readwrite("user_int", &MessageEvent::user_int)
         .def_readwrite("type", &MessageEvent::type)
         .def_readwrite("subtype", &MessageEvent::subType)

@@ -207,7 +207,7 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
         auto valueLabel = createLabel(value, "statValue");
         if (title == "今日消息数") m_todayMessageValue = valueLabel;
         if (title == "在线账号数") m_onlineAccountValue = valueLabel;
-        if (title == "日志数量") m_logCountValue = valueLabel;
+        if (title == "加群数量") m_logCountValue = valueLabel;
         if (title == "插件数量") {
             valueLabel->setObjectName("pluginCountValue");
             m_pluginCountValue = valueLabel;
@@ -589,15 +589,19 @@ void HomePage::refreshRuntimeStats()
 {
     int onlineCount = 0;
     int messageCount = 0;
+    int jiaq=0,tq=0;
     for (const auto &account : std::as_const(m_accounts)) {
         if (account->online) onlineCount++;
         messageCount += account->received + account->sent;
+        jiaq += account->今日加群数量;
+        tq+=account->今日退群数量;
     }
+
     const int pluginCount = m_pluginList.size();
     int logCount=0;
     if (m_todayMessageValue) m_todayMessageValue->setText(QString::number(messageCount));
-    if (m_onlineAccountValue) m_onlineAccountValue->setText(QString::number(onlineCount));
-    if (m_logCountValue) m_logCountValue->setText(QString::number(logCount));
+    if (m_onlineAccountValue) m_onlineAccountValue->setText(QString("%1 / %2").arg(onlineCount).arg(m_accounts.size()));
+    if (m_logCountValue) m_logCountValue->setText(QString("退%1 加%2").arg(tq).arg(jiaq));
     if (m_pluginCountValue) m_pluginCountValue->setText(QString::number(pluginCount));
 
 

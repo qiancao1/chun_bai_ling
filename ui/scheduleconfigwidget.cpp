@@ -14,14 +14,14 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
-#include <QDebug>
+
 
 
 // ---------- ScheduleConfigWidget ----------
 ScheduleConfigWidget::ScheduleConfigWidget(QWidget *parent)
     : QWidget(parent)
 {
-    qDebug() << "界面";
+
     setupUI();
     initTable();
 
@@ -86,7 +86,7 @@ __result__ = f"收到来自 {msg.appid} 的消息"
 
 #msg.msg #你添加到数据库的 内容 使用|||分割 注意 触发类型必须是"每个群执行一次" 这个保留才他值
 #msg.groupid #注意 触发类型必须是"每个群执行一次" 这个保留才他值
-#[image,path=路径,x=10,y=10] xy可不传 路径可以是链接
+#![#100px #100px](路径) #100px是设置高宽可不传 路径可以是链接
 #[audio,path=路径] [video,path=路径] [file,path=路径]
 #蓝字：蓝字请使用 []() 如 [测试](你点击了蓝字)
 #同时也是支持 [链接](https://example.com)
@@ -477,7 +477,7 @@ __result__ = f"收到来自 {msg.appid} 的消息"
 
 #msg.msg #你添加到数据库的 内容 使用|||分割 注意 触发类型必须是"每个群执行一次" 这个保留才他值
 #msg.groupid #注意 触发类型必须是"每个群执行一次" 这个保留才他值
-#[image,path=路径,x=10,y=10] xy可不传 路径可以是链接
+#![#100px #100px](路径) #100px是设置高宽可不传 路径可以是链接
 #[audio,path=路径] [video,path=路径] [file,path=路径]
 #蓝字：蓝字请使用 []() 如 [测试](你点击了蓝字)
 #同时也是支持 [链接](https://example.com)

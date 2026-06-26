@@ -306,8 +306,17 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
                 Message msg;
                 if (deserializeMessage(blob, msg)) {
-
+                    if(!msg.direction.isEmpty() && !msg.msg.isEmpty())
+                    {
+                        msg.isSelf=true;
+                        QString hf = msg.hf;
+                        msg.hf = QString();
+                        result.append(msg);
+                        msg.isSelf=false;
+                        msg.hf = hf;
+                    }
                     result.append(msg);
+
                     fetched++;
                 }
             }

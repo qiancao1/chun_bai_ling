@@ -15,7 +15,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QComboBox>          // <-- 新增
-#include <QDebug>
+
 
 // ---------- BotRuleItem 序列化 ----------
 QJsonObject BotRuleItem::toJson() const

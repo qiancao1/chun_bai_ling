@@ -10,6 +10,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
+
+set(CMAKE_PREFIX_PATH "C:\\Aisy\\Qt\\qt-5.15.3-dynamic-msvc2019-x86_64")
+ 
+
 add_definitions(-DNOMINMAX)
 # ==================== Python 版本选择 ====================# ========== Python 版本选择开关 ==========
 # 使用 t 版：设为 ON
@@ -24,7 +28,15 @@ else()
     message(WARNING "key.txt not found, using EMPTY default key!")
 endif()
 
-
+if(MSVC)
+    # 移除已有的 /showIncludes 选项
+    string(REGEX REPLACE "/showIncludes" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REGEX REPLACE "/showIncludes" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+    
+    # 或者直接添加 /showIncludes-（如果编译器支持）
+    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /showIncludes-")
+    # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /showIncludes-")
+endif()
 if(USE_FREETHREADING_PYTHON)
     # ---------- t 版手动配置 ----------
     set(PYTHON_FT_ROOT "C:/Users/Airuan/AppData/Local/Python/pythoncore-3.14t-64"

@@ -12,7 +12,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QComboBox>
-#include <QDebug>
+
 #include <QQueue>
 std::string g_keyuuid;
 char* g_keyuuid2 = nullptr;

@@ -77,12 +77,15 @@
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.0.5.10 (2026-06-25)
+## v1.0.5.10 (2026-06-26)
 - 修复 回复设置未保存问题
 - 增加 刷屏检测
 - 增加 ai白名单 模式 以及设置开启等指令
 - 重写 日志系统 减少内存消耗
 - 移除 使用了 GPLv3 协议的库(强制开源) 框架整体使用LGPL协议(非强制开源)
+- 修复 聊天室 图片不加载问题
+- 修复 聊天室 全量群发送信息失败
+- 优化 发送图片格式 [image,path=xx] 改为 ![img](路径|链接) [image,path=xx] 仍然可用
 
 ## v1.0.4.5 (2026-06-23)
 - 好好好 茜草改名为 纯白铃
@@ -437,7 +440,12 @@ void MainWindow::setupUi()
             [this](int id) {
                 updateCurrentBotInfo();
                 stackedWidget->setCurrentIndex(id);
-                if (logPage) logPage->setActive(id == 2);
+                if (logPage)
+                {
+                    logPage->setActive(id == 2);
+                }else{
+                    logPage->modle_clear();
+                }
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
         QListWidgetItem *item = robotListWidget->currentItem();

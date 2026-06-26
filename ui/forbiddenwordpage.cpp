@@ -11,7 +11,7 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QDir>
-#include <QDebug>
+
 
 // ---------- 默认存储路径 ----------
 QString ForbiddenWordPage::defaultFilePath() {
@@ -55,7 +55,7 @@ void ForbiddenWordPage::saveToDefaultFile() {
     QString path = defaultFilePath();
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "无法保存违禁词列表到" << path;
+
         return;
     }
     QTextStream out(&file);

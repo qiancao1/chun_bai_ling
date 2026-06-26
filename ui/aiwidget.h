@@ -45,7 +45,7 @@ struct FunctionData {
     bool interrupt = false;       // 中断复选框
 };
 struct PendingMessage {
-    QString text;           // 纯文本（[image,path=...] 已替换为 [image]）
+    QString text;
     QStringList imagePaths; // 本地缓存图片路径（绝对路径）
 };
 struct Ai_Fun {

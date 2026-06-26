@@ -128,6 +128,16 @@ QString normalizeNewlinesToCR(const QString &input)
 }
 QString python_code(const QString &py_code,const MessageEvent &msg);
 QString ruqunhy(const AccountInfo *info,const MessageEvent &ev);
+QString 内置指令(MessageEvent &ev)
+{
+    QString text;
+    if(ev.msg=="我的id" || ev.msg=="我的ID")
+    {
+        text = QString("**我的ID**\n>user_id:%1\n个人ID:%2\n群ID：%3").arg(ev.user_int).arg(ev.user, ev.groupId);
+    }
+
+    return text;
+}
 //===========================================================================================================================================我猜你在找这个
 void Messages(AccountInfo *info,MessageEvent &ev) {
 
@@ -145,13 +155,21 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             }
         }
     }
-
     QString text;
-    if(m_blacklist.contains(ev.groupId) || m_blacklist.contains(ev.user)) { //黑名单
-        text="[黑名单]群或用户";
+    QString ret= 内置指令(ev);
+    if(!ret.isEmpty())
+    {
+        QQBotClient *client = m_botClients[info->appid_int];
+        if(text.isEmpty()) text = "[私有指令|%1ms]";
+        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
-    QString ret =ruqunhy(info,ev);
+
+
+    if(m_blacklist.contains(ev.groupId) || m_blacklist.contains(ev.user)) { //黑名单
+        return;
+    }
+    ret =ruqunhy(info,ev);
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
@@ -193,6 +211,8 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     pluginPage->dispatch_message(ev.raw,ev);
     if(ev.at_you || !ev.fullType) botnomsg(ev.appid,ev.type,ev.groupId,ev.msgId);
 }
+
+
 quint32 getTimestampMs() {
     using namespace std::chrono;
     // 取 steady_clock（单调时钟，不受系统时间调整影响，适合做差值计算）
@@ -700,6 +720,23 @@ bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg
 }
 
 
+QByteArray R_file(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {}; // 或记录 errorString()
+    }
+    return file.readAll();
+}
 
-
+bool W_file(const QString &path, const QByteArray &data)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    qint64 written = file.write(data);
+    file.close();
+    return written == data.size();
+}
 

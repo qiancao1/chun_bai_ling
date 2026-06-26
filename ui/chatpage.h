@@ -98,8 +98,10 @@ public:
     explicit ChatPage(QWidget *parent = nullptr);
     ~ChatPage();
     void btnsetChecked();
+    void extracted(int &bufferIdx, QStringList &list,
+                   QSet<QPair<int, QString>> &seen);
     void updateAllContactLists(int index);
-    void addContact(int type, const MessageEvent &ev);
+    void addContact(int type, const MessageEvent &ev,const QString &name);
     int m_appid=0;
     int m_type=0;
     void addMessage(const Message &msg);
@@ -107,6 +109,7 @@ public:
     QHash<QString,int> 全量群;
     QHash<QString,QString> customGroupNames;
     QHash<QString,qint64> 最近对话;
+    QString currentContactId;
     int isGroupMode=0;
     void onContactItemClicked2(int appid, const QString &id, int type);
 
@@ -150,7 +153,7 @@ private:
     QComboBox *comboSendType;
     QPushButton *btnSend;
 
-    QString currentContactId;
+
     QLabel *titleLabel;
     QString m_msgid;
 

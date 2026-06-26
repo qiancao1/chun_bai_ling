@@ -21,7 +21,6 @@ set::set(QWidget *parent) : QWidget(parent), m_serverRunning(false)
     bool isLocalMode = m_localRadio->isChecked();
     bool autoStart = g_config["auto_start_local_server"].toBool();
     if (isLocalMode && autoStart) {
-        // 延迟一点启动，让界面先显示出来，避免阻塞
         QTimer::singleShot(0, this, [this]() {
             onStartStopClicked();  // 调用启动逻辑
         });
@@ -30,7 +29,7 @@ set::set(QWidget *parent) : QWidget(parent), m_serverRunning(false)
 
 set::~set()
 {
-    // 析构时如果服务器正在运行，可以选择停止或不管（根据需求）
+
 }
 
 void set::setupUI()

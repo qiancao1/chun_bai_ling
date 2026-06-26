@@ -26,7 +26,7 @@
 #include <QUrlQuery>
 #include <QEventLoop>
 #include <QTimer>
-#include <QDebug>
+
 
 ScreenshotSyncClient::ScreenshotSyncClient(QObject *parent)
     : QObject(parent),
@@ -64,8 +64,6 @@ QByteArray ScreenshotSyncClient::captureHtmlSync(const QString &html, int width,
         timer.stop(); // 正常完成
         if (reply->error() == QNetworkReply::NoError) {
             return reply->readAll();
-        }else{
-            qDebug() << reply->readAll();
         }
     } else {
 
