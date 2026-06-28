@@ -84,7 +84,7 @@ public:
     void onTextMessage(const QString &message);
     // 发送消息接口
     QString send_messages(int type, const QString &openid, QString &pname, QString &text, const QString &msgid=QString(),
-                          bool is_wakeup=false, bool mode=false);
+                          bool is_wakeup=false, bool mode=false, int 发送类型 = 0);
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
                           const QString &message_reference, const QString &msgid,

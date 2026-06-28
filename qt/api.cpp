@@ -2101,7 +2101,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
 
 
 QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
-                                    const QString &msgid,bool is_wakeup,bool mode)
+                                    const QString &msgid,bool is_wakeup,bool mode,int 发送类型)
 {
     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
 
@@ -2126,7 +2126,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
             return response;
         }
         QString response,fileinfo;
-        if(!mode && m_info->markdown || mode && 聊天发送模式==1)
+        if(!mode && m_info->markdown || mode && 发送类型==1)
         {
             textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
             if(textB.contains("[image,path="))

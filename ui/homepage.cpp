@@ -259,7 +259,7 @@ QFrame* HomePage::createChartPanel() {
 }
 
 void HomePage::updateChartData() {
-    extern QJsonObject g_config;
+
 
     QDate today = QDate::currentDate();
     QString dateStr = today.toString(Qt::ISODate);  // "2026-06-04"

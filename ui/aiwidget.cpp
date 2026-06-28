@@ -2670,6 +2670,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         QJsonObject obj3 = obj2["message"].toObject();
         QString text = obj3["content"].toString();
         const QJsonArray arr2 = obj3["tool_calls"].toArray();
+        obj3.remove("reasoning_content");
         qDebug() << "ai回复：" << text << "tool:" << arr2;
         // 将 AI 响应加入上下文
         if (sxw.contains("messages") && sxw["messages"].isArray()) {
@@ -3005,7 +3006,6 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
     }
     QString res = handleMessage(ev,info);
     if(!res.isEmpty()){
-        accountPage->saveAccounts(info);
         return res;
     }
     QString prefix;

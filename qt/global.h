@@ -141,8 +141,7 @@ void doWork(int totalDelay);//延迟 ms
 bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg);
 QByteArray R_file(const QString &path);
 bool W_file(const QString &path,const QByteArray &data);
-
-
+int accinfo(int appid);
 
 
 
@@ -181,7 +180,7 @@ public:
         for (int attempt = 0; attempt < 2; ++attempt) {
             QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
             QString txt = "[沙箱]";
-            QString rawData = client->send_messages(m_msgType,m_contactId,txt, m_text, currentMsgId,zh,mode);
+            QString rawData = client->send_messages(m_msgType,m_contactId,txt, m_text, currentMsgId,zh,mode,聊天发送模式);
 
             QJsonParseError error;
             QJsonDocument doc = QJsonDocument::fromJson(rawData.toUtf8(), &error);

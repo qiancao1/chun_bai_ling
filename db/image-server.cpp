@@ -35,6 +35,11 @@
 #include <QString>
 #include <QTextStream>
 
+#include <QSslSocket>
+#include <QSslCertificate>
+#include <QSslKey>
+#include <QSslConfiguration>
+
 #include <QDir>
 #include <QUuid>
 #include <QDateTime>
@@ -51,14 +56,93 @@
 #include <QFileInfo>
 
 // 全局服务器指针和端口
-QTcpServer *g_server = nullptr;
+static void handleRequest(QTcpSocket *socket);
+class HttpImageServer : public QTcpServer
+{
+    Q_OBJECT
+private:
+    bool m_useSsl = false;
+    QSslCertificate m_cert;
+    QSslKey m_privateKey;
+
+public:
+    explicit HttpImageServer(QObject *parent = nullptr) : QTcpServer(parent) {}
+
+    // 新增：加载证书，返回是否成功启用 SSL
+    bool setupSsl(const QString &certPath, const QString &keyPath)
+    {
+        if (certPath.isEmpty() || keyPath.isEmpty()) {
+            m_useSsl = false;
+            return false;
+        }
+        QFile certFile(certPath), keyFile(keyPath);
+        if (!certFile.open(QIODevice::ReadOnly) || !keyFile.open(QIODevice::ReadOnly)) {
+            qWarning() << "Failed to read SSL cert/key files, fallback to HTTP.";
+            m_useSsl = false;
+            return false;
+        }
+        m_cert = QSslCertificate(&certFile, QSsl::Pem);
+        m_privateKey = QSslKey(&keyFile, QSsl::Rsa, QSsl::Pem);
+        if (m_cert.isNull() || m_privateKey.isNull()) {
+            qWarning() << "Invalid SSL cert/key content, fallback to HTTP.";
+            m_useSsl = false;
+            return false;
+        }
+        m_useSsl = true;
+        return true;
+    }
+
+    bool isSslEnabled() const { return m_useSsl; }
+
+protected:
+    void incomingConnection(qintptr socketDescriptor) override
+    {
+        if (m_useSsl) {
+            // ---------- HTTPS 分支 ----------
+            QSslSocket *sslSocket = new QSslSocket();
+            if (!sslSocket->setSocketDescriptor(socketDescriptor)) {
+                delete sslSocket;
+                return;
+            }
+            sslSocket->setLocalCertificate(m_cert);
+            sslSocket->setPrivateKey(m_privateKey);
+
+            // 关键：等 TLS 握手成功后再处理业务数据
+            connect(sslSocket, &QSslSocket::encrypted, this, [sslSocket]() {
+                handleRequest(sslSocket);  // 你的原有处理函数
+            });
+            // 握手失败则清理
+            connect(sslSocket, &QSslSocket::errorOccurred, this, [sslSocket]() {
+                sslSocket->deleteLater();
+            });
+            // 断开连接时清理
+            connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
+
+            sslSocket->startServerEncryption();
+        } else {
+            // ---------- HTTP 分支（原有逻辑） ----------
+            QTcpSocket *socket = new QTcpSocket();
+            if (!socket->setSocketDescriptor(socketDescriptor)) {
+                delete socket;
+                return;
+            }
+            connect(socket, &QTcpSocket::readyRead, this, [socket]() {
+                handleRequest(socket);
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+        }
+    }
+};
+
+
+HttpImageServer *g_server = nullptr;
 static quint16 g_port = 0;
 static QString g_ip = "127.0.0.1";
 static QString g_allowedReadDir = QDir::current().absolutePath() + "/uploads";
 // Token 认证相关
 static QSet<QString> g_validTokens;      // 存储合法的 Token
 static bool g_tokenAuthEnabled = false;  // 若为 true 且列表非空，才要求 Token
-
+static bool g_ssl = false;  // 若为 true 且列表非空，才要求 Token
 void setUploadTokens(const QStringList &tokens)
 {
     g_validTokens.clear();
@@ -546,31 +630,16 @@ static void handleRequest(QTcpSocket *socket)
 }
 // 新增处理函数
 // TCP 服务器子类
-class HttpImageServer : public QTcpServer
-{
-    Q_OBJECT
-public:
-    explicit HttpImageServer(QObject *parent = nullptr) : QTcpServer(parent) {}
-
-protected:
-    void incomingConnection(qintptr socketDescriptor) override
-    {
-        QTcpSocket *socket = new QTcpSocket(this);
-        if (!socket->setSocketDescriptor(socketDescriptor)) {
-            delete socket;
-            return;
-        }
-        connect(socket, &QTcpSocket::readyRead, this, [socket]() {
-            handleRequest(socket);
-        });
-        connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
-    }
-};
 
 // 本地直接保存文件的辅助函数（供内部调用）
 QString upload(const QString &path)
 {
-    return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(path)));
+    if(!g_server) return QString();
+    if(g_ip.isEmpty()) return QString();
+    if(g_ssl)
+        return QString("https://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(path)));
+    else
+        return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(path)));
 }
 
 QString upload(const QByteArray &data)
@@ -590,29 +659,49 @@ QString upload(const QByteArray &data)
 }
 
 // 对外启动函数
-bool startImageServer(const QString &ip, quint16 port)
+// 新增两个参数，默认空字符串表示不启用 SSL
+bool startImageServer(quint16 port,
+                      const QString &certPath = "",
+                      const QString &keyPath = "")
 {
     if (g_server) {
         qDebug() << "Server already running on port" << g_port;
         return false;
     }
     if (!QDir().mkpath(g_allowedReadDir)) {
-
         return false;
     }
+
     g_server = new HttpImageServer();
+    g_ssl=false;
+    // 尝试加载证书（如果提供了路径）
+    if (!certPath.isEmpty() && !keyPath.isEmpty()) {
+        g_ssl=true;
+        if (!g_server->setupSsl(certPath, keyPath)) {
+            qDebug() << "SSL setup failed, continuing with plain HTTP.";
+        }
+    }
+
     if (!g_server->listen(QHostAddress::Any, port)) {
         qDebug() << "Failed to start server on port" << port;
         delete g_server;
         g_server = nullptr;
         return false;
     }
+
     g_port = port;
-    g_ip = ip;
+    if (g_server->isSslEnabled()) {
+        qDebug() << "HTTPS Server started on port" << port;
+    } else {
+        qDebug() << "HTTP Server started on port" << port;
+    }
     return true;
 }
 
-
+void set_ip(const QString &ip)
+{
+    g_ip = ip;
+}
 void stopImageServer()
 {
     if (!g_server) {

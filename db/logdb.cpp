@@ -19,13 +19,12 @@
  */
 // logdb.cpp
 #include "logdb.h"
-#include "LogPage.h"
 #include <QDebug>
 #include <QDir>
 #include <QDataStream>
 #include <QCoreApplication>
 #include <cstring>
-#include <vector>
+
 #include <algorithm>
 
 // 常量定义
@@ -33,16 +32,17 @@ static const size_t DEFAULT_MAPSIZE = 64ULL * 1024 * 1024;   // 64 MB
 static const size_t MAX_MAPSIZE = 16ULL * 1024 * 1024 * 1024; // 16 GB
 static const int SEQ_DIGITS = 20; // 序号填充位数
 
+// ========== 构造函数、析构函数 ==========
 LogDB::LogDB(const QString &dbPath, QObject *parent)
     : QObject(parent)
-    , m_bufferSize(10000)                     // 默认 10000
+    , m_bufferSize(10000)
     , m_buffer(new std::atomic<uint64_t>[m_bufferSize])
     , m_dbPath(dbPath)
     , m_env(nullptr)
     , m_dbi_main(0)
     , m_dbi_meta(0)
+    , m_currentTxn(nullptr)          // 初始化事务指针
 {
-    // 初始化缓冲区为 0
     for (size_t i = 0; i < m_bufferSize; ++i) {
         m_buffer[i].store(0, std::memory_order_relaxed);
     }
@@ -51,6 +51,95 @@ LogDB::LogDB(const QString &dbPath, QObject *parent)
 LogDB::~LogDB()
 {
     close();
+}
+
+// ========== 关闭 ==========
+void LogDB::close()
+{
+    if (m_env) {
+        // 如果存在未提交的事务，回滚
+        if (m_currentTxn) {
+            mdb_txn_abort(m_currentTxn);
+            m_currentTxn = nullptr;
+        }
+        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
+        if (m_dbi_meta) mdb_dbi_close(m_env, m_dbi_meta);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        m_dbi_main = 0;
+        m_dbi_meta = 0;
+    }
+    delete[] m_buffer;
+}
+
+// ========== 事务控制 ==========
+bool LogDB::beginTransaction(bool readOnly)
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
+    if (m_currentTxn) {
+        qWarning() << "LogDB: 已有活动事务，不允许嵌套";
+        return false;
+    }
+    int rc = mdb_txn_begin(m_env, nullptr, readOnly ? MDB_RDONLY : 0, &m_currentTxn);
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: 开启事务失败:" << mdb_strerror(rc);
+        return false;
+    }
+    return true;
+}
+
+bool LogDB::commitTransaction()
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_currentTxn) {
+        qWarning() << "LogDB: 没有活动事务可提交";
+        return false;
+    }
+    int rc = mdb_txn_commit(m_currentTxn);
+    m_currentTxn = nullptr;
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: 提交事务失败:" << mdb_strerror(rc);
+        return false;
+    }
+    return true;
+}
+
+bool LogDB::abortTransaction()
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_currentTxn) {
+        qWarning() << "LogDB: 没有活动事务可回滚";
+        return false;
+    }
+    mdb_txn_abort(m_currentTxn);
+    m_currentTxn = nullptr;
+    return true;
+}
+
+// ========== 使用外部事务的读取（不自动开启事务） ==========
+bool LogDB::readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
+                         uint64_t seq, Message& msg) const
+{
+    // 不加锁，因为不修改对象状态，但需要确保 m_env 有效（外部调用者应保证）
+    if (!txn || !m_env) return false;
+
+    QString keyStr = makeKey(appid, groupId, seq);
+    QByteArray keyBytes = keyStr.toUtf8();
+
+    MDB_val key, value;
+    key.mv_data = keyBytes.data();
+    key.mv_size = keyBytes.size();
+
+    int rc = mdb_get(txn, m_dbi_main, &key, &value);
+    if (rc != MDB_SUCCESS) {
+        if (rc != MDB_NOTFOUND)
+            qWarning() << "LogDB: readLogInTxn 失败:" << mdb_strerror(rc);
+        return false;
+    }
+
+    QByteArray blob((const char*)value.mv_data, value.mv_size);
+    return deserializeMessage(blob, msg);
 }
 
 bool LogDB::open()
@@ -133,18 +222,6 @@ bool LogDB::open()
     return true;
 }
 
-void LogDB::close()
-{
-    if (m_env) {
-        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
-        if (m_dbi_meta) mdb_dbi_close(m_env, m_dbi_meta);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        m_dbi_main = 0;
-        m_dbi_meta = 0;
-    }
-    delete[] m_buffer;
-}
 
 QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
 {
@@ -214,7 +291,40 @@ bool LogDB::deserializeMessage(const QByteArray &data, Message &msg) const
     return stream.status() == QDataStream::Ok;
 }
 
+bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const
+{
+    // 不加锁，因为外部事务已由调用者管理，且 m_env 只读
+    if (!txn || !m_env) return false;
 
+    MDB_cursor *cursor = nullptr;
+    int rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: getLatestLogInTxn 打开游标失败:" << mdb_strerror(rc);
+        return false;
+    }
+
+    MDB_val key, value;
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最大 seq 开始
+    while (rc == MDB_SUCCESS) {
+        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+        QStringList parts = keyStr.split(':');
+        if (parts.size() == 3) {
+            QString appidFromKey = parts[1];
+            QString groupIdFromKey = parts[2];
+            if (appidFromKey == appid && groupIdFromKey == groupId) {
+                QByteArray blob((const char*)value.mv_data, value.mv_size);
+                if (deserializeMessage(blob, msg)) {
+                    mdb_cursor_close(cursor);
+                    return true;
+                }
+            }
+        }
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+    }
+
+    mdb_cursor_close(cursor);
+    return false;   // 未找到
+}
 
 // ---------- 公共接口 ----------
 uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg)
@@ -273,7 +383,47 @@ uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Me
     setBufferTimeAndStatus(nextId,now_us,0);
     return nextId;
 }
+bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
 
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) return false;
+
+    MDB_cursor *cursor = nullptr;
+    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return false;
+    }
+
+    MDB_val key, value;
+    // 从数据库末尾（最大 seq）开始向前遍历
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    while (rc == MDB_SUCCESS) {
+        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+        QStringList parts = keyStr.split(':');
+        if (parts.size() == 3) {
+            QString appidFromKey = parts[1];
+            QString groupIdFromKey = parts[2];
+            if (appidFromKey == appid && groupIdFromKey == groupId) {
+                QByteArray blob((const char*)value.mv_data, value.mv_size);
+                if (deserializeMessage(blob, msg)) {
+                    mdb_cursor_close(cursor);
+                    mdb_txn_abort(txn);
+                    return true;
+                }
+            }
+        }
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
+    return false;
+}
 QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId, int N) const
 {
     QMutexLocker locker(&m_mutex);

@@ -20,7 +20,15 @@ public:
     // 打开/关闭数据库
     bool open();
     void close();
-
+    bool beginTransaction(bool readOnly = false);
+    bool commitTransaction();
+    bool abortTransaction();
+        bool getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const;
+    bool getLatestLog(const QString &appid, const QString &groupId, Message &msg) const;
+    MDB_txn* getCurrentTxn() const { return m_currentTxn; }
+    // 使用外部已有事务进行读取（不自动开启事务）
+    bool readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
+                      uint64_t seq, Message& msg) const;
     // 添加日志，返回分配的序号（全局唯一递增），失败返回 0
     uint64_t appendLog(const QString &appid, const QString &groupId, const Message &msg);
 
@@ -129,7 +137,7 @@ private:
     bool serializeMessage(const Message &msg, QByteArray &data) const;
     bool deserializeMessage(const QByteArray &data, Message &msg) const;
 
-
+    MDB_txn* m_currentTxn;   // 当前活动事务（由 beginTransaction 创建）
 
     // 禁用拷贝
     LogDB(const LogDB&) = delete;

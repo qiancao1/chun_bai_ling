@@ -253,7 +253,7 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
     switch (ev.type) {
     case 0: // 群消息
         if(ev.subType>1)
-            ev.msg = QString("%1").arg(ev.subType == 2 ? "群成员添加" : "群成员退群", ev.user);
+            ev.msg = QString("%1").arg(ev.subType == 2 ? "群成员添加" : "群成员退群");
         break;
     case 1: // 频道消息
         break;
@@ -263,7 +263,7 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
         break;
     case 4: // 群事件
         ev.msg = QString("[群事件] %1 操作者:%2")
-                      .arg(ev.subType == 4 ? "被邀请进群" : "被踢出群", ev.groupId, ev.user);
+                      .arg(ev.subType == 4 ? "被邀请进群" : "被踢出群", ev.user);
         break;
     case 5: // 好友事件
 

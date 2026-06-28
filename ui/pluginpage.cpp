@@ -132,9 +132,9 @@ void PluginPage::setupUi()
     pluginListWidget->setDragDropMode(QAbstractItemView::InternalMove); // 内部移动模式（不复制，只移动）
     pluginListWidget->setDefaultDropAction(Qt::MoveAction); // 确保移动动作
 
-    addPluginBtn  = new QPushButton("添加(DLL)");
-    addPluginBtn2 = new QPushButton("添加(Python)");
-    addPluginBtn3 = new QPushButton("添加(JS)");
+    addPluginBtn  = new QPushButton("添加-DLL");
+    addPluginBtn2 = new QPushButton("添加-Python");
+    addPluginBtn3 = new QPushButton("添加-JS");
 
 
     QHBoxLayout *btnRow = new QHBoxLayout;

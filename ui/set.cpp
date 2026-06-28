@@ -6,11 +6,13 @@
 #include <QColorDialog>
 #include <QTimer>
 #include "jjm.h"
+#include "websocketserver.h"
 void stopImageServer();
-bool startImageServer(const QString &ip,quint16 port);
+bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "");
 void setUploadTokens(const QStringList &tokens);
+void set_ip(const QString &ip);
 QString ffmpegdiv;
-
+WebSocketServer *server=nullptr;
 set::set(QWidget *parent) : QWidget(parent), m_serverRunning(false)
 {
     setupUI();
@@ -166,26 +168,70 @@ void set::setupUI()
     remoteLayout->addWidget(m_confirmBtn);
 
     // 本地图床配置行
+
+
+
+    webhook = new QLineEdit(this);
+    webhook_but = new QPushButton("确认");
+    webhook_ssl = new QLineEdit(this);
+    webhook_ssl_but = new QPushButton("确认");
+    webhook_ssl->setPlaceholderText("可选，可空..清将证书放运行目录");
+    webws_port = new QLineEdit(this);
+    web_qr = new QPushButton("确认");
+    int port = g_config["webhook_p"].toInt(8080);
+    webhook->setText(QString::number(port));
+    webhook->setPlaceholderText("8080");
+    webhook->setMaximumWidth(70);
+    QString SSL = g_config["webhook_ssl"].toString();
+    webhook_ssl->setText(SSL);
+
+    port = g_config["webws_p"].toInt(8081);
+    webws_port->setText(QString::number(port));
+    webws_port->setMaximumWidth(70);
+    QHBoxLayout *remoteLayout2 = new QHBoxLayout;
+    remoteLayout2->setAlignment(Qt::AlignLeft);
+    remoteLayout2->addWidget(new QLabel("webhook端口："));
+    remoteLayout2->addWidget(webhook);
+    remoteLayout2->addWidget(webhook_but);
+
+    remoteLayout2->addWidget(new QLabel(" 聊天室端口："));
+    remoteLayout2->addWidget(webws_port);
+    remoteLayout2->addWidget(web_qr);
+    remoteLayout2->addWidget(new QLabel(" SSL密码："));
+    remoteLayout2->addWidget(webhook_ssl);
+    remoteLayout2->addWidget(webhook_ssl_but);
     QHBoxLayout *localLayout = new QHBoxLayout;
     localLayout->setAlignment(Qt::AlignLeft);
     QLabel *addrLabel = new QLabel(tr("启动本地图床："), this);
     m_addrEdit = new QLineEdit(this);
     m_addrEdit->setPlaceholderText(tr("这里只需要输入【公网ip】或者域名 "));
     m_addrEdit->setMinimumWidth(150);
-    QLabel *portLabel = new QLabel(tr("端口："), this);
-    m_portSpin = new QSpinBox(this);
-    m_portSpin->setRange(1, 65535);
-    m_startStopBtn = new QPushButton(tr("启动"), this);
+
+
+    m_startStopBtn = new QPushButton(tr("保存"), this);
+    Ewebhook = new QCheckBox;
+    Ews = new QCheckBox;
+    ESSL = new QCheckBox;
+
+    Ewebhook->setText("启动用webhook");
+    Ews->setText("启用web管理");
+    ESSL->setText("启用SSL");
     localLayout->addWidget(addrLabel);
     localLayout->addWidget(m_addrEdit);
-    localLayout->addWidget(portLabel);
-    localLayout->addWidget(m_portSpin);
+
     localLayout->addWidget(m_startStopBtn);
+    localLayout->addWidget(Ewebhook);
+    localLayout->addWidget(Ews);
+
+
     mainVLayout->addLayout(remoteLayout1);
+
+
     mainVLayout->addLayout(modeLayout2);
 
     mainVLayout->addLayout(modeLayout);
     mainVLayout->addLayout(remoteLayout);
+    mainVLayout->addLayout(remoteLayout2);
     mainVLayout->addLayout(localLayout);
     // ----- IP 白名单配置区域 -----
     QLabel *tableLabel = new QLabel(tr("Token 管理：启用/禁用、上传次数统计"), this);
@@ -260,16 +306,79 @@ void set::setupUI()
         saveConfig();
         QMessageBox::about(this,"","重启生效");
     });
+
+
     connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);
     connect(m_saveTokenBtn, &QPushButton::clicked, this, &set::onWhitelistChanged);  // 复用原名槽
 
     connect(m_remoteRadio, &QRadioButton::toggled, this, &set::onModeToggled);
     connect(m_localRadio,  &QRadioButton::toggled, this, &set::onModeToggled);
     connect(m_confirmBtn, &QPushButton::clicked, [this](){ saveRemoteConfig();});
-    connect(m_startStopBtn, &QPushButton::clicked, this, &set::onStartStopClicked);
-    connect(m_addrEdit, &QLineEdit::textChanged, this, &set::onLocalIpChanged);
-    connect(m_portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &set::onLocalPortChanged);
+    //图床链接 保存
+    connect(m_startStopBtn, &QPushButton::clicked, [this](){
+        g_config["local_server_ip"]= m_addrEdit->text().trimmed();
+        saveConfig();
+    });
+    connect(web_qr, &QPushButton::clicked, [this](){
+        int prot = webws_port->text().toInt();
+        if(prot<=10 || prot>0xffff)
+        {
+            QMessageBox::warning(this,"端口错误","端口不在 1-65535 之间");
+            return ;
+        }
+        g_config["webws_p"] = prot;
+        saveConfig();
 
+    });
+    connect(webhook_but, &QPushButton::clicked, [this](){
+        int prot = webhook->text().toInt();
+        if(prot<=10 || prot>0xffff)
+        {
+            QMessageBox::warning(this,"端口错误","端口不在 1-65535 之间");
+            return ;
+        }
+        g_config["webhook_p"] = prot;
+        saveConfig();
+
+    });
+    //启用禁用webhook
+    connect(Ewebhook, &QCheckBox::clicked, this, &set::onStartStopClicked);
+
+    //启用禁用ws聊天室
+    connect(Ews, &QCheckBox::clicked, [this](){
+        if(Ews->isChecked())
+        {
+            server->open(g_config["webws_p"].toInt());  // 监听 8080 端口
+            g_config["webws_run"]=true;
+            saveConfig();
+        }
+        else
+        {
+            server->close();
+            g_config["webws_run"]=false;
+            saveConfig();
+        }
+    });
+    connect(ESSL, &QCheckBox::clicked, [this](){
+
+            g_config["SSL"]=ESSL->isChecked();
+            saveConfig();
+
+    });
+
+    server = new WebSocketServer;
+    if(g_config["webws_run"].toBool())
+    {
+        Ews->setChecked(true);
+    }
+    if(g_config["webhook_run"].toBool())
+    {
+        Ewebhook->setChecked(true); //不出意外会触发信号
+    }
+    if( g_config["SSL"].toBool())
+    {
+        ESSL->setChecked(true);
+    }
 }
 
 void set::onAddTokenRow()
@@ -380,9 +489,9 @@ void set::loadConfig()
     远程token=g_config["image_server_token"].toString();
     m_token->setText(远程token);
     QString localIp = g_config["local_server_ip"].toString();
-    int localPort = g_config["local_server_port"].toInt();
+
     m_addrEdit->setText(localIp);
-    m_portSpin->setValue(localPort);
+
     QJsonArray tokenArray = g_config["token_table_data"].toArray();
     m_tokenTable->setRowCount(0);
         QStringList enabledTokens;
@@ -448,12 +557,7 @@ void set::saveRemoteConfig()
     // 可选：提示保存成功
 }
 
-void set::saveLocalConfig()
-{
-    g_config["local_server_ip"]= m_addrEdit->text().trimmed();
-    g_config["local_server_port"]= m_portSpin->value();
-    saveConfig();
-}
+
 
 void set::saveAutoStartFlag(bool autoStart)
 {
@@ -467,7 +571,7 @@ void set::updateControlEnable()
     m_token->setEnabled(remoteMode);
     m_confirmBtn->setEnabled(remoteMode);
     m_addrEdit->setEnabled(!remoteMode);
-    m_portSpin->setEnabled(!remoteMode);
+
     m_startStopBtn->setEnabled(!remoteMode);
     m_tokenTable->setEnabled(!remoteMode);
     m_addTokenBtn->setEnabled(!remoteMode);
@@ -498,39 +602,20 @@ void set::onModeToggled(bool checked)
 }
 
 
-void set::onLocalIpChanged(const QString &ip)
-{
-    Q_UNUSED(ip)
-    saveLocalConfig();
-}
-
-void set::onLocalPortChanged(int port)
-{
-    Q_UNUSED(port)
-    saveLocalConfig();
-}
 
 
 void set::onStartStopClicked()
 {
-    if (!m_localRadio->isChecked())
-        return;
 
     if (!m_serverRunning) {
-        // 尝试启动
-        QString ip = m_addrEdit->text().trimmed();
-        quint16 port = m_portSpin->value();
-        if (ip.isEmpty()) {
-            QMessageBox::warning(this, tr("错误"), tr("服务器地址不能为空"));
-            return;
-        }
-        bool ok = startImageServer(ip, port);
+
+        bool ok = startImageServer(g_config["webhook_p"].toInt());
         if (ok) {
             m_serverRunning = true;
             m_startStopBtn->setText(tr("停止"));
             saveAutoStartFlag(true);
         } else {
-            AppendEventLog("图床服务器启动失败，请检查IP/端口是否可用。下次程序启动将自动重试。" ,0xff);
+            AppendEventLog("启动服务器启动失败，端口是否可用。下次程序启动将自动重试。" ,0xff);
         }
     } else {
         // 停止服务器

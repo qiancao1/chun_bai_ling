@@ -107,14 +107,17 @@ QString normalizeNewlinesToCR(const QString &input)
     while (i < len) {
         const QChar ch = input[i];
         if (ch == '\r') {
-
-            result.append('\r');
-            if (i + 1 < len && input[i+1] == '\n') {
+            if (i + 1 < len && input[i + 1] == '\n') {
+                // \r\n 统一替换为 \n
+                result.append('\n');
                 ++i; // 跳过 \n
+            } else {
+                // 单独的 \r 保留
+                result.append('\r');
             }
         }
         else if (ch == '\n') {
-            // 单独的 \n 转换为 \r
+            // 单独的 \n 仍转换为 \r（保持原有行为，可根据需要调整）
             result.append('\r');
         }
         else {
@@ -122,8 +125,8 @@ QString normalizeNewlinesToCR(const QString &input)
         }
         ++i;
     }
-    if(result.contains("\\n"))
-        result =subTextReplace(result,"\\n","\r");
+
+    // 移除最后的字面量替换（原代码处理 "\\n"，并非换行符）
     return result;
 }
 QString python_code(const QString &py_code,const MessageEvent &msg);
@@ -529,16 +532,17 @@ void parseFromId(qint64 id, int &appid, int &type) {
     appid = static_cast<int>(id >> 32);
     type = static_cast<int>(id & 0xFFFFFFFF);
 }
-extern QTcpServer *g_server;
+
 QString upload(const QString &path);
 QString uploadImageSync(const QString& serverUrl, const QString& token, const QString& filePath,int timeoutMs = 30000, QString* errorMsg = nullptr);
 QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int timeoutMs,QString *errorMsg);
 
 QString uploadImageToCdn(const QString &path)
 {
-    if(g_server)
-        return upload(path);
-    QString url;
+    QString url = upload(path);
+    if(!url.isEmpty())    return url;
+
+
     if(setA->远程服务器)
     {
         if(setA->远程链接.contains("127.0.0.1")) //看看是不是这条电脑 另一个开的图床

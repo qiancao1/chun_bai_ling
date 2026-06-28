@@ -39,8 +39,7 @@ void AccountPage::recordHourlyStats() {
 
     QDateTime now = QDateTime::currentDateTime();
     QDate date = now.date();
-    int hour =
-        now.time().hour();
+    int hour = now.time().hour();
 
     updateHourStat(g_config, "Received", date, hour, deltaReceived);
     updateHourStat(g_config, "Sent", date, hour, deltaSent);

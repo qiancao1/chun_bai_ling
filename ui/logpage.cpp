@@ -264,9 +264,9 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
         case 0:
             rowItems << new QStandardItem(msg.timestamp)
                      << new QStandardItem(botName)
+                     << new QStandardItem(openid)
                      << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
-                     << new QStandardItem(msg.msg)
-                     << new QStandardItem(msg.direction);
+                     << new QStandardItem(msg.msg);
             break;
         default:
             return;

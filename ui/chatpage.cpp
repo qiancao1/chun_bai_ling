@@ -351,7 +351,7 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     // ---------- 文本换行计算 ----------
     QFont textFont("Microsoft YaHei", 11);
     QFontMetrics fm(textFont);
-    const int maxBubbleWidth = 360;
+    const int maxBubbleWidth = 460;
     QStringList lines;
     if (s_wrapCache.contains(content)) {
         lines = *s_wrapCache[content];
@@ -437,7 +437,7 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     int bubbleWidth = textWidth + 28;
     if (imageWidth > bubbleWidth - 24) // 让图片宽度不超过气泡内边距
         bubbleWidth = imageWidth + 24;
-    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+10;
+    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+16;
     bubbleWidth = qMax(bubbleWidth,130);
     QRect avatarRect;
     QRect bubbleRect;
@@ -565,7 +565,7 @@ QSize BubbleDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelI
     // 文本换行（复用 paint 中的算法）
     QFont textFont("Microsoft YaHei", 11);
     QFontMetrics fm(textFont);
-    const int maxBubbleWidth = 360;
+    const int maxBubbleWidth = 460;
     QStringList lines;
     static QCache<QString, QStringList> wrapCache;
     if (wrapCache.contains(content)) {
@@ -1169,6 +1169,7 @@ void ChatPage::btnsetChecked()
     isGroupMode = mode;
 }
 QString getBotName(int appid);
+
 void ChatPage::updateAllContactLists(int index)
 {
     int bufferIdx=0;
@@ -1177,8 +1178,10 @@ void ChatPage::updateAllContactLists(int index)
     seen.clear(); //过滤器
     s_wrapCache.clear(); //聊天记录缓存
     avatarCache.clear(); //头像缓存
+    bool sw=false;
     switch (index) {
     case 0: // 全量群
+        sw = g_logdb[1]->beginTransaction(true);
         for (auto it = 全量群.begin(); it != 全量群.end(); ++it) {
             Contact c;
             c.id = it.key();
@@ -1186,9 +1189,21 @@ void ChatPage::updateAllContactLists(int index)
             if(c.name.isEmpty()) c.name=it.key();
             int appid =it.value();
             c.name =getBotName(appid)+":"+ c.name;
-            c.lastMsgTime = "猜猜我是谁";      // 忽略
+            Message msg;
+            if(sw)
+            {
+                g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), c.id, msg);
+            }else{
+                g_logdb[1]->getLatestLog(QString::number(appid),c.id,msg);
+
+            }
+            if(msg.name.isEmpty())
+                c.lastMsgTime = "无信息";      // 忽略
+            else
+                c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
             appendContactCard(appid, c,0);
         }
+        if(sw) g_logdb[1]->commitTransaction();
         return;
     case 1: bufferIdx=1;break;// 普通群
     case 2: bufferIdx=2;break;// 私聊
@@ -1201,8 +1216,18 @@ void ChatPage::updateAllContactLists(int index)
             Contact c;
             c.id = it.key();
             c.name = getBotName(appid)+":"+customGroupNames.value(c.id);       // 没有 name，就用 key
-            c.lastMsgTime = "";      // 忽略
+            Message msg;
+            if(sw)
+            {
+                g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), c.id, msg);
+            }else{
+                g_logdb[1]->getLatestLog(QString::number(appid),c.id,msg);
 
+            }
+            if(msg.name.isEmpty())
+                c.lastMsgTime = "无信息";      // 忽略
+            else
+                c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
             appendContactCard(appid, c,type);
         }
         return;
@@ -1213,6 +1238,7 @@ void ChatPage::updateAllContactLists(int index)
 
     const QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
     QSet<QPair<int, QString>> seen;
+    sw = g_logdb[bufferIdx]->beginTransaction(true);
     for (const QString &keyStr : list) {
         QStringList parts = keyStr.split(':');
         if (parts.size() != 3) continue;
@@ -1234,11 +1260,13 @@ void ChatPage::updateAllContactLists(int index)
         if (seen.contains(key)) continue;  // 每个群组只取最新一条
         seen.insert(key);
         Message msg;
-        if (!g_logdb[bufferIdx]->readLog(QString::number(appid), groupId, seq, msg)) {
-            qWarning() << "读取消息失败:" << keyStr;
-            continue;
-        }
+        if(sw)
+        {
+            g_logdb[bufferIdx]->readLogInTxn(g_logdb[bufferIdx]->getCurrentTxn(),QString::number(appid), groupId, seq, msg);
 
+        }else{
+            g_logdb[bufferIdx]->readLog(QString::number(appid), groupId, seq, msg);
+        }
         Contact c;
         c.id = groupId;
 
@@ -1261,7 +1289,10 @@ void ChatPage::updateAllContactLists(int index)
 
 
     }
+    if(sw) g_logdb[bufferIdx]->commitTransaction();
 }
+
+
 void ChatPage::appendContactCard(int appid,Contact c,int type)
 {
     ContactItemWidget *widget = new ContactItemWidget(c);
