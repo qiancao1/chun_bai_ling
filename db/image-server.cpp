@@ -293,17 +293,17 @@ static void webmb(QTcpSocket *socket, const QByteArray &pathQuery)
         return;
     }
 
-    QString filePath = "web面板.html";
+    QString filePath = "web.html";
 
     QFileInfo fi(filePath);
     if (!fi.exists() || !fi.isFile()) {
-        sendErrorResponse(socket, 404, "web面板.html 文件不存在");
+        sendErrorResponse(socket, 404, "web.html 文件不存在");
         return;
     }
 
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        sendErrorResponse(socket, 500, "web面板.html 打不开");
+        sendErrorResponse(socket, 500, "web.html 打不开");
         return;
     }
     QByteArray data = file.readAll();
