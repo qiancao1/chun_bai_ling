@@ -32,7 +32,7 @@ public:
 
 private slots:
     void onStartStopClicked();
-    void onModeToggled(bool checked);
+
 
 
     void onAddTokenRow();
@@ -47,9 +47,9 @@ private:
     void saveModeConfig();
     void saveRemoteConfig();
 
-    void saveAutoStartFlag(bool autoStart);
+
     void updateControlEnable();
-    void stopLocalServerIfRunning();
+
 
 
 
@@ -67,7 +67,7 @@ private:
     QPushButton *m_addTokenBtn;
     QPushButton *m_delTokenBtn;
     QPushButton *m_saveTokenBtn;   // 保存按钮
-    bool m_serverRunning;   // 当前是否正在运行
+
 };
 
 #endif // SET_H

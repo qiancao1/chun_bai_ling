@@ -137,6 +137,8 @@ protected:
 
 HttpImageServer *g_server = nullptr;
 static quint16 g_port = 0;
+
+QString ws_token = "127.0.0.1";
 static QString g_ip = "127.0.0.1";
 static QString g_allowedReadDir = QDir::current().absolutePath() + "/uploads";
 // Token 认证相关
@@ -163,9 +165,8 @@ static bool isPathInAllowedDir(const QString &requestedPath)
     QString absoluteAllowed = allowed.absolutePath();
     QFileInfo fi(requestedPath);
     QString absoluteRequest = QDir::cleanPath(fi.absoluteFilePath());
-    // 绝对路径必须位于 allowed 目录下，或者是 allowed 目录本身
-    return absoluteRequest.startsWith(absoluteAllowed + QDir::separator()) ||
-           absoluteRequest == absoluteAllowed;
+    return absoluteRequest.startsWith(absoluteAllowed);
+
 }
 // 从请求中提取 Token：优先从 Authorization 头，其次从查询参数 token=
 static QString extractToken(const QByteArray &headers, const QByteArray &pathQuery)
@@ -275,7 +276,53 @@ static void sendErrorResponse(QTcpSocket *socket, int code, const QString &messa
     QByteArray body = message.toUtf8();
     sendResponse(socket, code, "text/plain; charset=utf-8", body);
 }
+static void webmb(QTcpSocket *socket, const QByteArray &pathQuery)
+{
+    QUrl url(QString::fromUtf8(pathQuery));
+    QUrlQuery query(url);
+    QString token = query.queryItemValue("token");
+    if(token.isEmpty())
+    {
+        sendErrorResponse(socket, 404, "token 为空请传递 登录密钥");
+        return;
+    }
+    // 这里写个1分钟不处理（原逻辑保留）
+    if(ws_token != token)
+    {
+        sendErrorResponse(socket, 404, "token 不正确 请等待1 分钟后再链接");
+        return;
+    }
 
+    QString filePath = "web面板.html";
+
+    QFileInfo fi(filePath);
+    if (!fi.exists() || !fi.isFile()) {
+        sendErrorResponse(socket, 404, "web面板.html 文件不存在");
+        return;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        sendErrorResponse(socket, 500, "web面板.html 打不开");
+        return;
+    }
+    QByteArray data = file.readAll();
+    file.close();
+
+    // ========== 新增：替换占位符 ==========
+    QString htmlContent = QString::fromUtf8(data);
+    htmlContent.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));
+    htmlContent.replace("占位符token", ws_token);  // 或 token（二者相同）
+    data = htmlContent.toUtf8();
+    // =====================================
+
+    QMimeDatabase mimeDb;
+    QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
+    if (mimeType.isEmpty())
+        mimeType = "application/octet-stream";
+
+    sendResponse(socket, 200, mimeType.toUtf8(), data);
+}
 static void handleGet(QTcpSocket *socket, const QByteArray &pathQuery)
 {
     QUrl url(QString::fromUtf8(pathQuery));
@@ -609,7 +656,10 @@ static void handleRequest(QTcpSocket *socket)
         body = requestData.mid(bodyStart);
 
     if (method == "GET") {
-        handleGet(socket, path);
+        if(path.startsWith("/web"))
+            webmb(socket, path);
+        else
+            handleGet(socket, path);
 
     }else if (method == "POST") {
         if (path.startsWith("/upload")) {            // 原有的 /upload 或 /remote_upload
@@ -676,10 +726,10 @@ bool startImageServer(quint16 port,
     g_ssl=false;
     // 尝试加载证书（如果提供了路径）
     if (!certPath.isEmpty() && !keyPath.isEmpty()) {
-        g_ssl=true;
+
         if (!g_server->setupSsl(certPath, keyPath)) {
             qDebug() << "SSL setup failed, continuing with plain HTTP.";
-        }
+        }else g_ssl=true;
     }
 
     if (!g_server->listen(QHostAddress::Any, port)) {

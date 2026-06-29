@@ -48,6 +48,7 @@
 #include <QPointer>
 #include "sandboxwindow.h"
 #include "set.h"
+#include "websocketserver.h"
 class Global
 {
 public:
@@ -97,9 +98,11 @@ extern LmdbKV *cache_db;
 extern LmdbKV *aidb;
 extern LmdbKV *dsdb;
 extern LmdbKV *accdb;
+extern quint16 g_ws_port;
+extern QString ws_token;
 
 extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
-
+extern WebSocketServer *ws_server;
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
 extern SharedMemoryBridge *bridge;
 extern QJsonObject g_config;

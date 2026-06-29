@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QWebSocketServer>
 #include <QList>
+#include "chatpage.h"
 #include "clientconnection.h"
 
 class WebSocketServer : public QObject
@@ -15,6 +16,7 @@ public:
     ~WebSocketServer();
     void close();
     bool open(quint16 port);
+    void broadcastMessage(const Message &msg, int appid, int type, const QString &groupId);
 
 private slots:
     void onNewConnection();

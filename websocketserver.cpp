@@ -10,8 +10,8 @@
 #include <qjsonobject.h>
 #include <qtimer.h>
 QString getBotName(int appid);
-// 硬编码的合法 token（生产环境应改为数据库验证）
-static const QString VALID_TOKEN = "my_secret_token_123";
+
+
 
 WebSocketServer::WebSocketServer(QObject *parent)
     : QObject(parent)
@@ -43,7 +43,7 @@ void WebSocketServer::onNewConnection()
     QUrl url = socket->requestUrl();
     QUrlQuery query(url);
     QString token = query.queryItemValue("token");
-    if (token != VALID_TOKEN) {
+    if (token != ws_token) {
         qWarning() << "Invalid token from" << socket->peerAddress().toString();
         socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Invalid token");
         socket->deleteLater();
@@ -100,7 +100,7 @@ public:
     void run() override {
         QString groupId = params.value("groupId").toString();
         int appid = params.value("appid").toInt();
-        int type = params.value("type").toInt() - 1;
+        int type = params.value("type").toInt();
         QString text = params.value("text").toString();
         QString msgid = params.value("msgid").toString();
         int mark = params.value("markdown").toInt();
@@ -136,7 +136,7 @@ public:
             return;
         }
 
-        QString pname = "web聊天室";
+        QString pname = "[web聊天室]";
         QString res = m_botClients[appid]->send_messages(type, groupId, pname, text, msgid, false, true, mark);
         if (!res.contains("ROBOT")) {
             res = m_botClients[appid]->send_messages(type, groupId, pname, text, QString(), type == 2, true, mark);
@@ -145,28 +145,8 @@ public:
         QJsonObject response;
         response["cmd"] = "send_msg";
         response["params"] = params;
+        response["success"] = true;
         if (!reqId.isEmpty()) response["reqId"] = reqId;
-
-        // 解析返回结果
-        QJsonDocument doc = QJsonDocument::fromJson(res.toUtf8());
-        if (doc.isObject()) {
-            QJsonObject obj = doc.object();
-            bool success = obj.contains("id") && !obj.contains("error");
-            response["success"] = success;
-            if (success) {
-                QString id = obj["id"].toString();
-                QJsonObject ext = obj["ext_info"].toObject();
-                QString ref = ext["ref_idx"].toString();
-                response["id"] = id;
-                response["ref"] = "[ref,msg_idx=" + ref + "]";
-            }
-            response["msg"] = res;
-        } else {
-            bool success = res.contains("ROBOT");
-            response["success"] = success;
-            response["msg"] = res;
-        }
-
         sendResponse(response);
     }
 private:
@@ -174,6 +154,8 @@ private:
     QString reqId;
     ClientConnection *client;
 };
+
+
 void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
 {
     ClientConnection *client = qobject_cast<ClientConnection*>(sender());
@@ -368,6 +350,41 @@ void WebSocketServer::handleGetLogs(const QJsonObject &params, ClientConnection 
     response["data"] = arr;
     if (!reqId.isEmpty()) response["reqId"] = reqId;
     client->sendMessage(response);
+}
+//有新信息
+void WebSocketServer::broadcastMessage(const Message &msg, int appid, int type, const QString &groupId)
+{
+    if(m_clients.size()==0) return;
+    QJsonObject data;
+    data["appid"] = appid;
+    data["groupId"] = groupId;
+    data["type"] = type;   // 群聊类型，与前端对应
+
+    QJsonObject msgObj;
+    msgObj["user"] = msg.user;
+    msgObj["msg"] = msg.msg;
+    msgObj["timestamp"] = msg.timestamp;
+    msgObj["name"] = msg.name;
+    msgObj["hf"] = msg.hf;
+    msgObj["ch"] = msg.ch;
+    msgObj["plugin_ch"] = msg.plugin_ch;
+    msgObj["direction"] = msg.direction;
+    msgObj["color"] = msg.Color_0;
+    msgObj["isSelf"] = msg.isSelf;
+
+    data["msg"] = msgObj;
+
+    QJsonObject message;
+    message["type"] = "newMessage";
+    message["data"] = data;
+
+    // 广播给所有在线客户端
+    QMetaObject::invokeMethod(qApp, [=]() {
+        for (ClientConnection *c : std::as_const(m_clients)) {
+            c->sendMessage(message);
+        }
+    }, Qt::QueuedConnection);
+
 }
 // 获取聊天记录
 void WebSocketServer::handleGetRecentMessages(const QJsonObject &params, ClientConnection *client, const QString &reqId)

@@ -832,6 +832,8 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
         }
         g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
         logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
+        msg.isSelf=true;
+        if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
         return ;
     }
 
@@ -856,6 +858,7 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
 
     g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
     logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
+    if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
 
 }
 

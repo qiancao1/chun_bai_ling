@@ -12,8 +12,8 @@ bool startImageServer(quint16 port,const QString &certPath = "",const QString &k
 void setUploadTokens(const QStringList &tokens);
 void set_ip(const QString &ip);
 QString ffmpegdiv;
-WebSocketServer *server=nullptr;
-set::set(QWidget *parent) : QWidget(parent), m_serverRunning(false)
+WebSocketServer *ws_server=nullptr;
+set::set(QWidget *parent) : QWidget(parent)
 {
     setupUI();
     loadConfig();           // 加载配置到 UI
@@ -173,11 +173,17 @@ void set::setupUI()
 
     webhook = new QLineEdit(this);
     webhook_but = new QPushButton("确认");
+
     webhook_ssl = new QLineEdit(this);
     webhook_ssl_but = new QPushButton("确认");
-    webhook_ssl->setPlaceholderText("可选，可空..清将证书放运行目录");
+
+    webhook_ssl->setPlaceholderText("可选，可空..证书放置 运行目录/key.key,key.crt");
+
     webws_port = new QLineEdit(this);
     web_qr = new QPushButton("确认");
+
+
+
     int port = g_config["webhook_p"].toInt(8080);
     webhook->setText(QString::number(port));
     webhook->setPlaceholderText("8080");
@@ -188,18 +194,28 @@ void set::setupUI()
     port = g_config["webws_p"].toInt(8081);
     webws_port->setText(QString::number(port));
     webws_port->setMaximumWidth(70);
+    QUuid uuid= QUuid::createUuid();
+    ws_token = uuid.toString(QUuid::WithoutBraces);
+    qDebug() << "token:" << ws_token;
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
     remoteLayout2->setAlignment(Qt::AlignLeft);
     remoteLayout2->addWidget(new QLabel("webhook端口："));
     remoteLayout2->addWidget(webhook);
     remoteLayout2->addWidget(webhook_but);
 
-    remoteLayout2->addWidget(new QLabel(" 聊天室端口："));
+    remoteLayout2->addWidget(new QLabel("聊天室端口："));
     remoteLayout2->addWidget(webws_port);
     remoteLayout2->addWidget(web_qr);
+
     remoteLayout2->addWidget(new QLabel(" SSL密码："));
     remoteLayout2->addWidget(webhook_ssl);
     remoteLayout2->addWidget(webhook_ssl_but);
+
+
+
+
+
+
     QHBoxLayout *localLayout = new QHBoxLayout;
     localLayout->setAlignment(Qt::AlignLeft);
     QLabel *addrLabel = new QLabel(tr("启动本地图床："), this);
@@ -222,7 +238,7 @@ void set::setupUI()
     localLayout->addWidget(m_startStopBtn);
     localLayout->addWidget(Ewebhook);
     localLayout->addWidget(Ews);
-
+    localLayout->addWidget(ESSL);
 
     mainVLayout->addLayout(remoteLayout1);
 
@@ -311,8 +327,6 @@ void set::setupUI()
     connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);
     connect(m_saveTokenBtn, &QPushButton::clicked, this, &set::onWhitelistChanged);  // 复用原名槽
 
-    connect(m_remoteRadio, &QRadioButton::toggled, this, &set::onModeToggled);
-    connect(m_localRadio,  &QRadioButton::toggled, this, &set::onModeToggled);
     connect(m_confirmBtn, &QPushButton::clicked, [this](){ saveRemoteConfig();});
     //图床链接 保存
     connect(m_startStopBtn, &QPushButton::clicked, [this](){
@@ -348,13 +362,13 @@ void set::setupUI()
     connect(Ews, &QCheckBox::clicked, [this](){
         if(Ews->isChecked())
         {
-            server->open(g_config["webws_p"].toInt());  // 监听 8080 端口
+            ws_server->open(g_config["webws_p"].toInt());  // 监听 8080 端口
             g_config["webws_run"]=true;
             saveConfig();
         }
         else
         {
-            server->close();
+            ws_server->close();
             g_config["webws_run"]=false;
             saveConfig();
         }
@@ -366,10 +380,11 @@ void set::setupUI()
 
     });
 
-    server = new WebSocketServer;
+    ws_server = new WebSocketServer;
     if(g_config["webws_run"].toBool())
     {
         Ews->setChecked(true);
+        ws_server->open(g_config["webws_p"].toInt());
     }
     if(g_config["webhook_run"].toBool())
     {
@@ -559,11 +574,7 @@ void set::saveRemoteConfig()
 
 
 
-void set::saveAutoStartFlag(bool autoStart)
-{
-    g_config ["auto_start_local_server"]= autoStart;
-    saveConfig();
-}
+
 void set::updateControlEnable()
 {
     bool remoteMode = m_remoteRadio->isChecked();
@@ -579,50 +590,27 @@ void set::updateControlEnable()
     m_saveTokenBtn->setEnabled(!remoteMode);
 }
 
-void set::stopLocalServerIfRunning()
-{
-    if (m_serverRunning) {
-        stopImageServer();
-        m_serverRunning = false;
-        m_startStopBtn->setText(tr("启动"));
-    }
-}
-
-void set::onModeToggled(bool checked)
-{
-    if (!checked) return;  // 只处理被选中的那个
-    saveModeConfig();
-    远程服务器=false;
-    if (m_remoteRadio->isChecked()) {
-        stopLocalServerIfRunning();
-        远程服务器=true;
-        saveAutoStartFlag(false);  // 远程模式下不应该自动启动
-    }
-    updateControlEnable();
-}
 
 
 
 
 void set::onStartStopClicked()
 {
-
-    if (!m_serverRunning) {
-
-        bool ok = startImageServer(g_config["webhook_p"].toInt());
-        if (ok) {
-            m_serverRunning = true;
-            m_startStopBtn->setText(tr("停止"));
-            saveAutoStartFlag(true);
-        } else {
+    g_config["webhook_run"]=Ewebhook->isChecked();
+    saveConfig();
+    if (Ewebhook->isChecked()) {
+        bool ok;
+        if(ESSL->isChecked())
+            ok = startImageServer(g_config["webhook_p"].toInt(),"key.crt","key.key");
+        else
+            ok = startImageServer(g_config["webhook_p"].toInt());
+        if (!ok) {
+            Ewebhook->setChecked(false);
             AppendEventLog("启动服务器启动失败，端口是否可用。下次程序启动将自动重试。" ,0xff);
+
         }
     } else {
-        // 停止服务器
         stopImageServer();
-        m_serverRunning = false;
-        m_startStopBtn->setText(tr("启动"));
-        saveAutoStartFlag(false);
     }
 }
 

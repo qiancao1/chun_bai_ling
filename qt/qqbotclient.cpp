@@ -725,6 +725,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
+    if(ws_server) ws_server->broadcastMessage(mes,ev.appid,ev.type,ev.groupId);
     if(ev.type<=3)
     {
         m_info->message_received++;
