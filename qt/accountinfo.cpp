@@ -73,7 +73,7 @@ QString AccountInfo::toJson() const {
     obj["pplx"] = pplx;
     obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
-
+    obj["fujia"] = QJsonArray::fromStringList(fujia);
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
     obj["jiam"]=1;
@@ -86,6 +86,7 @@ QString AccountInfo::toJson() const {
     obj["shuap"]=shuap;
     obj["tiaoshu"]=tiaoshu;
     obj["pbbot"]=pbbot;
+    obj["admin"]=admin;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -108,6 +109,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.nickname = obj["nickname"].toString();
     info.avatarPath = obj["avatarPath"].toString();
     info.wsAddress = obj["wsAddress"].toString();
+    info.admin = obj["admin"].toString();
     info.type = obj["type"].toInt();
 
 
@@ -180,5 +182,12 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     for (const auto &value : std::as_const(arr)) {
         info.tools.append(value.toString());
     }
+
+    QJsonArray arr2 = obj["fujia"].toArray();
+    info.fujia.reserve(arr2.size());
+    for (const auto &value : std::as_const(arr2)) {
+        info.fujia.append(value.toString());
+    }
+
     return info;
 }

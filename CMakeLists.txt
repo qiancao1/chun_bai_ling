@@ -172,6 +172,7 @@ else()
             ui/statuschartwidget.h ui/statuschartwidget.cpp
             clientconnection.h clientconnection.cpp
             websocketserver.h websocketserver.cpp
+            ui/aifujia.h ui/aifujia.cpp ui/aifujia.ui
 
 
 
@@ -195,7 +196,7 @@ if(MSVC)
         ENCRYPTION_KEY="${KEY_CONTENT}"
     )
 else()
-    set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/liblmdb.a)
+
 endif()
 
 
@@ -219,6 +220,7 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/db
     ${CMAKE_CURRENT_SOURCE_DIR}/qt
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/ed25519-donna
     ${Python_INCLUDE_DIRS}
 )
 

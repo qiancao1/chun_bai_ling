@@ -347,7 +347,7 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");
     configTabWidget2->addTab(keyword, "关键词回复");
-    configTabWidget2->addTab(schedule, "订阅");
+    configTabWidget2->addTab(schedule, "订阅|定时");
     configTabWidget2->addTab(ai_ui, "Ai");
     configTabWidget2->addTab(refset,"回复设置");
 

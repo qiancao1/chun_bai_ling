@@ -106,6 +106,7 @@ struct AccountInfo {
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;
+    QList<QString> fujia;
     QString model;              // 模型名称
     QString setting;            // 选中的全局设定名
     int context_len=128;            // 上下文

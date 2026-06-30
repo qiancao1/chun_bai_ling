@@ -218,9 +218,8 @@ void LogPage::loadMore(int limit)
         m_model->appendRow(rowItems);
         int newRow = m_model->rowCount() - 1;   // 获取最新行号
         QModelIndex idx = m_model->index(newRow, 0);
+        m_model->setData(idx,key,Qt::UserRole);
 
-        m_model->setData(idx,msg.user,Qt::UserRole);
-        m_model->setData(idx,groupId,Qt::UserRole+2);
     }
 
     m_offset += data.size();
@@ -261,6 +260,12 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
             break;
         case 3: // 私聊
         case 4: // 频道私聊
+            rowItems << new QStandardItem(msg.timestamp)
+                     << new QStandardItem(botName)
+                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
+                     << new QStandardItem(msg.msg)
+                     << new QStandardItem(msg.direction);
+            break;
         case 0:
             rowItems << new QStandardItem(msg.timestamp)
                      << new QStandardItem(botName)
@@ -299,10 +304,10 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
         m_model->appendRow(rowItems);
         int newRow = m_model->rowCount() - 1;   // 获取最新行号
         QModelIndex idx = m_model->index(newRow, 0);
+        QString key = g_logdb[0]->makeKey(QString::number(appid),groupId,seq);
+        m_model->setData(idx,key,Qt::UserRole);
+        m_model->setData(idx,seq,Qt::UserRole+1);
 
-        m_model->setData(idx,msg.user,Qt::UserRole);
-        m_model->setData(idx,seq,Qt::UserRole + 1);
-        m_model->setData(idx,openid,Qt::UserRole + 2);
         m_offset++;
         QTableView* view = currentListView();
         if (view) {
@@ -531,6 +536,8 @@ void LogPage::setupUi()
             QAction *copySenderId = menu.addAction("复制发送人id");
             QAction *copyRow = menu.addAction("复制整行内容");
             menu.addSeparator();
+            QAction *ch = menu.addAction("撤回本条");
+            QAction *chbr = menu.addAction("撤回别人");
             QAction *viewContent = menu.addAction("查看消息内容");
 
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
@@ -540,12 +547,18 @@ void LogPage::setupUi()
                 QApplication::clipboard()->setText(content);
             } else if (selected == copyTargetId) {
                 QModelIndex idx = m_model->index(index.row(), 0);
-                QString sender = m_model->data(idx, Qt::UserRole+2).toString();
-                QApplication::clipboard()->setText(sender);
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+
+
+                QApplication::clipboard()->setText(key);
             } else if (selected == copySenderId) {
                 QModelIndex idx = m_model->index(index.row(), 0);
-                QString sender = m_model->data(idx, Qt::UserRole).toString();
-                QApplication::clipboard()->setText(sender);
+
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+                Message msg;
+                g_logdb[currentTabIndex]->readLog(key,msg);
+                QApplication::clipboard()->setText(msg.user);
+
             } else if (selected == copyRow) {
                 QStringList parts;
                 for (int col = 0; col < m_model->columnCount(); ++col) {
@@ -558,6 +571,52 @@ void LogPage::setupUi()
                 QString direction = getFieldText(index.row(), Field_Direction);
                 QString text = content + "\n\n-----------------------------------\n\n" + direction;
                 QMessageBox::information(this, "消息内容", text);
+            }else if(ch == selected)
+            {
+                QModelIndex idx = m_model->index(index.row(), 0);
+
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+
+                Message msg;
+                g_logdb[currentTabIndex]->readLog(key,msg);
+                if(msg.ch.isEmpty())
+                {
+                    QMessageBox::warning(this,"","撤回失败 msgid为空 不能撤回");
+                    return ;
+                }
+                QStringList list = key.split(":");
+                int appid = list[1].toInt();
+                if(m_botClients.contains(appid))
+                {
+                    QString res = m_botClients[appid]->delete_messages(currentTabIndex-1,list[2],msg.plugin_ch);
+                    if(res.contains("message")) QMessageBox::warning(this,"撤回失败",res);
+                    return ;
+                }
+                QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");
+                return ;
+            }else if(chbr == selected)
+            {
+                QModelIndex idx = m_model->index(index.row(), 0);
+
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+
+                Message msg;
+                g_logdb[currentTabIndex]->readLog(key,msg);
+                if(msg.ch.isEmpty())
+                {
+                    QMessageBox::warning(this,"","撤回失败 msgid为空 不能撤回");
+                    return ;
+                }
+                QStringList list = key.split(":");
+                int appid = list[1].toInt();
+                if(m_botClients.contains(appid))
+                {
+                    QString res = m_botClients[appid]->delete_messages(currentTabIndex-1,list[2],msg.ch);
+                    if(res.contains("message")) QMessageBox::warning(this,"撤回失败",res);
+                    return ;
+                }
+                QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");
+                return ;
             }
         });
 

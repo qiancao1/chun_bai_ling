@@ -81,7 +81,7 @@ public:
     bool isOnline() const { return m_info->online; }
     AccountInfo *m_info;                // 指向外部原始 AccountInfo
     int m_reconnectAttempts;
-    void onTextMessage(const QString &message);
+    QString onTextMessage(const QString &message);
     // 发送消息接口
     QString send_messages(int type, const QString &openid, QString &pname, QString &text, const QString &msgid=QString(),
                           bool is_wakeup=false, bool mode=false, int 发送类型 = 0);
@@ -108,6 +108,8 @@ public:
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
 
+public slots:
+    void onTextMessageReceived(const QString &message);
 
 signals:
     void loginSuccess();
@@ -120,7 +122,7 @@ signals:
 private slots:
     void onConnected();
     void onDisconnected();
-    void onTextMessageReceived(const QString &message);
+
     void onError(QAbstractSocket::SocketError error);
     void onHeartbeatTimeout();
 
@@ -159,8 +161,8 @@ private:
 
     QWebSocket m_webSocket;
     QNetworkAccessManager m_nam;
-    QTimer m_heartbeatTimer;
-    QTimer m_reconnectTimer;
+    QTimer m_heartbeatTimer; //心跳
+    QTimer m_reconnectTimer; //重连
     bool 代理=false;
     QString m_accessToken;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）

@@ -23,7 +23,7 @@ public:
     bool beginTransaction(bool readOnly = false);
     bool commitTransaction();
     bool abortTransaction();
-        bool getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const;
+    bool getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const;
     bool getLatestLog(const QString &appid, const QString &groupId, Message &msg) const;
     MDB_txn* getCurrentTxn() const { return m_currentTxn; }
     // 使用外部已有事务进行读取（不自动开启事务）
@@ -31,7 +31,7 @@ public:
                       uint64_t seq, Message& msg) const;
     // 添加日志，返回分配的序号（全局唯一递增），失败返回 0
     uint64_t appendLog(const QString &appid, const QString &groupId, const Message &msg);
-
+    QString makeKey(const QString &appid, const QString &groupId, uint64_t seq) const;
     // 获取指定 appid:groupId 最近 N 条（按序号从大到小，即最新在前）
     QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int N) const;
 
@@ -44,7 +44,7 @@ public:
 
     // 读取指定 key 对应的 Message
     bool readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const;
-
+    bool readLog(const QString &keyStr, Message &msg) const;
     // 清理数据库，保留全局最新 N 条，删除其余
     bool cleanDatabase(int keepN);
 
@@ -131,7 +131,7 @@ private:
     mutable QMutex m_mutex;
 
     // 辅助函数
-    QString makeKey(const QString &appid, const QString &groupId, uint64_t seq) const;
+
     bool getNextId(uint64_t &nextId) const;
     bool updateNextId(uint64_t nextId);
     bool serializeMessage(const Message &msg, QByteArray &data) const;

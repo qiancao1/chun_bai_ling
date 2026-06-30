@@ -9,6 +9,7 @@
 #include <qpushbutton.h>
 #include <qtablewidget.h>
 #include "AccountInfo.h"
+#include "aifujia.h"
 #include "qqbotclient.h"
 #include "PlaceholderLineEdit.h"
 #include "PlaceholderTextEdit.h"
@@ -31,10 +32,6 @@ struct InterfaceData {
     QList<KeyData> keys;
 };
 
-struct ModelData {
-    QString name;
-    QList<int> enabledInterfaceIndices; // 全局接口列表中的索引
-};
 
 struct FunctionData {
 
@@ -149,7 +146,7 @@ private:
 
     // --- UI 控件指针 ---
     QTabWidget *tabWidget;
-
+    Aifujia *ai_fujia;
     QCheckBox *feibaimd,*chkGroupChat, *chkGroupPersonal, *chkPrivateChat;
     QCheckBox *chkNameTrigger, *chkChannel, *chkAtTrigger, *chkChannelPersonal, *chkImageRec,*chkniren;
 

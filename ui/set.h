@@ -48,7 +48,7 @@ private:
     void saveRemoteConfig();
 
 
-    void updateControlEnable();
+
 
 
 

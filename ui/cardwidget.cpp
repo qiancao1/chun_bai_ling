@@ -186,6 +186,7 @@ QQBotClient* CardWidget::getOrCreateClient(AccountInfo *info)
 
     return client;
 }
+bool is_server();
 void CardWidget::initbotdb(AccountInfo *info)
 {
     int appid = info->appid_int;
@@ -201,10 +202,17 @@ void CardWidget::onLoginButtonA() {
     client->m_reconnectAttempts=0; //重置登录次数
     m_info->startup_time= QDateTime::currentSecsSinceEpoch();
     onLoginButton();
+    if(m_info->type==1)
+    {
+        if(!is_server()){
+            QMessageBox::warning(this,"","请在高级设置 运行webhook服务器后再次尝试 登录webhook账号");
+        }
+    }
 }
 void CardWidget::onLoginButton() {
     QQBotClient *client = getOrCreateClient(m_info);
     initbotdb(m_info);
+
     if (m_info->online) {
         client->stop();
 
@@ -214,7 +222,7 @@ void CardWidget::onLoginButton() {
     }
 
     refreshDisplay();
-    emit loginClicked(m_info->appid_int);
+    emit loginClicked(m_info->appid_int); //更新首页
 }
 
 void CardWidget::triggerLogin() {

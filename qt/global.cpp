@@ -129,6 +129,172 @@ QString normalizeNewlinesToCR(const QString &input)
     // 移除最后的字面量替换（原代码处理 "\\n"，并非换行符）
     return result;
 }
+QString python_code3(const QString &py_code,const MessageEvent &msg)
+{
+    py::gil_scoped_acquire gil;
+    try {
+        py::module_ qiancao = py::module_::import("qiancao_sdk");
+        py::object api = qiancao.attr("QQApi")(g_keyuuid);
+
+        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        exec_globals["__builtins__"] = py::module_::import("builtins");
+        exec_globals["msg"] = py::cast(msg);
+        exec_globals["api"] = api;               // 注入 api 对象
+
+        // 4. 执行用户代码
+        py::exec(py_code.toStdString(), exec_globals);
+
+        // 5. 读取返回值
+        QString ret;
+        if (exec_globals.contains("__result__"))
+            ret = QString::fromStdString(py::str(exec_globals["__result__"]));
+
+        return ret;
+    } catch (const py::error_already_set &e) {
+        QString text = "[Python] Execute code error: " + QString::fromUtf8(e.what());
+        AppendEventLog(text ,0xff);
+        return text;
+
+    } catch (const std::exception &e) {
+        QString text ="[Python] Execute code error: " + QString::fromUtf8(e.what());
+        AppendEventLog(text ,0xff);
+        return text;
+    }
+    return "代码执行完成 未返回数据";
+}
+QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
+    QString p1, p2, p3;  // 最多三个参数，p3 自动收尾剩余
+
+
+    if (!info->bai_sr.isEmpty() && ev.msg.startsWith(info->bai_sr)) {
+        int cnt = extractParams(ev.msg, info->bai_sr, 0, p1);
+        if (cnt == -1) return "指令错误";
+        if (cnt == 0) {
+            //没提供参数
+            if(ev.type==0)
+            {
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord rec;
+                db->getGroupInfo(ev.groupId,rec);
+                if (rec.bitmap & 4) return "本群已在白名单";
+                rec.bitmap |= 4;
+                db->addGroup(ev.groupId,rec);
+                return "添加本群 ai白名单成功";
+            }else if(ev.type==2)
+            {
+                auto *db = g_botdb[info->appid_int];
+                UserRecord rec;
+                db->getUserBySeqId(ev.user_int,rec);
+                if (rec.bitmap & 4) return "你已经已在白名单";
+                rec.bitmap |= 4;
+                db->updateUserBySeqId(ev.user_int,rec);
+                return "添加 ai白名单成功";
+            }
+            return "目前只支持 群 和 私聊设置白名单";
+        }
+        //提供了参数
+        if(p1.size()==32)
+        {
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord rec;
+            if(db->getGroupInfo(p1,rec))
+            {
+                if(p1!=ev.groupId) return "传递参数1 群id 在数据库 未记录 请检查是否是真实群id 或者将机器人移出 对应群再次邀请";
+                rec.create_time= QDateTime::currentSecsSinceEpoch()/60;
+                rec.inviter_seq_id=ev.user_int;
+            }
+            if (rec.bitmap & 4) return "本群已在白名单";
+            rec.bitmap |= 4;
+            db->addGroup(ev.groupId,rec);
+            return "添加本群 ai白名单成功";
+        }
+        int user_id = p1.toInt();
+        if(user_id <2147483636 && user_id>0)
+        {
+            auto *db = g_botdb[info->appid_int];
+            UserRecord rec;
+            db->getUserBySeqId(ev.user_int,rec);
+            if (rec.bitmap & 4) return "该用户已经在白名单 或 已经开启";
+            rec.bitmap |= 4;
+            db->updateUserBySeqId(ev.user_int,rec);
+            return "添加成功 你确保整个 id 是你需要添加的人";
+        }
+
+        return "参数错误 指令{群id|好友id} 好友id 是短id";
+    }
+
+    // ========== 白名单删除 ==========
+
+    if (!info->bai_sc.isEmpty() && ev.msg.startsWith(info->bai_sc)) {
+        int cnt = extractParams(ev.msg, info->bai_sc, 0, p1);
+        if (cnt == -1) return "指令错误";
+        if (cnt == 0) {
+            // 无参数：操作当前会话（群或私聊）
+            if (ev.type == 0) {
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord rec;
+                db->getGroupInfo(ev.groupId, rec);
+                if (!(rec.bitmap & 4)) return "本群不在白名单";
+                rec.bitmap &= ~4;
+                db->addGroup(ev.groupId, rec);
+                return "删除本群 AI 白名单成功";
+            } else if (ev.type == 2) {
+                auto *db = g_botdb[info->appid_int];
+                UserRecord rec;
+                db->getUserBySeqId(ev.user_int, rec);
+                if (!(rec.bitmap & 4)) return "该用户不在白名单";
+                rec.bitmap &= ~4;
+                db->updateUserBySeqId(ev.user_int, rec);
+                return "删除当前用户白名单成功";
+            }
+            return "目前只支持群和私聊设置白名单";
+        }
+
+        if (p1.size() == 32) {
+            // 参数为群ID（长ID）
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord rec;
+            if (db->getGroupInfo(p1, rec)) {
+                if (p1 != ev.groupId) return "只能操作当前群";
+                if (!(rec.bitmap & 4)) return "该群不在白名单";
+                rec.bitmap &= ~4;
+                db->addGroup(ev.groupId, rec);
+                return "删除本群 AI 白名单成功";
+            } else {
+                return "数据库中无此群记录，可能未添加白名单 相当于删除成功";
+            }
+        }
+
+        int user_id = p1.toInt();
+        if (user_id > 0 && user_id < 2147483636) {
+            // 参数为合法的用户ID（仅校验，操作当前用户）
+            auto *db = g_botdb[info->appid_int];
+            UserRecord rec;
+            db->getUserBySeqId(ev.user_int, rec);
+            if (!(rec.bitmap & 4)) return "该用户不在白名单";
+            rec.bitmap &= ~4;
+            db->updateUserBySeqId(ev.user_int, rec);
+            return "删除当前用户白名单成功";
+        }
+
+        return "参数错误，指令{群id|好友id}，好友id为短id";
+    }
+
+
+    if (!info->bai_qy.isEmpty() && ev.msg.startsWith(info->bai_qy)) {
+        QString cmd = info->bai_qy;
+        int cnt = extractParams(ev.msg, cmd, 0, p1);
+        if (cnt < 1) return "请指定 1（启用）或 0（关闭）";
+        QString status = p1.split(" ").first();
+        if (status != "0" && status != "1") return "状态值必须为 0 或 1";
+        bool enable = (status == "1");
+        return QString("白名单已%1").arg(enable ? "启用" : "关闭");
+
+    }
+
+    return QString();
+}
+
 QString python_code(const QString &py_code,const MessageEvent &msg);
 QString ruqunhy(const AccountInfo *info,const MessageEvent &ev);
 QString 内置指令(MessageEvent &ev)
@@ -140,6 +306,60 @@ QString 内置指令(MessageEvent &ev)
     }
 
     return text;
+}
+QString admin_zl(AccountInfo *info,MessageEvent &ev)
+{
+    if(info->admin.isEmpty()) return QString();
+    if(!info->admin.contains(ev.user)) return QString();
+    if(ev.msg=="取")
+    {
+        QJsonParseError err;
+        QJsonDocument dom = QJsonDocument::fromJson(ev.raw.toUtf8(), &err);
+        if (err.error == QJsonParseError::NoError && !dom.isNull()) {
+            return dom.toJson(QJsonDocument::Indented);
+        }
+        return ev.raw.toUtf8();  // 若 ev.raw 是 QString，需要转为 QByteArray
+    }
+    if(ev.msg.startsWith("md"))
+    {
+        QString text = ev.msg.mid(2).trimmed(); // 删除"md"并去除前导空白
+        if (text.startsWith("#python")) {
+            text = python_code3(text, ev);
+        }
+        return text;
+    }
+    if (ev.msg == "开启拟人" || ev.msg == "关闭拟人") {
+        if (ev.type != 0 && ev.type != 1) {
+            return "除群和频道外，其他类型无需手动操作";
+        }
+
+        auto *db = g_botdb[ev.appid];
+        GroupRecord gr;
+        db->getGroupInfo(ev.groupId, gr);
+        bool isEnabled = (gr.bitmap & 1) == 1;  // 当前拟人状态
+
+        if (ev.msg == "开启拟人") {
+            if (isEnabled) {
+                return "本群已开启拟人，无需重复开启";
+            }
+            gr.bitmap |= 1;   // 置位
+            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+            return "拟人已开启";
+        } else { // 关闭拟人
+            if (!isEnabled) {
+                return "本群未开启拟人，无需关闭";
+            }
+            gr.bitmap &= ~1;  // 清除位
+            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+            return "拟人已关闭";
+        }
+    }
+    QString res = handleMessage(ev,info);
+    if(!res.isEmpty()){
+        return res;
+    }
+
+    return QString();
 }
 //===========================================================================================================================================我猜你在找这个
 void Messages(AccountInfo *info,MessageEvent &ev) {
@@ -160,6 +380,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
     QString text;
     QString ret= 内置指令(ev);
+    if(ret.isEmpty()) ret = admin_zl(info,ev);
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];

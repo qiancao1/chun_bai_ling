@@ -20,7 +20,7 @@ set::set(QWidget *parent) : QWidget(parent)
 {
     setupUI();
     loadConfig();           // 加载配置到 UI
-    updateControlEnable();  // 根据模式启用/禁用控件
+
 
     // 如果需要自动启动（本地模式且 auto_start 为 true）
     bool isLocalMode = m_localRadio->isChecked();
@@ -192,8 +192,8 @@ void set::setupUI()
     webws_port->setMaximumWidth(70);
     QUuid uuid= QUuid::createUuid();
     ws_token = uuid.toString(QUuid::WithoutBraces);
-    qDebug() << "token:http://127.0.0.1:" + QString::number(port) + "/web?token=" + ws_token;
-    qDebug() << "token:http://192.168.1.8:" + QString::number(port) + "/web?token=" + ws_token;
+    qDebug() << "token:http://127.0.0.1:" + QString::number(port) + "/webui/index.html?token=" + ws_token;
+    qDebug() << "token:http://192.168.1.8:" + QString::number(port) + "/webui/index.html?token=" + ws_token;
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
     remoteLayout2->setAlignment(Qt::AlignLeft);
     remoteLayout2->addWidget(new QLabel("webhook端口："));
@@ -337,10 +337,10 @@ void set::setupUI()
         int port=g_config["webhook_p"].toInt();
         if(ESSL->isChecked())
         {
-            clipboard->setText(QString("https://%1:%2/web?token=%3").arg(g_ip).arg(port).arg(ws_token));
+            clipboard->setText(QString("https://%1:%2/webui/index.html?token=%3").arg(g_ip).arg(port).arg(ws_token));
 
         }else{
-            clipboard->setText(QString("http://%1:%2/web?token=%3").arg(g_ip).arg(port).arg(ws_token));
+            clipboard->setText(QString("http://%1:%2/webui/index.html?token=%3").arg(g_ip).arg(port).arg(ws_token));
         }
 
     });
@@ -368,7 +368,7 @@ void set::setupUI()
 
     });
     //启用禁用webhook
-    connect(Ewebhook, &QCheckBox::clicked, this, &set::onStartStopClicked);
+
 
     //启用禁用ws聊天室
     connect(Ews, &QCheckBox::clicked, [this](){
@@ -406,11 +406,13 @@ void set::setupUI()
     if(g_config["webhook_run"].toBool())
     {
         Ewebhook->setChecked(true); //不出意外会触发信号
+        onStartStopClicked();
     }
     if( g_config["SSL"].toBool())
     {
         ESSL->setChecked(true);
     }
+    connect(Ewebhook, &QCheckBox::clicked, this, &set::onStartStopClicked);
 }
 
 void set::onAddTokenRow()
@@ -591,31 +593,12 @@ void set::saveRemoteConfig()
 
 
 
-
-void set::updateControlEnable()
-{
-    bool remoteMode = m_remoteRadio->isChecked();
-    m_urlEdit->setEnabled(remoteMode);
-    m_token->setEnabled(remoteMode);
-    m_confirmBtn->setEnabled(remoteMode);
-    m_addrEdit->setEnabled(!remoteMode);
-
-    m_startStopBtn->setEnabled(!remoteMode);
-    m_tokenTable->setEnabled(!remoteMode);
-    m_addTokenBtn->setEnabled(!remoteMode);
-    m_delTokenBtn->setEnabled(!remoteMode);
-    m_saveTokenBtn->setEnabled(!remoteMode);
-}
-
-
-
-
-
 void set::onStartStopClicked()
 {
     g_config["webhook_run"]=Ewebhook->isChecked();
     saveConfig();
     if (Ewebhook->isChecked()) {
+
         bool ok;
         if(ESSL->isChecked())
             ok = startImageServer(g_config["webhook_p"].toInt(),"key.crt","key.key");

@@ -146,6 +146,9 @@ static QString g_allowedReadDir = QDir::current().absolutePath() + "/uploads";
 static QSet<QString> g_validTokens;      // 存储合法的 Token
 static bool g_tokenAuthEnabled = false;  // 若为 true 且列表非空，才要求 Token
 static bool g_ssl = false;  // 若为 true 且列表非空，才要求 Token
+bool is_server(){
+    return g_server;
+}
 void setUploadTokens(const QStringList &tokens)
 {
     g_validTokens.clear();
@@ -277,53 +280,91 @@ static void sendErrorResponse(QTcpSocket *socket, int code, const QString &messa
     QByteArray body = message.toUtf8();
     sendResponse(socket, code, "text/plain; charset=utf-8", body);
 }
-static void webmb(QTcpSocket *socket, const QByteArray &pathQuery)
+
+
+
+static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
 {
-    QUrl url(QString::fromUtf8(pathQuery));
-    QUrlQuery query(url);
-    QString token = query.queryItemValue("token");
-    if(token.isEmpty())
-    {
-        sendErrorResponse(socket, 404, "token 为空请传递 登录密钥");
-        return;
-    }
-    // 这里写个1分钟不处理（原逻辑保留）
-    if(ws_token != token)
-    {
-        sendErrorResponse(socket, 404, "token 不正确 请等待1 分钟后再链接");
+    // 1. 分离路径和查询参数
+    QString path = QString::fromUtf8(pathQuery);
+    int qmPos = path.indexOf('?');
+    QString pathOnly = (qmPos != -1) ? path.left(qmPos) : path;
+    QString queryPart = (qmPos != -1) ? path.mid(qmPos + 1) : QString();
+
+    // 2. 提取 token（用于 index.html 替换）
+    QUrlQuery urlQuery(queryPart);
+    QString token = urlQuery.queryItemValue("token");
+
+    // 3. 映射 /webui/ 到相对路径
+    QString relativePath;
+    if (pathOnly.startsWith("/webui/")) {
+        relativePath = pathOnly.mid(6);           // 去掉 "/webui/"
+        while (relativePath.startsWith('/'))      // 移除所有前导斜杠
+            relativePath = relativePath.mid(1);
+    } else if (pathOnly == "/webui" || pathOnly == "/webui/") {
+        relativePath = "index.html";
+    } else {
+        sendErrorResponse(socket, 404, "Invalid path");
         return;
     }
 
-    QString filePath = "web.html";
+    // 4. 规范化路径（消除 . 和 ..）
+    relativePath = QDir::cleanPath(relativePath);
+    if (relativePath.startsWith('/')) {
+        sendErrorResponse(socket, 403, "Forbidden");
+        return;
+    }
 
-    QFileInfo fi(filePath);
+    // 5. 安全校验：禁止目录遍历
+    if (relativePath.contains("..") || relativePath.startsWith("..")) {
+        sendErrorResponse(socket, 403, "Forbidden");
+        return;
+    }
+
+    // 6. 组合实际文件路径，并校验是否在允许的根目录下
+    QString baseDir = "./webui";
+    QDir baseDirObj(baseDir);
+    QString fullPath = baseDirObj.absoluteFilePath(relativePath);
+    if (!fullPath.startsWith(baseDirObj.absolutePath())) {
+        sendErrorResponse(socket, 403, "Forbidden");
+        return;
+    }
+
+    QFileInfo fi(fullPath);
     if (!fi.exists() || !fi.isFile()) {
-        sendErrorResponse(socket, 404, "web.html 文件不存在");
+        sendErrorResponse(socket, 404, "File not found");
         return;
     }
 
-    QFile file(filePath);
+    // 读取文件
+    QFile file(fullPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        sendErrorResponse(socket, 500, "web.html 打不开");
+        sendErrorResponse(socket, 500, "Cannot open file");
         return;
     }
     QByteArray data = file.readAll();
     file.close();
 
-    // ========== 新增：替换占位符 ==========
-    QString htmlContent = QString::fromUtf8(data);
-    htmlContent.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));
-    htmlContent.replace("占位符token", ws_token);  // 或 token（二者相同）
-    data = htmlContent.toUtf8();
-    // =====================================
-
+    // MIME 类型
     QMimeDatabase mimeDb;
-    QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
+    QString mimeType = mimeDb.mimeTypeForFile(fullPath).name();
     if (mimeType.isEmpty())
         mimeType = "application/octet-stream";
 
+    // 7. 仅对 index.html 进行占位符替换（包含端口和 token）
+    if (fi.fileName() == "index.html") {
+        QString content = QString::fromUtf8(data);
+        // 替换端口占位符
+        content.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));
+        // 替换 token 占位符（优先使用请求中的 token，否则使用全局 ws_token）
+        QString finalToken = token.isEmpty() ? ws_token : token;
+        content.replace("占位符token", finalToken);
+        data = content.toUtf8();
+    }
+
     sendResponse(socket, 200, mimeType.toUtf8(), data);
 }
+
 static void handleGet(QTcpSocket *socket, const QByteArray &pathQuery)
 {
     QUrl url(QString::fromUtf8(pathQuery));
@@ -612,7 +653,27 @@ QString uploadImageByPath(const QString &serverUrl, const QString &localPath, in
     }
     return urlResult;
 }
-// 全局请求处理（带缓冲区）
+QString webhook_sig(QJsonObject &obj, const QString &secret);
+QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArray &body) {
+
+    if (!pathQuery.startsWith("/webhook/")) return "{}";
+    bool ok;
+    int appid = pathQuery.mid(9).toInt(&ok);
+    if (!ok) return "{}";
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(body, &err);
+    if (err.error != QJsonParseError::NoError) return "{}";
+    auto it = m_botClients.find(appid);
+    if (it == m_botClients.end()) return "{}";
+    auto* client = it.value();
+    QJsonObject obj = doc.object();
+    int op = obj.value("op").toInt(-1);
+    if(op==13) return  webhook_sig(obj,client->m_info->secret); //优化方法 直接 文本判断 op 是否 13 再解析
+    client->onTextMessageReceived(QString::fromUtf8(body));
+    return "{}";
+}
+
 static void handleRequest(QTcpSocket *socket)
 {
     static QHash<QTcpSocket*, QByteArray> buffers;
@@ -658,12 +719,17 @@ static void handleRequest(QTcpSocket *socket)
 
     if (method == "GET") {
         if(path.startsWith("/web"))
-            webmb(socket, path);
+            webui(socket, path);
         else
             handleGet(socket, path);
 
     }else if (method == "POST") {
-        if (path.startsWith("/upload")) {            // 原有的 /upload 或 /remote_upload
+        if (path.startsWith("/webhook/"))
+        {
+
+            sendResponse(socket, 200, "application/json",webhook(socket,path,body).toUtf8());
+        }
+        else if (path.startsWith("/upload")) {            // 原有的 /upload 或 /remote_upload
             handlePost(socket, headerPart, body, path);
         } else if (path == "/remote_upload" || path == "/remote_upload/") {
             handleRemotePost(socket, headerPart, body, path);
@@ -711,6 +777,15 @@ QString upload(const QByteArray &data)
     }
     return QString("http://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(savePath)));
 }
+void stopImageServer()
+{
+    if (!g_server) {
+        return;
+    }
+    g_server->close();
+    delete g_server;
+    g_server = nullptr;
+}
 
 // 对外启动函数
 // 新增两个参数，默认空字符串表示不启用 SSL
@@ -718,9 +793,11 @@ bool startImageServer(quint16 port,
                       const QString &certPath = "",
                       const QString &keyPath = "")
 {
+    if(port!=g_port)
+        stopImageServer();
     if (g_server) {
         qDebug() << "Server already running on port" << g_port;
-        return false;
+        return true;
     }
     if (!QDir().mkpath(g_allowedReadDir)) {
         return false;
@@ -755,15 +832,6 @@ bool startImageServer(quint16 port,
 void set_ip(const QString &ip)
 {
     g_ip = ip;
-}
-void stopImageServer()
-{
-    if (!g_server) {
-        return;
-    }
-    g_server->close();
-    delete g_server;
-    g_server = nullptr;
 }
 
 

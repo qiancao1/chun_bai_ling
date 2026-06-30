@@ -1,4 +1,5 @@
 #include "AiWidget.h"
+#include "aifujia.h"
 #include "aisxw.h"
 #include "bqbgl.h"
 
@@ -735,10 +736,15 @@ void AiWidget::setupUi()
     bqbgl *ai_bqbgl = new bqbgl(this);   // 创建 plts 对象
     ai_bqbgl->show();
 
+
+
     QString text =ai_bqbgl->meiju();
     拟人人设=subTextReplace(拟人人设2,"【表情包】","【表情包】"+text);
     拟人人设_私聊=subTextReplace(拟人人设1,"【表情包】","【表情包】"+text);
     tabWidget->addTab(ai_bqbgl, "表情包管理");
+    ai_fujia = new Aifujia(this);
+    ai_fujia->show();
+    tabWidget->addTab(ai_fujia, "附加模型");
 
 }
 // ====== 数据读写 ======
@@ -886,6 +892,8 @@ void AiWidget::列表行被单击()
     for (const auto &acc : std::as_const(m_accounts))
     {
         if(acc->appid_int != g_appid) continue;
+
+
         addtoui(acc);
         不加载= 1;
         for (int row = 0; row < funcListTable->rowCount(); ++row) {
@@ -909,6 +917,9 @@ void AiWidget::列表行被单击()
                 }
             }
         }
+        ai_fujia->initdata(acc.get());
+
+
         不加载= 0;
         return;
     }
@@ -1255,6 +1266,7 @@ void AiWidget::onmodelListTableCellChanged(int row, int column) {
     auto &iface = modelList[row];
     iface.name = newText;
     刷新模型();
+    ai_fujia->initmode(modelList);
     saveToFile2();
 }
 
@@ -1270,6 +1282,7 @@ void AiWidget::onModelAdd() {
     modelListTable->setItem(row, 0, new QTableWidgetItem(newModel.name));
     modelListTable->selectRow(row);
     刷新模型();
+    ai_fujia->initmode(modelList);
     saveToFile2();
 }
 
@@ -1291,6 +1304,7 @@ void AiWidget::onModelDelete() {
         currentInterfaceRow = -1;
     }
     刷新模型();
+    ai_fujia->initmode(modelList);
     saveToFile2();
 }
 void AiWidget::onModelCurrentCellChanged(int currentRow, int currentCol,
@@ -2295,10 +2309,6 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
 QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
 {
 
-    if(info->atTrigger && ev.at_you){}
-    else if(info->pplx == 1 && ev.msg.contains(info->Ai_nickname)){}
-    else if(info->pplx == 2 && ev.msg.startsWith(info->Ai_nickname)){}
-    else return QString();
 
     if(ev.type==0 && info->enableGroupChat){}
     else if(ev.type==1 && info->enableChannel){}
@@ -2322,6 +2332,21 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         }
     }
 
+    for(auto &f : info->fujia)
+    {
+        if(ev.msg.startsWith(f))
+        {
+            QString role;
+            QString mode = ai_fujia->fujia_jy(f,role);
+            if(mode.isEmpty()) return "触发附加ai指令 但是 ui界面与 设置不一致";
+            return Ai_post(mode,role+ev.msg,60000);
+        }
+
+    }
+    if(info->atTrigger && ev.at_you){}
+    else if(info->pplx == 1 && ev.msg.contains(info->Ai_nickname)){}
+    else if(info->pplx == 2 && ev.msg.startsWith(info->Ai_nickname)){}
+    else return QString();
     if (ev.msg == "清除记忆") {
         QString openid;
         switch (ev.type) {
@@ -2777,12 +2802,9 @@ QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
     if(modelList[index].enabledInterfaceIndices.isEmpty()) return "【"+model+"】 未设置接口 请配置接口后试试";
     QJsonObject obj;
     obj["model"]=model;
-    QJsonArray msgs;
-    QJsonObject userMsg;
-    userMsg["role"] = "user";
-    userMsg["content"] = msg;
-    msgs.append(userMsg);
-    obj["messages"] = msgs;
+    appendPendingMessageToContext(obj, parseImageTagsAndDownload(msg)); //下载
+    convertContextImagesToBase64(obj);
+
     int index2=0;
     if(timeoutMs<=0) timeoutMs=30000;
     if(timeoutMs<=5000) timeoutMs=5000;
@@ -2837,138 +2859,6 @@ QByteArray AiWidget::Ai_post(const QString &url,const QString &key, QJsonObject 
 
 
 
-QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
-    QString p1, p2, p3;  // 最多三个参数，p3 自动收尾剩余
-
-
-    if (!info->bai_sr.isEmpty() && ev.msg.startsWith(info->bai_sr)) {
-        int cnt = extractParams(ev.msg, info->bai_sr, 0, p1);
-        if (cnt == -1) return "指令错误";
-        if (cnt == 0) {
-            //没提供参数
-            if(ev.type==0)
-            {
-                auto *db = g_botdb[info->appid_int];
-                GroupRecord rec;
-                db->getGroupInfo(ev.groupId,rec);
-                if (rec.bitmap & 4) return "本群已在白名单";
-                rec.bitmap |= 4;
-                db->addGroup(ev.groupId,rec);
-                return "添加本群 ai白名单成功";
-            }else if(ev.type==2)
-            {
-                auto *db = g_botdb[info->appid_int];
-                UserRecord rec;
-                db->getUserBySeqId(ev.user_int,rec);
-                if (rec.bitmap & 4) return "你已经已在白名单";
-                rec.bitmap |= 4;
-                db->updateUserBySeqId(ev.user_int,rec);
-                 return "添加 ai白名单成功";
-            }
-            return "目前只支持 群 和 私聊设置白名单";
-        }
-        //提供了参数
-        if(p1.size()==32)
-        {
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord rec;
-            if(db->getGroupInfo(p1,rec))
-            {
-                if(p1!=ev.groupId) return "传递参数1 群id 在数据库 未记录 请检查是否是真实群id 或者将机器人移出 对应群再次邀请";
-                rec.create_time= QDateTime::currentSecsSinceEpoch()/60;
-                rec.inviter_seq_id=ev.user_int;
-            }
-            if (rec.bitmap & 4) return "本群已在白名单";
-            rec.bitmap |= 4;
-            db->addGroup(ev.groupId,rec);
-            return "添加本群 ai白名单成功";
-        }
-        int user_id = p1.toInt();
-        if(user_id <2147483636 && user_id>0)
-        {
-            auto *db = g_botdb[info->appid_int];
-            UserRecord rec;
-            db->getUserBySeqId(ev.user_int,rec);
-            if (rec.bitmap & 4) return "该用户已经在白名单 或 已经开启";
-            rec.bitmap |= 4;
-            db->updateUserBySeqId(ev.user_int,rec);
-            return "添加成功 你确保整个 id 是你需要添加的人";
-        }
-
-        return "参数错误 指令{群id|好友id} 好友id 是短id";
-    }
-
-    // ========== 白名单删除 ==========
-
-    if (!info->bai_sc.isEmpty() && ev.msg.startsWith(info->bai_sc)) {
-        int cnt = extractParams(ev.msg, info->bai_sc, 0, p1);
-        if (cnt == -1) return "指令错误";
-        if (cnt == 0) {
-            // 无参数：操作当前会话（群或私聊）
-            if (ev.type == 0) {
-                auto *db = g_botdb[info->appid_int];
-                GroupRecord rec;
-                db->getGroupInfo(ev.groupId, rec);
-                if (!(rec.bitmap & 4)) return "本群不在白名单";
-                rec.bitmap &= ~4;
-                db->addGroup(ev.groupId, rec);
-                return "删除本群 AI 白名单成功";
-            } else if (ev.type == 2) {
-                auto *db = g_botdb[info->appid_int];
-                UserRecord rec;
-                db->getUserBySeqId(ev.user_int, rec);
-                if (!(rec.bitmap & 4)) return "该用户不在白名单";
-                rec.bitmap &= ~4;
-                db->updateUserBySeqId(ev.user_int, rec);
-                return "删除当前用户白名单成功";
-            }
-            return "目前只支持群和私聊设置白名单";
-        }
-
-        if (p1.size() == 32) {
-            // 参数为群ID（长ID）
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord rec;
-            if (db->getGroupInfo(p1, rec)) {
-                if (p1 != ev.groupId) return "只能操作当前群";
-                if (!(rec.bitmap & 4)) return "该群不在白名单";
-                rec.bitmap &= ~4;
-                db->addGroup(ev.groupId, rec);
-                return "删除本群 AI 白名单成功";
-            } else {
-                return "数据库中无此群记录，可能未添加白名单 相当于删除成功";
-            }
-        }
-
-        int user_id = p1.toInt();
-        if (user_id > 0 && user_id < 2147483636) {
-            // 参数为合法的用户ID（仅校验，操作当前用户）
-            auto *db = g_botdb[info->appid_int];
-            UserRecord rec;
-            db->getUserBySeqId(ev.user_int, rec);
-            if (!(rec.bitmap & 4)) return "该用户不在白名单";
-            rec.bitmap &= ~4;
-            db->updateUserBySeqId(ev.user_int, rec);
-            return "删除当前用户白名单成功";
-        }
-
-        return "参数错误，指令{群id|好友id}，好友id为短id";
-    }
-
-
-    if (!info->bai_qy.isEmpty() && ev.msg.startsWith(info->bai_qy)) {
-        QString cmd = info->bai_qy;
-        int cnt = extractParams(ev.msg, cmd, 0, p1);
-        if (cnt < 1) return "请指定 1（启用）或 0（关闭）";
-        QString status = p1.split(" ").first();
-        if (status != "0" && status != "1") return "状态值必须为 0 或 1";
-        bool enable = (status == "1");
-        return QString("白名单已%1").arg(enable ? "启用" : "关闭");
-
-    }
-
-    return QString();
-}
 
 
 
@@ -2976,45 +2866,7 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
     if(!info->admin.contains(ev.user)) return QString();
-    if(ev.msg=="取")
-    {
-        QJsonParseError err;
-        QJsonDocument dom = QJsonDocument::fromJson(ev.raw.toUtf8(), &err);
-        if (err.error == QJsonParseError::NoError && !dom.isNull()) {
-            return dom.toJson(QJsonDocument::Indented);
-        }
-        return ev.raw.toUtf8();  // 若 ev.raw 是 QString，需要转为 QByteArray
-    }
-    if (ev.msg == "开启拟人" || ev.msg == "关闭拟人") {
-        if (ev.type != 0 && ev.type != 1) {
-            return "除群和频道外，其他类型无需手动操作";
-        }
 
-        auto *db = g_botdb[ev.appid];
-        GroupRecord gr;
-        db->getGroupInfo(ev.groupId, gr);
-        bool isEnabled = (gr.bitmap & 1) == 1;  // 当前拟人状态
-
-        if (ev.msg == "开启拟人") {
-            if (isEnabled) {
-                return "本群已开启拟人，无需重复开启";
-            }
-            gr.bitmap |= 1;   // 置位
-            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
-            return "拟人已开启";
-        } else { // 关闭拟人
-            if (!isEnabled) {
-                return "本群未开启拟人，无需关闭";
-            }
-            gr.bitmap &= ~1;  // 清除位
-            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
-            return "拟人已关闭";
-        }
-    }
-    QString res = handleMessage(ev,info);
-    if(!res.isEmpty()){
-        return res;
-    }
     QString prefix;
     if (ev.msg.startsWith("同意")) {
         prefix = "同意";

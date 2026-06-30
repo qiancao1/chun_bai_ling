@@ -35,7 +35,7 @@
 
 
 bool shuaping(AccountInfo *info, const MessageEvent &ev);
-
+bool is_server();
 QHash<int, QQBotClient*> m_botClients;
 
 QQBotClient::QQBotClient(AccountInfo *info, QObject *parent)
@@ -87,28 +87,40 @@ void QQBotClient::start()
         代理=1;
     }
 
+    if(m_info->type==0)
+    {
+        QNetworkRequest request(wsUrl);
 
-    QNetworkRequest request(wsUrl);
+        request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.0.19)");
+        m_webSocket.open(request);
+    }else{
+        if(is_server())
+        {
+            fetchSelfInfo();
+        }else{
+            AppendEventLog("未启动webhook服务器 请允许后再试试");
+        }
 
-    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.0.19)");
-    m_webSocket.open(request);
+    }
 
 
 }
 
 void QQBotClient::stop()
 {
-
-    stopHeartbeatTimer();
-    if (m_webSocket.state() == QAbstractSocket::ConnectedState)
-        m_webSocket.close();
+    if(m_info->type==0){
+        stopHeartbeatTimer();
+        resetReconnectAttempts();
+        if (m_webSocket.state() == QAbstractSocket::ConnectedState)
+            m_webSocket.close();
+    }
     m_info->online = false;
     m_info->autoConnect=false;
     m_isConnecting = false;
     m_invalidHeartbeatCount = 0;
     m_seq = 0;
     m_sessionId.clear();
-    resetReconnectAttempts();
+
     m_reconnectAttempts = 10;
     AppendEventLog(QString("机器人 %1 已停止").arg(m_info->appid),0xff);
 }
@@ -811,19 +823,64 @@ void QQBotClient::onTextMessageReceived(const QString &message) {
     QThreadPool::globalInstance()->start(task);
 }
 
-void QQBotClient::onTextMessage(const QString &message)
+
+#include "ed25519.h"   // ed25519-donna 的头文件
+
+static QByteArray padSecretTo32(const QString& secret) {
+    QByteArray raw = secret.toLocal8Bit();   // 与易语言“到字节集”编码一致（ANSI/GBK）
+    while (raw.size() < 32) {
+        raw.append(raw);
+    }
+    return raw.left(32);
+}
+
+QString webhook_sig(const QJsonObject &obj, const QString &secret) {
+    QJsonObject d = obj.value("d").toObject();
+    QString plain_token = d.value("plain_token").toString();
+    QString event_ts = d.value("event_ts").toString();
+    if (plain_token.isEmpty() || event_ts.isEmpty()) {
+        qWarning() << "Missing plain_token or event_ts in JSON.";
+        return QString();
+    }
+    QByteArray seed = padSecretTo32(secret);
+    if (seed.size() != 32) {
+        qWarning() << "Failed to produce 32-byte seed.";
+        return QString();
+    }
+    unsigned char pk[32];
+    ed25519_publickey((const unsigned char*)seed.constData(), pk);
+
+    // 4. 构造消息：event_ts + plain_token（ANSI 编码，与易语言一致）
+    QByteArray msg = event_ts.toLocal8Bit() + plain_token.toLocal8Bit();
+
+    unsigned char sig[64];
+    ed25519_sign((const unsigned char*)msg.constData(), msg.size(),
+                 (const unsigned char*)seed.constData(), pk, sig);
+
+    QString sigHex = QByteArray((const char*)sig, 64).toHex();
+
+
+    QJsonObject res;
+    res["plain_token"] = plain_token;
+    res["signature"] = sigHex;
+    // res["public_key"] = pubHex;   // 按需添加
+
+    return QJsonDocument(res).toJson(QJsonDocument::Compact);
+}
+
+QString QQBotClient::onTextMessage(const QString &message)
 {
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &err);
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("收到非法 JSON: " + message.left(200),0xff);
-        return;
+        return QString();
     }
     QJsonObject obj = doc.object();
     int op = obj.value("op").toInt(-1);
     qint64 s = obj.value("s").toVariant().toLongLong();
     if (s > 0) m_seq = s;
-
+    QString res;
     switch (op) {
     case 10: { // Hello
         int interval = obj.value("d").toObject().value("heartbeat_interval").toInt(30000);
@@ -851,13 +908,13 @@ void QQBotClient::onTextMessage(const QString &message)
 
 
 
-            return;
+            return res;
         } else if (eventType == "RESUMED") {
             m_info->online = true;
             m_isConnecting = false;
             AppendEventLog("会话恢复成功",0x594787);
             emit loginSuccess();
-            return;
+            return res;
         }
         parseMessageEvent(obj,message);
         break;
@@ -870,17 +927,23 @@ void QQBotClient::onTextMessage(const QString &message)
         });
         break;
     case 7: // Reconnect
+        if(m_info->type==0){
+            QMetaObject::invokeMethod(this, [=]() {
+                stopHeartbeatTimer();
+                m_webSocket.close();
+            });
+        }
+        break;
+    case 13: // webhook认证
 
-        QMetaObject::invokeMethod(this, [=]() {
-            stopHeartbeatTimer();
-            m_webSocket.close();
-        });
+        res = webhook_sig(obj,m_info->secret);
 
         break;
     default:
         AppendEventLog(QString("未处理的 op=%1").arg(op) ,0xff);
         break;
     }
+    return res;
 }
 
 

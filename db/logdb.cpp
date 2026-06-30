@@ -653,7 +653,35 @@ bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, 
     mdb_txn_abort(txn);
     return ok;
 }
+bool LogDB::readLog(const QString &keyStr, Message &msg) const
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
 
+
+    QByteArray keyBytes = keyStr.toUtf8();
+
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) return false;
+
+    MDB_val key, value;
+    key.mv_data = keyBytes.data();
+    key.mv_size = keyBytes.size();
+
+    rc = mdb_get(txn, m_dbi_main, &key, &value);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        if (rc != MDB_NOTFOUND)
+            qWarning() << "LogDB: readLog 失败:" << mdb_strerror(rc);
+        return false;
+    }
+
+    QByteArray blob((const char*)value.mv_data, value.mv_size);
+    bool ok = deserializeMessage(blob, msg);
+    mdb_txn_abort(txn);
+    return ok;
+}
 bool LogDB::cleanDatabase(int keepN)
 {
     QMutexLocker locker(&m_mutex);
