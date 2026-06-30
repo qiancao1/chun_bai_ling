@@ -221,7 +221,7 @@ QString botlist()
         obj["id"] = info->pduid; //频道id
         obj["union_openid"]=info->unid;   //QQid
         obj["time"] = formatDuration(now-info->startup_time);
-
+        obj["admin"] = info->admin;
         if(info->日计时变量!=day)
         {
             info->今日加群数量 = 0;

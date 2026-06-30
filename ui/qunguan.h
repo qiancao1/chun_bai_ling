@@ -21,6 +21,8 @@ private slots:
 
     void on_checkBox_2_checkStateChanged(const Qt::CheckState &arg1);
 
+    void on_pushButton_2_clicked();
+
 private:
     Ui::qunguan *ui;
 };

@@ -44,7 +44,7 @@ LmdbKV *cache_db=nullptr;
 std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
-QString g_admin;
+
 LmdbKV *aidb=nullptr;
 LmdbKV *dsdb=nullptr;
 LmdbKV *accdb=nullptr;
@@ -68,7 +68,7 @@ void loadconfig()
         file.close();
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
-    g_admin = g_config["admin"].toString();
+
 
 }
 

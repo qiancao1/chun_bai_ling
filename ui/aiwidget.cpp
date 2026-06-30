@@ -2714,13 +2714,20 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
                     sxw["messages"] = msgs;
                     if (tool_name == "run_python" && data.contains("[待确认]"))
                     {
-                        QString key;
-                        if (g_admin.isEmpty()) {
+                        int index = accinfo(ev.appid);
+                         QString key;
+                        if(index>=0)
+                        {
+                            if (m_accounts[index]->admin.isEmpty()) {
+                                key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
+                            } else {
+                                key = R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意%1","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"同意"}},{"action":{"data":"拒绝%2","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"拒绝","style":1,"visited_label":"拒绝"}}]}]}}}#b:#)";
+                                key = key.arg(ev.user, ev.user);
+                            }
+                        }else{
                             key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
-                        } else {
-                            key = R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意%1","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"同意"}},{"action":{"data":"拒绝%2","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"拒绝","style":1,"visited_label":"拒绝"}}]}]}}}#b:#)";
-                            key = key.arg(ev.user, ev.user);
                         }
+
                         return data + key;  // 返回审核信息 + 键盘
                     }
                     ok = true;
@@ -2967,8 +2974,8 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
 
 QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
-    if(g_admin.isEmpty()) return QString();
-    if(!g_admin.contains(ev.user)) return QString();
+    if(info->admin.isEmpty()) return QString();
+    if(!info->admin.contains(ev.user)) return QString();
     if(ev.msg=="取")
     {
         QJsonParseError err;

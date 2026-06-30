@@ -87,14 +87,12 @@ void QQBotClient::start()
         代理=1;
     }
 
-    // 第三步：连接 WebSocket
-    QUrl url(wsUrl);
-    if (!url.isValid()) {
-        emit loginFailed("无效的 WebSocket 地址: " + wsUrl);
-        m_isConnecting = false;
-        return;
-    }
-    m_webSocket.open(url);
+
+    QNetworkRequest request(wsUrl);
+
+    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.0.19)");
+    m_webSocket.open(request);
+
 
 }
 
@@ -902,7 +900,7 @@ void QQBotClient::sendIdentify()
     QJsonObject payload;
     payload["op"] = 2;
     payload["d"] = identify;
-
+    //"QQBotPlugin/9.9.9 (Node/20.11.0; Linux; 自定义显示名称/1.0.19)"
     QString msg = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     m_webSocket.sendTextMessage(msg);
     if(代理)

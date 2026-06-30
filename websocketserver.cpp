@@ -43,6 +43,7 @@ void WebSocketServer::onNewConnection()
     QUrl url = socket->requestUrl();
     QUrlQuery query(url);
     QString token = query.queryItemValue("token");
+
     if (token != ws_token) {
         qWarning() << "Invalid token from" << socket->peerAddress().toString();
         socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Invalid token");
@@ -91,6 +92,9 @@ void WebSocketServer::broadcastOnlineCount()
         c->sendMessage(message);
     }
 }
+// 假设您已经有了一个处理 JSON 消息的函数
+
+
 
 class ___wefs : public QRunnable {
 public:
@@ -136,6 +140,165 @@ public:
             return;
         }
 
+        QJsonValue fileDataVal = params.value("file_data");
+        QStringList fileDataList;
+        if (fileDataVal.isArray()) {
+            QJsonArray arr = fileDataVal.toArray();
+            for (auto v : arr) {
+                if (v.isString()) fileDataList.append(v.toString());
+            }
+        } else if (fileDataVal.isString()) {
+            fileDataList.append(fileDataVal.toString());
+        }
+
+        if (!fileDataList.isEmpty()) {
+            // 辅助 Lambda：保存 Base64 到文件，返回完整路径
+            auto saveBase64ToFile = [&](const QString &base64Data, const QString &dir, const QString &filename) -> QString {
+                QDir dirPath(dir);
+                if (!dirPath.exists()) {
+                    if (!dirPath.mkpath(".")) {
+                        qWarning() << "无法创建目录：" << dir;
+                        return QString();
+                    }
+                }
+
+                // 1. 去除 Data URL 前缀（如果存在）
+                QString cleanBase64 = base64Data;
+                if (cleanBase64.startsWith("data:")) {
+                    int commaPos = cleanBase64.indexOf(',');
+                    if (commaPos != -1) {
+                        cleanBase64 = cleanBase64.mid(commaPos + 1);
+                    }
+                }
+
+                // 2. 解码 Base64
+                QByteArray raw = QByteArray::fromBase64(cleanBase64.toLatin1());
+                if (raw.isEmpty()) {
+                    qWarning() << "Base64 解码失败，数据开头：" << cleanBase64.left(30);
+                    return QString();
+                }
+
+                // 3. 写入文件
+                QString fullPath = dir + "/" + filename;
+                // 若文件存在，添加随机后缀
+                if (QFile::exists(fullPath)) {
+                    QFileInfo fi(filename);
+                    QString base = fi.baseName();
+                    QString ext = fi.completeSuffix();
+                    QString newName = base + "_" + QUuid::createUuid().toString(QUuid::WithoutBraces).left(6);
+                    if (!ext.isEmpty()) newName += "." + ext;
+                    fullPath = dir + "/" + newName;
+                }
+
+                QFile file(fullPath);
+                if (!file.open(QIODevice::WriteOnly)) {
+                    qWarning() << "无法写入文件：" << fullPath;
+                    return QString();
+                }
+                file.write(raw);
+                file.close();
+                return fullPath;
+            };
+
+            // 1. 收集所有标记及其在文本中的位置（按出现顺序）
+            struct TagInfo {
+                int pos;
+                QString fullMatch;
+                QString type;   // image, file, audio, video
+                QString name;   // 原始文件名
+            };
+            QList<TagInfo> tags;
+
+            // 正则匹配： [image, name=xxx] 或 [image, path=xxx] 或 [image] 等
+            QRegularExpression tagRegex(R"(\[(image|file|audio|video)(?:\s*,\s*(?:name|path)\s*=\s*([^\],]+))?\])",
+                                        QRegularExpression::CaseInsensitiveOption);
+            auto it = tagRegex.globalMatch(text);
+            while (it.hasNext()) {
+                auto match = it.next();
+                TagInfo info;
+                info.pos = match.capturedStart();
+                info.fullMatch = match.captured(0);
+                info.type = match.captured(1).toLower();
+                info.name = match.captured(2).trimmed();
+                if (info.name.isEmpty()) {
+                    // 如果没有提供 name，生成默认名
+                    info.name = QString("%1_%2.%3")
+                                    .arg(info.type)
+                                    .arg(QDateTime::currentDateTime().toTime_t())
+                                    .arg(info.type == "audio" ? "mp3" : (info.type == "video" ? "mp4" : "bin"));
+                }
+                tags.append(info);
+            }
+
+            // 兼容图片的 ![]() 格式（如果前端还使用）
+            QRegularExpression imgRegex(R"(!\[.*?\]\(([^)]+)\))");
+            auto it2 = imgRegex.globalMatch(text);
+            while (it2.hasNext()) {
+                auto match = it2.next();
+                // 将 ![]() 也视为 image 标记，但我们需要知道它的文件名
+                TagInfo info;
+                info.pos = match.capturedStart();
+                info.fullMatch = match.captured(0);
+                info.type = "image";
+                info.name = match.captured(1); // 可能是纯文件名或路径
+                // 提取实际文件名（去掉路径）
+                QFileInfo fi(info.name);
+                info.name = fi.fileName();
+                if (info.name.isEmpty()) info.name = "image.jpg";
+                tags.append(info);
+            }
+
+            // 按位置排序
+            std::sort(tags.begin(), tags.end(), [](const TagInfo &a, const TagInfo &b) {
+                return a.pos < b.pos;
+            });
+
+            // 从后往前替换，避免位置偏移
+            for (int i = tags.size() - 1; i >= 0; --i) {
+                if (fileDataList.isEmpty()) break;
+                const TagInfo &info = tags[i];
+                QString b64 = fileDataList.takeLast(); // 反向取最后一个
+
+                // 确定目标目录
+                QString targetDir;
+                if (info.type == "image") targetDir = "tmp/image";
+                else if (info.type == "file") targetDir = "tmp/file";
+                else if (info.type == "audio") targetDir = "tmp/audio";
+                else if (info.type == "video") targetDir = "tmp/video";
+                else continue;
+
+                QString savedPath = saveBase64ToFile(b64, targetDir, info.name);
+                if (!savedPath.isEmpty()) {
+                    QString newTag;
+                    if (info.type == "image") {
+                        // 图片使用 Markdown 语法或 [image, path=...] 均可，这里使用 [image, path=...]
+                        newTag = QString("[image, path=%1]").arg(savedPath);
+                    } else {
+                        newTag = QString("[%1, path=%2]").arg(info.type).arg(savedPath);
+                    }
+                    text.replace(info.pos, info.fullMatch.length(), newTag);
+                }
+            }
+
+            // 如果有剩余的 file_data（没有标记对应），保存为普通文件并追加到末尾
+            if (!fileDataList.isEmpty()) {
+                QString extraText;
+                for (const QString &b64 : fileDataList) {
+                    QString filename = QString("file_%1_%2.bin")
+                    .arg(QDateTime::currentDateTime().toTime_t())
+                        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(6));
+                    QString savedPath = saveBase64ToFile(b64, "tmp/file", filename);
+                    if (!savedPath.isEmpty()) {
+                        extraText += QString("[file, path=%1]").arg(savedPath);
+                    }
+                }
+                if (!extraText.isEmpty()) {
+                    text += " " + extraText;
+                }
+            }
+        }
+
+        // ========== 发送消息（使用更新后的 text） ==========
         QString pname = "[web聊天室]";
         QString res = m_botClients[appid]->send_messages(type, groupId, pname, text, msgid, false, true, mark);
         if (!res.contains("ROBOT")) {
@@ -149,6 +312,8 @@ public:
         if (!reqId.isEmpty()) response["reqId"] = reqId;
         sendResponse(response);
     }
+
+
 private:
     QJsonObject params;
     QString reqId;
@@ -174,7 +339,43 @@ void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
         QThreadPool::globalInstance()->start(task);
     } else if (action == "getLogs") {
         handleGetLogs(params, client, reqId);
-    } else {
+    }else if(action == "getFile")
+    {
+        QString path = params.value("path").toString();
+        QFileInfo fi(path);
+        QString absolutePath = fi.absoluteFilePath();
+
+        // 限制只能读取 tmp/ 目录下的文件
+        QDir tmpDir("tmp/");
+        QString tmpAbsolute = tmpDir.absolutePath();
+        if (!absolutePath.startsWith(tmpAbsolute)) {
+            QJsonObject response;
+            response["action"] = "getFile";
+            response["reqId"] = reqId;
+            response["success"] = false;
+            response["msg"] = "Access denied: file outside tmp directory";
+            client->sendMessage(response);
+            return;
+        }
+
+        QFile file(path);
+        QJsonObject response;
+        response["action"] = "getFile";
+        response["reqId"] = reqId;
+
+        if (file.open(QIODevice::ReadOnly)) {
+            QByteArray data = file.readAll();
+            QString base64 = data.toBase64();
+            response["success"] = true;
+            response["data"] = base64;
+            response["path"] = path;
+        } else {
+            response["success"] = false;
+            response["msg"] = "文件不存在或无法读取: " + path;
+        }
+        client->sendMessage(response);
+        return;
+    }else {
         sendError(client, "Unknown action: " + action, reqId);
     }
 }

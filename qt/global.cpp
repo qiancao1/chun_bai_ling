@@ -193,7 +193,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         return;
     }
     ret = keyword->match(info->appid_int,ev.msg);
-    if(ret.isEmpty()) ret = schedule->ppzl(ev,text);
+    if(ret.isEmpty()) ret = schedule->ppzl(ev,text,info);
 
     if(!ret.isEmpty())
     {

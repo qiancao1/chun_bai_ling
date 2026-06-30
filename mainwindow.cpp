@@ -338,10 +338,11 @@ void MainWindow::setupUi()
     hxzsy->setContentsMargins(0,0,0,0);
 
 
-
+    robotListWidget->setMinimumWidth(100);
     robotListWidget->setMaximumWidth(220);
     hxzsy->addWidget(robotListWidget);
     QTabWidget *configTabWidget2 = new QTabWidget;           // 选择夹
+    configTabWidget2->addTab(ui_qunguan,"基础");
     configTabWidget2->addTab(myPlts, "批量推送");
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");
@@ -349,7 +350,7 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(schedule, "订阅");
     configTabWidget2->addTab(ai_ui, "Ai");
     configTabWidget2->addTab(refset,"回复设置");
-    configTabWidget2->addTab(ui_qunguan,"刷屏检测");
+
     hxzsy->addWidget(configTabWidget2);
 
 
@@ -1378,8 +1379,4 @@ void MainWindow::applyStyleSheet()
 
 
 
-void MainWindow::on_pushButton_clicked(bool checked)
-{
-
-}
 

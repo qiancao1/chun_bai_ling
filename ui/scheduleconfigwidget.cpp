@@ -945,14 +945,14 @@ QString python_code2(const QString &py_code,const MessageEvent &msg,QString &dat
     return QString();
 }
 
-QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名)
+QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,AccountInfo *info)
 {
     if(!tasksMap.contains(ev.appid)) return QString();
     const auto &tasks = tasksMap[ev.appid];
     for (auto &t : tasks)
     {
         if(!t.enabled) continue;
-        if(!(t.role == 1 && ev.member_role<=1 || t.role == 2 || t.role == 0 && g_admin.contains(ev.user))) continue;
+        if(!(t.role == 1 && ev.member_role<=1 || t.role == 2 || t.role == 0 && info->admin.contains(ev.user))) continue;
         if(t.addSubscribeCmd == ev.msg)
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";

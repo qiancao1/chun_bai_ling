@@ -258,7 +258,7 @@ class ScheduleConfigWidget : public QWidget
 public:
     explicit ScheduleConfigWidget(QWidget *parent = nullptr);
     ~ScheduleConfigWidget();
-    QString ppzl(const MessageEvent &ev,QString &订阅名);
+    QString ppzl(const MessageEvent &ev, QString &订阅名, AccountInfo *info);
     void 列表行被单击();
     void jiancha();
     QString add_byAi(const QString &remark,int appid,const QString &时间,int 执行次数 ,const QString &python_code);

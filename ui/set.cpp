@@ -5,6 +5,7 @@
 #include <QHeaderView>
 #include <QColorDialog>
 #include <QTimer>
+#include <qclipboard.h>
 #include "jjm.h"
 #include "websocketserver.h"
 void stopImageServer();
@@ -12,6 +13,8 @@ bool startImageServer(quint16 port,const QString &certPath = "",const QString &k
 void setUploadTokens(const QStringList &tokens);
 void set_ip(const QString &ip);
 QString ffmpegdiv;
+extern QString g_ip;
+extern bool e_img;
 WebSocketServer *ws_server=nullptr;
 set::set(QWidget *parent) : QWidget(parent)
 {
@@ -116,14 +119,7 @@ void set::setupUI()
 
     QGridLayout *modeLayout2 = new QGridLayout;
     modeLayout2->setAlignment(Qt::AlignLeft);
-    QLabel *modeLabela = new QLabel("管理员：", this);
-    admin_Edit = new QLineEdit;
-    admin_Edit->setPlaceholderText("写入管理员id 32字节hex 空格分割");
-    admin_but = new QPushButton("确认");
-    admin_Edit->setText(g_admin);
-    modeLayout2->addWidget(modeLabela,0,0);
-    modeLayout2->addWidget(admin_Edit,0,1);
-    modeLayout2->addWidget(admin_but,0,2);
+
 
 
     modeLayout2->setAlignment(Qt::AlignLeft);
@@ -132,9 +128,9 @@ void set::setupUI()
     python3_14t->setPlaceholderText("如 [C:/python/] 不需要exe");
     python3_14t_but = new QPushButton("确认");
     python3_14t->setText(g_config["pythonHome"].toString());
-    modeLayout2->addWidget(modeLabela2,1,0);
-    modeLayout2->addWidget(python3_14t,1,1);
-    modeLayout2->addWidget(python3_14t_but,1,2);
+    modeLayout2->addWidget(modeLabela2,0,0);
+    modeLayout2->addWidget(python3_14t,0,1);
+    modeLayout2->addWidget(python3_14t_but,0,2);
 
     // 模式行
     QHBoxLayout *modeLayout = new QHBoxLayout;
@@ -191,12 +187,13 @@ void set::setupUI()
     QString SSL = g_config["webhook_ssl"].toString();
     webhook_ssl->setText(SSL);
 
-    port = g_config["webws_p"].toInt(8081);
-    webws_port->setText(QString::number(port));
+    int port2 = g_config["webws_p"].toInt(8081);
+    webws_port->setText(QString::number(port2));
     webws_port->setMaximumWidth(70);
     QUuid uuid= QUuid::createUuid();
     ws_token = uuid.toString(QUuid::WithoutBraces);
-    qDebug() << "token:" << ws_token;
+    qDebug() << "token:http://127.0.0.1:" + QString::number(port) + "/web?token=" + ws_token;
+    qDebug() << "token:http://192.168.1.8:" + QString::number(port) + "/web?token=" + ws_token;
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
     remoteLayout2->setAlignment(Qt::AlignLeft);
     remoteLayout2->addWidget(new QLabel("webhook端口："));
@@ -218,28 +215,34 @@ void set::setupUI()
 
     QHBoxLayout *localLayout = new QHBoxLayout;
     localLayout->setAlignment(Qt::AlignLeft);
-    QLabel *addrLabel = new QLabel(tr("启动本地图床："), this);
+    QLabel *addrLabel = new QLabel(tr("对外链接："), this);
     m_addrEdit = new QLineEdit(this);
-    m_addrEdit->setPlaceholderText(tr("这里只需要输入【公网ip】或者域名 "));
+    m_addrEdit->setPlaceholderText(tr("如 abcd.com 或 22.33.44.55"));
     m_addrEdit->setMinimumWidth(150);
-
-
-    m_startStopBtn = new QPushButton(tr("保存"), this);
+    m_startStopBtn = new QPushButton("保存", this);
+    lts_but = new QPushButton("复制聊天室链接", this);
     Ewebhook = new QCheckBox;
     Ews = new QCheckBox;
     ESSL = new QCheckBox;
-
+    Eimg = new QCheckBox;
     Ewebhook->setText("启动用webhook");
     Ews->setText("启用web管理");
     ESSL->setText("启用SSL");
+    Eimg->setText("启用图床");
+
+
+    e_img = g_config["e_img"].toBool();
+    Eimg->setChecked(e_img);
     localLayout->addWidget(addrLabel);
     localLayout->addWidget(m_addrEdit);
 
     localLayout->addWidget(m_startStopBtn);
+    localLayout->addWidget(lts_but);
+
     localLayout->addWidget(Ewebhook);
     localLayout->addWidget(Ews);
     localLayout->addWidget(ESSL);
-
+    localLayout->addWidget(Eimg);
     mainVLayout->addLayout(remoteLayout1);
 
 
@@ -309,12 +312,6 @@ void set::setupUI()
     });
 
     connect(m_addTokenBtn, &QPushButton::clicked, this, &set::onAddTokenRow);
-    connect(admin_but, &QPushButton::clicked, [this](){
-        g_admin = admin_Edit->text();
-        g_config["admin"] = g_admin;
-        saveConfig();
-    });
-
 
     connect(python3_14t_but, &QPushButton::clicked, [this](){
         g_config["yiyu"] = 0;
@@ -330,9 +327,24 @@ void set::setupUI()
     connect(m_confirmBtn, &QPushButton::clicked, [this](){ saveRemoteConfig();});
     //图床链接 保存
     connect(m_startStopBtn, &QPushButton::clicked, [this](){
-        g_config["local_server_ip"]= m_addrEdit->text().trimmed();
+        g_ip=m_addrEdit->text().trimmed();
+        g_config["local_server_ip"]= g_ip;
         saveConfig();
     });
+
+    connect(lts_but, &QPushButton::clicked, [this](){
+        QClipboard *clipboard = QApplication::clipboard();
+        int port=g_config["webhook_p"].toInt();
+        if(ESSL->isChecked())
+        {
+            clipboard->setText(QString("https://%1:%2/web?token=%3").arg(g_ip).arg(port).arg(ws_token));
+
+        }else{
+            clipboard->setText(QString("http://%1:%2/web?token=%3").arg(g_ip).arg(port).arg(ws_token));
+        }
+
+    });
+
     connect(web_qr, &QPushButton::clicked, [this](){
         int prot = webws_port->text().toInt();
         if(prot<=10 || prot>0xffff)
@@ -379,7 +391,12 @@ void set::setupUI()
             saveConfig();
 
     });
+    connect(Eimg, &QCheckBox::clicked, [this](){
+        e_img= Eimg->isChecked();
+        g_config["e_img"]=e_img;
+        saveConfig();
 
+    });
     ws_server = new WebSocketServer;
     if(g_config["webws_run"].toBool())
     {
@@ -503,9 +520,9 @@ void set::loadConfig()
     m_urlEdit->setText(远程链接);
     远程token=g_config["image_server_token"].toString();
     m_token->setText(远程token);
-    QString localIp = g_config["local_server_ip"].toString();
+    g_ip = g_config["local_server_ip"].toString();
 
-    m_addrEdit->setText(localIp);
+    m_addrEdit->setText(g_ip);
 
     QJsonArray tokenArray = g_config["token_table_data"].toArray();
     m_tokenTable->setRowCount(0);

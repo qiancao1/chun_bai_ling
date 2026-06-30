@@ -112,7 +112,7 @@ extern QHash<int, QQBotClient*> m_botClients;
 extern QHash<int, BotDB*> g_botdb;
 extern QHash<int, CardWidget*> g_CW;
 extern QString g_sandboxuuid;
-extern QString g_admin;
+
 extern double totalMemMB;
 extern qint64 g_totalRuntime;
 extern std::string g_keyuuid;

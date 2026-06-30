@@ -63,7 +63,6 @@ private slots:
 
 
 
-    void on_pushButton_clicked(bool checked);
 
 private:
     void setupUi();

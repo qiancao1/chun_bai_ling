@@ -138,8 +138,9 @@ protected:
 HttpImageServer *g_server = nullptr;
 static quint16 g_port = 0;
 
-QString ws_token = "127.0.0.1";
-static QString g_ip = "127.0.0.1";
+QString ws_token = QString();
+QString g_ip = QString();
+bool e_img=false;
 static QString g_allowedReadDir = QDir::current().absolutePath() + "/uploads";
 // Token 认证相关
 static QSet<QString> g_validTokens;      // 存储合法的 Token
@@ -686,6 +687,7 @@ QString upload(const QString &path)
 {
     if(!g_server) return QString();
     if(g_ip.isEmpty()) return QString();
+    if(!e_img) return QString();
     if(g_ssl)
         return QString("https://%1:%2/?path=%3").arg(g_ip).arg(g_port).arg(QString::fromUtf8(QUrl::toPercentEncoding(path)));
     else
@@ -694,6 +696,8 @@ QString upload(const QString &path)
 
 QString upload(const QByteArray &data)
 {
+    if(g_ip.isEmpty()) return QString();
+    if(!e_img) return QString();
     QString hashHex = calculateMd5(data);
     QString savePath = QDir::current().absolutePath() + "/uploads/" + hashHex + ".png";
     bool fileAlreadyExists = QFile::exists(savePath);

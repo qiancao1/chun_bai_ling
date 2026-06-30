@@ -95,6 +95,7 @@ struct AccountInfo {
     bool e_bai=true;
     bool shuap=false;//刷屏检测
     qint64 startup_time = 0;
+    QString admin;
     QString welcomeMsg;         // 被添加时的欢迎词
     QString fallbackReply;      // 指令未处理时的回应
     QString rqhy; //群成员加群提示文本
