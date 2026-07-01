@@ -177,6 +177,8 @@ void initDBs() {
 QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
+QString webhook_sig(const QJsonObject &obj, const QString &secret);
+
 int main(int argc, char *argv[]) {
 
 

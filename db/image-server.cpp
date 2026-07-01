@@ -653,7 +653,7 @@ QString uploadImageByPath(const QString &serverUrl, const QString &localPath, in
     }
     return urlResult;
 }
-QString webhook_sig(QJsonObject &obj, const QString &secret);
+QString webhook_sig(const QJsonObject &obj, const QString &secret);
 QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArray &body) {
 
     if (!pathQuery.startsWith("/webhook/")) return "{}";

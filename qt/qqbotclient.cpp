@@ -824,50 +824,81 @@ void QQBotClient::onTextMessageReceived(const QString &message) {
 }
 
 
-#include "ed25519.h"   // ed25519-donna 的头文件
+typedef const char* (__cdecl *GetSignatureFunc)(const char*, const char*, const char*);
+typedef void (__cdecl *FreeSignatureFunc)(const char*);
 
-static QByteArray padSecretTo32(const QString& secret) {
-    QByteArray raw = secret.toLocal8Bit();   // 与易语言“到字节集”编码一致（ANSI/GBK）
-    while (raw.size() < 32) {
-        raw.append(raw);
+static GetSignatureFunc pGetSignature = nullptr;
+static FreeSignatureFunc pFreeSignature = nullptr;
+
+static bool loadSignatureDll() {
+    if (pGetSignature && pFreeSignature) {
+        return true; // 已加载
     }
-    return raw.left(32);
+
+    QLibrary lib("GetSignature.dll");
+    if (!lib.load()) {
+        qWarning() << "Failed to load GetSignature.dll:" << lib.errorString();
+        return false;
+    }
+
+    pGetSignature = (GetSignatureFunc)lib.resolve("GetSignature");
+    pFreeSignature = (FreeSignatureFunc)lib.resolve("FreeSignature");
+
+    if (!pGetSignature || !pFreeSignature) {
+        qWarning() << "Failed to resolve GetSignature or FreeSignature";
+        return false;
+    }
+
+    return true;
 }
 
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
+    // 1. 提取字段
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
     QString event_ts = d.value("event_ts").toString();
+
     if (plain_token.isEmpty() || event_ts.isEmpty()) {
-        qWarning() << "Missing plain_token or event_ts in JSON.";
+        qWarning() << "Missing plain_token or event_ts";
         return QString();
     }
-    QByteArray seed = padSecretTo32(secret);
-    if (seed.size() != 32) {
-        qWarning() << "Failed to produce 32-byte seed.";
+
+    // 2. 确保 DLL 已加载
+    if (!loadSignatureDll()) {
         return QString();
     }
-    unsigned char pk[32];
-    ed25519_publickey((const unsigned char*)seed.constData(), pk);
 
-    // 4. 构造消息：event_ts + plain_token（ANSI 编码，与易语言一致）
-    QByteArray msg = event_ts.toLocal8Bit() + plain_token.toLocal8Bit();
+    // 3. 转换为 UTF-8 字符串（与 Python 的 encode('utf-8') 一致）
+    QByteArray plain_token_utf8 = plain_token.toUtf8();
+    QByteArray event_ts_utf8 = event_ts.toUtf8();
+    QByteArray secret_utf8 = secret.toUtf8();
 
-    unsigned char sig[64];
-    ed25519_sign((const unsigned char*)msg.constData(), msg.size(),
-                 (const unsigned char*)seed.constData(), pk, sig);
+    // 4. 调用 GetSignature
+    // 注意参数顺序：plain_token, event_ts, bot_secret
+    const char* sig_cstr = pGetSignature(
+        plain_token_utf8.constData(),
+        event_ts_utf8.constData(),
+        secret_utf8.constData()
+        );
 
-    QString sigHex = QByteArray((const char*)sig, 64).toHex();
+    if (!sig_cstr) {
+        qWarning() << "GetSignature returned null";
+        return QString();
+    }
+
+    // 5. 将结果转为 QString（假设签名是十六进制字符串，UTF-8 编码）
+    QString signature = QString::fromUtf8(sig_cstr);
+
+    // 6. 释放内存
+    pFreeSignature(sig_cstr);
 
 
     QJsonObject res;
     res["plain_token"] = plain_token;
-    res["signature"] = sigHex;
-    // res["public_key"] = pubHex;   // 按需添加
+    res["signature"] = signature;
 
     return QJsonDocument(res).toJson(QJsonDocument::Compact);
 }
-
 QString QQBotClient::onTextMessage(const QString &message)
 {
     QJsonParseError err;

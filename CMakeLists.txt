@@ -180,6 +180,7 @@ else()
 
 
 
+
         )
     endif()
 endif()
@@ -220,7 +221,7 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/db
     ${CMAKE_CURRENT_SOURCE_DIR}/qt
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
-    ${CMAKE_CURRENT_SOURCE_DIR}/libs/ed25519-donna
+
     ${Python_INCLUDE_DIRS}
 )
 
