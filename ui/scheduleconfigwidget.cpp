@@ -953,7 +953,7 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
     {
         if(!t.enabled) continue;
         if(!(t.role == 1 && ev.member_role<=1 || t.role == 2 || t.role == 0 && info->admin.contains(ev.user))) continue;
-        if(t.addSubscribeCmd == ev.msg)
+        if(!t.addSubscribeCmd.isEmpty() && ev.msg.startsWith(t.addSubscribeCmd))
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[添加订阅：" + t.remark + "|%1ms]";
@@ -965,7 +965,7 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
             if(bot->addSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||")))
                 return ret;
             return "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
-        }else if(t.cancelSubscribeCmd==ev.msg)
+        }else if(!t.cancelSubscribeCmd.isEmpty() && ev.msg.startsWith(t.cancelSubscribeCmd))
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[删除订阅：" + t.remark + "|%1ms]";

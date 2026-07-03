@@ -174,6 +174,12 @@ else()
             websocketserver.h websocketserver.cpp
             ui/aifujia.h ui/aifujia.cpp ui/aifujia.ui
 
+            ui/chatwidget.h
+            ui/appwindow.h ui/appwindow.cpp
+            db/qdrantclient.h db/qdrantclient.cpp
+
+
+
 
 
 

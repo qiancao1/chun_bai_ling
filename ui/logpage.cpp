@@ -589,7 +589,14 @@ void LogPage::setupUi()
                 if(m_botClients.contains(appid))
                 {
                     QString res = m_botClients[appid]->delete_messages(currentTabIndex-1,list[2],msg.plugin_ch);
-                    if(res.contains("message")) QMessageBox::warning(this,"撤回失败",res);
+                    if(res.contains("message")) {
+                        QMessageBox::warning(this,"撤回失败",res);
+                        return;
+                    }
+                    msg.plugin_ch="[已撤回]";
+                    msg.direction = "[已撤回]\n"+msg.direction;
+                    msg.Color_0 = 0xAB56F6;
+                    g_logdb[currentTabIndex]->updateLog(key,msg);
                     return ;
                 }
                 QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");
@@ -612,7 +619,14 @@ void LogPage::setupUi()
                 if(m_botClients.contains(appid))
                 {
                     QString res = m_botClients[appid]->delete_messages(currentTabIndex-1,list[2],msg.ch);
-                    if(res.contains("message")) QMessageBox::warning(this,"撤回失败",res);
+                    if(res.contains("message")) {
+                        QMessageBox::warning(this,"撤回失败",res);
+                        return;
+                    }
+                    msg.ch="[已撤回]";
+                    msg.msg = "[已撤回]\n"+msg.msg;
+                    msg.Color_0 = 0x20A362;
+                    g_logdb[currentTabIndex]->updateLog(key,msg);
                     return ;
                 }
                 QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");

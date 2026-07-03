@@ -92,8 +92,11 @@ struct AccountInfo {
     bool online = false;
     bool ark=false;
     bool markdown=false;
+    bool markdown_pd=false;
+    bool markdown_pd_mb=false;
     bool e_bai=true;
     bool shuap=false;//刷屏检测
+    bool xiangliang=false; //向量数据库
     qint64 startup_time = 0;
     QString admin;
     QString welcomeMsg;         // 被添加时的欢迎词
@@ -108,18 +111,22 @@ struct AccountInfo {
     QList<QString> tools;
     QList<QString> fujia;
     QString model;              // 模型名称
+    QString Embed_model;
     QString setting;            // 选中的全局设定名
     int context_len=128;            // 上下文
     int nSecondsNoReply = 0;    // N秒没回复
     int nMinutesNoReply = 0;    // N分钟没回复
     int delayReplySeconds = 6;  // 延迟回复(秒)
     int pplx=0;
+    int 固定条数=0;
+    int 触发概率=0;
+    int 递增概率=0;
     int 模型开始下标=0;
 
     bool enableGroupChat = false;
     bool enableGroupPersonal = false;
     bool enablePrivateChat = false;
-    bool nameTrigger = false;
+
     bool enableChannel = false;
     bool enableChannelPersonal = false;
     bool atTrigger = false;

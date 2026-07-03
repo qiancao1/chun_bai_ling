@@ -5,8 +5,7 @@
 #include "sandboxwindow.h"
 #include "global.h"
 #include <QtWidgets>
-#include <QSyntaxHighlighter>
-#include <QRegularExpression>
+
 #include <QPainter>
 
 QString g_sandboxuuid;
@@ -14,86 +13,8 @@ QString g_sandboxuuid;
 namespace py = pybind11;
 
 
-class LineNumberArea : public QWidget
-{
-public:
-    LineNumberArea(CodeEditor *editor) : QWidget(editor), codeEditor(editor)
-    {
-        setContentsMargins(0,0,0,0);
-    }
 
-    QSize sizeHint() const override
-    {
-        return QSize(codeEditor->lineNumberAreaWidth(), 0);
-    }
-
-protected:
-    void paintEvent(QPaintEvent *event) override
-    {
-        codeEditor->lineNumberAreaPaintEvent(event);
-    }
-
-private:
-    CodeEditor *codeEditor;
-};
 // ---------- Python 语法高亮器 ----------
-class PythonHighlighter : public QSyntaxHighlighter
-{
-    Q_OBJECT
-public:
-    PythonHighlighter(QTextDocument *parent = nullptr) : QSyntaxHighlighter(parent)
-    {
-        HighlightingRule rule;
-
-        QStringList keywords = {
-            "and", "as", "assert", "async", "await", "break", "class", "continue",
-            "def", "del", "elif", "else", "except", "False", "finally", "for",
-            "from", "global", "if", "import", "in", "is", "lambda", "None",
-            "nonlocal", "not", "or", "pass", "raise", "return", "True", "try",
-            "while", "with", "yield"
-        };
-        rule.pattern = QRegularExpression("\\b(" + keywords.join("|") + ")\\b");
-        rule.format.setForeground(QColor(0xFF7F32));
-        rule.format.setFontWeight(QFont::Bold);
-        highlightingRules.append(rule);
-
-        rule.pattern = QRegularExpression("\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()");
-        rule.format.setForeground(QColor(0x6A5ACD));
-        highlightingRules.append(rule);
-
-        rule.pattern = QRegularExpression("(\".*?\"|'.*?')");
-        rule.format.setForeground(QColor(0xD2691E));
-        highlightingRules.append(rule);
-
-        rule.pattern = QRegularExpression("#[^\n]*");
-        rule.format.setForeground(QColor(0x8A8A8A));
-        rule.format.setFontItalic(true);
-        highlightingRules.append(rule);
-
-        rule.pattern = QRegularExpression("\\b[0-9]+\\b");
-        rule.format.setForeground(QColor(0xB8860B));
-        highlightingRules.append(rule);
-    }
-
-protected:
-    void highlightBlock(const QString &text) override
-    {
-        for (const HighlightingRule &rule : std::as_const(highlightingRules)) {
-            QRegularExpressionMatchIterator matchIterator = rule.pattern.globalMatch(text);
-            while (matchIterator.hasNext()) {
-                QRegularExpressionMatch match = matchIterator.next();
-                setFormat(match.capturedStart(), match.capturedLength(), rule.format);
-            }
-        }
-    }
-
-private:
-    struct HighlightingRule {
-        QRegularExpression pattern;
-        QTextCharFormat format;
-    };
-    QVector<HighlightingRule> highlightingRules;
-};
 
 // ---------- CodeEditor 实现 ----------
 CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
@@ -692,6 +613,7 @@ void SandboxWindow::onSendClicked()
         // 回到主线程更新 UI
         QMetaObject::invokeMethod(this, [this, exitCode, outText, errText, errorMessage, resultOutput]() {
             // 显示 print 输出到输出框
+            doWork(16);
             if (!outText.isEmpty())
                 outputLog->append(outText);
             if (!errText.isEmpty())

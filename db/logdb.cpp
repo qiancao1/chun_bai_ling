@@ -277,7 +277,7 @@ bool LogDB::serializeMessage(const Message &msg, QByteArray &data) const
     QDataStream stream(&data, QIODevice::WriteOnly);
     stream.setVersion(QDataStream::Qt_5_15);
     stream << msg.user << msg.msg << msg.isSelf << msg.timestamp
-           << msg.name << msg.hf << msg.ch<< msg.plugin_ch << msg.direction << msg.Color_0;
+           << msg.name << msg.hf << msg.ch<< msg.plugin_ch << msg.direction << msg.Color_0 <<msg.ref_name <<msg.ref_msg;
     return stream.status() == QDataStream::Ok;
 }
 
@@ -286,7 +286,7 @@ bool LogDB::deserializeMessage(const QByteArray &data, Message &msg) const
     QDataStream stream(data);
     stream.setVersion(QDataStream::Qt_5_15);
     stream >> msg.user >> msg.msg >> msg.isSelf >> msg.timestamp
-        >> msg.name >> msg.hf >> msg.ch >> msg.plugin_ch >> msg.direction >> msg.Color_0;
+        >> msg.name >> msg.hf >> msg.ch >> msg.plugin_ch >> msg.direction >> msg.Color_0 >> msg.ref_name >> msg.ref_msg;
 
     return stream.status() == QDataStream::Ok;
 }
@@ -456,6 +456,7 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
                 Message msg;
                 if (deserializeMessage(blob, msg)) {
+                    msg.seq = parts[0].toInt();
                     if(!msg.direction.isEmpty() && !msg.msg.isEmpty())
                     {
                         msg.isSelf=true;
@@ -588,7 +589,40 @@ QStringList LogDB::getAllKeys() const
     mdb_txn_abort(txn);
     return keys;
 }
+bool LogDB::updateLog(const QString &keyStr, const Message &msg)
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
 
+
+    QByteArray keyBytes = keyStr.toUtf8();
+    QByteArray valueBlob;
+    if (!serializeMessage(msg, valueBlob)) return false;
+
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) return false;
+
+    MDB_val key, value;
+    key.mv_data = keyBytes.data();
+    key.mv_size = keyBytes.size();
+    value.mv_data = valueBlob.data();
+    value.mv_size = valueBlob.size();
+
+    rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        qWarning() << "LogDB: updateLog 失败:" << mdb_strerror(rc);
+        return false;
+    }
+
+    rc = mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: updateLog 提交失败:" << mdb_strerror(rc);
+        return false;
+    }
+    return true;
+}
 bool LogDB::updateLog(const QString &appid, const QString &groupId, uint64_t seq, const Message &msg)
 {
     QMutexLocker locker(&m_mutex);

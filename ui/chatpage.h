@@ -26,7 +26,9 @@ struct Message {
     QString ch; //撤回消息用
     QString plugin_ch;
     QString direction;
-
+    QString ref_name;
+    QString ref_msg;
+    int seq=0;
     int Color_0=0;
     bool isSelf=false;
 

@@ -34,6 +34,8 @@ QString AccountInfo::toJson() const {
     obj["secret"] = MachineKey::encrypt(secret, key);
     obj["ark"] = ark;
     obj["markdown"] = markdown;
+    obj["markdown_pd"]= markdown_pd;
+    obj["markdown_pd"]= markdown_pd_mb;
     obj["botqq"] = botqq;
     obj["botsettext"] = botsettext;
     obj["nickname"] = nickname;
@@ -65,7 +67,7 @@ QString AccountInfo::toJson() const {
     obj["e_GroupChat"] = enableGroupChat;
     obj["e_GroupPersonal"] = enableGroupPersonal;
     obj["e_PrivateChat"] = enablePrivateChat;
-    obj["nameTrigger"] = nameTrigger;
+
     obj["e_Channel"] = enableChannel;
     obj["atTrigger"] = atTrigger;
     obj["e_ChannelPersonal"] = enableChannelPersonal;
@@ -77,7 +79,9 @@ QString AccountInfo::toJson() const {
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
     obj["jiam"]=1;
-
+    obj["a_gdts"]=固定条数;
+    obj["a_cfgl"]=触发概率;
+    obj["a_dzgl"]=递增概率;
     obj["e_bai"]=e_bai;
     obj["bai_sr"]=bai_sr;
     obj["bai_sc"]=bai_sc;
@@ -87,6 +91,8 @@ QString AccountInfo::toJson() const {
     obj["tiaoshu"]=tiaoshu;
     obj["pbbot"]=pbbot;
     obj["admin"]=admin;
+    obj["xiangliang"]=xiangliang;
+    obj["admin"]=Embed_model;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -104,6 +110,8 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.secret = MachineKey::decrypt(obj["secret"].toString(), key);
     info.ark = obj["ark"].toBool();
     info.markdown = obj["markdown"].toBool();
+    info.markdown_pd = obj["markdown_pd"].toBool();
+    info.markdown_pd_mb = obj["markdown_pd"].toBool();
     info.botqq = obj["botqq"].toString();
     info.botsettext = obj["botsettext"].toString();
     info.nickname = obj["nickname"].toString();
@@ -121,6 +129,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
 
+    info.Embed_model = obj["admin"].toString();
 
 
     info.今日加群数量 = obj["g_add"].toInt();
@@ -130,8 +139,13 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.日计时变量 = obj["r_jis"].toInt();
     info.今日频道数量= obj["c_add"].toInt();
     info.今日退出频道数量= obj["c_sub"].toInt();
+    info.固定条数 = obj["a_gdts"].toInt();
+    info.触发概率= obj["a_cfgl"].toInt();
+    info.递增概率= obj["a_dzgl"].toInt();
+
 
     info.times = obj["times"].toInt(5);
+    info.xiangliang=obj["xiangliang"].toBool(); //向量开关
     info.shuap = obj["shuap"].toBool();
     info.pbbot =obj["pbbot"].toBool();
     info.tiaoshu = obj["tiaoshu"].toInt(5);
@@ -171,7 +185,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.enableGroupChat = obj["e_GroupChat"].toBool();
     info.enableGroupPersonal = obj["e_GroupPersonal"].toBool();
     info.enablePrivateChat = obj["e_PrivateChat"].toBool();
-    info.nameTrigger = obj["nameTrigger"].toBool();
+
     info.enableChannel = obj["e_Channel"].toBool();
     info.atTrigger = obj["atTrigger"].toBool();
     info.enableChannelPersonal = obj["e_ChannelPersonal"].toBool();

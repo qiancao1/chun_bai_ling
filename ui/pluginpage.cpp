@@ -18,6 +18,7 @@
 #include <QProcess>
 #include <QApplication>
 #include <qlibrary.h>
+#include "AppWindow.h"
 #include "PluginDepDialog.h"
 #include "global.h"
 #include "node_plugin_manager.h"
@@ -184,11 +185,17 @@ void PluginPage::setupUi()
 
     detailNameLabel = new QLabel;
     detailNameLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #222222;");
-    pypip = new QPushButton("插件引用库");
-    pypip->setFixedWidth(100);   // 保持原宽度
-
     formLayout2->addWidget(detailNameLabel);
-    formLayout2->addWidget(pypip);
+    QHBoxLayout *iconNameLayout2 = new QHBoxLayout;
+    iconNameLayout2->setSpacing(3);
+    pypip = new QPushButton("插件引用库");
+    pypip->setFixedWidth(100);
+    ai_c_j= new QPushButton("Ai生成插件");
+    ai_c_j->setFixedWidth(100);
+
+    iconNameLayout2->addWidget(pypip);
+    iconNameLayout2->addWidget(ai_c_j);
+    formLayout2->addItem(iconNameLayout2);
     iconNameLayout->addLayout(formLayout2);
 
     rightMainLayout->addLayout(iconNameLayout);
@@ -330,6 +337,11 @@ void PluginPage::setupUi()
         }
         PluginDepDialog dlg(requires, plugin.name, this);
         dlg.exec();
+    });
+    connect(ai_c_j, &QPushButton::clicked,this, [this]() {
+        auto *w = new AppWindow();
+        w->setAttribute(Qt::WA_DeleteOnClose);
+        w->show();
     });
 }
 
@@ -527,6 +539,87 @@ QString python_code(const QString &py_code,const MessageEvent &msg)
     return QString();
 }
 
+bool matchRule(const Rule &rule, const QString &msg) {
+    switch (rule.type) {
+    case MatchType::Equals:
+        return rule.caseSensitive ? (msg == rule.key)
+                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+    case MatchType::StartsWith:
+        return rule.caseSensitive ? msg.startsWith(rule.key)
+                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::EndsWith:
+        return rule.caseSensitive ? msg.endsWith(rule.key)
+                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::Contains:
+        return rule.caseSensitive ? msg.contains(rule.key)
+                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+    case MatchType::Regex: {
+
+        return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
+    }
+    }
+    return false;
+}
+void onMessageReceived(const MessageEvent &msg,int i) {
+
+    try {
+        py::gil_scoped_acquire gil;
+
+        QString reply;
+        // 1. 优先按规则匹配
+        for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
+            if (matchRule(rule, msg.msg)) {
+                // 调用规则对应的函数
+                py::object ret = rule.function(msg);
+                if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                    if(reply.isEmpty())
+                        reply = QString::fromStdString(py::str(ret).cast<std::string>());
+                    else
+                        reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
+                }
+
+
+            }
+        }
+        if (!reply.isEmpty()) {
+            QQBotClient *client = m_botClients[msg.appid];
+            if (client) {
+                QString contactId = msg.groupId;
+                QString msgIdNormal = msg.msgId;
+                QString msgIdRetry = msg.msgId;
+                QString nickname = client->m_info->nickname;
+                SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
+                                                            msgIdNormal, msgIdRetry, nickname, false);
+                QThreadPool::globalInstance()->start(task);
+            }
+            return ;
+        }
+        // 2. 如果没有任何规则匹配，且有 on_message，则调用 on_message 作为兜底
+        if (m_pluginList[i].python.instance) {
+            py::object ret = m_pluginList[i].python.instance(msg);
+            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                QString reply = QString::fromStdString(py::str(ret).cast<std::string>());
+                if (!reply.isEmpty()) {
+                    QQBotClient *client = m_botClients[msg.appid];
+                    if (client) {
+                        QString contactId = msg.groupId;
+                        QString msgIdNormal = msg.msgId;
+                        QString msgIdRetry = msg.msgId;
+                        QString nickname = client->m_info->nickname;
+                        SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
+                                                                    msgIdNormal, msgIdRetry, nickname, false);
+                        QThreadPool::globalInstance()->start(task);
+                    }
+                }
+            }
+        }
+    } catch (const std::exception &e) {
+        AppendEventLog("[Python] " + m_pluginList[i].name + " 错误: " + e.what(), 0xff);
+    } catch (...) {
+        AppendEventLog("[Python] " + m_pluginList[i].name + " 未知错误", 0xff);
+    }
+
+}
 
 void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
 {
@@ -536,31 +629,7 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
         if (!m_pluginList[i].enabled) continue;
         if(m_pluginList[i].appid.contains(msg.appid)) continue; //这个插件禁用
         if (m_pluginList[i].type == 0){
-            try {
-                if (m_pluginList[i].python.instance) {
-                    py::gil_scoped_acquire gil;
-                    py::object ret = m_pluginList[i].python.instance(msg);
-                    if (!ret.is_none() && py::isinstance<py::str>(ret)) {
-                        QString reply = QString::fromStdString(py::str(ret).cast<std::string>());
-                        if (!reply.isEmpty()) {
-                            QQBotClient *client = m_botClients[msg.appid];
-                            if (client) {
-                                QString contactId = msg.groupId;
-                                QString msgIdNormal = msg.msgId;
-                                QString msgIdRetry = msg.msgId;
-                                QString nickname = client->m_info->nickname;
-                                SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                                            msgIdNormal, msgIdRetry, nickname,false);
-                                QThreadPool::globalInstance()->start(task);
-                            }
-                        }
-                    }
-                }
-            } catch (const std::exception &e) {
-                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: " + e.what() ,0xff);
-            } catch (...) {
-                AppendEventLog("[Python] " + m_pluginList[i].name + " on_message: unknown exception" ,0xff);
-            }
+            onMessageReceived(msg,i);
             continue;
         }
         if(m_pluginList[i].type == 2)
@@ -1096,15 +1165,10 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         // 执行文件，将 locals 也设为 plugin_globals，保证所有定义都进入同一个字典
         py::eval_file(mainPy.toStdString(), plugin_globals, plugin_globals);
 
-        // 从 plugin_globals 中获取 on_message
-        if (!plugin_globals.contains("on_message"))
-            return info.path+"\\main.py 中 on_message 函数不存在";
-        py::object func = plugin_globals["on_message"];
-        if (!py::isinstance<py::function>(func))
-            return info.path+"\\main.py 中 on_message 函数不存在";
-        info.python.instance = func;
 
-        // 同样从 plugin_globals 获取其他函数
+        if (plugin_globals.contains("on_message"))
+            info.python.instance = plugin_globals["on_message"];
+
         auto getCb = [&](const char *name) -> py::object {
             if (plugin_globals.contains(name)) {
                 py::object obj = plugin_globals[name];
@@ -1148,6 +1212,72 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                         }
                     }
                 }
+                // 定义一个 lambda 来解析特定类型的规则列表
+                // 定义一个 lambda 解析特定类型的规则列表
+                auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
+                    py::str keyPy = py::str(typeKey.toStdString());  // 或
+
+                    if (dict.contains(keyPy) && py::isinstance<py::list>(dict[keyPy])) {
+                        py::list ruleList = dict[keyPy].cast<py::list>();
+                        for (py::handle item : ruleList) {
+                            if (!py::isinstance<py::dict>(item)) {
+                                qWarning() << typeKey << "规则项不是字典，跳过";
+                                continue;
+                            }
+                            py::dict ruleDict = item.cast<py::dict>();
+
+                            // 提取 key（必填）
+                            QString key;
+                            if (ruleDict.contains("key") && !ruleDict["key"].is_none()) {
+                                key = QString::fromStdString(ruleDict["key"].cast<std::string>());
+                            } else {
+                                qWarning() << typeKey << "规则缺少 key，跳过";
+                                continue;
+                            }
+
+                            // 提取 fun（必填）-> 从 plugin_globals 获取函数对象
+                            QString funName;
+                            if (ruleDict.contains("fun") && !ruleDict["fun"].is_none()) {
+                                funName = QString::fromStdString(ruleDict["fun"].cast<std::string>());
+                            } else {
+                                qWarning() << typeKey << "规则缺少 fun，跳过";
+                                continue;
+                            }
+
+                            // 从 plugin_globals 查找函数对象
+                            py::object funcObj;
+
+                            py::str funStd = py::str(funName.toStdString());  // 或
+                            if (plugin_globals.contains(funStd)) {
+                                py::object obj = plugin_globals[funStd];
+                                if (py::isinstance<py::function>(obj) || PyCallable_Check(obj.ptr())) {
+                                    funcObj = obj;
+                                }
+                            }
+                            if (funcObj.is_none()) {
+                                qWarning() << "函数" << funName << "不存在或不可调用，跳过该规则";
+                                continue;
+                            }
+
+                            // 提取 case_sensitive（可选，默认为 true）
+                            bool caseSensitive = true;
+                            if (ruleDict.contains("case_sensitive") && !ruleDict["case_sensitive"].is_none()) {
+                                caseSensitive = ruleDict["case_sensitive"].cast<bool>();
+                            }
+
+                            // 添加到统一规则列表
+                            info.python.rules.append({matchType, key, funcObj, caseSensitive});
+                        }
+                    }
+                };
+
+                // 依次解析各个顶层键
+                parseRuleList("equals", MatchType::Equals);
+                parseRuleList("startswith", MatchType::StartsWith);
+                parseRuleList("endswith", MatchType::EndsWith);
+                parseRuleList("contains", MatchType::Contains);
+                parseRuleList("regex", MatchType::Regex);
+
             } catch (const py::error_already_set &e) {
                 return QString("执行 %1/main.py 中 get_plugin_info 函数异常：%2").arg(info.path, e.what());
             }

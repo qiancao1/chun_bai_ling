@@ -97,6 +97,7 @@ public:
     QString send_messages_markdown(int type,const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                    const QJsonObject keyboard,const QString &message_reference,
                                    const QString &msgid,bool is_wakeup=false);
+    QString send_messages_pd(const QString &url, const QString &msgId, const QString &content, const QString &imagePath, const QString &message_reference);
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
     QString uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok);
@@ -104,6 +105,8 @@ public:
     //撤回
     QString delete_messages(int type, const QString &openid, const QString &msgid);
     //获取邀请链接
+    QString get_members_list(const QString& group,int limit);
+    QString get_groups_members(const QString& group,const QString& user);
     QString generate_share_link(const QString& callback_data);
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
@@ -153,6 +156,8 @@ private:
     void fetchSelfInfo();   // 获取机器人自身信息
     void downloadAvatar(const QString &url, const QString &savePath);
     QString _Post(const QString &url,const QJsonObject &json, int timeoutMs = 30000);
+    QString _Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs = 30000);
+    QString _Get(const QString &url, int timeoutMs);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
     QString processImageTags2(QString &text, int type, QString &info,int targetType, const QString &openid,QString &message_reference);
 

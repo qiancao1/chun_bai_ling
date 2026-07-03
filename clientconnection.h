@@ -12,7 +12,7 @@ class ClientConnection : public QObject
 public:
     explicit ClientConnection(QWebSocket *socket, const QString &token, QObject *parent = nullptr);
     ~ClientConnection();
-
+    QWebSocket *m_socket;
     QString getToken() const { return m_token; }
     QHostAddress getPeerAddress() const { return m_socket->peerAddress(); }
     void sendMessage(const QJsonObject &message);
@@ -26,7 +26,7 @@ private slots:
     void onSocketDisconnected();
 
 private:
-    QWebSocket *m_socket;
+
     QString m_token;
 };
 

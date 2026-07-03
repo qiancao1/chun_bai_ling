@@ -35,6 +35,8 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
 
     m_arkCheckBox->setChecked(info.ark);
     m_markdownCheckBox->setChecked(info.markdown);
+    m_markdownCheckBox_pd->setChecked(info.markdown_pd);
+    m_markdownCheckBox_pd_mb->setChecked(info.markdown_pd_mb);
     //m_welcomeEdit->setPlainText(info.welcomeMsg);
     //m_fallbackEdit->setPlainText(info.fallbackReply);
 
@@ -243,12 +245,18 @@ void AddAccountDialog::setupUI() {
     m_wsRadio = new QRadioButton("WebSocket");
     m_webhookRadio = new QRadioButton("Webhook");
     m_arkCheckBox = new QCheckBox("启用Ark");
-    m_markdownCheckBox = new QCheckBox("启用Markdown");
+    m_markdownCheckBox = new QCheckBox("启用群Markdown");
+    m_markdownCheckBox_pd = new QCheckBox("启用频道原生Markdown");
+    m_markdownCheckBox_pd_mb = new QCheckBox("启用频道模板");
+
     m_wsRadio->setChecked(true);
     typeLayout->addWidget(m_wsRadio, 0, 0);
     typeLayout->addWidget(m_webhookRadio, 0, 1);
     typeLayout->addWidget(m_arkCheckBox, 0, 2);
     typeLayout->addWidget(m_markdownCheckBox, 0, 3);
+    typeLayout->addWidget(m_markdownCheckBox_pd, 0, 4);
+    typeLayout->addWidget(m_markdownCheckBox_pd_mb, 0, 5);
+
     // typeWidget 需要占满第1~5列
     basicLayout->addWidget(new QLabel("连接设置:"), row, 0);
     basicLayout->addWidget(typeWidget, row, 1, 1, 5);
@@ -393,8 +401,8 @@ AccountInfo AddAccountDialog::getAccountInfo() const {
     info.type = m_wsRadio->isChecked() ? 0 : 1;
     info.ark = m_arkCheckBox->isChecked();
     info.markdown = m_markdownCheckBox->isChecked();
-
-
+    info.markdown_pd = m_markdownCheckBox_pd->isChecked();
+    info.markdown_pd_mb = m_markdownCheckBox_pd_mb->isChecked();
     //info.welcomeMsg = m_welcomeEdit->toPlainText();
     //info.fallbackReply = m_fallbackEdit->toPlainText();
     info.wsIntents = computeIntentsMask();

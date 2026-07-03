@@ -143,7 +143,7 @@ public:
         QJsonValue fileDataVal = params.value("file_data");
         QStringList fileDataList;
         if (fileDataVal.isArray()) {
-            QJsonArray arr = fileDataVal.toArray();
+            const QJsonArray arr = fileDataVal.toArray();
             for (auto v : arr) {
                 if (v.isString()) fileDataList.append(v.toString());
             }
@@ -274,7 +274,7 @@ public:
                         // 图片使用 Markdown 语法或 [image, path=...] 均可，这里使用 [image, path=...]
                         newTag = QString("[image, path=%1]").arg(savedPath);
                     } else {
-                        newTag = QString("[%1, path=%2]").arg(info.type).arg(savedPath);
+                        newTag = QString("[%1, path=%2]").arg(info.type,savedPath);
                     }
                     text.replace(info.pos, info.fullMatch.length(), newTag);
                 }
@@ -320,7 +320,7 @@ private:
     ClientConnection *client;
 };
 
-
+QString botlist();
 void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
 {
     ClientConnection *client = qobject_cast<ClientConnection*>(sender());
@@ -375,7 +375,68 @@ void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
         }
         client->sendMessage(response);
         return;
-    }else {
+    }else if(action == "getBotList"){
+        QJsonObject response;
+        response["success"] = true;
+        response["data"] = botlist();
+        response["cmd"] = "getBotList";
+        if (!reqId.isEmpty()) response["reqId"] = reqId;
+        client->sendMessage(response);
+
+        return;
+    }else if(action == "deleteMsg"){ // 撤回
+
+        QString groupId = params.value("groupId").toString();  //群id 私聊时传递 好友
+        int appid = params.value("appid").toInt();
+        int type = params.value("type").toInt(); //0 群 1频道 2私聊 3频道私聊
+        if(type<0 || type>3)
+        {
+            QJsonObject response;
+            response["success"] = false;
+            response["data"] = "type 不在 0-3 之间"; //success 为 false时 错误信息
+            response["cmd"] = "deleteMsg";
+            if (!reqId.isEmpty()) response["reqId"] = reqId;
+            client->sendMessage(response);
+            return ;
+        }
+        int seq = params.value("seq").toInt(0); //getRecentMessages 返回的有
+        bool isSelf = params.value("isSelf").toBool();
+        QString msgid = params.value("msgid").toString();        //不出意外是 用户发的 ch 机器人发的 plugin_ch
+
+
+        QString res;
+        if(m_botClients.contains(appid))
+        {
+           res = m_botClients[appid]->delete_messages(type,groupId,msgid);
+            if(!res.contains("message") && seq !=0) {
+                Message msg;
+
+                if(g_logdb[type+1]->readLog(QString::number(appid),groupId,seq,msg))
+                {
+                    msg.Color_0 = 0xAB56F6;
+                    msg.hf=QString();
+                    if(isSelf){
+                        msg.plugin_ch= "[已撤回]";
+
+                        msg.direction = "[已撤回]\n"+msg.direction;
+
+                    }else{
+                        msg.ch= "[已撤回]";
+                        msg.msg = "[已撤回]\n"+msg.msg;
+                    }
+                    g_logdb[type+1]->updateLog(QString::number(appid),groupId,seq,msg);
+                }
+            }
+        }
+        QJsonObject response;
+        response["success"] = (!res.contains("mess"));
+        response["data"] = res; //success 为 false时 错误信息
+        response["cmd"] = "deleteMsg";
+        if (!reqId.isEmpty()) response["reqId"] = reqId;
+        client->sendMessage(response);
+        return;
+    }
+    else {
         sendError(client, "Unknown action: " + action, reqId);
     }
 }
@@ -562,6 +623,7 @@ void WebSocketServer::broadcastMessage(const Message &msg, int appid, int type, 
     data["type"] = type;   // 群聊类型，与前端对应
 
     QJsonObject msgObj;
+    msgObj["seq"] = msg.seq;
     msgObj["user"] = msg.user;
     msgObj["msg"] = msg.msg;
     msgObj["timestamp"] = msg.timestamp;
@@ -572,6 +634,9 @@ void WebSocketServer::broadcastMessage(const Message &msg, int appid, int type, 
     msgObj["direction"] = msg.direction;
     msgObj["color"] = msg.Color_0;
     msgObj["isSelf"] = msg.isSelf;
+    msgObj["ref_name"] = msg.ref_name;
+    msgObj["ref_msg"] = msg.ref_msg;
+
 
     data["msg"] = msgObj;
 
@@ -593,7 +658,7 @@ void WebSocketServer::handleGetRecentMessages(const QJsonObject &params, ClientC
     QString groupId = params.value("groupId").toString();
     int appid = params.value("appid").toInt();
     int type = params.value("type").toInt();
-    int count = params.value("count").toInt(20);
+    int count = params.value("count").toInt(50);
     int offset = params.value("offset").toInt(0);
     if(type<=0) type=1;
     if (type < 1 || type > 4) {
@@ -613,6 +678,7 @@ void WebSocketServer::handleGetRecentMessages(const QJsonObject &params, ClientC
     for (const auto &msg : std::as_const(list)) {
 
         QJsonObject msgObj;
+        msgObj["seq"] = msg.seq;
         msgObj["user"] = msg.user;
         msgObj["msg"] = msg.msg;
         msgObj["timestamp"] = msg.timestamp;
@@ -623,6 +689,8 @@ void WebSocketServer::handleGetRecentMessages(const QJsonObject &params, ClientC
         msgObj["direction"] = msg.direction;
         msgObj["color"] = msg.Color_0;
         msgObj["isSelf"] = msg.isSelf;
+        msgObj["ref_name"] = msg.ref_name;
+        msgObj["ref_msg"] = msg.ref_msg;
         messagesArray.append(msgObj);
     }
 

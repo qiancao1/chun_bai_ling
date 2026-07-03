@@ -47,6 +47,7 @@ private:
 
     QCheckBox* m_arkCheckBox;
     QCheckBox* m_markdownCheckBox;
+    QCheckBox* m_markdownCheckBox_pd,*m_markdownCheckBox_pd_mb;
     // 动态配置区域
     QStackedWidget *m_stackedConfig;
     QWidget *m_wsConfigWidget;

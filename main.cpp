@@ -180,7 +180,12 @@ qint64 g_totalRuntime=0;
 QString webhook_sig(const QJsonObject &obj, const QString &secret);
 
 int main(int argc, char *argv[]) {
-
+    //自适应
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+    QApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough
+        );
 
     qputenv("QT_DEBUG_PLUGINS", "1");
     SetUnhandledExceptionFilter(CrashHandler);

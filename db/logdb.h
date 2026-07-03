@@ -41,7 +41,7 @@ public:
 
     // 修改指定 key 对应的 Message
     bool updateLog(const QString &appid, const QString &groupId, uint64_t seq, const Message &msg);
-
+    bool updateLog(const QString &keyStr, const Message &msg);
     // 读取指定 key 对应的 Message
     bool readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const;
     bool readLog(const QString &keyStr, Message &msg) const;

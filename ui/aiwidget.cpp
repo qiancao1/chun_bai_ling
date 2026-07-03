@@ -26,6 +26,8 @@
 #include <qbuffer.h>
 #include <qimagereader.h>
 #include <qnetworkreply.h>
+#include <QRandomGenerator>
+
 bool 不加载=false;
 
 QString 拟人人设_助手=R"(
@@ -350,8 +352,6 @@ void AiWidget::setupUi()
     mainLayout->addWidget(tabWidget, 0, 1);
 
 
-
-
     // ==================== 首页 (tab 1) ====================
     QWidget *tab1 = new QWidget(this);
     tabWidget->addTab(tab1, "首页");
@@ -374,11 +374,11 @@ void AiWidget::setupUi()
     chkGroupChat     = new QCheckBox("群聊", tab1);
     chkGroupPersonal = new QCheckBox("群个人", tab1);
     chkPrivateChat   = new QCheckBox("私聊", tab1);
-    chkNameTrigger   = new QCheckBox("名字触发", tab1);
     chkChannel       = new QCheckBox("频道", tab1);
     chkAtTrigger     = new QCheckBox("艾特触发", tab1);
     chkChannelPersonal= new QCheckBox("频道个人", tab1);
     chkImageRec      = new QCheckBox("识图", tab1);
+    向量数据库      = new QCheckBox("向量数据库", tab1);
     chkniren      = new QCheckBox("拟人(@咸鱼王)", tab1);
 
     hboxChecks->addWidget(chkGroupChat);
@@ -386,45 +386,41 @@ void AiWidget::setupUi()
     hboxChecks->addWidget(chkPrivateChat);
     hboxChecks->addWidget(chkChannel);
     hboxChecks->addWidget(chkChannelPersonal);
-    hboxChecks->addWidget(chkNameTrigger);
+
     hboxChecks->addWidget(chkAtTrigger);
     hboxChecks->addWidget(chkImageRec);
+    hboxChecks->addWidget(向量数据库);
     hboxChecks->addWidget(chkniren);
 
     btnSaveRobot = new QPushButton("保存机器人", tab1);
     hboxChecks->addWidget(btnSaveRobot);
     rightLayout->addLayout(hboxChecks);
+    QGridLayout *hboxChecks2 = new QGridLayout();
 
-    QHBoxLayout *hboxChecks2 = new QHBoxLayout();
     hboxChecks2->setSpacing(2);
-    feibaimd     = new QCheckBox("白名单模式", tab1);
-    hboxChecks2->addWidget(feibaimd);
-
+    feibaimd     = new QCheckBox("白名单", tab1);
     set_qy = new QLineEdit(tab1);
     set_qy->setPlaceholderText("设置ai白名单模式 1");
-    hboxChecks2->addWidget(set_qy);
-
-    hboxChecks2->addWidget(new QLabel("设置白名单指令：", tab1));
     set_zl = new QLineEdit(tab1);
     set_zl->setPlaceholderText("添加ai白名单");
-    hboxChecks2->addWidget(set_zl);
-    hboxChecks2->addWidget(new QLabel("删除白名单指令：", tab1));
     set_sc = new QLineEdit(tab1);
     set_sc->setPlaceholderText("删除ai白名单");
-    hboxChecks2->addWidget(set_sc);
 
+    set_sjhf= new QLineEdit(tab1);
+    set_递增概率 = new QLineEdit(tab1);
+    set_固定条数 = new QLineEdit(tab1);
+    set_sjhf->setPlaceholderText("25");
+    set_递增概率->setPlaceholderText("5");
+    set_固定条数->setPlaceholderText("5");
 
-    rightLayout->addLayout(hboxChecks2);
-
-
-    // 第二行：机器人详细信息（网格）
-    QGridLayout *gridDetails = new QGridLayout();
-    gridDetails->setSpacing(2);
-    gridDetails->setContentsMargins(2, 2, 2, 2);
-
+    //========================
     lblRobotName = new QLabel("昵称：", tab1);
-    lblRobotName->setMaximumSize(50, 16777215);
+    //lblRobotName->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     editRobotName = new QLineEdit(tab1);
+    lblContext = new QLabel("上下文：", tab1);
+    editContext = new QLineEdit(tab1);
+    combo_xiangliang = new QComboBox(tab1);
+    //========================
     lblModel = new QLabel("模型：", tab1);
     comboModel = new QComboBox(tab1);
     lblSetting = new QLabel("设定：", tab1);
@@ -432,43 +428,52 @@ void AiWidget::setupUi()
     lblPplx = new QLabel("匹配类型：", tab1);
     comboPplx = new QComboBox(tab1);
     comboPplx->addItems(QStringList() << "不匹配昵称" << "信息包含" << "信息头");
-
-    gridDetails->addWidget(lblRobotName, 0, 0);
-    gridDetails->addWidget(editRobotName, 0, 1);
-    gridDetails->addWidget(lblModel, 0, 2);
-    gridDetails->addWidget(comboModel, 0, 3);
-    gridDetails->addWidget(lblSetting, 0, 4);
-    gridDetails->addWidget(comboSetting, 0, 5);
-    gridDetails->addWidget(lblPplx, 0, 6);
-    gridDetails->addWidget(comboPplx, 0, 7);
-
-    lblContext = new QLabel("上下文：", tab1);
-    editContext = new QLineEdit(tab1);
-    lblNoReplySeconds = new QLabel("N秒没回复：", tab1);
+    //========================
+    lblNoReplySeconds = new QLabel("N秒没回复", tab1);
     editNoReplySeconds = new QLineEdit(tab1);
     lblNoReplyMinutes = new QLabel("N分钟没回复", tab1);
     editNoReplyMinutes = new QLineEdit(tab1);
-    lblDelayReply = new QLabel("延迟回复(秒)：", tab1);
+    lblDelayReply = new QLabel("延迟回复(秒)", tab1);
     editDelayReply = new QLineEdit(tab1);
 
-    // 标签右对齐
-    lblRobotName->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    lblModel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    lblSetting->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    lblContext->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    hboxChecks2->addWidget(lblRobotName, 0, 0);
+    hboxChecks2->addWidget(editRobotName, 0, 1);
+    hboxChecks2->addWidget(lblContext, 0, 2);
+    hboxChecks2->addWidget(editContext, 0, 3);
+    hboxChecks2->addWidget(new QLabel("向量模型", tab1), 0, 4);
+    hboxChecks2->addWidget(combo_xiangliang, 0, 5);
 
-    gridDetails->addWidget(lblContext, 1, 0);
-    gridDetails->addWidget(editContext, 1, 1);
-    gridDetails->addWidget(lblNoReplySeconds, 1, 2);
-    gridDetails->addWidget(editNoReplySeconds, 1, 3);
-    gridDetails->addWidget(lblNoReplyMinutes, 1, 4);
-    gridDetails->addWidget(editNoReplyMinutes, 1, 5);
-    gridDetails->addWidget(lblDelayReply, 1, 6);
-    gridDetails->addWidget(editDelayReply, 1, 7);
 
-    rightLayout->addLayout(gridDetails);
+    hboxChecks2->addWidget(lblModel, 1, 0);
+    hboxChecks2->addWidget(comboModel, 1, 1);
+    hboxChecks2->addWidget(lblSetting,1, 2);
+    hboxChecks2->addWidget(comboSetting, 1, 3);
+    hboxChecks2->addWidget(lblPplx, 1, 4);
+    hboxChecks2->addWidget(comboPplx, 1, 5);
 
-    // 第三行：全局设定列表 + 编辑框
+    hboxChecks2->addWidget(feibaimd,2,0);
+    hboxChecks2->addWidget(set_qy,2,1);
+    hboxChecks2->addWidget(new QLabel("设置白名单", tab1),2,2);
+    hboxChecks2->addWidget(set_zl,2,3);
+    hboxChecks2->addWidget(new QLabel("删除白名单", tab1),2,4);
+    hboxChecks2->addWidget(set_sc,2,5);
+
+    hboxChecks2->addWidget(new QLabel("随机回复", tab1),3,0);
+    hboxChecks2->addWidget(set_sjhf,3,1);
+    hboxChecks2->addWidget(new QLabel("递增概率", tab1),3,2);
+    hboxChecks2->addWidget(set_递增概率,3,3);
+    hboxChecks2->addWidget(new QLabel("固定条数", tab1),3,4);
+    hboxChecks2->addWidget(set_固定条数,3,5);
+
+    hboxChecks2->addWidget(lblNoReplySeconds, 4, 0);
+    hboxChecks2->addWidget(editNoReplySeconds, 4, 1);
+    hboxChecks2->addWidget(lblNoReplyMinutes,4, 2);
+    hboxChecks2->addWidget(editNoReplyMinutes, 4, 3);
+    hboxChecks2->addWidget(lblDelayReply, 4, 4);
+    hboxChecks2->addWidget(editDelayReply, 4, 5);
+
+    rightLayout->addLayout(hboxChecks2);
+
     QHBoxLayout *hboxSettings = new QHBoxLayout();
     hboxSettings->setSpacing(2);
     settingListWidget = new QListWidget(tab1);
@@ -478,7 +483,7 @@ void AiWidget::setupUi()
     hboxSettings->addWidget(settingTextEdit);
     rightLayout->addLayout(hboxSettings);
 
-    // 第四行：设定名 + 添加/删除按钮
+
     QHBoxLayout *hboxButtons = new QHBoxLayout();
     hboxButtons->setSpacing(2);
     hboxButtons->setContentsMargins(2, 2, 2, 2);
@@ -494,7 +499,6 @@ void AiWidget::setupUi()
     hboxButtons->addWidget(btnDeleteSetting);
     rightLayout->addLayout(hboxButtons);
 
-    // 因为左侧列表已经移走，现在 tab1 的网格只需要放右半部分即可
     grid1->addLayout(rightLayout, 0, 0);
 
     // ==================== 模型配置 (tab 2) ====================
@@ -829,6 +833,7 @@ void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
 {
     editRobotName->setText(acc->Ai_nickname);
     comboModel->setCurrentText(acc->model);
+    combo_xiangliang->setCurrentText(acc->Embed_model);
     comboPplx->setCurrentIndex(acc->pplx);
     int idx = comboSetting->findText(acc->setting);
     comboSetting->setCurrentIndex(idx >= 0 ? idx : -1);
@@ -839,29 +844,41 @@ void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
     chkGroupChat->setChecked(acc->enableGroupChat);
     chkGroupPersonal->setChecked(acc->enableGroupPersonal);
     chkPrivateChat->setChecked(acc->enablePrivateChat);
-    chkNameTrigger->setChecked(acc->nameTrigger);
+
     chkChannel->setChecked(acc->enableChannel);
     chkAtTrigger->setChecked(acc->atTrigger);
     chkChannelPersonal->setChecked(acc->enableChannelPersonal);
     chkImageRec->setChecked(acc->enableImageRec);
+    向量数据库->setChecked(acc->xiangliang);
     chkniren->setChecked(acc->niren);
     set_zl->setText(acc->bai_sr);
     set_sc->setText(acc->bai_sc);
     feibaimd->setChecked(acc->e_bai);
     set_qy->setText(acc->bai_qy);
-
+    set_固定条数->setText(QString::number(acc->固定条数));
+    set_sjhf->setText(QString::number(acc->触发概率));
+    set_递增概率->setText(QString::number(acc->递增概率));
 }
 void AiWidget::刷新模型()
 {
+    ai_fujia->initmode(modelList);
+    emit modelListUpdated(); // 发出通知！告诉所有新开窗口刷新
     QString currentText = comboModel->currentText();  // 假设 comboModel 是 QComboBox*
     comboModel->clear();
+    combo_xiangliang->clear();
     for (const auto &m : std::as_const(modelList))
     {
+        combo_xiangliang->addItem(m.name);
         comboModel->addItem(m.name);
     }
     int index = comboModel->findText(currentText);
     if (index != -1)
         comboModel->setCurrentIndex(index);
+
+    index = combo_xiangliang->findText(currentText);
+    if (index != -1)
+        combo_xiangliang->setCurrentIndex(index);
+
 }
 
 void AiWidget::refreshSettingList()
@@ -933,6 +950,7 @@ void AiWidget::on_btnSaveRobot_clicked()
         if(acc->appid_int != g_appid) continue;
         acc->Ai_nickname = editRobotName->text().trimmed();
         acc->model = comboModel->currentText();
+        acc->Embed_model = combo_xiangliang->currentText();
         acc->pplx = comboPplx->currentIndex();
         acc->setting = comboSetting->currentText();
         acc->context_len = editContext->text().toInt();
@@ -942,16 +960,23 @@ void AiWidget::on_btnSaveRobot_clicked()
         acc->enableGroupChat = chkGroupChat->isChecked();
         acc->enableGroupPersonal = chkGroupPersonal->isChecked();
         acc->enablePrivateChat = chkPrivateChat->isChecked();
-        acc->nameTrigger = chkNameTrigger->isChecked();
+
         acc->enableChannel = chkChannel->isChecked();
         acc->atTrigger = chkAtTrigger->isChecked();
         acc->enableChannelPersonal = chkChannelPersonal->isChecked();
         acc->enableImageRec = chkImageRec->isChecked();
+        acc->xiangliang = 向量数据库->isChecked();
         acc->niren = chkniren->isChecked();
         acc->bai_sr = set_zl->text();
         acc->bai_sc = set_sc->text();
         acc->e_bai = feibaimd->isChecked();
         acc->bai_qy = set_qy->text();
+
+
+        acc->固定条数 = set_固定条数->text().toInt();
+        acc->触发概率 = set_sjhf->text().toInt();
+        acc->递增概率 = set_递增概率->text().toInt();
+
         accountPage->saveAccounts(acc.get());
         return;
     }
@@ -1266,7 +1291,7 @@ void AiWidget::onmodelListTableCellChanged(int row, int column) {
     auto &iface = modelList[row];
     iface.name = newText;
     刷新模型();
-    ai_fujia->initmode(modelList);
+
     saveToFile2();
 }
 
@@ -1282,7 +1307,7 @@ void AiWidget::onModelAdd() {
     modelListTable->setItem(row, 0, new QTableWidgetItem(newModel.name));
     modelListTable->selectRow(row);
     刷新模型();
-    ai_fujia->initmode(modelList);
+
     saveToFile2();
 }
 
@@ -1304,7 +1329,7 @@ void AiWidget::onModelDelete() {
         currentInterfaceRow = -1;
     }
     刷新模型();
-    ai_fujia->initmode(modelList);
+
     saveToFile2();
 }
 void AiWidget::onModelCurrentCellChanged(int currentRow, int currentCol,
@@ -1888,7 +1913,7 @@ QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const
     }else if(tool_name=="redings")
     {
         res = schedule->remov_ds_byai(ev.appid,p1.toInt());
-    }else if(tool_name == "llwye")
+    }else if(tool_name == "byss")
     {
         int y = obj["p2"].toInt();
         if(y<=0) y=1;
@@ -2380,59 +2405,6 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
     emit newMessageArrived(info, ev,false,false);
     return QString(); // 立即返回
 }
-
-// ========== 主线程处理消息（延迟合并） ==========
-void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool notime)
-{
-    // 计算 openid
-    QString openid;
-    switch (ev.type) {
-    case 0: openid = info->enableGroupPersonal ? ev.groupId : ev.user; break;
-    case 1: openid = info->enableChannelPersonal ? ev.groupId : ev.user; break;
-    case 2: openid = ev.groupId; break;
-    default: return;
-    }
-
-    auto &session = m_sessions[openid];
-    if (!session.timer) {
-        session.timer = new QTimer(this);
-        session.timer->setSingleShot(true);
-        connect(session.timer, &QTimer::timeout, this, [this, openid]() {
-            flushPendingMessages(openid,false);
-        });
-    }
-    if(!send)
-    {
-        PendingMessage pm;
-        if(info->enableImageRec) pm = parseImageTagsAndDownload(ev.msg);
-        else pm.text = ev.msg;
-
-        QDateTime now = QDateTime::currentDateTime();
-        pm.text = QString("[Time:%1|UID:%2|Username:%3] 说:%4").arg(now.toString("yyyy-MM-dd HH:mm:ss")).arg(ev.user_int).arg(ev.nickname,pm.text);
-        session.pendingMessages.append(pm);
-    }
-    session.baseContext = buildBaseContext(info,ev.groupId, openid,ev.type);
-    session.appid = ev.appid;
-    session.type = ev.type;
-    session.groupId = ev.groupId;
-    session.msgId = ev.msgId;
-    session.accountInfo = info;
-    session.openid = openid;
-    if (session.isProcessing) {
-        return;
-    }
-    if(notime){
-        flushPendingMessages(openid,send);
-        return;
-    }
-    int delayMs = info->delayReplySeconds * 1000;
-    if (delayMs <= 0) delayMs = 1000;
-
-    session.timer->start(delayMs);
-    session.dslx=0;
-    qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
-}
-
 void AiWidget::trimContextByMessageCount(QJsonObject &context, int maxMessages)
 {
     if (!context.contains("messages") || !context["messages"].isArray())
@@ -2466,34 +2438,99 @@ void AiWidget::trimContextByMessageCount(QJsonObject &context, int maxMessages)
     context["messages"] = finalMsgs;
 }
 
+// ========== 主线程处理消息（延迟合并） ==========
+void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool notime)
+{
+    // 计算 openid
+    QString openid;
+    switch (ev.type) {
+    case 0: openid = info->enableGroupPersonal ? ev.groupId : ev.user; break;
+    case 1: openid = info->enableChannelPersonal ? ev.groupId : ev.user; break;
+    case 2: openid = ev.groupId; break;
+    default: return;
+    }
+
+    auto &session = m_sessions[openid];
+    if (!session.timer) {
+        session.sjs = info->触发概率;
+        session.timer = new QTimer(this);
+        session.timer->setSingleShot(true);
+        connect(session.timer, &QTimer::timeout, this, [this, openid]() {
+
+            flushPendingMessages(openid,false);
+        });
+    }
+    if(!send)
+    {
+        PendingMessage pm;
+        if(info->enableImageRec) pm = parseImageTagsAndDownload(ev.msg);
+        else pm.text = ev.msg;
+
+        QDateTime now = QDateTime::currentDateTime();
+        pm.text = QString("[Time:%1|UID:%2|Username:%3] 说:%4").arg(now.toString("yyyy-MM-dd HH:mm:ss")).arg(ev.user_int).arg(ev.nickname,pm.text);
+        session.pendingMessages.append(pm);
+    }
+    //session.baseContext = buildBaseContext(info,ev.groupId, openid,ev.type);
+    session.appid = ev.appid;
+    session.type = ev.type;
+    session.groupId = ev.groupId;
+    session.msgId = ev.msgId;
+    session.accountInfo = info;
+    session.openid = openid;
+    if (session.isProcessing) {
+        return;
+    }
+    session.ts++;
+    if(session.ts>=info->固定条数)
+    {
+
+    }else if(session.sjs!=0 && session.sjs < QRandomGenerator::global()->bounded(100))//随机数
+    {
+        session.sjs  +=  info->递增概率;
+        return ;
+    }
+    if(notime){
+        flushPendingMessages(openid,send);
+        return;
+    }
+    int delayMs = info->delayReplySeconds * 1000;
+    if (delayMs <= 0) delayMs = 1000;
+
+    session.timer->start(delayMs);
+    session.dslx=0;
+    qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
+}
+
+
 void AiWidget::flushPendingMessages(const QString &openid,bool send)
 {
     auto &session = m_sessions[openid];
+    //session.baseContext 改为下面
+    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
     if(!send){
         if (session.pendingMessages.isEmpty())
             return;
 
         for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
-            appendPendingMessageToContext(session.baseContext, pm);
+            appendPendingMessageToContext(baseContext, pm);
         }
         session.pendingMessages.clear();
     }
 
 
-    trimContextImages(session.baseContext, 6);//处理图片
-    trimToolResponses(session.baseContext, 5, 64);
+    trimContextImages(baseContext, 6);//处理图片
+    trimToolResponses(baseContext, 5, 64);
     if(session.accountInfo->context_len<5)
         session.accountInfo->context_len=5;
-    trimContextByMessageCount(session.baseContext, session.accountInfo->context_len); //限制上下文
-
-    QJsonObject requestContext = session.baseContext;
-
+    trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
 
     int oldMsgCount = 0;
-    if (requestContext.contains("messages") && requestContext["messages"].isArray()) {
-        oldMsgCount = requestContext["messages"].toArray().size();
+    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
+        oldMsgCount = baseContext["messages"].toArray().size();
     }
-    convertContextImagesToBase64(requestContext);
+    convertContextImagesToBase64(baseContext);
+
+
     session.isProcessing = true;
 
     // 构造空 MessageEvent
@@ -2524,10 +2561,70 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         return;
     }
 
+    if(session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()){
+        QString collectionName = "memories_" + openid;
+        QString err;
+        if (!m_qdrantClient->createCollection(collectionName, 384, "Cosine", &err)) {
+            if (!err.contains("already exists")) {
+                qWarning() << "创建集合失败:" << err;
+            }
+        }
+        QString lastUserMsg;
+        QJsonArray msgs = baseContext["messages"].toArray(); // mutableContext 是你要传给 Ai_posts 的上下文
+        for (int i = msgs.size() - 1; i >= 0; --i) {
+            if (msgs[i].toObject()["role"].toString() == "user") {
+                lastUserMsg = msgs[i].toObject()["content"].toString();
+                break;
+            }
+        }
+        if (!lastUserMsg.isEmpty()) {
+            QVector<double> queryVec;
+            for (int i : std::as_const(modelList[model_index].enabledInterfaceIndices)){
+                if(globalInterfaces[i].keys.size()==0)
+                {
+                    queryVec = getEmbedding(lastUserMsg,globalInterfaces[i].url,session.accountInfo->Embed_model,QString());
+                }else{
+                    for(const auto &key : std::as_const(globalInterfaces[i].keys)){
+                        if(!key.enabled) continue;
+                        queryVec = getEmbedding(lastUserMsg,globalInterfaces[i].url,session.accountInfo->Embed_model,key.key);
+                    }
+                }
+                if (!queryVec.isEmpty()) break;
+            }
+
+            if (!queryVec.isEmpty()) {
+                QJsonArray results = m_qdrantClient->search(collectionName, queryVec, 3, &err);
+                if (err.isEmpty() && !results.isEmpty()) {
+                    // 拼成一段文本
+                    QString memoryText = "【用户历史信息】\n";
+                    for (const QJsonValue &val : std::as_const(results)) {
+                        QJsonObject payload = val.toObject().value("payload").toObject();
+                        memoryText += "- " + payload["fact"].toString() + "\n";
+                    }
+                    // 插入到 messages 最前面（作为 system 消息）
+                    QJsonArray newMsgs = baseContext["messages"].toArray();
+                    QJsonObject sysMsg;
+                    sysMsg["role"] = "system";
+                    sysMsg["content"] = memoryText;
+                    // 如果已有 system 消息，合并；否则插入最前面
+                    if (!newMsgs.isEmpty() && newMsgs[0].toObject()["role"].toString() == "system") {
+                        QJsonObject existing = newMsgs[0].toObject();
+                        existing["content"] = existing["content"].toString() + "\n\n" + memoryText;
+                        newMsgs[0] = existing;
+                    } else {
+                        newMsgs.prepend(sysMsg);
+                    }
+                    baseContext["messages"] = newMsgs;
+                }
+            }
+        }
+    }
+
+
     int timeoutMs = 30000;
 
-    QThreadPool::globalInstance()->start([this, ev, model_index, requestContext, oldMsgCount, timeoutMs, openid]() {
-        QJsonObject mutableContext = requestContext;
+    QThreadPool::globalInstance()->start([this, ev, model_index, baseContext, oldMsgCount, timeoutMs, openid]() {
+        QJsonObject mutableContext = baseContext;
         int startIndex = m_modelStartIndex;
         QString reply = Ai_posts(ev, startIndex, model_index, mutableContext, timeoutMs);
         int newStartIndex = startIndex;
@@ -2580,22 +2677,24 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         return;
 
     auto &session = *it;
+    session.sjs = session.accountInfo->触发概率;
     session.isProcessing = false;
-
+    //session.baseContext 改为下面
+    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
     if (updatedContext.contains("messages") && updatedContext["messages"].isArray()) {
         QJsonArray newMsgs = updatedContext["messages"].toArray();
-        QJsonArray baseMsgs = session.baseContext["messages"].toArray();
+        QJsonArray baseMsgs = baseContext["messages"].toArray();//这个代码 主要作用是 区分原文和 用于请求的 上下文 因为上下文包含b64图片 原文没有
         if (newMsgs.size() > oldMsgCount) {
 
             for (int i = oldMsgCount; i < newMsgs.size(); ++i) {
                 baseMsgs.append(newMsgs[i]);
             }
-            session.baseContext["messages"] = baseMsgs;
+            baseContext["messages"] = baseMsgs;
         }
     }
 
-    // ---- 保存上下文到数据库（使用 session.baseContext，含本地路径） ----
-    QJsonObject savedContext = session.baseContext;
+    // ---- 保存上下文到数据库（使用 baseContext，含本地路径） ----
+    QJsonObject savedContext = baseContext;
     if (savedContext.contains("tools"))
         savedContext.remove("tools");
     if (savedContext.contains("messages") && savedContext["messages"].isArray()) {
@@ -2614,6 +2713,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
     {
         return ;
     }
+    session.duihts++;
     if (!session.pendingMessages.isEmpty()) {
         flushPendingMessages(openid,false);
     }else if(session.dslx==0 && session.accountInfo->nSecondsNoReply>0){
@@ -2631,7 +2731,116 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         session.pendingMessages.append(pm);
         session.timer->start(session.accountInfo->nMinutesNoReply*60*1000);
     }
+    if(!session.accountInfo->xiangliang) return;
+    if (session.duihts % 5 == 0 && !reply.isEmpty()) {
+        // 用 AI 提取事实
+        if(session.accountInfo->Embed_model.isEmpty()) return;
+        trimContextByMessageCount(baseContext,10); //限制上下文
+
+        QJsonArray newMsgs = baseContext["messages"].toArray();
+        newMsgs.removeAt(0); //移除系统提示词
+        QString prompt = "从对话中提取关于用户的事实，每条一句话，返回 JSON 数组：\n" +
+                         QString(QJsonDocument(newMsgs).toJson());
+
+        QThreadPool::globalInstance()->start([this,acc = session.accountInfo, prompt, openid]() {
+
+            QString response = ai_ui->Ai_post(acc->model, prompt, 60000);
+            if (response.isEmpty()) return;
+
+            QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+            if (!doc.isArray()) {
+                qWarning() << "提取的事实不是JSON数组";
+                return;
+            }
+            QJsonArray facts = doc.array();
+
+            QJsonArray pointsToInsert;
+            QString err;
+            QString model = acc->Embed_model;
+            int model_index=0;
+            bool ok=false;
+            for (model_index=0;model_index<modelList.size();model_index++){
+                if(modelList[model_index].name==model) {
+                    ok =true;
+                    break;
+                }
+            }
+            for (const QJsonValue &val : std::as_const(facts)) {
+                QString fact = val.toString();
+                if (fact.trimmed().isEmpty()) continue;
+
+
+                QVector<double> vec;
+                for (int i : std::as_const(modelList[model_index].enabledInterfaceIndices)){
+                    if(globalInterfaces[i].keys.size()==0)
+                    {
+                        vec = getEmbedding(fact,globalInterfaces[i].url,acc->Embed_model,QString());
+                    }else{
+                        for(const auto &key : std::as_const(globalInterfaces[i].keys)){
+                            if(!key.enabled) continue;
+                            vec = getEmbedding(fact,globalInterfaces[i].url,acc->Embed_model,key.key);
+                        }
+                    }
+                    if (!vec.isEmpty()) break;
+                }
+                if (vec.isEmpty()) continue;
+                double threshold = 0.85; // 相似度阈值，可调整
+                QJsonArray searchResults = m_qdrantClient->search(
+                    "memories_" + openid,
+                    vec,
+                    1,  // 只查1条
+                    &err
+                    );
+
+                bool isDuplicate = false;
+                if (err.isEmpty() && !searchResults.isEmpty()) {
+                    QJsonObject firstResult = searchResults[0].toObject();
+                    double score = firstResult["score"].toDouble(); // Qdrant 返回的相似度分数
+                    if (score >= threshold) {
+                        isDuplicate = true;
+                        qDebug() << "跳过重复事实:" << fact << "相似度:" << score;
+                    }
+                }
+
+                // 3. 如果不是重复，加入待插入列表
+                if (!isDuplicate) {
+                    QJsonObject point;
+                    // 用 MD5 做 ID（作为精确去重的补充）
+                    QByteArray hash = QCryptographicHash::hash(fact.toUtf8(), QCryptographicHash::Md5);
+                    QString hex = hash.toHex();
+                    point["id"] = hex;
+
+                    QJsonArray vecArr;
+                    for (double v : std::as_const(vec)) vecArr.append(v);
+                    point["vector"] = vecArr;
+
+                    QJsonObject payload;
+                    payload["fact"] = fact;
+                    payload["time"] = QDateTime::currentSecsSinceEpoch();
+                    point["payload"] = payload;
+
+                    pointsToInsert.append(point);
+                }
+            }
+
+            // 4. 只插入不重复的事实
+            if (!pointsToInsert.isEmpty()) {
+                if (!m_qdrantClient->upsertPoints("memories_" + openid, pointsToInsert, &err)) {
+                    qWarning() << "存储记忆失败:" << err;
+                } else {
+                    qDebug() << "成功插入" << pointsToInsert.size() << "条新事实";
+                }
+            } else {
+                qDebug() << "没有新事实需要插入";
+            }
+        });
+
+    }
+
+
 }
+
+
 QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs)
 {
 
@@ -2786,6 +2995,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
     }
     return QString();
 }
+
 //============
 QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
 {
@@ -2859,9 +3069,6 @@ QByteArray AiWidget::Ai_post(const QString &url,const QString &key, QJsonObject 
 
 
 
-
-
-
 QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
@@ -2917,3 +3124,117 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 
 }
 
+QByteArray AiWidget::syncHttpPost(const QUrl &url, const QJsonDocument &payload, int timeoutMs)
+{
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkAccessManager nam;
+    QNetworkReply *reply = nam.post(request, payload.toJson());
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
+
+    QByteArray response;
+    if (timer.isActive()) {
+        timer.stop();
+        if (reply->error() == QNetworkReply::NoError) {
+            response = reply->readAll();
+        } else {
+            qWarning() << "HTTP请求失败:" << reply->errorString();
+        }
+    } else {
+        reply->abort();
+        qWarning() << "HTTP请求超时";
+    }
+    reply->deleteLater();
+    return response;
+}
+QVector<double> AiWidget::getEmbedding(const QString &text, const QString &url2, const QString &model, const QString &key)
+{
+    QVector<double> result;
+    QUrl url(url2);
+
+    // 1. 构造请求体（兼容 Ollama 格式，大部分本地服务都支持）
+    QJsonObject body;
+    body["model"] = model;
+    QJsonArray inputs;
+    inputs.append(text);
+    body["input"] = inputs;  // Ollama 标准字段
+
+    // 2. 发送请求
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    // 【关键修复】如果提供了 Key，加入 Authorization 头
+    if (!key.isEmpty()) {
+        request.setRawHeader("Authorization", QString("Bearer " + key).toUtf8());
+    }
+
+    QNetworkAccessManager nam;
+    QNetworkReply *reply = nam.post(request, QJsonDocument(body).toJson());
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(30000);
+    loop.exec();
+
+    QByteArray response;
+    if (timer.isActive()) {
+        timer.stop();
+        if (reply->error() == QNetworkReply::NoError) {
+            response = reply->readAll();
+        } else {
+            qWarning() << "嵌入请求失败:" << reply->errorString();
+            reply->deleteLater();
+            return result;
+        }
+    } else {
+        reply->abort();
+        qWarning() << "嵌入请求超时";
+        reply->deleteLater();
+        return result;
+    }
+    reply->deleteLater();
+
+    // 3. 【关键修复】兼容多种返回格式
+    QJsonDocument doc = QJsonDocument::fromJson(response);
+    if (doc.isNull()) return result;
+
+    QJsonObject obj = doc.object();
+    QJsonArray vecArr;
+
+
+    if (obj.contains("embeddings") && obj["embeddings"].isArray()) {
+        QJsonArray embeddings = obj["embeddings"].toArray();
+        if (!embeddings.isEmpty()) {
+            vecArr = embeddings[0].toArray();
+        }
+    }
+
+    else if (obj.contains("data") && obj["data"].isArray()) {
+        QJsonArray data = obj["data"].toArray();
+        if (!data.isEmpty()) {
+            vecArr = data[0].toObject()["embedding"].toArray();
+        }
+    }
+
+    if (vecArr.isEmpty()) {
+        AppendEventLog("无法解析嵌入向量，响应内容:" + response.left(200),0xff);
+        return result;
+    }
+
+    result.reserve(vecArr.size());
+    for (const QJsonValue &v : vecArr) {
+        result.append(v.toDouble());
+    }
+    return result;
+}

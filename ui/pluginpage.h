@@ -23,6 +23,21 @@ class PluginManager;   // 前置声明
 
 
 namespace py = pybind11;
+enum class MatchType {
+    Equals,
+    StartsWith,
+    EndsWith,
+    Contains,
+    Regex
+};
+
+struct Rule {
+    MatchType type;
+    QString key;            // 匹配值
+    py::object function;    // 已解析的 Python 可调用对象
+    bool caseSensitive = true;
+    QRegularExpression regex;   // 多线程安全，只读使用
+};
 
 struct PythonPluginobj {
     //py::dict globals;
@@ -32,6 +47,9 @@ struct PythonPluginobj {
     py::object onEnable;                 // 启用时调用
     py::object onDisable;                // 禁用时调用
     py::object onUnload;                 // 卸载前调用
+    QList<Rule> rules;      // 所有规则列表（替代原来的 equals hash）
+
+
 };
 struct JsPlugin {
     QProcess* process = nullptr;
@@ -155,7 +173,7 @@ private:
     QTextBrowser *detailDescLabel;
     QLabel *detailStatusLabel;
     QListWidget *rightCheckList;
-    QPushButton *pypip;
+    QPushButton *pypip,*ai_c_j;
 
     QPushButton *loadBtn;
     QPushButton *addPluginBtn;   // 顶部按钮

@@ -307,7 +307,84 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
         break;
     }
 }
+void tiqfuj(const QJsonObject &d ,QString &msg){
+    QString extraInfo;
 
+    const QJsonArray attachments = d["attachments"].toArray();
+
+
+    int i = 0;
+    for (const QJsonValue &attVal : attachments) {
+        QJsonObject att = attVal.toObject();
+        QString contentType = att["content_type"].toString();
+        QString filename = att["filename"].toString();
+        int size = att["size"].toDouble();
+        QString url = att["url"].toString();
+
+        // 构建前缀部分（不变）
+        QString prefix;
+        if (contentType.contains("image")) {
+            int height = att["height"].toDouble();
+            int width = att["width"].toDouble();
+            prefix = QString("[image,height=%1,width=%2,name=").arg(height).arg(width);
+        } else if (contentType.contains("file")) {
+            prefix = "[file,name=";
+        } else if (contentType.contains("voice")) {
+            prefix = "[audio,name=";
+        } else if (contentType.contains("video")) {
+            prefix = "[video,name=";
+        } else {
+            prefix = "[unknown,name=";
+        }
+
+        // ---- 高效提取 ext 中的 text ----
+        QString text;
+        // 构建当前 i 对应的标记前缀（固定格式，无需正则）
+        QString markerPrefix = QString("<faceType=6,faceId=\"%1\",ext=\"").arg(i);
+        int startPos = msg.indexOf(markerPrefix);
+        if (startPos != -1) {
+            int extStart = startPos + markerPrefix.length();           // ext 值的起始位置
+            int extEnd = msg.indexOf("\">", extStart);             // 找到结束的 ">
+            if (extEnd != -1) {
+                QString extBase64 = msg.mid(extStart, extEnd - extStart);
+                QByteArray decoded = QByteArray::fromBase64(extBase64.toUtf8());
+                QJsonDocument doc = QJsonDocument::fromJson(decoded);
+                if (!doc.isNull() && doc.isObject()) {
+                    QJsonObject obj = doc.object();
+                    text = obj["text"].toString();
+                }
+
+
+                QString extraInfo = prefix + filename +
+                                    QString(",type=%1,text=%2,size=%3,url=%4]")
+                                        .arg(contentType)
+                                        .arg(text)
+                                        .arg(size)
+                                        .arg(url);
+
+
+                msg.replace(startPos, extEnd + 2 - startPos, extraInfo);
+                i++;  // 只有成功替换后才递增
+            }else{
+                QString extraInfo = prefix + filename +
+                                    QString(",type=%1,size=%2,url=%3]")
+                                        .arg(contentType)
+                                        .arg(size)
+                                        .arg(url);
+                msg+=extraInfo;
+            }
+        }else{
+            QString extraInfo = prefix + filename +
+                                QString(",type=%1,size=%2,url=%3]")
+                                    .arg(contentType)
+                                    .arg(size)
+                                    .arg(url);
+            msg+=extraInfo;
+        }
+        // 如果未找到，则不递增 i（与原逻辑一致）
+    }
+
+}
 
 void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 {
@@ -407,7 +484,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
         QJsonObject author = d.value("author").toObject();
         ev.user = author.value("union_openid").toString();
-        ev.groupId = author.value("id").toString();
+        ev.groupId = d.value("guild_id").toString();
         if (ev.user.isEmpty()) ev.user = ev.groupId;
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
@@ -680,41 +757,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     if(!ev.fullType) ev.at_you=true; //
     // 解析附件信息（图片、文件、语音、视频等）
-    QString extraInfo;
-
-    const QJsonArray attachments = d["attachments"].toArray();
-    int i=0;
-    for (const QJsonValue &attVal : attachments) {
-        QJsonObject att = attVal.toObject();
-        QString contentType = att["content_type"].toString();
-        QString filename = att["filename"].toString();
-        int size = att["size"].toDouble();
-        QString url = att["url"].toString();
-
-        if (contentType.contains("image")) {
-            int height = att["height"].toDouble();
-            int width = att["width"].toDouble();
-            extraInfo += QString("[image,height=%1,width=%2,name=").arg(height).arg(width);
-        } else if (contentType.contains("file")) {
-            extraInfo += "[file,name=";
-        } else if (contentType.contains("voice")) {
-            extraInfo += "[audio,name=";
-        } else if (contentType.contains("video")) {
-            extraInfo += "[video,name=";
-        } else {
-            extraInfo += "[unknown,name=";
-        }
-
-
-        extraInfo += filename + QString(",type=%1,size=%2,url=%3]").arg(contentType).arg(size).arg(url);
-        QString text=QString(R"(<faceType=6,faceId="%1",ext="eyJ0ZXh0IjoiIn0=">)").arg(i);
-        int index = ev.msg.indexOf(text);
-        if (index != -1) {
-            ev.msg.replace(index, text.length(), extraInfo);
-            extraInfo=QString();
-            i++;
-        }
-    }
+    tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
 
@@ -722,18 +765,35 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
 
     int tabIndex= mapTypeToTabIndex(ev.type);
-    if (!extraInfo.isEmpty()) {
-        ev.msg += extraInfo;   // 若已有其他 extra 内容，可改为 ev.extra += extraInfo;
-    }
+
 
     ev.msg = ev.msg.trimmed();
     logMessageEvent(m_info->nickname,ev);
 
     QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     Message mes{ev.user,ev.msg,false,tiems,"",ev.replyTo,ev.msgId};
+    if(ev.type<4)
+    {
+        const auto& msg_array = d["msg_elements"].toArray();
+        if (msg_array.size() > 0) {
+            const QJsonObject &first_element = msg_array.at(0).toObject();
+            if (!first_element.isEmpty()) {  // 确认是有效对象
+                const auto& author_obj = first_element["author"].toObject();
+                if (!author_obj.isEmpty()) {  // 确认 author 是对象且非空
+                    mes.ref_name = author_obj["username"].toString();
+                } else {
+                    mes.ref_name.clear(); // 无 author 时清空，避免脏数据
+                }
+                mes.ref_msg = first_element["content"].toString(); // content 缺失则为空字符串
+                tiqfuj(first_element,mes.ref_msg);
+            }
+        }
+    }
+
     mes.Color_0 = Color_1;
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
+    mes.seq = ev.log;
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if(ws_server) ws_server->broadcastMessage(mes,ev.appid,ev.type,ev.groupId);
     if(ev.type<=3)
@@ -796,6 +856,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    qDebug() << ev.groupId <<ev.msg;
     Messages(m_info, ev);
     return ;
 }
@@ -1069,7 +1130,35 @@ void QQBotClient::resetReconnectAttempts()
     m_reconnectAttempts = 0;
     m_reconnectTimer.stop();
 }
+QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)
+{
 
+
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,ContentTypeHeader);
+    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
+    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
+
+
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.post(request, jsonData);
+
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();   // 阻塞直到请求完成或超时
+
+    // 5. 处理结果
+    QString response= QString::fromUtf8(reply->readAll());
+
+    reply->deleteLater();
+    return response;
+}
 
 QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int timeoutMs)
 {
@@ -1102,6 +1191,37 @@ QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int time
     reply->deleteLater();
     return response;
 }
+QString QQBotClient::_Get(const QString &url, int timeoutMs)
+{
+
+
+    // 2. 创建请求对象
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
+    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
+
+    // 3. 创建网络管理器（局部变量，在同步阻塞模式下安全）
+    QNetworkAccessManager manager;
+    QNetworkReply *reply = manager.get(request);
+
+    // 4. 同步等待：事件循环 + 超时定时器
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();   // 阻塞直到请求完成或超时
+
+    // 5. 处理结果
+    QString response= QString::fromUtf8(reply->readAll());
+
+    reply->deleteLater();
+    return response;
+}
+
 void QQBotClient::fetchSelfInfo()
 {
     if (!m_info->online) return;

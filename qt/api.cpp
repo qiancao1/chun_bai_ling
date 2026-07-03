@@ -53,7 +53,8 @@ const int API_ID_HTMLIMG1=12;
 const int API_ID_HTMLIMG2=13;
 const int API_ID_DS=14;
 const int API_ID_AI=15;
-
+const int API_ID_GET_MEMBER=16;
+const int API_ID_GET_MEMBER_LIST=17;
 
 QString renderInThread(const QString &htmlContent,int width = 400) ;
 inline QString toQString(const char* s) {
@@ -761,7 +762,34 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         result = ai_ui->Ai_post(text,text2,toInt(_3)).toStdString();
         break;
     }
-
+    case API_ID_GET_MEMBER: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="获取用户信息 参数1 群id不能是空";
+            break;
+        }
+        QString text2 = toQString(_2);
+        if(text2.isEmpty())
+        {
+            result ="获取用户信息 参数2 用户id 内容不能是空";
+            break;
+        }
+        result = client->get_groups_members(text,text2).toStdString();
+        break;
+    }
+    case API_ID_GET_MEMBER_LIST: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="获取用户信息 参数1 群id不能是空";
+            break;
+        }
+        int limit = toInt(_2);
+        if(limit<=0) limit =100;
+        result = client->get_members_list(text,limit).toStdString();
+        break;
+    }
     default:
         result = R"({"error":"Unknown apiId"})";
         break;
@@ -819,6 +847,7 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
     {
         g_logdb[tabIndex]->readLog(m_info->appid,openid,index,msg);
         msg.plugin_ch = deleteid;
+
         if(pname.contains("%1"))
             msg.direction = pname.arg(diff_ms) + text;
         else
@@ -833,12 +862,13 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
         g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
         logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
         msg.isSelf=true;
+        msg.seq = index;
         if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
         return ;
     }
 
-    msg.isSelf=true;
-    msg.ch = deleteid;
+    msg.isSelf = true;
+    msg.plugin_ch = deleteid;
     msg.Color_0 = Color_0;
     if(!ref.isEmpty())
         msg.hf="[ref,msg_idx="+ref+"]";
@@ -856,7 +886,7 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
         msg.Color_0 = 0xff0000;
     }
 
-    g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
+    msg.seq = g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
     logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
     if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
 
@@ -1150,42 +1180,48 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         for (const TagPos &tag : std::as_const(tags)) {
             result.append(QStringView(text).mid(lastPos, tag.start - lastPos));
             QString url = tag.img.urlOrPath;
-            if (url.isEmpty()) {
+            if (!url.isEmpty()) {
+                // 仅对本地非 HTTP 路径处理（需要上传图床或从缓存获取）
+                if (!url.startsWith(QLatin1String("http"))) {
+                    QString fileMd5 = calculateFileMD5(url);
+                    bool cacheHit = false;
+                    QString cachedUrl;
 
-            } else {
-                if (!url.startsWith(QLatin1String("http"))) { //只检查本地图片的 缓存
-                    QString fileMd5=calculateFileMD5(url);
-                    QString fileInfo;
+                    // ---------- 检查缓存（新格式） ----------
                     if (cache_db && !fileMd5.isEmpty()) {
                         QString cacheKey = QString("imageB_%1").arg(fileMd5);
                         QString cached = cache_db->get(cacheKey);
                         if (!cached.isEmpty()) {
-                            int timeIdx = cached.lastIndexOf(",Time=");
-                            if (timeIdx != -1) {
-                                qint64 expire = cached.mid(timeIdx + 6).toLongLong();
-                                if (QDateTime::currentSecsSinceEpoch() < expire) {
-                                    fileInfo = cached.left(timeIdx);
+                            int sepIdx = cached.lastIndexOf("||||");
+                            if (sepIdx != -1) {
+                                qint64 expireTime = cached.left(sepIdx).toLongLong();
+                                cachedUrl = cached.mid(sepIdx + 4);
+                                if (QDateTime::currentSecsSinceEpoch() < expireTime) {
+                                    cacheHit = true;
                                 }
-                            } else {
-                                fileInfo = cached;
                             }
                         }
                     }
-                    if(fileInfo.isEmpty())
-                    {
-                        QString uploadedUrl = uploadImageToCdn(url);
-                        if (!uploadedUrl.isEmpty()) url = uploadedUrl;
-                        if(!url.isEmpty())
-                        {
-                            fileInfo =  QString("%1||||%2").arg(QDateTime::currentSecsSinceEpoch()+1440*60).arg(url);
-                            cache_db->put(QString("imageB_%1").arg(fileMd5), fileInfo);
-                        }
 
-                    }else if(!fileInfo.isEmpty())
-                    {
-                        url = extractBetween(fileInfo,"path=",",");
+                    if (cacheHit) {
+                        url = cachedUrl;   // 使用缓存中的 URL
+                    } else {
+                        // 缓存未命中或已过期，上传图床
+                        QString uploadedUrl = uploadImageToCdn(url);
+                        if (!uploadedUrl.isEmpty()) {
+                            url = uploadedUrl;
+                            // 存入缓存（新格式）
+                            if (cache_db && !fileMd5.isEmpty()) {
+                                qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
+                                QString cacheValue = QString("%1||||%2").arg(expire).arg(url);
+                                cache_db->put(QString("imageB_%1").arg(fileMd5), cacheValue);
+                            }
+                        }
+                        // 若上传失败，url 保持原样（保留本地路径，后续可能生成无效链接，但不会丢失数据）
                     }
                 }
+
+                // 生成 Markdown 图片标签（尺寸逻辑保持不变）
                 QString markdownImg;
                 if (tag.img.x > 0 && tag.img.y > 0) {
                     markdownImg = QStringLiteral("![#%1px #%2px](%3)")
@@ -1209,7 +1245,7 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
                                       QString &message_reference)
 {
-    // ---------- 1. 处理 [ref,...] 标签（只处理第一个） ----------
+
     int refStart = text.indexOf(QLatin1String("[ref,"), 0, Qt::CaseInsensitive);
     if (refStart != -1) {
         int refEnd = text.indexOf(']', refStart);
@@ -1311,14 +1347,13 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
 
     // ---------- 5. 若没有任何图片标签，处理其他 Markdown 链接后返回 ----------
     if (allTags.isEmpty()) {
-        if (type == 0)
+        if (type == 0 || type == 2) //这个type 不是 发送类型
             text = convertMdLinksKeepHttp(text);
         else
             text = convertMarkdownLinksToXml(text);
         return text;
     }
 
-    // ---------- 按起始位置降序排序（从后往前替换） ----------
     std::sort(allTags.begin(), allTags.end(),
               [](const ImgTag &a, const ImgTag &b) { return a.start > b.start; });
 
@@ -1432,10 +1467,15 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                     markdownImg = QStringLiteral("![#%1px #0px](%2)").arg(w).arg(newUrl);
                 }
                 text.replace(tag.start, tag.length, markdownImg);
+            }else if (type == 2) {
+
+                info = newUrl;
+                text.replace(tag.start, tag.length, QString());
             }
         }
         else {
-            if (type == 0) {
+            if (type == 0 || type ==2) {
+                info = newUrl;
                 text.replace(tag.start, tag.length, QString());
             } else if (type == 1) {
                 int w = (tag.width > 0) ? tag.width : 1000;
@@ -1450,7 +1490,7 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
             }
         }
     }
-    if (type == 0)
+    if (type == 0 || type==2)
         text = convertMdLinksKeepHttp(text);
     else
         text = convertMarkdownLinksToXml(text);
@@ -2102,7 +2142,75 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
 
 }
 
+QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, const QString &content, const QString &imagePath,const QString &message_reference)
+{
+    QByteArray postData;
+    QString headers;
+    bool useJson = imagePath.isEmpty() || imagePath.startsWith("http", Qt::CaseInsensitive);
 
+    if (useJson) {
+        QJsonObject obj;
+        if (!imagePath.isEmpty() && imagePath.startsWith("http")) {
+            obj["image"] = imagePath;
+        }
+        if (!content.isEmpty()) {
+            obj["content"] = content;
+        }
+        if (msgId.contains("INTERACTION") || msgId.contains("FRIEND_ADD") || msgId.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
+            obj["event_id"] = msgId;
+        else
+            obj["msg_id"] = msgId;
+
+        if (!message_reference.isEmpty()) {
+            QJsonObject refObj;
+            refObj["message_id"] = message_reference;
+            refObj["ignore_get_message_error"] = false;
+            obj["message_reference"] = refObj;
+        }
+        headers = "application/json";
+        postData = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    } else {
+        QString boundary = QString("----WebKitFormBoundary%1")
+        .arg(QString::number(QRandomGenerator::global()->generate(), 16));
+        QByteArray body;
+        if (!content.isEmpty()) {
+            QByteArray contentData = content.toUtf8();
+            body += "--" + boundary.toUtf8() + "\r\n";
+            body += "Content-Disposition: form-data; name=\"content\"\r\n";
+            body += "Content-Length: " + QByteArray::number(contentData.size()) + "\r\n";
+            body += "\r\n";
+            body += contentData + "\r\n";
+        }
+        if (!imagePath.isEmpty() && QFile::exists(imagePath)) {
+            QFile file(imagePath);
+            if (file.open(QIODevice::ReadOnly)) {
+                QByteArray imageData = file.readAll();
+                file.close();
+                body += "--" + boundary.toUtf8() + "\r\n";
+                body += "Content-Disposition: form-data; name=\"file_image\"; filename=\"image.jpeg\"\r\n";
+                body += "Content-Type: image/jpeg\r\n";
+                body += "\r\n";
+                body += imageData + "\r\n";
+            }
+        }
+        QString idFieldName;
+        if (msgId.contains("INTERACTION") || msgId.contains("FRIEND_ADD") || msgId.contains("GROUP_MEMBER"))
+            idFieldName = "event_id";
+        else
+            idFieldName = "msg_id";
+
+        QByteArray idData = msgId.toUtf8();
+        body += "--" + boundary.toUtf8() + "\r\n";
+        body += "Content-Disposition: form-data; name=\"" + idFieldName.toUtf8() + "\"\r\n";
+        body += "Content-Length: " + QByteArray::number(idData.size()) + "\r\n";
+        body += "\r\n";
+        body += idData + "\r\n";
+        body += "--" + boundary.toUtf8() + "--\r\n";
+        headers = QString("multipart/form-data; boundary=%1").arg(boundary);
+        postData = body;
+    }
+    return _Post(url, postData,headers,10000);
+}
 QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int 发送类型)
 {
@@ -2114,6 +2222,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
 
     if (!text.isEmpty())
     {
+
         auto [index, realMsgId] = splitWrappedMsgId(msgid);
         QJsonObject keyboard;
         QJsonArray prompt_keyboard;
@@ -2129,6 +2238,52 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
             return response;
         }
         QString response,fileinfo;
+        if(type==1 || type ==3)
+        {
+
+            if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+            {
+                textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                if(textB.contains("[image,path="))
+                    textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+
+                QString textA = forbidden->filterText(textB);//违禁词过滤
+                response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                if(response.contains("token not exist or expire")) //token过期
+                {
+                    m_accessToken.clear();
+                    refreshAccessToken();
+                    response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                }
+            }else if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
+            {
+                textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                if(textB.contains("[image,path="))
+                    textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                QString textA = forbidden->filterText(textB);
+                QString response = R"({"message":"暂时不支持 模板发送"})";
+                addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+                return response;
+
+            }else{
+                textB = processImageTags2(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                if(textB.contains("[image,path="))
+                    textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                QString textA = forbidden->filterText(textB);//违禁词过滤
+                QString url = get_url(type, openid, "messages");
+
+                response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference);
+                if(response.contains("token not exist or expire"))
+                {
+                    m_accessToken.clear();
+                    refreshAccessToken();
+                    response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference);
+                }
+            }
+            addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+            return response;
+        }
+
         if(!mode && m_info->markdown || mode && 发送类型==1)
         {
             textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
@@ -2183,7 +2338,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
     json["content"] = text;
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
     QString url = get_url(type, openid, "messages");
-    return _Post(url, json, 5000);
+    return _Post(url, json, 10000);
 }
 
 QString QQBotClient::send_messages_ark(int type,const QString &openid,QString &pname,const QJsonObject &ark,const QString &msgid,bool is_wakeup)
@@ -2273,6 +2428,20 @@ QString QQBotClient::generate_share_link(const QString& callback_data)
     return _Post("https://api.sgroup.qq.com/v2/generate_url_link", json, 5000);
 }
 
+QString QQBotClient::get_members_list(const QString& group,int limit)
+{
+    QJsonObject json;
+    QJsonObject json2;
+    json2["limit"] = limit;
+    json["data"] =json2;
+    QString url= get_url(0,group,"members");
+    return _Post(url, json, 10000);
+}
+
+QString QQBotClient::get_groups_members(const QString& group,const QString &user)
+{
+    return _Get(get_url(0,group,"members",user), 10000);
+}
 //回应回调
 QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data)
 {

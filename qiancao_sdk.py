@@ -20,7 +20,9 @@ class QQApi:
     API_ID_HTMLIMG2=13;
     API_ID_DS=14;
     API_ID_AI=15;
- 
+    API_ID_GET_MEMBER=16;
+    API_ID_GET_MEMBER_LIST=17;    
+     
     def __init__(self, uuid: str):
         self.uuid = uuid
 
@@ -169,4 +171,22 @@ class QQApi:
         :param timeout: 超时时间（ms），对应C++的_3
         """
         return self._callback(self.API_ID_AI, 0, model, content, str(timeout))   
+        
+    def get_member(self,appid: int,  openid : str, uset : str) -> Dict:
+        """
+        查询 某个用户 在群 昵称 身份
+        :param appid: Bot appid
+        :param openid: 群id（参数1）
+        :param uset: 用户id（参数2）
+        """
+        return self._callback(self.API_ID_GET_MEMBER, appid, openid, uset)     
+     def get_member_list(self,appid: int,  openid : str, limit : int) -> Dict:
+        """
+        获取指定群成员列表 返回json 这个是未开放的api 保留
+        :param appid: Bot appid
+        :param openid: 群id（参数1）
+        :param limit: 获取数量（参数2）
+        """
+        return self._callback(self.API_ID_GET_MEMBER_LIST, appid, openid, str(limit))    
+        
         
