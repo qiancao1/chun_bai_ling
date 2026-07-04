@@ -72,12 +72,12 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.1.0.10"
-#define APP_BUILD_NUMBER 10
+#define APP_VERSION_STR "v1.1.2.12"
+#define APP_BUILD_NUMBER 12
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.1.2.12 (2026-07-02)
+## v1.1.2.12 (2026-07-04)
 - 增加 webhook 的支持
 - 增加 webui 面板 可以在 手机或浏览器查看日志 或 回复内容
 - 优化 管理列表将指定到机器人
@@ -90,6 +90,7 @@ QString Homev=R"(
 - 增加 AI对向量数据库的支持 可以自己本地部署模型 或付费使用别人的
 - 部署链接[链接](https://ollama.com/download/windows) 如果不想下载这个 也可以用其他
 - 或者 [硅基流动](https://www.siliconflow.cn/) 有提供的免费向量模型 "BAAI/bge-m3"
+- 优化 ai 部分每小时清理内存
 
 ## v1.1.0.10 (2026-06-26)
 - 修复 回复设置未保存问题
@@ -474,7 +475,7 @@ void MainWindow::setupUi()
         TextReplace->列表行被单击();
         keyword->列表行被单击();
         schedule->列表行被单击();
-        ai_ui->列表行被单击();
+        ai_ui->list_c();
         refset->列表行被单击();
         ui_qunguan->列表行被单击();
     });

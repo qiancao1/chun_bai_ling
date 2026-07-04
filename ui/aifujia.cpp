@@ -130,6 +130,7 @@ void Aifujia::on_removs_row_clicked()
 // ---------- 保存数据到文件 ----------
 void Aifujia::on_save_data_clicked()
 {
+
     // 1. 获取当前选中的行
     int row = ui->tableWidget->currentRow();
     if (row < 0 || row >= fujiaList.size()) {
@@ -183,6 +184,7 @@ void Aifujia::save_data()
 // ---------- 核心：监听表格变化，同步更新到 fujiaList ----------
 void Aifujia::on_tableWidget_itemChanged(QTableWidgetItem *item)
 {
+    if(bujiaz) return ;
     if (!item) return;
     int row = item->row();
     if (row < 0 || row >= fujiaList.size()) return;
@@ -221,7 +223,7 @@ QString Aifujia::fujia_jy(QString &zl, QString &role)
 
 void Aifujia::initdata(AccountInfo *acc)
 {
-
+    bujiaz =true;
     for (int row = 0; row < fujiaList.size(); ++row) {
 
         QTableWidgetItem *item = ui->tableWidget->item(row, 0);
@@ -244,6 +246,7 @@ void Aifujia::initdata(AccountInfo *acc)
             if (item) item->setCheckState(Qt::Checked);
         }
     }
+    bujiaz=false;
 }
 
 void Aifujia::on_tableWidget_itemClicked(QTableWidgetItem *item)

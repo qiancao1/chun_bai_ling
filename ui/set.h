@@ -31,7 +31,7 @@ public:
     QString 远程链接,远程token;
 
 private slots:
-    void onStartStopClicked();
+    bool onStartStopClicked(int port);
 
 
 

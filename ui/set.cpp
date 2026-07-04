@@ -20,16 +20,6 @@ set::set(QWidget *parent) : QWidget(parent)
 {
     setupUI();
     loadConfig();           // 加载配置到 UI
-
-
-    // 如果需要自动启动（本地模式且 auto_start 为 true）
-    bool isLocalMode = m_localRadio->isChecked();
-    bool autoStart = g_config["auto_start_local_server"].toBool();
-    if (isLocalMode && autoStart) {
-        QTimer::singleShot(0, this, [this]() {
-            onStartStopClicked();  // 调用启动逻辑
-        });
-    }
 }
 
 set::~set()
@@ -180,20 +170,32 @@ void set::setupUI()
 
 
 
-    int port = g_config["webhook_p"].toInt(8080);
+    int port = g_config["webhook_p"].toInt();
+    int port2 = g_config["webws_p"].toInt();
+    if(port==0)
+    {
+        port=8080;
+        g_config["webhook_p"]=8080;
+    }
+    if(port2==0)
+    {
+        port2=8081;
+        g_config["webws_p"]=8081;
+    }
+
+
     webhook->setText(QString::number(port));
     webhook->setPlaceholderText("8080");
     webhook->setMaximumWidth(70);
     QString SSL = g_config["webhook_ssl"].toString();
     webhook_ssl->setText(SSL);
 
-    int port2 = g_config["webws_p"].toInt(8081);
+
     webws_port->setText(QString::number(port2));
     webws_port->setMaximumWidth(70);
     QUuid uuid= QUuid::createUuid();
     ws_token = uuid.toString(QUuid::WithoutBraces);
-    qDebug() << "token:http://127.0.0.1:" + QString::number(port) + "/webui/index.html?token=" + ws_token;
-    qDebug() << "token:http://192.168.1.8:" + QString::number(port) + "/webui/index.html?token=" + ws_token;
+
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
     remoteLayout2->setAlignment(Qt::AlignLeft);
     remoteLayout2->addWidget(new QLabel("webhook端口："));
@@ -207,9 +209,6 @@ void set::setupUI()
     remoteLayout2->addWidget(new QLabel(" SSL密码："));
     remoteLayout2->addWidget(webhook_ssl);
     remoteLayout2->addWidget(webhook_ssl_but);
-
-
-
 
 
 
@@ -370,21 +369,6 @@ void set::setupUI()
     //启用禁用webhook
 
 
-    //启用禁用ws聊天室
-    connect(Ews, &QCheckBox::clicked, [this](){
-        if(Ews->isChecked())
-        {
-            ws_server->open(g_config["webws_p"].toInt());  // 监听 8080 端口
-            g_config["webws_run"]=true;
-            saveConfig();
-        }
-        else
-        {
-            ws_server->close();
-            g_config["webws_run"]=false;
-            saveConfig();
-        }
-    });
     connect(ESSL, &QCheckBox::clicked, [this](){
 
             g_config["SSL"]=ESSL->isChecked();
@@ -400,19 +384,52 @@ void set::setupUI()
     ws_server = new WebSocketServer;
     if(g_config["webws_run"].toBool())
     {
-        Ews->setChecked(true);
-        ws_server->open(g_config["webws_p"].toInt());
+        int port = g_config["webws_p"].toInt();
+        if(port!=0){
+            Ews->setChecked(ws_server->open(port));
+        }
     }
     if(g_config["webhook_run"].toBool())
     {
-        Ewebhook->setChecked(true); //不出意外会触发信号
-        onStartStopClicked();
+        int port = g_config["webhook_p"].toInt();
+        if(port!=0){
+            Ewebhook->setChecked(onStartStopClicked(port));  //不会触发信号
+        }
     }
     if( g_config["SSL"].toBool())
     {
         ESSL->setChecked(true);
     }
-    connect(Ewebhook, &QCheckBox::clicked, this, &set::onStartStopClicked);
+    connect(Ewebhook, &QCheckBox::clicked, [this](){
+        int port = g_config["webhook_p"].toInt();
+        if(port!=0){
+            Ewebhook->setChecked(onStartStopClicked(port));  //不会触发信号
+        }
+    });
+
+    //启用禁用ws聊天室
+    connect(Ews, &QCheckBox::clicked, [this](){
+
+        int port = g_config["webws_p"].toInt();
+        if(port==0)
+        {
+            Ews->setChecked(false);
+            QMessageBox::warning(this,"启动失败","为设置端口 请设置端口后再试试 如果框里面有值点一下旁边的确认");
+            return ;
+        }
+        if(Ews->isChecked())
+        {
+            ws_server->open(port);  // 监听 8080 端口
+            g_config["webws_run"]=true;
+            saveConfig();
+        }
+        else
+        {
+            ws_server->close();
+            g_config["webws_run"]=false;
+            saveConfig();
+        }
+    });
 }
 
 void set::onAddTokenRow()
@@ -593,17 +610,18 @@ void set::saveRemoteConfig()
 
 
 
-void set::onStartStopClicked()
+bool set::onStartStopClicked(int port)
 {
     g_config["webhook_run"]=Ewebhook->isChecked();
     saveConfig();
+     bool ok=false;
     if (Ewebhook->isChecked()) {
 
-        bool ok;
+
         if(ESSL->isChecked())
-            ok = startImageServer(g_config["webhook_p"].toInt(),"key.crt","key.key");
+            ok = startImageServer(port,"key.crt","key.key");
         else
-            ok = startImageServer(g_config["webhook_p"].toInt());
+            ok = startImageServer(port);
         if (!ok) {
             Ewebhook->setChecked(false);
             AppendEventLog("启动服务器启动失败，端口是否可用。下次程序启动将自动重试。" ,0xff);
@@ -612,6 +630,7 @@ void set::onStartStopClicked()
     } else {
         stopImageServer();
     }
+    return ok;
 }
 
 

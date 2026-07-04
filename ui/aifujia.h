@@ -47,6 +47,7 @@ private:
 
     void load_data();
     void save_data();
+    bool bujiaz=false;
     Ui::Aifujia *ui;
     QList<fujia> fujiaList;
 };

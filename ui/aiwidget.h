@@ -66,6 +66,7 @@ struct SessionContext {
     int ts=0;
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
     int duihts=0;
+
     VectorMemory* memory = nullptr;
     QString groupId;
     QString msgId;
@@ -87,7 +88,7 @@ public:
     QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
     QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
-    void 列表行被单击(); // 切换机器人
+    void list_c(); // 切换机器人
     QMap<QString, SessionContext> m_sessions;   // 以 openid 为键
     QList<ModelData> modelList;
     QList<InterfaceData> globalInterfaces;
@@ -109,7 +110,7 @@ signals:
 
 private slots:
 
-
+    void onCleanupTimer();
     void onAsyncReply(const QString &openid, const QString &reply,
                       const QJsonObject &updatedContext,    // baseContextCopy
                       int oldMsgCount,
@@ -253,10 +254,12 @@ private:
 
     QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type);
     void flushPendingMessages(const QString& openid,bool send);
-
-
-
     int m_modelStartIndex;                      // 全局轮询下标
+
+    QTimer* m_cleanupTimer = nullptr;
+    void startHourlyCleanupTimer();
+    void clearSessionResources(SessionContext &ctx);
+    void clearAllSessions();
 };
 
 #endif // AIWIDGET_H

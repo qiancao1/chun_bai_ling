@@ -91,7 +91,7 @@ QString AccountInfo::toJson() const {
     obj["pbbot"]=pbbot;
     obj["admin"]=admin;
     obj["xiangliang"]=xiangliang;
-    obj["admin"]=Embed_model;
+    obj["Embed_model"]=Embed_model;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -128,7 +128,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
 
-    info.Embed_model = obj["admin"].toString();
+    info.Embed_model = obj["Embed_model"].toString();
 
 
     info.今日加群数量 = obj["g_add"].toInt();

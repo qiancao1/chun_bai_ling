@@ -325,7 +325,7 @@ AiWidget::AiWidget(QWidget *parent)
     loadFromFile3();
     refreshSettingList();
     refreshSettingCombo();
-
+    startHourlyCleanupTimer();
 }
 
 AiWidget::~AiWidget()
@@ -334,7 +334,11 @@ AiWidget::~AiWidget()
         delete session.timer;
         delete session.memory;
     }
-
+    clearAllSessions();
+    if (m_cleanupTimer) {
+        m_cleanupTimer->stop();
+        delete m_cleanupTimer;
+    }
     m_sessions.clear();
 }
 
@@ -834,9 +838,16 @@ void AiWidget::saveToFile1() const
 void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
 {
     editRobotName->setText(acc->Ai_nickname);
-    comboModel->setCurrentText(acc->model);
-    combo_xiangliang->setCurrentText(acc->Embed_model);
+    if(acc->model.isEmpty())
+        comboModel->setCurrentIndex(-1);
+    else
+        comboModel->setCurrentText(acc->model);
+    if(acc->Embed_model.isEmpty())
+        combo_xiangliang->setCurrentIndex(-1);
+    else
+        combo_xiangliang->setCurrentText(acc->Embed_model);
     comboPplx->setCurrentIndex(acc->pplx);
+
     int idx = comboSetting->findText(acc->setting);
     comboSetting->setCurrentIndex(idx >= 0 ? idx : -1);
     editContext->setText(QString::number(acc->context_len));
@@ -852,6 +863,7 @@ void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
     chkChannelPersonal->setChecked(acc->enableChannelPersonal);
     chkImageRec->setChecked(acc->enableImageRec);
     向量数据库->setChecked(acc->xiangliang);
+
     chkniren->setChecked(acc->niren);
     set_zl->setText(acc->bai_sr);
     set_sc->setText(acc->bai_sc);
@@ -906,7 +918,7 @@ void AiWidget::refreshSettingCombo()
 }
 
 //列表被单击
-void AiWidget::列表行被单击()
+void AiWidget::list_c()
 {
     for (const auto &acc : std::as_const(m_accounts))
     {
@@ -3267,8 +3279,56 @@ QVector<double> AiWidget::getEmbedding(const QString &text, const QString &url2,
     }
 
     result.reserve(vecArr.size());
-    for (const QJsonValue &v : vecArr) {
+    for (const QJsonValue &v : std::as_const(vecArr)) {
         result.append(v.toDouble());
     }
     return result;
+}
+
+
+void AiWidget::startHourlyCleanupTimer()
+{
+    m_cleanupTimer = new QTimer(this);
+    m_cleanupTimer->setInterval(60 * 60 * 1000); // 1小时
+    connect(m_cleanupTimer, &QTimer::timeout, this, &AiWidget::onCleanupTimer);
+    m_cleanupTimer->start();
+
+}
+
+// 清理单个会话的资源
+void AiWidget::clearSessionResources(SessionContext &ctx)
+{
+    if (ctx.timer) {
+        ctx.timer->stop();
+        delete ctx.timer;
+        ctx.timer = nullptr;
+    }
+    delete ctx.memory;
+    ctx.memory = nullptr;
+    delete ctx.accountInfo;
+    ctx.accountInfo = nullptr;
+    ctx.pendingMessages.clear(); // 若元素含指针，需另行释放
+}
+
+// 清理所有会话（析构时调用）
+void AiWidget::clearAllSessions()
+{
+    for (auto &ctx : m_sessions) {
+        clearSessionResources(ctx);
+    }
+    m_sessions.clear();
+}
+
+void AiWidget::onCleanupTimer()
+{
+    QMap<QString, SessionContext>::iterator it = m_sessions.begin();
+    while (it != m_sessions.end()) {
+        SessionContext &ctx = it.value();
+        if (ctx.isProcessing || !ctx.pendingMessages.isEmpty()) {
+            clearSessionResources(ctx);
+            it = m_sessions.erase(it);   // 移除并获取下一个迭代器
+        } else {
+            ++it;
+        }
+    }
 }

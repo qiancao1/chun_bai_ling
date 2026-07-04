@@ -132,7 +132,11 @@ class ___htmltoimg : public QRunnable {
 public:
     ___htmltoimg(const QString &text):m_text(text) {}
     void run() override {
+        QElapsedTimer timer;
+        timer.start();
         QByteArray data = ScreenA->captureHtmlSync(m_text);
+        qint64 elapsed = timer.elapsed();
+        qDebug() << "函数执行耗时：" << elapsed << "毫秒";
         QString path = "tmp/image/htmltoimg.png";
         QFile file(path);
         if (!file.open(QIODevice::WriteOnly)) {
