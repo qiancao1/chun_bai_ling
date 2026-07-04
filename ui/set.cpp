@@ -393,6 +393,7 @@ void set::setupUI()
     {
         int port = g_config["webhook_p"].toInt();
         if(port!=0){
+            Ewebhook->setChecked(true);
             Ewebhook->setChecked(onStartStopClicked(port));  //不会触发信号
         }
     }
@@ -431,7 +432,29 @@ void set::setupUI()
         }
     });
 }
+void set::set_webui(bool value)
+{
+    QMetaObject::invokeMethod(qApp, [=]() {
+        if(value)
+        {
+            int port = g_config["webws_p"].toInt();
+            if(port==0) return ;
 
+            ws_server->open(port);  // 监听 8080 端口
+            Ews->setChecked(true);
+            g_config["webws_run"]=true;
+            saveConfig();
+            return;
+        }
+        if(ws_server){
+            ws_server->close();
+            g_config["webws_run"]=false;
+            Ews->setChecked(false);
+            saveConfig();
+        }
+    }, Qt::QueuedConnection); // 使用 QueuedConnection 确保异步投递到主线程
+
+}
 void set::onAddTokenRow()
 {
     int row = m_tokenTable->rowCount();
@@ -614,7 +637,7 @@ bool set::onStartStopClicked(int port)
 {
     g_config["webhook_run"]=Ewebhook->isChecked();
     saveConfig();
-     bool ok=false;
+    bool ok=false;
     if (Ewebhook->isChecked()) {
 
 

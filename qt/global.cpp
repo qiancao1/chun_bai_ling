@@ -307,18 +307,29 @@ QString 内置指令(MessageEvent &ev)
 
     return text;
 }
+
 QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
     if(!info->admin.contains(ev.user)) return QString();
     if(ev.msg=="webui")
     {
-        if(ev.type!=2 || ev.type!=3)
+        if(ev.type == 2 || ev.type == 3)
         {
-            return "请在 私聊环境获取链接 否则其他人登录可恶意操作";
+            int port=g_config["webhook_p"].toInt();
+            return QString("%1://%2:%3/webui/index.html?token=%4").arg(g_config["SSL"].toBool() ? "https" : "http",g_ip).arg(port).arg(ws_token);
         }
-        int port=g_config["webhook_p"].toInt();
-        return QString("%1://%2:%3/webui/index.html?token=%4").arg(g_config["SSL"].toBool() ? "https" : "http",g_ip).arg(port).arg(ws_token);
+        return "请在 私聊环境获取链接 否则其他人登录可恶意操作";
+    }
+    if(ev.msg=="关闭webui")
+    {
+        setA->set_webui(false);
+        return "已关闭webui";
+    }
+    if(ev.msg=="开启webui")
+    {
+        setA->set_webui(true);
+        return "已开启webui";
     }
     if(ev.msg=="取")
     {

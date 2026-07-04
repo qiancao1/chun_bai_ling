@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QWebSocketServer>
 #include <QList>
+#include <qelapsedtimer.h>
 #include "chatpage.h"
 #include "clientconnection.h"
 
@@ -27,7 +28,8 @@ private:
     void broadcastOnlineCount();
     void handleGetGroupList(const QJsonObject &params, ClientConnection *client, const QString &reqId);
     void handleGetRecentMessages(const QJsonObject &params, ClientConnection *client, const QString &reqId);
-
+    QElapsedTimer m_tokenErrorTimer;
+    bool m_tokenErrorBlocked = false;
     // websocketserver.h 中增加
     void handleGetLogs(const QJsonObject &params, ClientConnection *client, const QString &reqId);
     // 修改 sendError 增加 reqId 参数（可选）

@@ -29,6 +29,7 @@ public:
     void incrementTokenUsage(const QString &token);
     bool 远程服务器=false;
     QString 远程链接,远程token;
+    void set_webui(bool value);
 
 private slots:
     bool onStartStopClicked(int port);
@@ -46,9 +47,6 @@ private:
     void loadConfig();
     void saveModeConfig();
     void saveRemoteConfig();
-
-
-
 
 
 

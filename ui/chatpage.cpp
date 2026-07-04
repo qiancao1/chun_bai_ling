@@ -1499,7 +1499,7 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
         return;
     }
     QString lastMsgId;
-    QList<Message> msg = g_logdb[bufferIdx]->getRecentLogs(QString::number(appid2),contactId,100);
+    QList<Message> msg = g_logdb[bufferIdx]->getRecentLogs(QString::number(appid2),contactId,2147483636,100);
     m_msgid.clear();  // 默认清空
     for (int i = 0; i < msg.size(); ++i) {
         if (!msg[i].isSelf) {

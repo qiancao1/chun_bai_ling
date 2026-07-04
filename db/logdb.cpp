@@ -424,8 +424,8 @@ bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &
     mdb_txn_abort(txn);
     return false;
 }
-QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId, int N) const
-{
+QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId,
+                                    int seq, int N) const {
     QMutexLocker locker(&m_mutex);
     QList<Message> result;
     if (!m_env || N <= 0) return result;
@@ -441,37 +441,53 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
         return result;
     }
 
+    // 构造目标 key 前缀，宽度请与存储格式一致（例如 6 位或 10 位）
+    int width = 10;  // 根据你的实际宽度调整，可以动态从数据库读取或配置
+    QString targetPrefix = QString("%1:").arg(seq, width, 10, QChar('0'));
+    QByteArray keyBuf = targetPrefix.toUtf8(); // 确保生命周期
     MDB_val key, value;
-    // 从数据库末尾（最大 seq）开始向前遍历
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    key.mv_data = keyBuf.data();
+    key.mv_size = keyBuf.size();
+
+    // 定位到第一个 >= targetPrefix 的记录
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+    if (rc != MDB_SUCCESS) {
+        // 没有比目标更大的 key（即所有 key 都小于目标），则从末尾开始
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    }
+
     int fetched = 0;
     while (rc == MDB_SUCCESS && fetched < N) {
         QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
         QStringList parts = keyStr.split(':');
         if (parts.size() == 3) {
-            // 新格式：parts[0]=seq, parts[1]=appid, parts[2]=groupId
-            QString appidFromKey = parts[1];
-            QString groupIdFromKey = parts[2];
-            if (appidFromKey == appid && groupIdFromKey == groupId) {
-                QByteArray blob((const char*)value.mv_data, value.mv_size);
-                Message msg;
-                if (deserializeMessage(blob, msg)) {
-                    msg.seq = parts[0].toInt();
-                    if(!msg.direction.isEmpty() && !msg.msg.isEmpty())
-                    {
-                        msg.isSelf=true;
-                        QString hf = msg.hf;
-                        msg.hf = QString();
+            int seq2 = parts[0].toInt();
+            // 只接受 seq 严格小于传入 seq 的记录（避免包含 >= 传入 seq 的）
+            if (seq > seq2) {
+                QString appidFromKey = parts[1];
+                QString groupIdFromKey = parts[2];
+                if (appidFromKey == appid && groupIdFromKey == groupId) {
+                    // 反序列化消息（原有逻辑保持不变）
+                    QByteArray blob((const char*)value.mv_data, value.mv_size);
+                    Message msg;
+                    msg.seq = seq2;
+                    if (deserializeMessage(blob, msg)) {
+                        // 你的原有处理（保留 isSelf、hf 等逻辑）
+                        if (!msg.direction.isEmpty() && !msg.msg.isEmpty()) {
+                            msg.isSelf = true;
+                            QString hf = msg.hf;
+                            msg.hf = QString();
+                            result.append(msg);
+                            msg.isSelf = false;
+                            msg.hf = hf;
+                        }
                         result.append(msg);
-                        msg.isSelf=false;
-                        msg.hf = hf;
+                        fetched++;
                     }
-                    result.append(msg);
-
-                    fetched++;
                 }
             }
         }
+        // 向前移动（key 更小）
         rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
     }
 

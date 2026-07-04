@@ -40,25 +40,42 @@ void WebSocketServer::onNewConnection()
     QWebSocket *socket = m_server->nextPendingConnection();
     if (!socket) return;
 
+    // 1. 检查是否处于封禁状态（10 秒内）
+    if (m_tokenErrorBlocked) {
+        if (m_tokenErrorTimer.elapsed() < 10000) {
+            qWarning() << "Server is temporarily blocking new connections (token error cooldown)";
+            socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Server busy, please retry later");
+            socket->deleteLater();
+            return;
+        } else {
+            // 超过 10 秒，解除封禁
+            m_tokenErrorBlocked = false;
+        }
+    }
+
     QUrl url = socket->requestUrl();
     QUrlQuery query(url);
     QString token = query.queryItemValue("token");
 
     if (token != ws_token) {
         qWarning() << "Invalid token from" << socket->peerAddress().toString();
+
+        // 2. 触发封禁（记录当前时间）
+        m_tokenErrorBlocked = true;
+        m_tokenErrorTimer.start();
+
         socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Invalid token");
         socket->deleteLater();
         return;
     }
+
 
     ClientConnection *client = new ClientConnection(socket, token, this);
     m_clients.append(client);
 
     connect(client, &ClientConnection::disconnected, this, &WebSocketServer::onClientDisconnected);
     connect(client, &ClientConnection::messageReceived, this, &WebSocketServer::onClientMessageReceived);
-
-    qDebug() << "New client connected, IP:" << client->getPeerAddress().toString()
-             << "Total clients:" << m_clients.size();
+    AppendEventLog("IP:"+client->getPeerAddress().toString()+"登录聊天室 当前聊天室成员："+QString::number(m_clients.size())+" 注意 当你高频链接时 可能人员会不是1 因为你之前的链接可能没释放",0xff);
 
     broadcastOnlineCount();
 }
@@ -671,8 +688,8 @@ void WebSocketServer::handleGetRecentMessages(const QJsonObject &params, ClientC
         return;
     }
 
-    // 注意：这里你的 original 代码用了 g_logdb[appid]，但 appid 可能是账号id，而 type 是日志类型索引。根据上下文，你可能需要根据 type 选择日志库。此处保留原逻辑，但建议检查。
-    QList<Message> list = g_logdb[type]->getRecentLogs(QString::number(appid), groupId, count);
+    if(offset<=0) offset=2147483636;
+    QList<Message> list = g_logdb[type]->getRecentLogs(QString::number(appid), groupId, offset,count);
 
     QJsonArray messagesArray;
     for (const auto &msg : std::as_const(list)) {
