@@ -108,15 +108,16 @@ void QQBotClient::start()
 
 void QQBotClient::stop()
 {
+    m_info->online = false;
+    m_info->autoConnect=false;
+    m_isConnecting = false;
     if(m_info->type==0){
         stopHeartbeatTimer();
         resetReconnectAttempts();
         if (m_webSocket.state() == QAbstractSocket::ConnectedState)
             m_webSocket.close();
     }
-    m_info->online = false;
-    m_info->autoConnect=false;
-    m_isConnecting = false;
+
     m_invalidHeartbeatCount = 0;
     m_seq = 0;
     m_sessionId.clear();
@@ -357,8 +358,7 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
 
                 QString extraInfo = prefix + filename +
                                     QString(",type=%1,text=%2,size=%3,url=%4]")
-                                        .arg(contentType)
-                                        .arg(text)
+                                        .arg(contentType,text)
                                         .arg(size)
                                         .arg(url);
 
@@ -1115,6 +1115,7 @@ void QQBotClient::stopHeartbeatTimer()
 // ---------- 重连 ----------
 void QQBotClient::scheduleReconnect(int delaySec)
 {
+    if(!m_info->autoConnect) return;
     if (m_reconnectAttempts >= 5) {
         AppendEventLog("重连次数已达上限，停止自动重连" ,0xff);
         return;

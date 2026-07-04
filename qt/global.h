@@ -66,7 +66,7 @@ struct dblog
     QString msg;        // 日志消息内容
 
 };
-
+extern QString g_ip;
 extern QListWidget *robotListWidget;
 extern AiWidget *ai_ui;
 extern HtmlToImageWidget *htmltoimg;

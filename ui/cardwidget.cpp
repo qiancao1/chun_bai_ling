@@ -208,6 +208,7 @@ void CardWidget::onLoginButtonA() {
             QMessageBox::warning(this,"","请在高级设置 运行webhook服务器后再次尝试 登录webhook账号");
         }
     }
+    accountPage->saveAccounts(m_info);
 }
 void CardWidget::onLoginButton() {
     QQBotClient *client = getOrCreateClient(m_info);

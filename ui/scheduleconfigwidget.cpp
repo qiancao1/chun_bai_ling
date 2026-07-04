@@ -678,12 +678,11 @@ void ___dsrw(){
                 auto *db = g_botdb[appid];
                 QStringList fullList = db->listSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark));
                 AppendEventLog(text+" 群数："+QString::number(fullList.size()),0x35E496);
-                const int chunkSize = 50;
-                for (int i = 0; i < fullList.size(); i += chunkSize) {
-                    QStringList subList = fullList.mid(i, chunkSize);
-                    auto *task = new api_dsrw(appid, subList, t.replyContent,text, t.executeType,t.mark);
-                    QThreadPool::globalInstance()->start(task);
-                }
+
+
+                auto *task = new api_dsrw(appid, fullList, t.replyContent,text, t.executeType,t.mark);
+                QThreadPool::globalInstance()->start(task);
+
             }
         }
     }

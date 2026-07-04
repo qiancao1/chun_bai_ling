@@ -311,6 +311,15 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
     if(!info->admin.contains(ev.user)) return QString();
+    if(ev.msg=="webui")
+    {
+        if(ev.type!=2 || ev.type!=3)
+        {
+            return "请在 私聊环境获取链接 否则其他人登录可恶意操作";
+        }
+        int port=g_config["webhook_p"].toInt();
+        return QString("%1://%2:%3/webui/index.html?token=%4").arg(g_config["SSL"].toBool() ? "https" : "http",g_ip).arg(port).arg(ws_token);
+    }
     if(ev.msg=="取")
     {
         QJsonParseError err;
