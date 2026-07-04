@@ -35,7 +35,6 @@
 #include "logdb.h"
 #include <QStandardPaths>
 #include <QMessageBox>
-
 namespace py = pybind11;
 
 QJsonObject g_config;
@@ -134,7 +133,8 @@ void initdiv()
     dir.mkpath("tmp/image");
     dir.mkpath("tmp/file");
     dir.mkpath("data");
-    dir.mkpath("botdb");
+    dir.mkpath("botdb/memory");
+
     dir.mkpath("plugin");
     dir.mkpath("plugin_data");
 }
@@ -240,10 +240,8 @@ int main(int argc, char *argv[]) {
     }
 
     py::gil_scoped_release release;
-
     cache_db = new LmdbKV("botdb/file_db");
     initDBs();
-
     if (QFile::exists("miaomiao32.exe")) {
         bridge = new SharedMemoryBridge;
         bridge->setCallback(myCallback);

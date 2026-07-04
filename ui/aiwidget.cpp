@@ -332,7 +332,9 @@ AiWidget::~AiWidget()
 {
     for (auto &session : m_sessions) {
         delete session.timer;
+        delete session.memory;
     }
+
     m_sessions.clear();
 }
 
@@ -378,7 +380,7 @@ void AiWidget::setupUi()
     chkAtTrigger     = new QCheckBox("艾特触发", tab1);
     chkChannelPersonal= new QCheckBox("频道个人", tab1);
     chkImageRec      = new QCheckBox("识图", tab1);
-    向量数据库      = new QCheckBox("向量数据库", tab1);
+    向量数据库      = new QCheckBox("向量记忆库", tab1);
     chkniren      = new QCheckBox("拟人(@咸鱼王)", tab1);
 
     hboxChecks->addWidget(chkGroupChat);
@@ -2386,8 +2388,6 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
 
 
 
-
-
     // 模型检查
     int index = -1;
     for (int i = 0; i < modelList.size(); ++i) {
@@ -2429,13 +2429,31 @@ void AiWidget::trimContextByMessageCount(QJsonObject &context, int maxMessages)
         nonSystem.removeAt(0);
     }
 
-    QJsonArray finalMsgs;
-    if (!systemMsg.isEmpty())
-        finalMsgs.append(systemMsg);
-    for (const QJsonValue &val : std::as_const(nonSystem))
-        finalMsgs.append(val);
 
-    context["messages"] = finalMsgs;
+    if (!systemMsg.isEmpty())
+        nonSystem.insert(0,systemMsg);
+    context["messages"] = nonSystem;
+}
+QString AiWidget::trimContextByMessageCount2(QJsonObject &context, int maxMessages)
+{
+    QString nonSystem;
+    if (!context.contains("messages") || !context["messages"].isArray())
+        return nonSystem;
+
+    QJsonArray msgs = context["messages"].toArray();
+    if (msgs.size() <= 1)
+        return nonSystem;
+
+    for (int i = 0; i < msgs.size(); ++i) {
+        QJsonObject obj = msgs[i] .toObject();
+        if(obj["role"].toString()!="user") continue;
+        auto a1 = obj["content"].toArray();
+        auto o2 = a1.at(0);
+        nonSystem+=o2["text"].toString()+"\n";
+    }
+
+
+    return nonSystem;
 }
 
 // ========== 主线程处理消息（延迟合并） ==========
@@ -2459,6 +2477,11 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
 
             flushPendingMessages(openid,false);
         });
+        if (!session.memory) {
+            QString memoryPath = "botdb/memory/" + openid;
+            QDir().mkpath(memoryPath);
+            session.memory = new VectorMemory(memoryPath.toStdString(), 384, 100000);
+        }
     }
     if(!send)
     {
@@ -2507,6 +2530,10 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     auto &session = m_sessions[openid];
     //session.baseContext 改为下面
     QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
+    int oldMsgCount = 0;
+    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
+        oldMsgCount = baseContext["messages"].toArray().size();
+    }
     if(!send){
         if (session.pendingMessages.isEmpty())
             return;
@@ -2524,10 +2551,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         session.accountInfo->context_len=5;
     trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
 
-    int oldMsgCount = 0;
-    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
-        oldMsgCount = baseContext["messages"].toArray().size();
-    }
+
     convertContextImagesToBase64(baseContext);
 
 
@@ -2561,52 +2585,74 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         return;
     }
 
-    if(session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()){
-        QString collectionName = "memories_" + openid;
-        QString err;
-        if (!m_qdrantClient->createCollection(collectionName, 384, "Cosine", &err)) {
-            if (!err.contains("already exists")) {
-                qWarning() << "创建集合失败:" << err;
-            }
-        }
+    if (session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()) {
+
         QString lastUserMsg;
-        QJsonArray msgs = baseContext["messages"].toArray(); // mutableContext 是你要传给 Ai_posts 的上下文
+        QJsonArray msgs = baseContext["messages"].toArray();
         for (int i = msgs.size() - 1; i >= 0; --i) {
             if (msgs[i].toObject()["role"].toString() == "user") {
-                lastUserMsg = msgs[i].toObject()["content"].toString();
+
+                QJsonObject obj =msgs[i].toObject();
+                QJsonArray arr=obj["content"].toArray();
+                QJsonObject obj2 = arr.at(0).toObject();
+                lastUserMsg = obj2["text"].toString();
                 break;
             }
         }
+
         if (!lastUserMsg.isEmpty()) {
+            int index=-1;
             QVector<double> queryVec;
-            for (int i : std::as_const(modelList[model_index].enabledInterfaceIndices)){
-                if(globalInterfaces[i].keys.size()==0)
-                {
-                    queryVec = getEmbedding(lastUserMsg,globalInterfaces[i].url,session.accountInfo->Embed_model,QString());
-                }else{
-                    for(const auto &key : std::as_const(globalInterfaces[i].keys)){
-                        if(!key.enabled) continue;
-                        queryVec = getEmbedding(lastUserMsg,globalInterfaces[i].url,session.accountInfo->Embed_model,key.key);
-                    }
+            for (int i = 0; i < modelList.size(); ++i) {
+                if (modelList[i].name == info->Embed_model) {
+                    index = i;
+                    break;
                 }
-                if (!queryVec.isEmpty()) break;
+            }
+            if (index != -1) {
+                for (int i : std::as_const(modelList[index].enabledInterfaceIndices)) {
+                    if (globalInterfaces[i].keys.size() == 0) {
+                        queryVec = getEmbedding(lastUserMsg,
+                                                globalInterfaces[i].url,
+                                                session.accountInfo->Embed_model,
+                                                QString());
+                    } else {
+                        for (const auto &key : std::as_const(globalInterfaces[i].keys)) {
+                            //if (!key.enabled) continue;
+                            queryVec = getEmbedding(lastUserMsg,
+                                                    globalInterfaces[i].url,
+                                                    session.accountInfo->Embed_model,
+                                                    key.key);
+                            if (!queryVec.isEmpty()) break;
+                        }
+                    }
+                    if (!queryVec.isEmpty()) break;
+                }
             }
 
+
             if (!queryVec.isEmpty()) {
-                QJsonArray results = m_qdrantClient->search(collectionName, queryVec, 3, &err);
-                if (err.isEmpty() && !results.isEmpty()) {
-                    // 拼成一段文本
+
+                std::vector<float> queryFloatVec(queryVec.begin(), queryVec.end());
+                auto results = session.memory->search(queryFloatVec, 3); // 取3条最相似的
+
+                if (!results.empty()) {
+
                     QString memoryText = "【用户历史信息】\n";
-                    for (const QJsonValue &val : std::as_const(results)) {
-                        QJsonObject payload = val.toObject().value("payload").toObject();
-                        memoryText += "- " + payload["fact"].toString() + "\n";
+                    for (const auto &[id, score] : results) {
+
+                        std::string meta = session.memory->getMetadata(id);
+                        if (!meta.empty()) {
+                            memoryText += "- " + QString::fromStdString(meta) + "\n";
+                        }
                     }
-                    // 插入到 messages 最前面（作为 system 消息）
+                    qDebug() <<"向量读取 "<< memoryText;
+
                     QJsonArray newMsgs = baseContext["messages"].toArray();
                     QJsonObject sysMsg;
                     sysMsg["role"] = "system";
                     sysMsg["content"] = memoryText;
-                    // 如果已有 system 消息，合并；否则插入最前面
+
                     if (!newMsgs.isEmpty() && newMsgs[0].toObject()["role"].toString() == "system") {
                         QJsonObject existing = newMsgs[0].toObject();
                         existing["content"] = existing["content"].toString() + "\n\n" + memoryText;
@@ -2620,7 +2666,6 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         }
     }
 
-
     int timeoutMs = 30000;
 
     QThreadPool::globalInstance()->start([this, ev, model_index, baseContext, oldMsgCount, timeoutMs, openid]() {
@@ -2628,8 +2673,6 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         int startIndex = m_modelStartIndex;
         QString reply = Ai_posts(ev, startIndex, model_index, mutableContext, timeoutMs);
         int newStartIndex = startIndex;
-
-        // 传回 mutableContext（已含 AI 回复）和 oldMsgCount，以便主线程合并
         emit asyncReplyReceived(openid, reply, mutableContext, oldMsgCount, newStartIndex);
         if (m_botClients.contains(ev.appid)) {
             auto *db = g_botdb[ev.appid];
@@ -2732,19 +2775,36 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         session.timer->start(session.accountInfo->nMinutesNoReply*60*1000);
     }
     if(!session.accountInfo->xiangliang) return;
-    if (session.duihts % 5 == 0 && !reply.isEmpty()) {
-        // 用 AI 提取事实
-        if(session.accountInfo->Embed_model.isEmpty()) return;
-        trimContextByMessageCount(baseContext,10); //限制上下文
+    if (session.duihts % 1 == 0 && !reply.isEmpty()) {
+        if (session.accountInfo->Embed_model.isEmpty()) return;
 
-        QJsonArray newMsgs = baseContext["messages"].toArray();
-        newMsgs.removeAt(0); //移除系统提示词
-        QString prompt = "从对话中提取关于用户的事实，每条一句话，返回 JSON 数组：\n" +
-                         QString(QJsonDocument(newMsgs).toJson());
+        QString newMsgs = trimContextByMessageCount2(baseContext, 10);
 
-        QThreadPool::globalInstance()->start([this,acc = session.accountInfo, prompt, openid]() {
+        QString prompt = R"(
+从最下面对话中提取关于用户的**有长期记忆价值的内容**，用于存入向量记忆库。
 
+**应该提取的内容**：
+- 用户的个人信息（年龄、职业、城市、家庭成员等）
+- 用户的兴趣爱好、偏好、习惯
+- 用户的长期目标、计划
+- 用户提到的过去经历、重要事件
+- 用户的固定观点、价值观
+- 用户喜欢什么
+
+只返回 JSON 数组，不要其他内容。
+对话内容：标准json数组 如 "["用户喜欢水果","用户喜欢科幻剧情"]" 如果没有什么东西符合 可以返回"[]" json要求标准格式 不要返回以下格式-> "[] 没有可提取内容","```json
+["xxx"]
+```" 这样子json无法解析
+
+请解析下面内容
+)" + newMsgs;
+
+        AccountInfo* acc = session.accountInfo;
+        VectorMemory* mem = session.memory;
+        QThreadPool::globalInstance()->start([this, acc, mem, prompt, openid]() {
+            qDebug() <<prompt;
             QString response = ai_ui->Ai_post(acc->model, prompt, 60000);
+
             if (response.isEmpty()) return;
 
             QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
@@ -2754,90 +2814,65 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
             }
             QJsonArray facts = doc.array();
 
-            QJsonArray pointsToInsert;
-            QString err;
+            // 3. 查找嵌入模型索引
             QString model = acc->Embed_model;
-            int model_index=0;
-            bool ok=false;
-            for (model_index=0;model_index<modelList.size();model_index++){
-                if(modelList[model_index].name==model) {
-                    ok =true;
+            int model_index = 0;
+            bool ok = false;
+            for (model_index = 0; model_index < modelList.size(); ++model_index) {
+                if (modelList[model_index].name == model) {
+                    ok = true;
                     break;
                 }
             }
+            if (!ok) {
+                qWarning() << "嵌入模型未找到:" << model;
+                return;
+            }
+
+            // 4. 处理每条提取的事实
             for (const QJsonValue &val : std::as_const(facts)) {
                 QString fact = val.toString();
                 if (fact.trimmed().isEmpty()) continue;
 
-
+                // 4.1 生成向量
                 QVector<double> vec;
-                for (int i : std::as_const(modelList[model_index].enabledInterfaceIndices)){
-                    if(globalInterfaces[i].keys.size()==0)
-                    {
-                        vec = getEmbedding(fact,globalInterfaces[i].url,acc->Embed_model,QString());
-                    }else{
-                        for(const auto &key : std::as_const(globalInterfaces[i].keys)){
-                            if(!key.enabled) continue;
-                            vec = getEmbedding(fact,globalInterfaces[i].url,acc->Embed_model,key.key);
+                for (int i : std::as_const(modelList[model_index].enabledInterfaceIndices)) {
+                    if (globalInterfaces[i].keys.size() == 0) {
+                        vec = getEmbedding(fact, globalInterfaces[i].url, acc->Embed_model, QString());
+                    } else {
+                        for (const auto &key : std::as_const(globalInterfaces[i].keys)) {
+                            //if (!key.enabled) continue;
+                            vec = getEmbedding(fact, globalInterfaces[i].url, acc->Embed_model, key.key);
+                            if (!vec.isEmpty()) break;
                         }
                     }
                     if (!vec.isEmpty()) break;
                 }
                 if (vec.isEmpty()) continue;
-                double threshold = 0.85; // 相似度阈值，可调整
-                QJsonArray searchResults = m_qdrantClient->search(
-                    "memories_" + openid,
-                    vec,
-                    1,  // 只查1条
-                    &err
-                    );
+
+                // 4.2 去重
+                double threshold = 0.85;
+                std::vector<float> queryFloatVec(vec.begin(), vec.end());
+                auto results = mem->search(queryFloatVec, 1);
 
                 bool isDuplicate = false;
-                if (err.isEmpty() && !searchResults.isEmpty()) {
-                    QJsonObject firstResult = searchResults[0].toObject();
-                    double score = firstResult["score"].toDouble(); // Qdrant 返回的相似度分数
+                if (!results.empty()) {
+                    double score = results[0].second;
                     if (score >= threshold) {
                         isDuplicate = true;
                         qDebug() << "跳过重复事实:" << fact << "相似度:" << score;
                     }
                 }
 
-                // 3. 如果不是重复，加入待插入列表
+                // 4.3 插入
                 if (!isDuplicate) {
-                    QJsonObject point;
-                    // 用 MD5 做 ID（作为精确去重的补充）
-                    QByteArray hash = QCryptographicHash::hash(fact.toUtf8(), QCryptographicHash::Md5);
-                    QString hex = hash.toHex();
-                    point["id"] = hex;
-
-                    QJsonArray vecArr;
-                    for (double v : std::as_const(vec)) vecArr.append(v);
-                    point["vector"] = vecArr;
-
-                    QJsonObject payload;
-                    payload["fact"] = fact;
-                    payload["time"] = QDateTime::currentSecsSinceEpoch();
-                    point["payload"] = payload;
-
-                    pointsToInsert.append(point);
+                    std::vector<float> floatVec(vec.begin(), vec.end());
+                    mem->insert(floatVec, fact.toStdString());
+                    qDebug() << "插入新事实:" << fact;
                 }
-            }
-
-            // 4. 只插入不重复的事实
-            if (!pointsToInsert.isEmpty()) {
-                if (!m_qdrantClient->upsertPoints("memories_" + openid, pointsToInsert, &err)) {
-                    qWarning() << "存储记忆失败:" << err;
-                } else {
-                    qDebug() << "成功插入" << pointsToInsert.size() << "条新事实";
-                }
-            } else {
-                qDebug() << "没有新事实需要插入";
             }
         });
-
     }
-
-
 }
 
 
@@ -3167,11 +3202,8 @@ QVector<double> AiWidget::getEmbedding(const QString &text, const QString &url2,
     inputs.append(text);
     body["input"] = inputs;  // Ollama 标准字段
 
-    // 2. 发送请求
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    // 【关键修复】如果提供了 Key，加入 Authorization 头
     if (!key.isEmpty()) {
         request.setRawHeader("Authorization", QString("Bearer " + key).toUtf8());
     }
@@ -3193,6 +3225,8 @@ QVector<double> AiWidget::getEmbedding(const QString &text, const QString &url2,
         if (reply->error() == QNetworkReply::NoError) {
             response = reply->readAll();
         } else {
+            response = reply->readAll();
+            qDebug() << response;
             qWarning() << "嵌入请求失败:" << reply->errorString();
             reply->deleteLater();
             return result;

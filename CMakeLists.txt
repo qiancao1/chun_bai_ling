@@ -176,7 +176,8 @@ else()
 
             ui/chatwidget.h
             ui/appwindow.h ui/appwindow.cpp
-            db/qdrantclient.h db/qdrantclient.cpp
+
+            db/vectormemory.h
 
 
 
@@ -227,7 +228,7 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/db
     ${CMAKE_CURRENT_SOURCE_DIR}/qt
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
-
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/hnswlib
     ${Python_INCLUDE_DIRS}
 )
 

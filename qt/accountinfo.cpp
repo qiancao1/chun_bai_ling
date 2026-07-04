@@ -22,7 +22,6 @@
 #include <QJsonArray>
 #include <qjsondocument.h>
 #include "jjm.h"
-
 // ============================================================
 
 QString AccountInfo::toJson() const {
@@ -146,6 +145,7 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
 
     info.times = obj["times"].toInt(5);
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
+
     info.shuap = obj["shuap"].toBool();
     info.pbbot =obj["pbbot"].toBool();
     info.tiaoshu = obj["tiaoshu"].toInt(5);

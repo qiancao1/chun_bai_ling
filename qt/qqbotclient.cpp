@@ -856,7 +856,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    qDebug() << ev.groupId <<ev.msg;
+    //qDebug() << ev.groupId <<ev.msg;
     Messages(m_info, ev);
     return ;
 }

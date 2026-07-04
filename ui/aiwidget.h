@@ -10,13 +10,16 @@
 #include <qtablewidget.h>
 #include "AccountInfo.h"
 #include "aifujia.h"
-#include "qdrantclient.h"
+
 #include "qqbotclient.h"
 #include "PlaceholderLineEdit.h"
 #include "PlaceholderTextEdit.h"
+#include "vectormemory.h"
 
 #define QLineEdit PlaceholderLineEdit
 #define QTextEdit PlaceholderTextEdit
+
+
 
 
 struct KeyData {
@@ -63,6 +66,7 @@ struct SessionContext {
     int ts=0;
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
     int duihts=0;
+    VectorMemory* memory = nullptr;
     QString groupId;
     QString msgId;
     QString openid;
@@ -89,7 +93,7 @@ public:
     QList<InterfaceData> globalInterfaces;
     void trimToolResponses(QJsonObject &context, int maxToolMessages, int truncateLimit);
     void trimContextByMessageCount(QJsonObject &context, int maxMessages);
-
+    QString trimContextByMessageCount2(QJsonObject &context, int maxMessages);
 
 public slots:
     void onNewMessage(AccountInfo* info, MessageEvent ev, bool send, bool notime);
@@ -160,7 +164,7 @@ private:
     void trimContextImages(QJsonObject &context, int maxImageMessages = 3);
     void convertContextImagesToBase64(QJsonObject &context);
 
-    QdrantClient *m_qdrantClient;
+
     // --- UI 控件指针 ---
     QTabWidget *tabWidget;
     Aifujia *ai_fujia;
