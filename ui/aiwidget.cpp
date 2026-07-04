@@ -3305,8 +3305,6 @@ void AiWidget::clearSessionResources(SessionContext &ctx)
     }
     delete ctx.memory;
     ctx.memory = nullptr;
-    delete ctx.accountInfo;
-    ctx.accountInfo = nullptr;
     ctx.pendingMessages.clear(); // 若元素含指针，需另行释放
 }
 
