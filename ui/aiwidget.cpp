@@ -2775,7 +2775,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         session.timer->start(session.accountInfo->nMinutesNoReply*60*1000);
     }
     if(!session.accountInfo->xiangliang) return;
-    if (session.duihts % 1 == 0 && !reply.isEmpty()) {
+    if (session.duihts % 5 == 0 && !reply.isEmpty()) {
         if (session.accountInfo->Embed_model.isEmpty()) return;
 
         QString newMsgs = trimContextByMessageCount2(baseContext, 10);

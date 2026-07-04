@@ -90,6 +90,7 @@ QString Homev=R"(
 - 增加 AI对向量数据库的支持 可以自己本地部署模型 或付费使用别人的
 - 部署链接[链接](https://ollama.com/download/windows) 如果不想下载这个 也可以用其他
 - 或者 [硅基流动](https://www.siliconflow.cn/) 有提供的免费向量模型 "BAAI/bge-m3"
+
 ## v1.1.0.10 (2026-06-26)
 - 修复 回复设置未保存问题
 - 增加 刷屏检测
