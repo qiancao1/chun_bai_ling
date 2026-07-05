@@ -9,7 +9,7 @@
 #include "jjm.h"
 #include "websocketserver.h"
 void stopImageServer();
-bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "");
+bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 void setUploadTokens(const QStringList &tokens);
 void set_ip(const QString &ip);
 QString ffmpegdiv;
@@ -389,6 +389,10 @@ void set::setupUI()
             Ews->setChecked(ws_server->open(port));
         }
     }
+    if( g_config["SSL"].toBool()) //要在 webhook之前
+    {
+        ESSL->setChecked(true);
+    }
     if(g_config["webhook_run"].toBool())
     {
         int port = g_config["webhook_p"].toInt();
@@ -397,10 +401,7 @@ void set::setupUI()
             Ewebhook->setChecked(onStartStopClicked(port));  //不会触发信号
         }
     }
-    if( g_config["SSL"].toBool())
-    {
-        ESSL->setChecked(true);
-    }
+
     connect(Ewebhook, &QCheckBox::clicked, [this](){
         int port = g_config["webhook_p"].toInt();
         if(port!=0){
@@ -642,7 +643,7 @@ bool set::onStartStopClicked(int port)
 
 
         if(ESSL->isChecked())
-            ok = startImageServer(port,"key.crt","key.key");
+            ok = startImageServer(port,"ssl.crt","ssl.key","ssl.pem");
         else
             ok = startImageServer(port);
         if (!ok) {

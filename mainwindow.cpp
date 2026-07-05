@@ -1031,9 +1031,27 @@ void MainWindow::checkUpdate() {
 }
 
 void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
+
+
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
+    if (QFile::exists(exePath)) {
+
+        QStringList arguments;
+        arguments << downloadUrl;
+        bool started = QProcess::startDetached(exePath, arguments);
+        if (started) {
+            QCoreApplication::quit();
+            return ;
+        }
+
+    }
+    QMessageBox::warning(this,"下载器不存在","下崽器不存在或者 运行失败 将直接下载 无法覆盖本文件名");
+
+
     QString cleanVersion = version;
     if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
-    QString exeName = QString("纯白铃-%1.exe").arg(cleanVersion);
+    QString exeName = QString("纯白铃铛-%1.exe").arg(cleanVersion);
     QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
 
     if (QFile::exists(savePath) && !QFile::remove(savePath)) {
@@ -1077,20 +1095,16 @@ void MainWindow::startDownloadAndReplace(const QString &version, const QString &
             progressDialog->deleteLater();
         };
 
-        // 被取消
         if (reply->error() == QNetworkReply::OperationCanceledError) {
             cleanup();
             return;
         }
 
-        // 网络错误
         if (reply->error() != QNetworkReply::NoError) {
             QMessageBox::critical(this, "下载失败", "网络错误: " + reply->errorString());
             cleanup();
             return;
         }
-
-        // 处理 HTTP 状态码
         int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QUrl finalUrl = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
         if (!finalUrl.isEmpty()) {
@@ -1143,6 +1157,7 @@ void MainWindow::startDownloadAndReplace(const QString &version, const QString &
         QCoreApplication::quit();
         cleanup();
     });
+
 }
 
 void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl) {

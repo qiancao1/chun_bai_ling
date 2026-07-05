@@ -57,37 +57,88 @@
 
 // 全局服务器指针和端口
 static void handleRequest(QTcpSocket *socket);
+
+
 class HttpImageServer : public QTcpServer
 {
     Q_OBJECT
+
 private:
     bool m_useSsl = false;
-    QSslCertificate m_cert;
+    QList<QSslCertificate> m_certChain;   // 完整证书链（第一个为服务器证书）
     QSslKey m_privateKey;
 
 public:
     explicit HttpImageServer(QObject *parent = nullptr) : QTcpServer(parent) {}
 
-    // 新增：加载证书，返回是否成功启用 SSL
-    bool setupSsl(const QString &certPath, const QString &keyPath)
+    // ========== 加载三个证书文件 ==========
+    // certPath: 服务器证书（PEM）
+    // keyPath:  私钥（无密码的 PEM）
+    // caPath:   中间证书链（PEM，可选）
+    bool setupSsl(const QString &certPath, const QString &keyPath, const QString &caPath = QString())
     {
         if (certPath.isEmpty() || keyPath.isEmpty()) {
             m_useSsl = false;
+            AppendEventLog("SSL setup: 文件路径为空");
             return false;
         }
-        QFile certFile(certPath), keyFile(keyPath);
-        if (!certFile.open(QIODevice::ReadOnly) || !keyFile.open(QIODevice::ReadOnly)) {
-            qWarning() << "Failed to read SSL cert/key files, fallback to HTTP.";
+
+        // 1. 加载服务器证书（作为链的第一个）
+        QFile certFile(certPath);
+        if (!certFile.open(QIODevice::ReadOnly)) {
+            AppendEventLog("SSL setup: 无法打开服务器证书文件 " + certPath);
             m_useSsl = false;
             return false;
         }
-        m_cert = QSslCertificate(&certFile, QSsl::Pem);
+        m_certChain = QSslCertificate::fromDevice(&certFile, QSsl::Pem);
+        certFile.close();
+        if (m_certChain.isEmpty()) {
+            AppendEventLog("SSL setup: 服务器证书文件无效或空");
+            m_useSsl = false;
+            return false;
+        }
+        QSslCertificate serverCert = m_certChain.first();  // 记录第一个证书用于去重
+
+        // 2. 如果提供了中间证书链，加载并追加（过滤与服务器证书相同的）
+        if (!caPath.isEmpty()) {
+            QFile caFile(caPath);
+            if (caFile.open(QIODevice::ReadOnly)) {
+                QList<QSslCertificate> caCerts = QSslCertificate::fromDevice(&caFile, QSsl::Pem);
+                caFile.close();
+                if (!caCerts.isEmpty()) {
+                    int added = 0;
+                    for (const QSslCertificate &cert : caCerts) {
+                        if (cert != serverCert) {   // 过滤重复
+                            m_certChain.append(cert);
+                            ++added;
+                        }
+                    }
+                    AppendEventLog(QString("SSL setup: 加载中间证书 %1 个，去重后添加 %2 个")
+                                       .arg(caCerts.size()).arg(added));
+                } else {
+                    AppendEventLog("SSL setup: 中间证书文件无有效证书");
+                }
+            } else {
+                AppendEventLog("SSL setup: 无法打开中间证书文件 " + caPath + "，忽略");
+            }
+        }
+
+        // 3. 加载私钥
+        QFile keyFile(keyPath);
+        if (!keyFile.open(QIODevice::ReadOnly)) {
+            AppendEventLog("SSL setup: 无法打开私钥文件 " + keyPath);
+            m_useSsl = false;
+            return false;
+        }
         m_privateKey = QSslKey(&keyFile, QSsl::Rsa, QSsl::Pem);
-        if (m_cert.isNull() || m_privateKey.isNull()) {
-            qWarning() << "Invalid SSL cert/key content, fallback to HTTP.";
+        keyFile.close();
+        if (m_privateKey.isNull()) {
+            AppendEventLog("SSL setup: 私钥无效（可能加密或格式错误）");
             m_useSsl = false;
             return false;
         }
+
+        AppendEventLog(QString("SSL setup 成功，证书链共 %1 个证书").arg(m_certChain.size()));
         m_useSsl = true;
         return true;
     }
@@ -101,26 +152,46 @@ protected:
             // ---------- HTTPS 分支 ----------
             QSslSocket *sslSocket = new QSslSocket();
             if (!sslSocket->setSocketDescriptor(socketDescriptor)) {
+                AppendEventLog("SSL: setSocketDescriptor 失败");
                 delete sslSocket;
                 return;
             }
-            sslSocket->setLocalCertificate(m_cert);
+
+            sslSocket->setLocalCertificateChain(m_certChain);
             sslSocket->setPrivateKey(m_privateKey);
 
-            // 关键：等 TLS 握手成功后再处理业务数据
-            connect(sslSocket, &QSslSocket::encrypted, this, [sslSocket]() {
-                handleRequest(sslSocket);  // 你的原有处理函数
+            // 强制 TLS 1.2（必须在 startServerEncryption 前）
+            QSslConfiguration config = sslSocket->sslConfiguration();
+            config.setProtocol(QSsl::TlsV1_2);
+            sslSocket->setSslConfiguration(config);
+
+            // 握手完成后连接 readyRead
+            connect(sslSocket, &QSslSocket::encrypted, this, [this, sslSocket]() {
+
+                connect(sslSocket, &QSslSocket::readyRead, this, [sslSocket]() {
+
+                    handleRequest(sslSocket);
+                });
+                // 如果握手后已有数据，立即处理
+                if (sslSocket->bytesAvailable() > 0) {
+
+                    handleRequest(sslSocket);
+                }
             });
-            // 握手失败则清理
-            connect(sslSocket, &QSslSocket::errorOccurred, this, [sslSocket]() {
+
+            // 错误处理
+            connect(sslSocket, &QSslSocket::errorOccurred, this, [sslSocket](QAbstractSocket::SocketError error) {
+                AppendEventLog("SSL 错误: " + QString::number(error) + " " + sslSocket->errorString());
                 sslSocket->deleteLater();
             });
-            // 断开连接时清理
+
+            // 断开清理
             connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
 
             sslSocket->startServerEncryption();
+
         } else {
-            // ---------- HTTP 分支（原有逻辑） ----------
+            // ---------- HTTP 分支 ----------
             QTcpSocket *socket = new QTcpSocket();
             if (!socket->setSocketDescriptor(socketDescriptor)) {
                 delete socket;
@@ -132,8 +203,11 @@ protected:
             connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
         }
     }
-};
 
+private:
+
+
+};
 
 HttpImageServer *g_server = nullptr;
 static quint16 g_port = 0;
@@ -642,10 +716,11 @@ QString uploadImageByPath(const QString &serverUrl, const QString &localPath, in
     }
     return urlResult;
 }
+
 QString webhook_sig(const QJsonObject &obj, const QString &secret);
 QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArray &body) {
 
-    if (!pathQuery.startsWith("/webhook/")) return "{}";
+
     bool ok;
     int appid = pathQuery.mid(9).toInt(&ok);
     if (!ok) return "{}";
@@ -653,21 +728,43 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(body, &err);
     if (err.error != QJsonParseError::NoError) return "{}";
-    auto it = m_botClients.find(appid);
-    if (it == m_botClients.end()) return "{}";
-    auto* client = it.value();
     QJsonObject obj = doc.object();
     int op = obj.value("op").toInt(-1);
-    if(op==13) return  webhook_sig(obj,client->m_info->secret); //优化方法 直接 文本判断 op 是否 13 再解析
+    auto it = m_botClients.find(appid);
+    if (it == m_botClients.end()){
+
+        if(op==13){
+            QStringList list = QString::fromUtf8(pathQuery).split("/");
+            if(list.size()>=3){
+                QString text =webhook_sig(obj,list[2]);
+                AppendEventLog("未存在的账号 "+list[1]+" secret:"+list[2]+" webhook 验证op:13 res:"+text);
+                return text;
+            }
+        }
+        static int jishu;
+        jishu++;
+        if(jishu%100){
+            AppendEventLog(QString("收到不在账号列表的机器人信息：%1 如果不是你的机器人 你可以尝试 更换端口 这里是 每100条只显示一条 内容：%2").arg(appid).arg(QString::fromUtf8(body)));
+        }
+        return "{}";
+    }
+    auto* client = it.value();
+
+
+    if(op==13){
+        QString text =webhook_sig(obj,client->m_info->secret); //优化方法 直接 文本判断 op 是否 13 再解析
+        AppendEventLog("webhook 验证op:13 res:"+text);
+        return text;
+    }
     client->onTextMessageReceived(QString::fromUtf8(body));
     return "{}";
 }
 
 static void handleRequest(QTcpSocket *socket)
 {
+
     static QHash<QTcpSocket*, QByteArray> buffers;
     buffers[socket].append(socket->readAll());
-
     QByteArray &buffer = buffers[socket];
     int headerEnd = buffer.indexOf("\r\n\r\n");
     if (headerEnd == -1)
@@ -689,6 +786,7 @@ static void handleRequest(QTcpSocket *socket)
         buffers.remove(socket);
         return;
     }
+
     QByteArray requestLine = lines[0].trimmed();
     QList<QByteArray> parts = requestLine.split(' ');
     if (parts.size() < 2) {
@@ -715,9 +813,9 @@ static void handleRequest(QTcpSocket *socket)
     }else if (method == "POST") {
         if (path.startsWith("/webhook/"))
         {
-
             sendResponse(socket, 200, "application/json",webhook(socket,path,body).toUtf8());
         }
+
         else if (path.startsWith("/upload")) {            // 原有的 /upload 或 /remote_upload
             handlePost(socket, headerPart, body, path);
         } else if (path == "/remote_upload" || path == "/remote_upload/") {
@@ -734,9 +832,6 @@ static void handleRequest(QTcpSocket *socket)
     socket->disconnectFromHost();
     buffers.remove(socket);
 }
-// 新增处理函数
-// TCP 服务器子类
-
 // 本地直接保存文件的辅助函数（供内部调用）
 QString upload(const QString &path)
 {
@@ -780,7 +875,7 @@ void stopImageServer()
 // 新增两个参数，默认空字符串表示不启用 SSL
 bool startImageServer(quint16 port,
                       const QString &certPath = "",
-                      const QString &keyPath = "")
+                      const QString &keyPath = "",const QString &ssl_pem="")
 {
     if(port!=g_port)
         stopImageServer();
@@ -796,9 +891,10 @@ bool startImageServer(quint16 port,
     g_ssl=false;
     // 尝试加载证书（如果提供了路径）
     if (!certPath.isEmpty() && !keyPath.isEmpty()) {
+        AppendEventLog("检测到SSL证书 启用SSL模型");
+        if (!g_server->setupSsl(certPath, keyPath,ssl_pem)) {
+            AppendEventLog("webhook SSL设置失败 请确认证书");
 
-        if (!g_server->setupSsl(certPath, keyPath)) {
-            qDebug() << "SSL setup failed, continuing with plain HTTP.";
         }else g_ssl=true;
     }
 
@@ -811,9 +907,9 @@ bool startImageServer(quint16 port,
 
     g_port = port;
     if (g_server->isSslEnabled()) {
-        qDebug() << "HTTPS Server started on port" << port;
+        AppendEventLog( "HTTPS Server started on port"+QString::number(port));
     } else {
-        qDebug() << "HTTP Server started on port" << port;
+        AppendEventLog( "HTTP Server started on port"+QString::number(port));
     }
     return true;
 }
@@ -879,12 +975,12 @@ QString uploadImageSync(const QString& serverUrl, const QString &token, const QS
     urlObj.setQuery(query);
     QString finalUrl = urlObj.toString();
 
-    // 4. 设置 Qt 请求
+
     QNetworkRequest request;
     request.setUrl(QUrl(finalUrl));
     request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
     request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
-    // 忽略 SSL 证书错误（与原 setVerifyCertificate(false) 一致）
+
     QSslConfiguration sslConfig = QSslConfiguration::defaultConfiguration();
     sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
     request.setSslConfiguration(sslConfig);

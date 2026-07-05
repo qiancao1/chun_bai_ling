@@ -96,6 +96,7 @@ void QQBotClient::start()
     }else{
         if(is_server())
         {
+            m_info->online=true;
             fetchSelfInfo();
         }else{
             AppendEventLog("未启动webhook服务器 请允许后再试试");
@@ -917,6 +918,7 @@ static bool loadSignatureDll() {
 
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     // 1. 提取字段
+
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
     QString event_ts = d.value("event_ts").toString();
@@ -959,8 +961,9 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     QJsonObject res;
     res["plain_token"] = plain_token;
     res["signature"] = signature;
+    QString text=  QJsonDocument(res).toJson(QJsonDocument::Compact);
 
-    return QJsonDocument(res).toJson(QJsonDocument::Compact);
+    return text;
 }
 QString QQBotClient::onTextMessage(const QString &message)
 {
