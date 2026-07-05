@@ -43,7 +43,7 @@ void WebSocketServer::onNewConnection()
     // 1. 检查是否处于封禁状态（10 秒内）
     if (m_tokenErrorBlocked) {
         if (m_tokenErrorTimer.elapsed() < 10000) {
-            qWarning() << "Server is temporarily blocking new connections (token error cooldown)";
+            qDebug() << "webui 登录冷却中";
             socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Server busy, please retry later");
             socket->deleteLater();
             return;
@@ -58,8 +58,8 @@ void WebSocketServer::onNewConnection()
     QString token = query.queryItemValue("token");
 
     if (token != ws_token) {
-        qWarning() << "Invalid token from" << socket->peerAddress().toString();
 
+        AppendEventLog("IP:"+ socket->peerAddress().toString()+" 尝试登录 webui token错误 有10秒全局冷却" ,0xff);
         // 2. 触发封禁（记录当前时间）
         m_tokenErrorBlocked = true;
         m_tokenErrorTimer.start();

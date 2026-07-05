@@ -291,11 +291,9 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
     QString pathOnly = (qmPos != -1) ? path.left(qmPos) : path;
     QString queryPart = (qmPos != -1) ? path.mid(qmPos + 1) : QString();
 
-    // 2. 提取 token（用于 index.html 替换）
     QUrlQuery urlQuery(queryPart);
     QString token = urlQuery.queryItemValue("token");
 
-    // 3. 映射 /webui/ 到相对路径
     QString relativePath;
     if (pathOnly.startsWith("/webui/")) {
         relativePath = pathOnly.mid(6);           // 去掉 "/webui/"
@@ -308,20 +306,17 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
         return;
     }
 
-    // 4. 规范化路径（消除 . 和 ..）
     relativePath = QDir::cleanPath(relativePath);
     if (relativePath.startsWith('/')) {
         sendErrorResponse(socket, 403, "Forbidden");
         return;
     }
 
-    // 5. 安全校验：禁止目录遍历
     if (relativePath.contains("..") || relativePath.startsWith("..")) {
         sendErrorResponse(socket, 403, "Forbidden");
         return;
     }
 
-    // 6. 组合实际文件路径，并校验是否在允许的根目录下
     QString baseDir = "./webui";
     QDir baseDirObj(baseDir);
     QString fullPath = baseDirObj.absoluteFilePath(relativePath);
@@ -336,7 +331,6 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
         return;
     }
 
-    // 读取文件
     QFile file(fullPath);
     if (!file.open(QIODevice::ReadOnly)) {
         sendErrorResponse(socket, 500, "Cannot open file");
@@ -345,23 +339,18 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
     QByteArray data = file.readAll();
     file.close();
 
-    // MIME 类型
     QMimeDatabase mimeDb;
     QString mimeType = mimeDb.mimeTypeForFile(fullPath).name();
     if (mimeType.isEmpty())
         mimeType = "application/octet-stream";
 
-    // 7. 仅对 index.html 进行占位符替换（包含端口和 token）
     if (fi.fileName() == "index.html") {
         QString content = QString::fromUtf8(data);
-        // 替换端口占位符
         content.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));
-        // 替换 token 占位符（优先使用请求中的 token，否则使用全局 ws_token）
-        QString finalToken = token.isEmpty() ? ws_token : token;
-        content.replace("占位符token", finalToken);
+
+        content.replace("占位符token", token);
         data = content.toUtf8();
     }
-
     sendResponse(socket, 200, mimeType.toUtf8(), data);
 }
 

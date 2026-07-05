@@ -244,7 +244,7 @@ void QQBotClient::onDisconnected()
     stopHeartbeatTimer();
     bool wasOnline = m_info->online;
     m_info->online = false;
-    m_info->autoConnect=false;
+
     m_isConnecting = false;
     if (wasOnline)
         emit disconnected();
@@ -415,6 +415,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.groupId = d.value("group_openid").toString();
         QJsonObject author = d.value("author").toObject();
         ev.user = author.value("union_openid").toString();
+        if (ev.user.isEmpty()) ev.user = author.value("id").toString();
         QString role= author.value("member_role").toString();
         if(role == "owner")
             ev.member_role = 0;
@@ -454,6 +455,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.type = 2;   // 私聊
         QJsonObject author = d.value("author").toObject();
         ev.user = author.value("union_openid").toString();
+        if (ev.user.isEmpty()) ev.user = author.value("id").toString();
         ev.groupId = ev.user;
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
