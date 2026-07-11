@@ -17,6 +17,7 @@ public:
     ~WebSocketServer();
     void close();
     bool open(quint16 port);
+    bool open(quint16 port, const QString &certPath, const QString &keyPath, const QString &caPath = QString());
     void broadcastMessage(const Message &msg, int appid, int type, const QString &groupId);
 
 private slots:

@@ -163,7 +163,7 @@ void set::setupUI()
     webhook_ssl = new QLineEdit(this);
     webhook_ssl_but = new QPushButton("确认");
 
-    webhook_ssl->setPlaceholderText("可选，可空..证书放置 运行目录/key.key,key.crt");
+    webhook_ssl->setPlaceholderText("可选，证书放置 运行目录/ssl.key,ssl.crt,ssl.pem");
 
     webws_port = new QLineEdit(this);
     web_qr = new QPushButton("确认");
@@ -352,6 +352,18 @@ void set::setupUI()
             return ;
         }
         g_config["webws_p"] = prot;
+        if(Ews->isChecked())
+        {
+            int port = g_config["webws_p"].toInt();
+
+            ws_server->close();
+            if(ESSL->isChecked())
+
+            Ews->setChecked(ws_server->open(port,"ssl.crt","ssl.key","ssl.pem"));  // 监听 8080 端口
+            else
+                Ews->setChecked(ws_server->open(port));
+
+        }
         saveConfig();
 
     });
@@ -363,36 +375,76 @@ void set::setupUI()
             return ;
         }
         g_config["webhook_p"] = prot;
+        if(Ewebhook->isChecked())
+        {
+            int port = g_config["webhook_p"].toInt();
+            Ewebhook->setChecked(false);
+            onStartStopClicked(port); //停止
+            Ewebhook->setChecked(true);  //不会触发信号
+            Ewebhook->setChecked(onStartStopClicked(port)); //重新开
+
+        }
         saveConfig();
 
     });
     //启用禁用webhook
 
 
-    connect(ESSL, &QCheckBox::clicked, [this](){
 
-            g_config["SSL"]=ESSL->isChecked();
-            saveConfig();
-
-    });
     connect(Eimg, &QCheckBox::clicked, [this](){
         e_img= Eimg->isChecked();
         g_config["e_img"]=e_img;
         saveConfig();
 
     });
+    if( g_config["SSL"].toBool()) //要在 webhook之前
+    {
+        ESSL->setChecked(true);
+    }
+
+    connect(ESSL, &QCheckBox::clicked, [this](){
+        bool ssl = ESSL->isChecked();
+        g_config["SSL"]=ssl;
+        if(Ewebhook->isChecked())
+        {
+            int port = g_config["webhook_p"].toInt();
+            Ewebhook->setChecked(false);
+            onStartStopClicked(port); //停止
+            Ewebhook->setChecked(true);  //不会触发信号
+            Ewebhook->setChecked(onStartStopClicked(port)); //重新开
+
+        }
+
+        if(Ews->isChecked())
+        {
+            int port = g_config["webws_p"].toInt();
+
+            ws_server->close();
+            if(ESSL->isChecked())
+
+                Ews->setChecked(ws_server->open(port,"ssl.crt","ssl.key","ssl.pem"));  // 监听 8080 端口
+            else
+                Ews->setChecked(ws_server->open(port));
+
+        }
+        saveConfig();
+
+    });
+
     ws_server = new WebSocketServer;
     if(g_config["webws_run"].toBool())
     {
         int port = g_config["webws_p"].toInt();
         if(port!=0){
-            Ews->setChecked(ws_server->open(port));
+
+            if(ESSL->isChecked())
+
+                Ews->setChecked(ws_server->open(port,"ssl.crt","ssl.key","ssl.pem"));  // 监听 8080 端口
+            else
+                Ews->setChecked(ws_server->open(port));
         }
     }
-    if( g_config["SSL"].toBool()) //要在 webhook之前
-    {
-        ESSL->setChecked(true);
-    }
+
     if(g_config["webhook_run"].toBool())
     {
         int port = g_config["webhook_p"].toInt();
@@ -421,7 +473,11 @@ void set::setupUI()
         }
         if(Ews->isChecked())
         {
-            ws_server->open(port);  // 监听 8080 端口
+            if(ESSL->isChecked())
+
+                ws_server->open(port,"ssl.crt","ssl.key","ssl.pem");  // 监听 8080 端口
+            else
+                ws_server->open(port);  // 监听 8080 端口
             g_config["webws_run"]=true;
             saveConfig();
         }
@@ -441,7 +497,11 @@ void set::set_webui(bool value)
             int port = g_config["webws_p"].toInt();
             if(port==0) return ;
 
-            ws_server->open(port);  // 监听 8080 端口
+            if(ESSL->isChecked())
+
+                ws_server->open(port,"ssl.crt","ssl.key","ssl.pem");  // 监听 8080 端口
+            else
+                ws_server->open(port);  // 监听 8080 端口
             Ews->setChecked(true);
             g_config["webws_run"]=true;
             saveConfig();

@@ -142,7 +142,7 @@ private:
     void refreshRow(int rowIndex);              // 刷新某行 UI
     void updateButtonWidths();                  // 自适应按钮宽度
     ButtonData getDefaultButtonData(int id) const;
-
+    void generateJson2();
     // 数据模型
     QList<QList<DragButton*>> m_buttonRows;   // 行 -> 按钮列表
     QMap<int, DragButton*> m_buttonMap;       // id -> 按钮指针

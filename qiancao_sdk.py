@@ -180,7 +180,7 @@ class QQApi:
         :param uset: 用户id（参数2）
         """
         return self._callback(self.API_ID_GET_MEMBER, appid, openid, uset)     
-     def get_member_list(self,appid: int,  openid : str, limit : int) -> Dict:
+    def get_member_list(self,appid: int,  openid : str, limit : int) -> Dict:
         """
         获取指定群成员列表 返回json 这个是未开放的api 保留
         :param appid: Bot appid

@@ -55,15 +55,7 @@ QJsonObject ButtonData::toJson() const {
     QJsonObject renderData;
     renderData["label"] = label;
     renderData["visited_label"] = visitedLabel;
-    if(style==9999)
-    {
-        QJsonObject renderData2;
-        renderData2["font_size"] = "small";
-        renderData["style"] = renderData2;
-    }else{
-        renderData["style"] = style;
-    }
-
+    renderData["style"] = style;
     result["render_data"] = renderData;
     QJsonObject action;
     action["type"] = actionType;
@@ -213,7 +205,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     m_styleCombo->addItem("灰线红文本 (3)", 3);
     m_styleCombo->addItem("蓝低白文本 (4)", 4);
     m_styleCombo->addItem("保留 (5)", 5);
-    m_styleCombo->addItem("小按钮 (n)", 9999);
+
     basicLayout->addRow("按钮样式 (style):", m_styleCombo);
 
     m_actionTypeCombo = new QComboBox;
@@ -489,10 +481,12 @@ void ButtonEditor::initUI() {
     QVBoxLayout *bottomLayout = new QVBoxLayout(bottomWidget);
     QHBoxLayout *jsonBtnLayout = new QHBoxLayout();
     QPushButton *genBtn = new QPushButton("📋 生成JSON", this);
+    QPushButton *genBtn_min = new QPushButton("📋 生成JSON(小按钮)", this);
     QPushButton *loadBtn = new QPushButton("📂 从JSON加载", this);
     QPushButton *copyBtn = new QPushButton("📄 复制", this);
     QPushButton *saveBtn = new QPushButton("💾 保存", this);
     jsonBtnLayout->addWidget(genBtn);
+    jsonBtnLayout->addWidget(genBtn_min);
     jsonBtnLayout->addWidget(loadBtn);
     jsonBtnLayout->addWidget(copyBtn);
     jsonBtnLayout->addWidget(saveBtn);
@@ -509,6 +503,7 @@ void ButtonEditor::initUI() {
     connect(delBtn, &QPushButton::clicked, this, &ButtonEditor::deleteSelectedButton);
     connect(clearBtn, &QPushButton::clicked, this, &ButtonEditor::clearAllButtons);
     connect(genBtn, &QPushButton::clicked, this, &ButtonEditor::generateJson);
+    connect(genBtn_min, &QPushButton::clicked, this, &ButtonEditor::generateJson2);
     connect(loadBtn, &QPushButton::clicked, this, &ButtonEditor::loadFromJson);
     connect(copyBtn, &QPushButton::clicked, this, &ButtonEditor::copyToClipboard);
     connect(saveBtn, &QPushButton::clicked, this, &ButtonEditor::saveToFile);
@@ -769,7 +764,25 @@ void ButtonEditor::generateJson() {
     root["keyboard"] = keyboard;
     m_jsonPreview->setPlainText(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
-
+void ButtonEditor::generateJson2() {
+    QJsonObject root, keyboard, content;
+    QJsonArray rowsArray;
+    for (const QList<DragButton*> &row : std::as_const(m_buttonRows)) {
+        QJsonObject rowObj;
+        QJsonArray btnsArray;
+        for (DragButton *btn : row)
+            btnsArray.append(btn->getButtonData().toJson());
+        rowObj["buttons"] = btnsArray;
+        rowsArray.append(rowObj);
+    }
+    content["rows"] = rowsArray;
+    QJsonObject o;
+    o["font_size"]="small";
+    content["style"] = o;
+    keyboard["content"] = content;
+    root["keyboard"] = keyboard;
+    m_jsonPreview->setPlainText(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
 void ButtonEditor::loadFromJson() {
     QString txt = m_jsonPreview->toPlainText();
     if (txt.isEmpty()) {

@@ -316,7 +316,11 @@ void PluginPage::setupUi()
         } else if(m_pluginList[currentSelected_index].type==1) {
             if(m_pluginList[currentSelected_index].DLL.onSet) m_pluginList[currentSelected_index].DLL.onSet();
         } else if(m_pluginList[currentSelected_index].type==2) {
-            sendData32(9,m_pluginList[currentSelected_index]);
+            QString res = sendData32(9,m_pluginList[currentSelected_index]);
+            QString text ="打开" + m_pluginList[currentSelected_index].name + "设置 结果：" + res + "\n如果返回失败代表 你可能有顶级窗口独占线程 请关闭那个窗口才能打开新窗口";
+            AppendEventLog(text);
+            if(res=="true") return;
+            QMessageBox::warning(this,"",text);
         }
     });
     connect(pypip, &QPushButton::clicked,this, [this]() {
@@ -444,6 +448,7 @@ void PluginPage::insertPlugin(int index, const PluginInfo &info) {
 
 void PluginPage::removePlugin(int index) {
     if (index < 0 || index >= m_pluginList.size()) return;
+    py::gil_scoped_acquire gil;
     m_pluginList.removeAt(index);
     delete pluginListWidget->takeItem(index);  // 同时删除 UI 条目
 }
@@ -872,7 +877,7 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
 bool PluginPage::uninstall_Plugin(int index)
 {
 
-    if (index<=-1 && index>m_pluginList.length()) return false;
+    if (index<=-1 || index>m_pluginList.length()) return false;
     if (QMessageBox::question(this, "确认卸载",QString("确定要卸载插件 '%1' 吗？此操作不可恢复。").arg(m_pluginList[index].name))!= QMessageBox::Yes)return false;
     AppendEventLog("[卸载插件]"+m_pluginList[index].name);
     if(!uninstall_Plugin(m_pluginList[index]))
@@ -882,7 +887,8 @@ bool PluginPage::uninstall_Plugin(int index)
         return false;
     }
     removePlugin(index);
-    currentSelected_index=-1;
+    onPluginSelected(currentSelected_index);
+
     detailIconLabel->clear();
     detailNameLabel->clear();
     detailTypeLabel->clear();

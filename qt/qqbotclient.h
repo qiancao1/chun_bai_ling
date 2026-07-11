@@ -97,6 +97,9 @@ public:
     QString send_messages_markdown(int type,const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                    const QJsonObject keyboard,const QString &message_reference,
                                    const QString &msgid,bool is_wakeup=false);
+    QString send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
+                                          const QJsonObject keyboard,const QString &message_reference,
+                                          const QString &msgid,bool is_wakeup);
     QString send_messages_pd(const QString &url, const QString &msgId, const QString &content, const QString &imagePath, const QString &message_reference);
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
@@ -143,7 +146,7 @@ private:
                             qint64& expireTime,QString &md5, bool &ok);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
     void addmsglog(QString &response, int index, QString &pname, const QString &text, qint64 now_us, int type, QString &msgid, const QString &openid);
-    void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid);
+    void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();
     void sendHeartbeat();

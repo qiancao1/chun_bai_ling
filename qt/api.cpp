@@ -1990,11 +1990,14 @@ QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     result["rows"] = rowsArray;
     return result;
 }
-void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJsonArray &prompt_keyboard,const QString &openid)
+void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJsonArray &prompt_keyboard,const QString &openid,QString &mb)
 {
     QString keyboard_data = extractBetween(text,"#b:#","#b:#");
     if(!keyboard_data.isEmpty())
         text=replaceBetweenAll(text,"#b:#","#b:#","");
+    mb = extractBetween(text,"#mb:#","#mb:#");
+    if(!mb.isEmpty())
+        text=replaceBetweenAll(text,"#mb:#","#mb:#","");
     int index = mapTypeToTabIndex(type);
 
     Message log2;
@@ -2226,12 +2229,13 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         auto [index, realMsgId] = splitWrappedMsgId(msgid);
         QJsonObject keyboard;
         QJsonArray prompt_keyboard;
-        QString message_reference;
+        QString message_reference,mb;
 
         QString textB=normalizeNewlinesToCR(text); //处理换行
 
-        bianl(type,index,textB,keyboard,prompt_keyboard,openid);//挂载按钮解析 小尾巴
-        if(textB.isEmpty())
+        bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+        bool mbise= mb.isEmpty();
+        if(textB.isEmpty() && mbise)
         {
             QString response = R"({"message":"发送内容不能为空"})";
             addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
@@ -2240,13 +2244,49 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         QString response,fileinfo;
         if(type==1 || type ==3)
         {
+            if(!mbise)
+            {
+                textB = processImageTags2(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                if(textB.contains("[image,path="))
+                    textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
 
-            if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+                QString textA = forbidden->filterText(textB);
+                response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                if(response.contains("token not exist or expire")) //token过期
+                {
+                    m_accessToken.clear();
+                    refreshAccessToken();
+                    response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                }else if(response.isEmpty())
+                {
+                    textB="#mb:#"+ mb+"#mb:#" ;
+                }else{
+                    addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+                    return response;
+                }
+            }
+            if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
             {
                 textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
                 if(textB.contains("[image,path="))
                     textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                QString textA = forbidden->filterText(textB);
 
+                //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                response = R"("message":"暂时不支持模板方式")";
+                if(response.contains("token not exist or expire")) //token过期
+                {
+                    m_accessToken.clear();
+                    refreshAccessToken();
+                    response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+                }
+
+
+            }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+            {
+                textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+                if(textB.contains("[image,path="))
+                    textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
                 QString textA = forbidden->filterText(textB);//违禁词过滤
                 response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
                 if(response.contains("token not exist or expire")) //token过期
@@ -2255,17 +2295,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                     refreshAccessToken();
                     response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
                 }
-            }else if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
-            {
-                textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-                if(textB.contains("[image,path="))
-                    textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-                QString textA = forbidden->filterText(textB);
-                QString response = R"({"message":"暂时不支持 模板发送"})";
-                addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
-                return response;
-
-            }else{
+            }else {
                 textB = processImageTags2(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
                 if(textB.contains("[image,path="))
                     textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
@@ -2283,7 +2313,27 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
             addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
             return response;
         }
+        if(!mbise)
+        {
+            textB = processImageTags2(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if(textB.contains("[image,path="))
+                textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
 
+            QString textA = forbidden->filterText(textB);
+            response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+            if(response.contains("token not exist or expire")) //token过期
+            {
+                m_accessToken.clear();
+                refreshAccessToken();
+                response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+            }else if(response.isEmpty())
+            {
+                textB="#mb:#"+ mb+"#mb:#" ;
+            }else{
+                addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+                return response;
+            }
+        }
         if(!mode && m_info->markdown || mode && 发送类型==1)
         {
             textB = processImageTags2(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
@@ -2371,6 +2421,33 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     QJsonObject json;
     json["msg_type"] = 2;
     json["markdown"] = QJsonObject{{"content", markdown}};
+
+    if (keyboard.contains("keyboard")){
+        json["keyboard"] = keyboard["keyboard"];
+    }else if(keyboard.contains("content")){
+        json["keyboard"] = keyboard;
+    }else if(keyboard.contains("rows")){
+        json["keyboard"] = QJsonObject{{"content",keyboard}};
+    }
+
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
+    QString url= get_url(type,openid,"messages");
+    return _Post(url, json, 5000);
+}
+QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
+                                            const QJsonObject keyboard,const QString &message_reference,
+                                            const QString &msgid,bool is_wakeup)
+{
+    QJsonObject json;
+    json["msg_type"] = 2;
+    QJsonParseError err;
+    QJsonDocument dom =QJsonDocument::fromJson(markdown.toUtf8(),&err);
+    if(err.error !=QJsonParseError::NoError)
+    {
+        return QString();
+    }
+
+    json["markdown"] = dom.object();
 
     if (keyboard.contains("keyboard")){
         json["keyboard"] = keyboard["keyboard"];

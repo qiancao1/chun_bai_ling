@@ -103,21 +103,18 @@ QString normalizeNewlinesToCR(const QString &input)
     result.reserve(input.size());
     int i = 0;
     const int len = input.size();
-
     while (i < len) {
         const QChar ch = input[i];
         if (ch == '\r') {
             if (i + 1 < len && input[i + 1] == '\n') {
-                // \r\n 统一替换为 \n
                 result.append('\n');
-                ++i; // 跳过 \n
+                ++i;
             } else {
-                // 单独的 \r 保留
+
                 result.append('\r');
             }
         }
         else if (ch == '\n') {
-            // 单独的 \n 仍转换为 \r（保持原有行为，可根据需要调整）
             result.append('\r');
         }
         else {
@@ -125,8 +122,10 @@ QString normalizeNewlinesToCR(const QString &input)
         }
         ++i;
     }
-
-    // 移除最后的字面量替换（原代码处理 "\\n"，并非换行符）
+    if(result.contains("\\n"))
+    {
+        result = subTextReplace(result,"\\n","\r");
+    }
     return result;
 }
 QString python_code3(const QString &py_code,const MessageEvent &msg)

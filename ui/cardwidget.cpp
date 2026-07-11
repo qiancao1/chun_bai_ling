@@ -147,9 +147,8 @@ void CardWidget::onTimeRefresh() {
         qint64 now = QDateTime::currentSecsSinceEpoch();
         qint64 elapsed = now - m_info->startup_time;
         m_durationLabel->setText("在线:" + formatDuration(elapsed));
-
-        m_receivedLabel->setText(QString("累计收发:%1,%2").arg(m_info->message_received).arg(m_info->message_sent ));
-        m_sentLabel->setText(QString("运行收发:%1,%2").arg(m_info->received).arg(m_info->sent));
+        m_receivedLabel->setText(QString("累计:%1,%2").arg(m_info->message_received).arg(m_info->message_sent ));
+        m_sentLabel->setText(QString("收发:%1,%2").arg(m_info->received).arg(m_info->sent));
     } else {
         m_durationLabel->setText("离线");
     }

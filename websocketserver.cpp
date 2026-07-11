@@ -9,6 +9,10 @@
 #include <qjsondocument.h>
 #include <qjsonobject.h>
 #include <qtimer.h>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QSslKey>
+
 QString getBotName(int appid);
 
 
@@ -22,6 +26,71 @@ WebSocketServer::WebSocketServer(QObject *parent)
 bool WebSocketServer::open(quint16 port)
 {
     if (!m_server->listen(QHostAddress::Any, port)) return false;
+    connect(m_server, &QWebSocketServer::newConnection, this, &WebSocketServer::onNewConnection);
+    return true;
+}
+
+
+
+bool WebSocketServer::open(quint16 port, const QString &certPath, const QString &keyPath, const QString &caPath)
+{
+    // 1. 加载证书和私钥
+    QFile certFile(certPath);
+    QFile keyFile(keyPath);
+    if (!certFile.open(QIODevice::ReadOnly) || !keyFile.open(QIODevice::ReadOnly)) {
+        qCritical() << "Failed to open certificate or key file";
+        return false;
+    }
+
+    QSslCertificate cert(&certFile, QSsl::Pem);
+    QSslKey key(&keyFile, QSsl::Rsa, QSsl::Pem);
+    certFile.close();
+    keyFile.close();
+
+    if (cert.isNull() || key.isNull()) {
+        qCritical() << "Invalid certificate or private key";
+        return false;
+    }
+
+    // 2. 构建 SSL 配置
+    QSslConfiguration sslConfig;
+    sslConfig.setLocalCertificate(cert);
+    sslConfig.setPrivateKey(key);
+
+    // 3. 处理证书链（如果需要）
+    if (!caPath.isEmpty()) {
+        QFile caFile(caPath);
+        if (caFile.open(QIODevice::ReadOnly)) {
+            QSslCertificate caCert(&caFile, QSsl::Pem);
+            if (!caCert.isNull()) {
+                // 证书链顺序：服务器证书在前，中间证书在后（从叶到根）
+                QList<QSslCertificate> chain;
+                chain << cert << caCert;   // 如果有多个中间证书，继续 append
+                sslConfig.setLocalCertificateChain(chain);
+            } else {
+                qWarning() << "Failed to load CA certificate";
+            }
+        }
+    }
+
+    // 4. 其他 SSL 设置（可选）
+    sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);  // 服务端通常不需要验证客户端
+
+    // 5. 创建安全模式的 WebSocket 服务器
+    if (m_server) {
+        delete m_server;
+        m_server = nullptr;
+    }
+    m_server = new QWebSocketServer("ChatBackend", QWebSocketServer::SecureMode, this);
+    m_server->setSslConfiguration(sslConfig);
+
+    // 6. 监听端口
+    if (!m_server->listen(QHostAddress::Any, port)) {
+        qCritical() << "Failed to listen on port" << port;
+        return false;
+    }
+
+    // 7. 连接新连接信号
     connect(m_server, &QWebSocketServer::newConnection, this, &WebSocketServer::onNewConnection);
     return true;
 }

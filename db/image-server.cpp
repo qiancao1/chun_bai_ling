@@ -103,7 +103,7 @@ public:
         if (!caPath.isEmpty()) {
             QFile caFile(caPath);
             if (caFile.open(QIODevice::ReadOnly)) {
-                QList<QSslCertificate> caCerts = QSslCertificate::fromDevice(&caFile, QSsl::Pem);
+                const QList<QSslCertificate> caCerts = QSslCertificate::fromDevice(&caFile, QSsl::Pem);
                 caFile.close();
                 if (!caCerts.isEmpty()) {
                     int added = 0;
@@ -157,22 +157,25 @@ protected:
                 return;
             }
 
+
+            // 设置证书链和私钥
             sslSocket->setLocalCertificateChain(m_certChain);
             sslSocket->setPrivateKey(m_privateKey);
 
-            // 强制 TLS 1.2（必须在 startServerEncryption 前）
-            QSslConfiguration config = sslSocket->sslConfiguration();
-            config.setProtocol(QSsl::TlsV1_2);
-            sslSocket->setSslConfiguration(config);
+
+            //QSslConfiguration config = sslSocket->sslConfiguration();
+            //config.setProtocol(QSsl::TlsV1_2);
+            //sslSocket->setSslConfiguration(config);
 
             // 握手完成后连接 readyRead
             connect(sslSocket, &QSslSocket::encrypted, this, [this, sslSocket]() {
 
+                // 每次有数据到达都调用 handleRequest
                 connect(sslSocket, &QSslSocket::readyRead, this, [sslSocket]() {
 
                     handleRequest(sslSocket);
                 });
-                // 如果握手后已有数据，立即处理
+
                 if (sslSocket->bytesAvailable() > 0) {
 
                     handleRequest(sslSocket);
@@ -420,8 +423,8 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
 
     if (fi.fileName() == "index.html") {
         QString content = QString::fromUtf8(data);
+        content.replace("占位符方式",  g_ssl ? "wss" : "ws");
         content.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));
-
         content.replace("占位符token", token);
         data = content.toUtf8();
     }
@@ -735,15 +738,17 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
 
         if(op==13){
             QStringList list = QString::fromUtf8(pathQuery).split("/");
-            if(list.size()>=3){
-                QString text =webhook_sig(obj,list[2]);
-                AppendEventLog("未存在的账号 "+list[1]+" secret:"+list[2]+" webhook 验证op:13 res:"+text);
-                return text;
+            if(list.size()>=4){
+                if(list[3].size()>20){
+                    QString text =webhook_sig(obj,list[3]);
+                    AppendEventLog("未存在的账号 "+list[2]+" secret:"+list[3]+" webhook 验证op:13 res:"+text);
+                    return text;
+                }
             }
         }
         static int jishu;
         jishu++;
-        if(jishu%100){
+        if(jishu%100==0){
             AppendEventLog(QString("收到不在账号列表的机器人信息：%1 如果不是你的机器人 你可以尝试 更换端口 这里是 每100条只显示一条 内容：%2").arg(appid).arg(QString::fromUtf8(body)));
         }
         return "{}";
