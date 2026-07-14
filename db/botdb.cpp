@@ -85,7 +85,7 @@ bool BotDB::open()
     mdb_env_set_maxdbs(m_env, 10);
     mdb_env_set_mapsize(m_env, m_currentMapSize);
     QByteArray pathBytes = m_path.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), 0, 0664);
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_open 失败:" << mdb_strerror(rc);
         mdb_env_close(m_env);
@@ -157,7 +157,7 @@ bool BotDB::reopenEnvironment()
 
     mdb_env_set_mapsize(m_env, m_currentMapSize);
     QByteArray pathBytes = m_path.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), 0, 0664);
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
         mdb_env_close(m_env);
         m_env = nullptr;

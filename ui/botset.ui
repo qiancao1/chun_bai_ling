@@ -38,10 +38,17 @@
        </property>
       </widget>
      </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="label_3">
-       <property name="text">
-        <string>信息未被处理是：</string>
+     <item row="1" column="0">
+      <widget class="QTextEdit" name="textEdit">
+       <property name="placeholderText">
+        <string>#python 开头为py代码</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QTextEdit" name="textEdit_2">
+       <property name="placeholderText">
+        <string>用户退群时 #python 开头位py代码 仅限全量群可用</string>
        </property>
       </widget>
      </item>
@@ -52,21 +59,90 @@
        </property>
       </widget>
      </item>
-     <item row="1" column="0">
-      <widget class="QTextEdit" name="textEdit">
+     <item row="2" column="0">
+      <widget class="QTextEdit" name="textEdit_3">
        <property name="placeholderText">
-        <string>#python 开头为py代码</string>
+        <string>用户加群时发送-#python开头为py代码 </string>
        </property>
       </widget>
      </item>
+     <item row="0" column="1">
+      <widget class="QLabel" name="label_3">
+       <property name="text">
+        <string>信息未被处理是：</string>
+       </property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <layout class="QHBoxLayout" name="horizontalLayout_2">
+       <item>
+        <widget class="QLabel" name="label_5">
+         <property name="text">
+          <string>延迟发送(秒):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_2">
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_6">
+         <property name="text">
+          <string>发送间隔(秒)：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_3">
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item row="5" column="0">
+      <layout class="QHBoxLayout" name="horizontalLayout">
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="label_7">
+         <property name="text">
+          <string>延迟发送(秒):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_4"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="label">
+         <property name="text">
+          <string>发送间隔(秒)：</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit">
+         <property name="placeholderText">
+          <string/>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QTextEdit" name="textEdit_3">
-     <property name="placeholderText">
-      <string>用户加群时发送-#python开头为py代码 </string>
-     </property>
-    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_3">
@@ -74,16 +150,9 @@
       <number>0</number>
      </property>
      <item>
-      <widget class="QLabel" name="label">
+      <widget class="QLabel" name="label_4">
        <property name="text">
-        <string>每次发送间隔(秒)：</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="lineEdit">
-       <property name="placeholderText">
-        <string>推荐24小时..86400秒</string>
+        <string>指令：【设置入群提示,取消入群提示,设置退群提示，取消入群提示】 你可以不写让他们强制开启默认开启</string>
        </property>
       </widget>
      </item>
@@ -95,13 +164,6 @@
       </widget>
      </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QLabel" name="label_4">
-     <property name="text">
-      <string>指令：设置入群提示,取消入群提示 你可以不写让他们强制开启默认开启</string>
-     </property>
-    </widget>
    </item>
   </layout>
  </widget>

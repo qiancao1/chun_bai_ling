@@ -592,9 +592,8 @@ void onMessageReceived(const MessageEvent &msg,int i) {
                 QString contactId = msg.groupId;
                 QString msgIdNormal = msg.msgId;
                 QString msgIdRetry = msg.msgId;
-                QString nickname = client->m_info->nickname;
                 SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                            msgIdNormal, msgIdRetry, nickname, false);
+                                                            msgIdNormal, msgIdRetry,"["+m_pluginList[i].name+"|%1ms]", false);
                 QThreadPool::globalInstance()->start(task);
             }
             return ;
@@ -609,10 +608,9 @@ void onMessageReceived(const MessageEvent &msg,int i) {
                     if (client) {
                         QString contactId = msg.groupId;
                         QString msgIdNormal = msg.msgId;
-                        QString msgIdRetry = msg.msgId;
-                        QString nickname = client->m_info->nickname;
+
                         SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                                    msgIdNormal, msgIdRetry, nickname, false);
+                                                                    msgIdNormal, "","["+m_pluginList[i].name+"|%1ms]", false);
                         QThreadPool::globalInstance()->start(task);
                     }
                 }

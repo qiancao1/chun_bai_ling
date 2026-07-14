@@ -26,6 +26,11 @@ void botset::列表行被单击()
         ui->textEdit->setPlainText(info->welcomeMsg);
         ui->textEdit_3->setPlainText(info->rqhy);
         ui->lineEdit->setText(QString::number(info->fasjg));
+        ui->lineEdit_4->setText(QString::number(info->rq_ychf));
+
+        ui->textEdit_2->setText(info->tqhy);
+        ui->lineEdit_2->setText(QString::number(info->tq_ychf));
+        ui->lineEdit_3->setText(QString::number(info->tq_lq));
     }
 }
 void botset::on_pushButton_clicked()
@@ -44,8 +49,11 @@ void botset::on_pushButton_clicked()
     info->fallbackReply = ui->wclhf->toPlainText();
     info->welcomeMsg= ui->textEdit->toPlainText();
     info->rqhy = ui->textEdit_3->toPlainText();
+    info->rq_ychf = ui->lineEdit_4->text().toInt();
+    info->tqhy= ui->textEdit_2->toPlainText();
+    info->tq_ychf = ui->lineEdit_2->text().toInt();
+    info->tq_lq = ui->lineEdit_3->text().toInt();
 
-    info->fasjg = ui->lineEdit->text().toInt();
     accountPage->saveAccounts(info.get());
 }
 

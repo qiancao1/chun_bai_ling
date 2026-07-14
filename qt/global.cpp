@@ -295,7 +295,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
 }
 
 QString python_code(const QString &py_code,const MessageEvent &msg);
-QString ruqunhy(const AccountInfo *info,const MessageEvent &ev);
+QString ruqunhy(AccountInfo *info,const MessageEvent &ev);
 QString 内置指令(MessageEvent &ev)
 {
     QString text;
@@ -396,6 +396,8 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
                 client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
             }
         }
+
+
     }
     QString text;
     QString ret= 内置指令(ev);
@@ -508,55 +510,163 @@ bool shuaping(AccountInfo *info, const MessageEvent &ev) {
     return false;
 }
 
-QString ruqunhy(const AccountInfo *info,const MessageEvent &ev)
+QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
-    if(ev.type!=0) return QString(); //0代表群
-    if(ev.member_role<2)//设置入群提示,取消入群提示 0群主 1管理 2群成员
-    {
-        if(ev.msg=="设置入群提示")
-        {
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId,gid);
-            if (!(gid.bitmap & 2))  return "当前已经设置 入群提示"; //已经关闭入群提示
-            gid.bitmap &= ~2;
-            db->addGroup(ev.groupId,gid);
-            return "设置入群提示成功";
+    if (ev.type != 0) return QString(); // 仅群聊
 
-        }else if(ev.msg=="取消入群提示"){
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId,gid);
-            if (gid.bitmap & 2)  return "当前没有设置 入群提示"; //已经关闭入群提示
-            gid.bitmap |= 2;
-            db->addGroup(ev.groupId,gid);
-            return "取消入群提示成功 如需打开 请发送 [设置入群提示]()";
-        }
-    }
-    if(ev.subType==2)
-    {
-        if(info->rqhy.isEmpty()) return QString();
+    // ---------- 管理员命令（立即处理，与原逻辑相同） ----------
+    if (ev.member_role < 2) {
         auto *db = g_botdb[info->appid_int];
         GroupRecord gid;
-        db->getGroupInfo(ev.groupId,gid);
-        if (gid.bitmap & 2) return QString(); //已经关闭入群提示
-        qint64 now = QDateTime::currentSecsSinceEpoch();
-        qint64 CD=gid.xychy_time - now;
-        if(CD <= 0 || info->fasjg<=0 || CD > info->fasjg)
-        {
-            if(info->fasjg>0)
-            {
-                gid.xychy_time= now + info->fasjg;
-                db->addGroup(ev.groupId,gid);
-            }
-            if(!info->rqhy.startsWith("#python")) return info->rqhy;
-            return python_code(info->rqhy,ev);
+        db->getGroupInfo(ev.groupId, gid);
+
+        if (ev.msg == "设置入群提示") {
+            if (!(gid.bitmap & 2))  return "当前已经设置 入群提示";
+            gid.bitmap &= ~2;
+            db->addGroup(ev.groupId, gid);
+            return "设置入群提示成功";
+        } else if (ev.msg == "取消入群提示") {
+            if (gid.bitmap & 2)  return "当前没有设置 入群提示";
+            gid.bitmap |= 2;
+            db->addGroup(ev.groupId, gid);
+            return "取消入群提示成功 如需打开 请发送 [设置入群提示]()";
         }
+
+        if (ev.msg == "设置退群提示") {
+            if (!(gid.bitmap & 4))  return "当前已经设置 退群提示";
+            gid.bitmap &= ~4;
+            db->addGroup(ev.groupId, gid);
+            return "设置退群提示成功";
+        } else if (ev.msg == "取消退群提示") {
+            if (gid.bitmap & 4)  return "当前没有设置 退群提示";
+            gid.bitmap |= 4;
+            db->addGroup(ev.groupId, gid);
+            return "取消退群提示成功 如需打开 请发送 [设置退群提示]()";
+        }
+        // 其他管理命令不处理，继续往下
+    }
+
+    // ---------- 入群事件（缓存起来，等待主线程合并发送） ----------
+    if (ev.subType == 2) {
+        if (info->rqhy.isEmpty()) return QString(); // 无回复内容则忽略
+
+        auto *db = g_botdb[info->appid_int];
+        GroupRecord gid;
+        db->getGroupInfo(ev.groupId, gid);
+        if (gid.bitmap & 2) return QString(); // 已关闭入群提示
+        qint64 now = QDateTime::currentSecsSinceEpoch();
+        if (info->fasjg > 0) {
+            qint64 lastSend = gid.xychy_time;
+            if (now - lastSend < info->fasjg) {
+                return QString();
+
+            }
+            gid.xychy_time = now;
+            db->addGroup(ev.groupId, gid);
+        }
+        if(info->rq_ychf==0)
+        {
+            QString sentText;
+            if(info->rqhy.contains("#python"))
+                sentText = python_code4(info->rqhy,QStringList() << ev.user);
+            else {
+                sentText =info->rqhy;
+                if(sentText.contains("{艾特}"))
+                {
+                    sentText = subTextReplace(sentText,"{艾特}","<@"+ev.user+">");
+                }
+
+                if(sentText.contains("{ID}"))
+                {
+                    sentText = subTextReplace(sentText,"{ID}",ev.user);
+                }
+                if(sentText.contains("{数量}"))
+                {
+                    sentText = subTextReplace(sentText,"{数量}","1");
+                }
+            }
+
+            return sentText;
+        }
+        QMutexLocker locker(&info->pendingMutex);
+        auto &entry = info->pendingJoin[ev.groupId];
+        if (entry.user.isEmpty()) {
+
+            entry.startTime = QDateTime::currentSecsSinceEpoch();
+        }
+        entry.user.append(ev.user);
+        entry.msgid=ev.msgId;
+        return QString(); // 不立即回复
+    }
+    if (ev.subType == 3) {
+        if (!chatPage->customGroupNames.contains(ev.groupId)) return QString();
+        if (info->tqhy.isEmpty()) return QString();
+        auto *db = g_botdb[info->appid_int];
+        GroupRecord gid;
+        db->getGroupInfo(ev.groupId, gid);
+        if (gid.bitmap & 4) return QString(); // 已关闭退群提示
+        qint64 now = QDateTime::currentSecsSinceEpoch();
+        if (info->tq_lq > 0) {
+            qint64 lastSend = gid.tq_CD;
+            if (now - lastSend < info->tq_lq) {
+                return QString();
+            }
+            gid.tq_CD = now;
+            db->addGroup(ev.groupId, gid);
+        }
+        if(info->tq_ychf==0)
+        {
+            auto *task = new SendMessageTask2(info->appid_int, 0, ev.groupId,info->tqhy,"","","[退群提示]", QStringList() <<ev.user);
+            QThreadPool::globalInstance()->start(task);
+            return QString();
+        }
+        QMutexLocker locker(&info->pendingMutex2);
+        auto &entry = info->pendingLeave[ev.groupId];
+        if (entry.user.isEmpty()) {
+
+            entry.startTime = QDateTime::currentSecsSinceEpoch();
+        }
+        entry.msgid=ev.msgId;
+        entry.user.append(ev.user);
+        return QString();
     }
     return QString();
 }
 
 
+void processPendingEvents()
+{
+    qint64 now = QDateTime::currentSecsSinceEpoch();
+    for (auto &acc : m_accounts){
+        {
+            QMutexLocker locker(&acc->pendingMutex);
+            for (auto it = acc->pendingJoin.begin(); it != acc->pendingJoin.end(); ) {
+                QString groupId = it.key();
+                PendingGroupEvent &evt = it.value();
+
+                if (now - evt.startTime < acc->rq_ychf) {
+                    ++it;
+                    continue;
+                }
+                auto *task = new SendMessageTask2(acc->appid_int, 0, groupId,acc->rqhy,evt.msgid,"","[进群提示]", evt.user);
+                QThreadPool::globalInstance()->start(task);
+                it = acc->pendingJoin.erase(it);
+            }
+        }
+        QMutexLocker locker(&acc->pendingMutex2);
+        for (auto it =acc->pendingLeave.begin(); it != acc->pendingLeave.end(); ) {
+            QString groupId = it.key();
+            PendingGroupEvent &evt = it.value();
+            if (now - evt.startTime < acc->tq_ychf) {
+                ++it;
+                continue;
+            }
+            auto *task = new SendMessageTask2(acc->appid_int, 0, groupId, acc->tqhy,"","","[退群提示]", evt.user);
+            QThreadPool::globalInstance()->start(task);
+            it = acc->pendingLeave.erase(it);
+        }
+    }
+}
 
 QString extractBetween(const QString &source, const QString &left, const QString &right) {
     int start = source.indexOf(left);
@@ -580,11 +690,11 @@ QString replaceBetweenAll(const QString &original,const QString &left,const QStr
         if (posLeft == -1) break;
         int posRight = result.indexOf(right, posLeft + left.length());
         if (posRight == -1) break;
-        // 替换 [posLeft, posRight+right.length()) 为 replacement
+
         result = result.left(posLeft) + replacement + result.mid(posRight + right.length());
         count++;
         if (maxReplacements != -1 && count >= maxReplacements) break;
-        // 下一次查找从替换后的新位置开始，避免重复替换
+
         startPos = posLeft + replacement.length();
     }
     return result;
@@ -983,4 +1093,30 @@ bool W_file(const QString &path, const QByteArray &data)
     file.close();
     return written == data.size();
 }
+QString python_code4(const QString &py_code,QList<QString> user_list)
+{
+    py::gil_scoped_acquire gil;
+    try {
+        py::module_ qiancao = py::module_::import("qiancao_sdk");
+        py::object api = qiancao.attr("QQApi")(g_keyuuid);
 
+        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        exec_globals["__builtins__"] = py::module_::import("builtins");
+        exec_globals["UserList"] = py::cast(user_list);
+        exec_globals["api"] = api;               // 注入 api 对象
+
+        // 4. 执行用户代码
+        py::exec(py_code.toStdString(), exec_globals);
+
+        // 5. 读取返回值
+        QString ret;
+        if (exec_globals.contains("__result__"))
+            ret = QString::fromStdString(py::str(exec_globals["__result__"]));
+        return ret;
+    } catch (const py::error_already_set &e) {
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
+    } catch (const std::exception &e) {
+        AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
+    }
+    return QString();
+}

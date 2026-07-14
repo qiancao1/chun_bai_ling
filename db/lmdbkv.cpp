@@ -49,7 +49,7 @@ LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
     }
 
     QByteArray pathBytes = dbPath.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_MAPASYNC, 0664);
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_open 失败:" << mdb_strerror(rc);
         mdb_env_close(m_env);

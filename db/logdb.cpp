@@ -40,7 +40,6 @@ LogDB::LogDB(const QString &dbPath, QObject *parent)
     , m_dbPath(dbPath)
     , m_env(nullptr)
     , m_dbi_main(0)
-    , m_dbi_meta(0)
     , m_currentTxn(nullptr)          // 初始化事务指针
 {
     for (size_t i = 0; i < m_bufferSize; ++i) {
@@ -56,21 +55,25 @@ LogDB::~LogDB()
 // ========== 关闭 ==========
 void LogDB::close()
 {
+     QMutexLocker locker(&m_mutex);  // 防止并发关闭
     if (m_env) {
-        // 如果存在未提交的事务，回滚
-        if (m_currentTxn) {
-            mdb_txn_abort(m_currentTxn);
-            m_currentTxn = nullptr;
-        }
+         if (m_currentTxn) {
+             mdb_txn_abort(m_currentTxn);
+             m_currentTxn = nullptr;
+         }
+
         if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
-        if (m_dbi_meta) mdb_dbi_close(m_env, m_dbi_meta);
         mdb_env_close(m_env);
         m_env = nullptr;
         m_dbi_main = 0;
-        m_dbi_meta = 0;
     }
-    delete[] m_buffer;
+    if (m_buffer) {
+        delete[] m_buffer;
+        m_buffer = nullptr;   // 置空防止重复释放
+    }
+
 }
+
 
 // ========== 事务控制 ==========
 bool LogDB::beginTransaction(bool readOnly)
@@ -158,11 +161,13 @@ bool LogDB::open()
         return false;
     }
 
-    mdb_env_set_maxdbs(m_env, 2);
-    mdb_env_set_mapsize(m_env, DEFAULT_MAPSIZE);
+    mdb_env_set_maxdbs(m_env, 1);          // 只需要一个子库
+    mdb_env_set_mapsize(m_env, DEFAULT_MAPSIZE);  // 可按需调大
 
+    // 3. 打开环境（使用高性能但安全的选项）
     QByteArray pathBytes = m_dbPath.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), 0, 0664);
+    rc = mdb_env_open(m_env, pathBytes.constData(),
+                      MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
         qCritical() << "LogDB: mdb_env_open 失败:" << mdb_strerror(rc);
         mdb_env_close(m_env);
@@ -174,6 +179,8 @@ bool LogDB::open()
     rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "LogDB: 开始事务失败:" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
 
@@ -181,96 +188,58 @@ bool LogDB::open()
     if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
         qCritical() << "LogDB: 打开 logs 子库失败:" << mdb_strerror(rc);
-        return false;
-    }
-    rc = mdb_dbi_open(txn, "meta", MDB_CREATE, &m_dbi_meta);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qCritical() << "LogDB: 打开 meta 子库失败:" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
 
-    // 如果 meta 中没有 next_id，初始化为 1
-    const char *nextIdKey = "next_log_id";
-    MDB_val key, value;
-    key.mv_data = (void*)nextIdKey;
-    key.mv_size = strlen(nextIdKey) + 1;
-    rc = mdb_get(txn, m_dbi_meta, &key, &value);
-    if (rc == MDB_NOTFOUND) {
-        uint64_t initId = 1;
-        value.mv_data = &initId;
-        value.mv_size = sizeof(initId);
-        rc = mdb_put(txn, m_dbi_meta, &key, &value, 0);
-        if (rc != MDB_SUCCESS) {
-            mdb_txn_abort(txn);
-            qCritical() << "LogDB: 初始化 next_id 失败:" << mdb_strerror(rc);
-            return false;
+    // 5. 从数据库中恢复最大序号（原子变量初始值）
+    uint64_t maxSeq = 0;
+    MDB_cursor *cursor = nullptr;
+    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
+    if (rc == MDB_SUCCESS) {
+        MDB_val key, value;
+        // 直接定位到最后一条（最大 key）
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+        if (rc == MDB_SUCCESS) {
+            // 解析 key 中的序号部分（格式: "000...020:appid:groupid"）
+            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+            QStringList parts = keyStr.split(':');
+            if (!parts.isEmpty()) {
+                bool ok;
+                uint64_t seq = parts[0].toULongLong(&ok);
+                if (ok && seq > maxSeq) {
+                    maxSeq = seq;
+                }
+            }
         }
-    } else if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qCritical() << "LogDB: 读取 next_id 失败:" << mdb_strerror(rc);
-        return false;
+        mdb_cursor_close(cursor);
+    } else {
+        // 游标打开失败（很少见），忽略，maxSeq 保持为 0
+        qWarning() << "LogDB: 打开游标失败，无法读取最大序号，从 1 开始";
     }
 
+    // 6. 提交事务（此时数据库已打开，序号已恢复）
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "LogDB: 提交事务失败:" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
 
-    qDebug() << "LogDB 已打开，目录:" << m_dbPath;
+    // 7. 设置原子变量，下一个序号 = 最大序号 + 1
+    m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
+
+    qDebug() << "LogDB 已打开，下一个序号从" << m_nextId.load() << "开始";
     return true;
 }
-
-
 QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
 {
     QString seqStr = QString("%1").arg(seq, SEQ_DIGITS, 10, QChar('0'));
     return seqStr + ":" +appid + ":" + groupId  ;
 }
 
-bool LogDB::getNextId(uint64_t &nextId) const
-{
-    if (!m_env) return false;
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    const char *keyStr = "next_log_id";
-    MDB_val key, value;
-    key.mv_data = (void*)keyStr;
-    key.mv_size = strlen(keyStr) + 1;
-    rc = mdb_get(txn, m_dbi_meta, &key, &value);
-    if (rc == MDB_SUCCESS && value.mv_size == sizeof(uint64_t)) {
-        memcpy(&nextId, value.mv_data, sizeof(nextId));
-    } else {
-        nextId = 1;
-    }
-    mdb_txn_abort(txn);
-    return true;
-}
-
-bool LogDB::updateNextId(uint64_t nextId)
-{
-    if (!m_env) return false;
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    const char *keyStr = "next_log_id";
-    MDB_val key, value;
-    key.mv_data = (void*)keyStr;
-    key.mv_size = strlen(keyStr) + 1;
-    value.mv_data = &nextId;
-    value.mv_size = sizeof(nextId);
-    rc = mdb_put(txn, m_dbi_meta, &key, &value, 0);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        return false;
-    }
-    rc = mdb_txn_commit(txn);
-    return rc == MDB_SUCCESS;
-}
 
 bool LogDB::serializeMessage(const Message &msg, QByteArray &data) const
 {
@@ -329,15 +298,13 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
 // ---------- 公共接口 ----------
 uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg)
 {
-    QMutexLocker locker(&m_mutex);
     if (!m_env) return 0;
 
-    uint64_t nextId;
-    if (!getNextId(nextId)) return 0;
+    // 原子递增获取唯一序号
+    uint64_t seq = m_nextId.fetch_add(1, std::memory_order_relaxed);
 
-    QString keyStr = makeKey(appid, groupId, nextId);
+    QString keyStr = makeKey(appid, groupId, seq);
     QByteArray keyBytes = keyStr.toUtf8();
-
     QByteArray valueBlob;
     if (!serializeMessage(msg, valueBlob)) return 0;
 
@@ -354,35 +321,17 @@ uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Me
     rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
     if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
-        qWarning() << "LogDB: mdb_put 失败:" << mdb_strerror(rc);
-        return 0;
-    }
-
-    // 更新 next_id
-    uint64_t newId = nextId + 1;
-    const char *metaKey = "next_log_id";
-    MDB_val mk, mv;
-    mk.mv_data = (void*)metaKey;
-    mk.mv_size = strlen(metaKey) + 1;
-    mv.mv_data = &newId;
-    mv.mv_size = sizeof(newId);
-    rc = mdb_put(txn, m_dbi_meta, &mk, &mv, 0);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qWarning() << "LogDB: 更新 next_id 失败:" << mdb_strerror(rc);
         return 0;
     }
 
     rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: 提交事务失败:" << mdb_strerror(rc);
-        return 0;
-    }
+    if (rc != MDB_SUCCESS) return 0;
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    setBufferTimeAndStatus(nextId,now_us,0);
-    return nextId;
+    setBufferDurationAndStatus(seq,now_us,0);
+    return seq;
 }
+
 bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
 {
     QMutexLocker locker(&m_mutex);
@@ -442,7 +391,7 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
     }
 
     // 构造目标 key 前缀，宽度请与存储格式一致（例如 6 位或 10 位）
-    int width = 10;  // 根据你的实际宽度调整，可以动态从数据库读取或配置
+    int width = 20;  // 根据你的实际宽度调整，可以动态从数据库读取或配置
     QString targetPrefix = QString("%1:").arg(seq, width, 10, QChar('0'));
     QByteArray keyBuf = targetPrefix.toUtf8(); // 确保生命周期
     MDB_val key, value;

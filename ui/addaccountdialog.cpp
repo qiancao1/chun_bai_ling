@@ -48,7 +48,7 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
 
 void AddAccountDialog::setupUI() {
     setWindowTitle("账号详细设置");
-    resize(760, 540);
+    resize(860, 540);
     setModal(true);
 
 
@@ -388,25 +388,20 @@ void AddAccountDialog::setIntentsMask(int mask) {
 
 
 
-AccountInfo AddAccountDialog::getAccountInfo() const {
-    AccountInfo info;
-
-    info.appid = m_appidEdit->text();
-    info.appid_int =info.appid.toInt();
-    info.secret = m_secretEdit->text();
-    info.botqq = m_botqqEdit->text();
-    info.wsAddress = m_wsAddressEdit->text();
-    info.botsettext = m_botsettextEdit->text();
-
-    info.type = m_wsRadio->isChecked() ? 0 : 1;
-    info.ark = m_arkCheckBox->isChecked();
-    info.markdown = m_markdownCheckBox->isChecked();
-    info.markdown_pd = m_markdownCheckBox_pd->isChecked();
-    info.markdown_pd_mb = m_markdownCheckBox_pd_mb->isChecked();
-    //info.welcomeMsg = m_welcomeEdit->toPlainText();
-    //info.fallbackReply = m_fallbackEdit->toPlainText();
-    info.wsIntents = computeIntentsMask();
+void AddAccountDialog::getAccountInfo(AccountInfo *info) const {
 
 
-    return info;
+    info->appid = m_appidEdit->text();
+    info->appid_int =info->appid.toInt();
+    info->secret = m_secretEdit->text();
+    info->botqq = m_botqqEdit->text();
+    info->wsAddress = m_wsAddressEdit->text();
+    info->botsettext = m_botsettextEdit->text();
+
+    info->type = m_wsRadio->isChecked() ? 0 : 1;
+    info->ark = m_arkCheckBox->isChecked();
+    info->markdown = m_markdownCheckBox->isChecked();
+    info->markdown_pd = m_markdownCheckBox_pd->isChecked();
+    info->markdown_pd_mb = m_markdownCheckBox_pd_mb->isChecked();
+    info->wsIntents = computeIntentsMask();
 }

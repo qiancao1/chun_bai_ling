@@ -83,6 +83,11 @@ QString Homev=R"(
 - 恢复 被Ai删除的 \\n 文本
 - 修复 pysdk 中有一行代码缩进有问题
 - webhook 疑似会丢信息 待验证
+- 修复 按钮回调 数据读取错误问题
+- 修复 移除32的try写出错误文件
+- 内置 一个常用 退群提示 使用主动发送 仅全量群可用
+- 增加 加群提示 支持等待添加多个成员后一起回复
+- 优化 数据库 一个原子变量到内存 减少一次数据库读取
 
 ## v1.1.2.14 (2026-07-05)
 - 增加 webhook 的支持
@@ -187,7 +192,7 @@ void cleanInactiveUsers(QHash<int,UserStat> *hash, quint32 now, quint32 expireMs
         it.next();
         const UserStat &stat = it.value();
         quint32 last = getLastTimestamp(stat);
-        // 如果从未发言（last==0）或者距离现在超过 expireMs 毫秒，删除
+
         if (last == 0 || (now - last) > expireMs) {
             it.remove();
         }
@@ -209,7 +214,6 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     btnHome->setChecked(true);
     stackedWidget->setCurrentIndex(0);
 
-    // 心跳定时器（你的原有逻辑）
     m_heartbeatTimer = new QTimer(this);
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
@@ -219,6 +223,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
                 if (card) card->onTimeRefresh();
             }
         }
+        processPendingEvents();
         schedule->jiancha();
         if(ss==homePage) homePage->refreshRuntimeStats();
         if (!bridge) return;
@@ -281,8 +286,10 @@ void showClickableLicenseInfo() {
         "<b>使用的第三方库及许可：</b><br><br>"
 
         "<b>Qt 5.15.3</b>（动态链接）<br>"
+        "Copyright (C) The Qt Company Ltd. and other contributors.<br>"
         "• Widgets、Network、WebSockets 模块：<a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3</a><br>"
-        "（动态链接下，LGPL 要求提供 Qt 库的源代码，并允许用户修改库后重新链接；无需提供您的目标文件）<br><br>"
+        "（动态链接下，LGPL 要求提供 Qt 库的源代码，并允许用户修改库后重新链接；无需提供您的目标文件）<br>"
+        "Qt 库源代码：<a href=\"https://code.qt.io/cgit/qt/\">https://code.qt.io/cgit/qt/</a><br><br>"
 
         "<b>pybind11</b><br>"
         "Copyright (c) 2016–2023 The pybind11 authors.<br>"
@@ -291,6 +298,10 @@ void showClickableLicenseInfo() {
         "<b>LMDB (Lightning Memory-Mapped Database)</b><br>"
         "Copyright (c) 2011–2021, Howard Chu, Symas Corp.<br>"
         "采用 <a href=\"https://www.openldap.org/software/release/license.html\">OpenLDAP Public License</a>（Version 2.8）<br><br>"
+
+        "<b>hnswlib</b><br>"
+        "Copyright (c) 2016 Yury Malkov and contributors.<br>"
+        "采用 <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">Apache License, Version 2.0</a><br><br>"
 
         "<b>📦 关于 DLL 插件（LGPL 合规说明）：</b><br>"
         "本程序支持动态加载第三方 DLL 插件。<br>"

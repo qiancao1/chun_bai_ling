@@ -66,6 +66,10 @@ struct dblog
     QString msg;        // 日志消息内容
 
 };
+
+
+
+QString python_code4(const QString &py_code,QList<QString> user_list);
 extern QString g_ip;
 extern QListWidget *robotListWidget;
 extern AiWidget *ai_ui;
@@ -145,8 +149,86 @@ bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg
 QByteArray R_file(const QString &path);
 bool W_file(const QString &path,const QByteArray &data);
 int accinfo(int appid);
+void processPendingEvents();
 
+class SendMessageTask2 : public QRunnable {
+public:
+    SendMessageTask2(int appid,int msgType,                     // 改为 int
+                    const QString& contactId,const QString& text,
+                     const QString& msgIdFirst,const QString& msgIdRetry,const QString pname,const QList<QString> user_list=QList<QString>())              // 参数名 chatPage
+        : m_appid(appid),
+        m_msgType(msgType),
+        m_contactId(contactId),
+        m_text(text),
+        m_msgIdFirst(msgIdFirst),
+        m_msgIdRetry(msgIdRetry),
+        m_pname(pname),
+        m_user_list(user_list)
+    {
+        setAutoDelete(true);
+    }
 
+    void run() override {
+        if(!m_botClients.contains(m_appid)) return ;
+        QString sentText;
+        if(m_text.contains("#python"))
+            sentText = python_code4(m_text,m_user_list);
+        else {
+            sentText =m_text;
+            if(sentText.contains("{艾特}"))
+            {
+                QString nat;
+                int estimatedLen = m_user_list.size() * 36; // 视实际 ID 长度调整，也可遍历一次精确计算
+                nat.reserve(estimatedLen);
+
+                bool first = true;
+                for(const auto &id : std::as_const(m_user_list))
+                {
+                    if(!first)
+                        nat.append(",");
+                    first = false;
+                    nat.append("<@").append(id).append(">");
+                }
+                sentText = subTextReplace(sentText,"{艾特}",nat);
+            }
+
+            if(sentText.contains("{ID}"))
+            {
+                QString result = m_user_list.join(",");
+                sentText = subTextReplace(sentText,"{ID}",result);
+            }
+            if(sentText.contains("{数量}"))
+            {
+                sentText = subTextReplace(sentText,"{数量}",QString::number(m_user_list.size()));
+            }
+        }
+        QQBotClient* client = m_botClients[m_appid];
+        bool zh=false;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
+            QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, sentText, currentMsgId,zh,false);
+            if(rawData.isEmpty()) return;
+            if (rawData.contains("ROBOT") || rawData.contains("消息提交安全审核成功")) { //检查发送成功 或主动推送
+                return;
+            }
+            if(attempt==0 && m_msgType==2)
+            {
+                zh = true; //召回
+            }
+            continue;
+        }
+    }
+
+private:
+    int m_appid;
+    int m_msgType;                  // 整数类型
+    QString m_contactId;
+    QString m_text;
+    QString m_msgIdFirst;
+    QString m_msgIdRetry;
+    QString m_pname;
+    QList<QString> m_user_list;
+};
 
 
 class SendMessageTask : public QRunnable {
@@ -157,7 +239,7 @@ public:
                     const QString& text,
                     const QString& msgIdFirst,
                     const QString& msgIdRetry,
-                    const QString& nickname,
+                    const QString& pname,
                     bool mode)              // 参数名 chatPage
         : m_client(client),
         m_msgType(msgType),
@@ -165,62 +247,37 @@ public:
         m_text(text),
         m_msgIdFirst(msgIdFirst),
         m_msgIdRetry(msgIdRetry),
-        m_nickname(nickname),
+        m_pname(pname),
         mode(mode)
     {
         setAutoDelete(true);
     }
 
     void run() override {
-        QString sentText = m_text;
-        QString nickname = m_nickname;
-        QQBotClient* client = m_client;
 
+        QQBotClient* client = m_client;
         bool success = false;
-        QString finalDisplayText = sentText;
         QString deleteid,ref;
         bool zh=false;
         for (int attempt = 0; attempt < 2; ++attempt) {
             QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
-            QString txt = "[沙箱]";
-            QString rawData = client->send_messages(m_msgType,m_contactId,txt, m_text, currentMsgId,zh,mode,聊天发送模式);
 
-            QJsonParseError error;
-            QJsonDocument doc = QJsonDocument::fromJson(rawData.toUtf8(), &error);
-            if (error.error == QJsonParseError::NoError && doc.isObject()) {
-                QJsonObject obj = doc.object();
-                QString msg = obj["messge"].toString();
-                deleteid = obj["id"].toString();
-                QJsonObject obj2 =obj["ext_info"].toObject();
-                ref = obj2["ref_idx"].toString();
-                if(!ref.isEmpty()) ref = "[ref,msg_idx="+ref+"]";
-                if (!deleteid.isEmpty() || msg == "消息提交安全审核成功") { //检查发送成功 或主动推送
-                    success = true;
-                    break;
-                }
-
-                if(attempt==0 && m_msgType==2)
-                {
-                    zh=true; //召回
-                    continue;
-                }
-                finalDisplayText = sentText + rawData;
-                continue;
-            } else {
-                finalDisplayText = sentText + rawData;
+            QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, m_text, currentMsgId,zh,mode,聊天发送模式);
+            if(rawData.isEmpty()) break;
+            if (rawData.contains("ROBOT") || rawData.contains("消息提交安全审核成功")) { //检查发送成功 或主动推送
+                success = true;
+                break;
             }
-            success = false;
-            break;
+            if(attempt==0 && m_msgType==2)
+            {
+                zh = true; //召回
+            }
+            continue;
         }
-
-        QMetaObject::invokeMethod(qApp, [sentText, finalDisplayText, success, nickname,deleteid,ref]() {
+        QMetaObject::invokeMethod(qApp, [ success]() {
             if (success) {
-                // 发送成功：清空输入框，添加自己的消息
                 chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
-
             }
-
-
         });
     }
 
@@ -231,9 +288,11 @@ private:
     QString m_text;
     QString m_msgIdFirst;
     QString m_msgIdRetry;
-    QString m_nickname;
+    QString m_pname;
     bool mode;
 };
+
+
 class JsApiTask : public QRunnable {
 public:
     JsApiTask(NodePluginManager* mgr, const QString& uuid, int id,

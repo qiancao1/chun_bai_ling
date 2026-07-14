@@ -643,15 +643,17 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msgId = payload.value("id").toString();
         QJsonObject resolved = d.value("data").toObject().value("resolved").toObject();
         ev.msg = resolved.value("button_data").toString();
-        ev.user = resolved.value("user_id").toString();
+
         if (ev.callbackType == 0)
         {
-            ev.type = 0;
-            ev.groupId = d.value("group_openid").toString();
-        }else if (ev.callbackType == 1) {
             ev.type = 1;
             ev.guildId = d.value("guild_id").toString();
             ev.groupId = d.value("channel_id").toString();
+            ev.user = resolved.value("user_id").toString();
+        }else if (ev.callbackType == 1) {
+            ev.type = 0;
+            ev.groupId = d.value("group_openid").toString();
+            ev.user = d.value("group_member_openid").toString();
         } else if (ev.callbackType == 2){
             ev.type = 2;
             ev.groupId = d.value("user_openid").toString();
@@ -795,7 +797,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     mes.Color_0 = Color_1;
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
+    auto start = std::chrono::steady_clock::now();
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
+    auto end = std::chrono::steady_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
     mes.seq = ev.log;
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if(ws_server) ws_server->broadcastMessage(mes,ev.appid,ev.type,ev.groupId);
@@ -859,7 +865,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    //qDebug() << ev.groupId <<ev.msg;
+    //qDebug() << ev.groupId <<ev.user << ev.msg;
     Messages(m_info, ev);
     return ;
 }

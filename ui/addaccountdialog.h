@@ -18,7 +18,7 @@ class AddAccountDialog : public QDialog {
 public:
     explicit AddAccountDialog(const AccountInfo &info = AccountInfo(), QWidget *parent = nullptr);
 
-    AccountInfo getAccountInfo() const;
+    void getAccountInfo(AccountInfo *info) const;
     void setEmbeddedMode(bool embedded);
 
 

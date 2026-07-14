@@ -92,11 +92,16 @@ QString AccountInfo::toJson() const {
     obj["admin"]=admin;
     obj["xiangliang"]=xiangliang;
     obj["Embed_model"]=Embed_model;
+
+    obj["rq_ychf"]=rq_ychf;
+    obj["tq_lq"]=tq_lq;
+    obj["tq_ychf"]=tq_ychf;
+    obj["tqhy"]=tqhy;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
-AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
-    AccountInfo info;
+void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
+
     info.appid = obj["appid"].toString();
     info.appid_int = info.appid.toInt();
     QByteArray key;
@@ -122,6 +127,11 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
 
     info.fasjg = obj["fasjg"].toInt();
     info.rqhy = obj["rqhy"].toString();
+
+    info.tq_lq = obj["tq_lq"].toInt();
+    info.tq_ychf = obj["tq_ychf"].toInt();
+    info.tqhy = obj["tqhy"].toString();
+    info.rq_ychf=obj["rq_ychf"].toInt();
 
     info.message_received = obj["message_received"].toInt();
     info.message_sent = obj["message_sent"].toInt();
@@ -203,5 +213,5 @@ AccountInfo AccountInfo::fromJson(const QJsonObject &obj) {
         info.fujia.append(value.toString());
     }
 
-    return info;
+
 }

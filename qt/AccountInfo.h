@@ -55,6 +55,12 @@ struct UserStat {
     quint8 head = 0;
     quint8 count = 0;
 };
+struct PendingGroupEvent {
+    qint64 startTime;          // 第一个事件到达的时间（秒）
+    QString msgid;
+    QList<QString> user;  // 收集的用户名
+};
+
 struct AccountInfo {
     QString appid;
 
@@ -104,7 +110,10 @@ struct AccountInfo {
     QString rqhy; //群成员加群提示文本
     QString bai_sr,bai_sc,bai_qy;
 
-
+    QString tqhy;
+    int tq_ychf=0; //退群延迟回复
+    int tq_lq=0;
+    int rq_ychf=0;
 
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
@@ -134,8 +143,13 @@ struct AccountInfo {
     bool enableImageRec = false;
     bool niren=false;
 
+    QMutex pendingMutex;                          // 保护两个map
+    QMap<QString, PendingGroupEvent> pendingJoin; // 入群缓存，key=群号
+    QMutex pendingMutex2;
+    QMap<QString, PendingGroupEvent> pendingLeave; // 退群缓存
+
     QString toJson() const;
-    static AccountInfo fromJson(const QJsonObject &obj);
+    static void fromJson(const QJsonObject &obj,AccountInfo &info);
 
 };
 struct RoleSetting {

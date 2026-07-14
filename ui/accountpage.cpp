@@ -194,7 +194,7 @@ void AccountPage::loadAccounts() {
 
     }
 
-    // 2. 从数据库加载所有数据到 m_accounts
+
     m_accounts.clear();
     QStringList appidList = accdb->getAllKeys();
     for (const QString &key : std::as_const(appidList)) {
@@ -206,8 +206,10 @@ void AccountPage::loadAccounts() {
         QJsonDocument doc = QJsonDocument::fromJson(value, &err);
         if (err.error != QJsonParseError::NoError) continue;
         QJsonObject obj = doc.object();
-        auto infoPtr = std::make_shared<AccountInfo>(AccountInfo::fromJson(obj));
-        m_accounts.append(infoPtr);
+
+        auto acc = std::make_shared<AccountInfo>();
+        AccountInfo::fromJson(obj, *acc);
+        m_accounts.append(acc);
     }
     qDebug() << "从数据库加载了" << m_accounts.size() << "条数据";
 }
@@ -297,15 +299,18 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
     dialog.setWindowTitle(editMode ? "编辑机器人账号" : "添加机器人账号");
     if (dialog.exec() != QDialog::Accepted) return;
 
-    AccountInfo newInfo = dialog.getAccountInfo();
-    if (newInfo.appid_int==0) {   // 假设 appid 是 QString，用 isEmpty() 判断
+
+    auto newInfo = std::make_shared<AccountInfo>();
+    dialog.getAccountInfo(newInfo.get());
+
+    if (newInfo->appid_int==0) {   // 假设 appid 是 QString，用 isEmpty() 判断
         QMessageBox::warning(this, "提示", "AppID 不能为空");
         return;
     }
 
     int existingIndex = -1;
     for (int i = 0; i < m_accounts.size(); ++i) {
-        if (m_accounts[i]->appid_int == newInfo.appid_int) {
+        if (m_accounts[i]->appid_int == newInfo->appid_int) {
             existingIndex = i;
             break;
         }
@@ -316,9 +321,9 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
             QMessageBox::warning(this, "重复", "AppID 已存在");
             return;
         }
-        auto infoPtr = std::make_shared<AccountInfo>(newInfo);
-        m_accounts.append(infoPtr);
-        refreshCards2(infoPtr.get());
+
+        m_accounts.append(newInfo);
+        refreshCards2(newInfo.get());
 
     } else {
 
@@ -331,27 +336,24 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         }
         if (oldIndex == -1) return;
 
-        if (newInfo.appid != info.appid && existingIndex != -1) {
+        if (newInfo->appid_int != info.appid_int && existingIndex != -1) {
             QMessageBox::warning(this, "重复", "AppID 已存在");
             return;
         }
 
-        // 保留原账号中的运行时状态字段
         auto oldInfoPtr = m_accounts[oldIndex];
-        AccountInfo &oldInfo = *oldInfoPtr;
-        newInfo.online = oldInfo.online;
-        newInfo.message_received = oldInfo.message_received;
-        newInfo.message_sent = oldInfo.message_sent;
-        newInfo.received = oldInfo.received;
-        newInfo.sent = oldInfo.sent;
-        newInfo.startup_time = oldInfo.startup_time;
-        newInfo.nickname = oldInfo.nickname;
-        newInfo.avatarPath = oldInfo.avatarPath;
 
-
-        // 更新
-        oldInfo = newInfo;
-        saveAccounts(&oldInfo);
+        oldInfoPtr->secret = newInfo->secret;
+        oldInfoPtr->botqq =   newInfo->botqq;
+        oldInfoPtr->wsAddress = newInfo->wsAddress;
+        oldInfoPtr->botsettext = newInfo->botsettext;
+        oldInfoPtr->type =newInfo->type;
+        oldInfoPtr->ark = newInfo->ark;
+        oldInfoPtr->markdown = newInfo->markdown;
+        oldInfoPtr->markdown_pd = newInfo->markdown_pd;
+        oldInfoPtr->markdown_pd_mb = newInfo->markdown_pd_mb;
+        oldInfoPtr->wsIntents = newInfo->wsIntents;
+        saveAccounts(oldInfoPtr.get());
     }
 
 

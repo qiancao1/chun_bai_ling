@@ -2218,10 +2218,20 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                                     const QString &msgid,bool is_wakeup,bool mode,int 发送类型)
 {
     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
+    QString newtext = text;
+    if(text.contains("#python"))
+    {
+        MessageEvent ev;
+        ev.appid = m_info->appid_int;
+        ev.groupId = openid;
+        ev.msgId=msgid;
+        ev.type = type;
 
+       newtext =python_code(text,ev);
+    }
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    QString newtext=sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
+    newtext=sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
 
     if (!text.isEmpty())
     {

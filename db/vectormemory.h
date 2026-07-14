@@ -24,7 +24,7 @@ public:
         }
         // 设置最大内存映射大小（可根据数据量调整）
         mdb_env_set_mapsize(env_, 1024 * 1024 * 1024); // 1GB
-        rc = mdb_env_open(env_, lmdbPath.c_str(), 0, 0664);
+        rc = mdb_env_open(env_, lmdbPath.c_str(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
         if (rc != MDB_SUCCESS) {
             mdb_env_close(env_);
             throw std::runtime_error("mdb_env_open failed: " + std::string(mdb_strerror(rc)));

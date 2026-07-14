@@ -58,7 +58,7 @@ public:
     }
 
     // 便捷接口：设置时间戳（微秒）和状态（1字节）
-    void setBufferTimeAndStatus(uint64_t seq, uint64_t timeUs, uint8_t status) {
+    void setBufferDurationAndStatus(uint64_t seq, uint64_t timeUs, uint8_t status) {
         uint64_t value = (timeUs << 8) | (status & 0xFF);
         setBufferRaw(seq, value);
     }
@@ -127,13 +127,13 @@ private:
     QString m_dbPath;
     MDB_env *m_env;
     MDB_dbi m_dbi_main;
-    MDB_dbi m_dbi_meta;
+
     mutable QMutex m_mutex;
 
     // 辅助函数
+    std::atomic<uint64_t> m_nextId{1};
 
-    bool getNextId(uint64_t &nextId) const;
-    bool updateNextId(uint64_t nextId);
+
     bool serializeMessage(const Message &msg, QByteArray &data) const;
     bool deserializeMessage(const QByteArray &data, Message &msg) const;
 

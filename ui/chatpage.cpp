@@ -1573,10 +1573,10 @@ void ChatPage::onSendmsg(QString &text)
     QString msgText = text;
     QString msgIdNormal = m_msgid;   // 第一次发送用的 msgId
     QString msgIdRetry = QString();
-    QString nickname = client->m_info->nickname;
+
 
     SendMessageTask *task = new SendMessageTask(client, msgType, contactId, msgText,
-                                                msgIdNormal, msgIdRetry, nickname,true);
+                                                msgIdNormal, msgIdRetry,"[聊天室]",true);
     QThreadPool::globalInstance()->start(task);
 }
 
