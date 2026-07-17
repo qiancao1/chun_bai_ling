@@ -41,7 +41,7 @@ struct Rule {
 
 struct PythonPluginobj {
     //py::dict globals;
-    QList<QString> requires;
+
     py::object instance;                 // on_message 函数
     py::object onSet;                   // 加载后调用
     py::object onEnable;                 // 启用时调用

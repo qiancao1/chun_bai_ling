@@ -1,4 +1,5 @@
 #include "AppWindow.h"
+#include "PythonParser.h"
 #include "global.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -19,7 +20,7 @@
 #include <QPushButton>
 #include <QApplication>
 #include <QClipboard>
-
+bool g_不审核=false;
 
 QString g_system=R"(1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
@@ -27,7 +28,7 @@ QString g_system=R"(1.注意 你可以直接调用读写工具 请勿输出要�
 4.当用户要求你编码插件时,你直接写到文件,不需要输出要用户复制,当用户提出某个功能有问题时 你可以读取文件 并且写出
 5.用户可能并不喜欢 /开头的指令 你可以先询问再 一般来说不会以/开头
 6.你可以需要 在main.py中 get_plugin_info 的 description 包含指令 因为并不是所有用户都看得懂代码 所以直接说明指令 当然 description 支持md格式文本 是 QTextEdit
-7.由于机器人 发送 是md格式 你可以在回复文本 添加 # ``` *** ![]() >  []() 等语法 注意[显示文本](点击后文本)语法是可点击按钮 例子 [开始游戏](开始游戏) 当然 可以[开始游戏]() 圆括号内容不写内容 自动用[]内容
+7.由于机器人 发送 是md格式 你可以在回复文本 添加 # ``` *** ![]() >  []() 等语法 注意[显示文本](点击后文本)语法是可点击按钮 例子 [开始游戏](加入谁是卧底) 当然 可以[开始游戏]() 圆括号内容不写内容 自动用[]内容
 8.当前系统环境是 win环境
 9.请在 返回的文本中 多添加[指令]() 等文本 因为在QQ点击这个标签可以快捷插入聊天框
 10.请注意 插件可能是在 多群环境运行 请根据用户说的类型来决定是 分群玩还是 分个人玩
@@ -45,7 +46,8 @@ QString g_system=R"(1.注意 你可以直接调用读写工具 请勿输出要�
 # msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
 # msg.user         : 发送者标识 32字节hex(字符串)
 # msg.msgid        : 本条消息的唯一 ID（字符串）
-# msg.msg          : 消息内容(字符串)
+# msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 (字符串)
+# msg.member_role  : 发送人权限 0群主 1管理员 2群员 (整数)
 # msg.appid        : 应用/机器人 ID(整数)
 # msg.user_id      : 用户 ID（整数）
 # msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
@@ -300,66 +302,66 @@ class ButtonGroup:
 
 
 
-
 void AppWindow::addMessage(const QString &text, bool isUser)
 {
     if (text.trimmed().isEmpty()) return;
+    QMetaObject::invokeMethod(this, [this, text, isUser]() {
+        // 1. 卡片背景与边框（颜色稍微调深一点，确保AI的框在白色背景下能明显看出来）
+        QString cardBg = isUser ? "#E8F5E9" : "#EEF2F6";   // 用户浅绿，AI 浅灰蓝
+        QString cardBorder = isUser ? "#4CAF50" : "#9C27B0";
 
-    // 1. 卡片背景与边框（颜色稍微调深一点，确保AI的框在白色背景下能明显看出来）
-    QString cardBg = isUser ? "#E8F5E9" : "#EEF2F6";   // 用户浅绿，AI 浅灰蓝
-    QString cardBorder = isUser ? "#4CAF50" : "#9C27B0";
+        // 2. 【关键修改】将角色名从代码块中抽离出来
+        // 角色名单独用 <div> 包裹，文本颜色改为黑色，并保留换行
+        QString rolePrefix = isUser ? "👤 用户:" : "🤖 AI:";
+        QString roleHtml = QString("<div style='color: #000000; font-weight: bold; margin-bottom: 6px; font-size: 14px;'>%1</div>").arg(rolePrefix);
 
-    // 2. 【关键修改】将角色名从代码块中抽离出来
-    // 角色名单独用 <div> 包裹，文本颜色改为黑色，并保留换行
-    QString rolePrefix = isUser ? "👤 用户:" : "🤖 AI:";
-    QString roleHtml = QString("<div style='color: #000000; font-weight: bold; margin-bottom: 6px; font-size: 14px;'>%1</div>").arg(rolePrefix);
+        // 3. 纯文本内容使用代码块包裹（不再包含角色名）
+        QString wrapped = "```" + text + "```\n";
+        wrapped.replace("\n\n\n\n", "\n\n");
+        wrapped.replace("\n\n\n", "\n\n");
 
-    // 3. 纯文本内容使用代码块包裹（不再包含角色名）
-    QString wrapped = "```" + text + "```\n";
-    wrapped.replace("\n\n\n\n", "\n\n");
-    wrapped.replace("\n\n\n", "\n\n");
+        // 4. 拼接 HTML
+        QString finalHtml = roleHtml; // 先拼上角色名
+        QStringList parts = wrapped.split("```");
 
-    // 4. 拼接 HTML
-    QString finalHtml = roleHtml; // 先拼上角色名
-    QStringList parts = wrapped.split("```");
+        for (int i = 0; i < parts.size(); ++i) {
+            if (i % 2 == 0) {
+                // 外部文本（外层换行符等）
+                QString escaped = parts[i].toHtmlEscaped();
+                escaped.replace("\n", "<br>");
+                finalHtml += escaped;
+            } else {
+                // 【关键修改】代码块内部：确保文本颜色为黑色（配合你的 HTML 样例要求）
+                QString codeBg = isUser ? "#3398DE" : "#353834";
+                QString codeTextColor = "#ffffff"; // 纯黑文字
 
-    for (int i = 0; i < parts.size(); ++i) {
-        if (i % 2 == 0) {
-            // 外部文本（外层换行符等）
-            QString escaped = parts[i].toHtmlEscaped();
-            escaped.replace("\n", "<br>");
-            finalHtml += escaped;
-        } else {
-            // 【关键修改】代码块内部：确保文本颜色为黑色（配合你的 HTML 样例要求）
-            QString codeBg = isUser ? "#3398DE" : "#353834";
-            QString codeTextColor = "#ffffff"; // 纯黑文字
-
-            finalHtml += QString(
-                             "<pre style='background:%1; color:%2; padding:8px 10px; border-radius:6px; "
-                             "font-family:Consolas, monospace; font-size:12px; white-space:pre-wrap; "
-                             "word-wrap:break-word; margin:0;'>"
-                             "<code>%3</code></pre>"
-                             ).arg(codeBg, codeTextColor, parts[i].toHtmlEscaped());
+                finalHtml += QString(
+                                 "<pre style='background:%1; color:%2; padding:8px 10px; border-radius:6px; "
+                                 "font-family:Consolas, monospace; font-size:12px; white-space:pre-wrap; "
+                                 "word-wrap:break-word; margin:0;'>"
+                                 "<code>%3</code></pre>"
+                                 ).arg(codeBg, codeTextColor, parts[i].toHtmlEscaped());
+            }
         }
-    }
 
-    // 5. 构建外层卡片
-    QString cardHtml = QString(
-                           "<div style='margin-bottom: 8px; "
-                           "background: %1; "
-                           "border-left: 5px solid %2; "
-                           "border-radius: 6px; "
-                           "padding: 6px 10px; "
-                           "box-shadow: 0 1px 2px rgba(0,0,0,0.03);'>"
-                           "  %3"
-                           "</div>"
-                           ).arg(cardBg, cardBorder, finalHtml);
+        // 5. 构建外层卡片
+        QString cardHtml = QString(
+                               "<div style='margin-bottom: 8px; "
+                               "background: %1; "
+                               "border-left: 5px solid %2; "
+                               "border-radius: 6px; "
+                               "padding: 6px 10px; "
+                               "box-shadow: 0 1px 2px rgba(0,0,0,0.03);'>"
+                               "  %3"
+                               "</div>"
+                               ).arg(cardBg, cardBorder, finalHtml);
 
-    QTextCursor cursor(chatTextEdit->document());
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertHtml(cardHtml);
-    chatTextEdit->moveCursor(QTextCursor::End);
-    chatTextEdit->ensureCursorVisible();
+        QTextCursor cursor(chatTextEdit->document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertHtml(cardHtml);
+        chatTextEdit->moveCursor(QTextCursor::End);
+        chatTextEdit->ensureCursorVisible();
+    }, Qt::QueuedConnection);
 }
 
 
@@ -480,22 +482,26 @@ bool confirmCommandExecutionGui(const QString &model,const QString &cmd, QWidget
 }
 bool confirmCommandExecution(const QString &model, const QString &cmd, QWidget *parent=nullptr) {
     // 如果已经在主线程，直接调用
-    if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
-        return confirmCommandExecutionGui(model, cmd, parent);
-    } else {
-        // 否则，通过 invokeMethod 转到主线程，并等待结果
-        bool result = false;
-        QEventLoop loop;
-        QMetaObject::invokeMethod(qApp, [&]() {
-            // 确保在主线程中执行
-            result = confirmCommandExecutionGui(model, cmd, parent);
-            loop.quit(); // 对话框关闭后，退出事件循环
-        }, Qt::QueuedConnection);
+    if(!g_不审核)
+    {
+        if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
+            return confirmCommandExecutionGui(model, cmd, parent);
+        } else {
+            // 否则，通过 invokeMethod 转到主线程，并等待结果
+            bool result = false;
+            QEventLoop loop;
+            QMetaObject::invokeMethod(qApp, [&]() {
+                // 确保在主线程中执行
+                result = confirmCommandExecutionGui(model, cmd, parent);
+                loop.quit(); // 对话框关闭后，退出事件循环
+            }, Qt::QueuedConnection);
 
-        // 阻塞当前线程，直到 loop.quit() 被调用
-        loop.exec();
-        return result;
+            // 阻塞当前线程，直到 loop.quit() 被调用
+            loop.exec();
+            return result;
+        }
     }
+    return true;
 }
 
 AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
@@ -616,11 +622,15 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     clearBtn->setMaximumWidth(100);
     sendBtn->setMaximumWidth(100);
     inputLayout0->addWidget(modelCombo);
+    nosh = new QCheckBox("不审核");
+    inputLayout0->addWidget(nosh);
     inputLayout0->addWidget(clearBtn);
     inputLayout0->addWidget(sendBtn);
     mainLayout2->addLayout(inputLayout0);
 
-
+    connect(nosh, &QCheckBox::clicked, this, [=]() {
+        g_不审核 = nosh->isChecked();
+    });
     // 信号连接
     connect(sendBtn, &QPushButton::clicked, this, [=]() {
         QString text = messageInput->toPlainText().trimmed();
@@ -706,47 +716,91 @@ void AppWindow::Folder()
             if (role == "user") {
                 addMessage(content, true);
             } else if (role == "assistant") {
-                addMessage(content, false);
-            } else if (role == "tool") {
-                addMessage("[工具返回值] " + content, false);
+
+                QString displayContent;
+                bool hasContent = !content.trimmed().isEmpty();
+                bool hasToolCalls = msgObj.contains("tool_calls") && msgObj["tool_calls"].isArray();
+
+                // 提取工具名称（如果有）
+                QStringList toolNames;
+                if (hasToolCalls) {
+                    QJsonArray calls = msgObj["tool_calls"].toArray();
+                    for (const QJsonValue &callVal : calls) {
+                        QJsonObject callObj = callVal.toObject();
+                        if (callObj.contains("function") && callObj["function"].isObject()) {
+                            QJsonObject funcObj = callObj["function"].toObject();
+                            QString name = funcObj["name"].toString();
+                            if (!name.isEmpty())
+                                toolNames << name;
+                        }
+                    }
+                }
+
+                if (hasContent) {
+                    displayContent = content;  // 保留原始内容（包括换行）
+                }
+                // 如果有工具调用，将工具信息附加到内容后面（或单独显示）
+                if (!toolNames.isEmpty()) {
+                    QString toolMsg = "\n\n[调用工具: " + toolNames.join(", ") + "]";
+                    if (hasContent) {
+                        displayContent += toolMsg;
+                    } else {
+                        displayContent = toolMsg;  // 没有文本内容，只显示工具信息
+                    }
+                }
+
+                // 如果既有内容又有工具，或者只有工具，都需要显示；如果什么都没有则跳过
+                if (!displayContent.trimmed().isEmpty()) {
+                    addMessage(displayContent, false);
+                }
+            }else if (role == "tool") {
+                    // 提取工具名（如果有）
+                    QString toolName = msgObj["name"].toString();
+                    QString displayContent = content;
+                    if (!toolName.isEmpty()) {
+                        addMessage("[工具返回值 (" + toolName + ")] " + displayContent, false);
+                    } else {
+                        addMessage("[工具返回值] " + displayContent, false);
+                    }
             }
         }
     }
 }
+#include <QTextCodec>
 QString listDirectoryEntries(const QString& path) {
     QDir dir(path);
-    if (!dir.exists()) {
-        qWarning() << "目录不存在:" << dir.absolutePath();
-        return QString();
-    }
+    if (!dir.exists()) return QString();
 
-    qDebug() << "正在枚举:" << dir.absolutePath();
-
-    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
-    QFileInfoList infoList = dir.entryInfoList(filters);
-
-    if (infoList.isEmpty()) {
-        qDebug() << "目录为空或无法读取内容";
-    } else {
-        qDebug() << "找到" << infoList.size() << "个条目";
-    }
-
+    QFileInfoList infoList = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot);
     QStringList lines;
-    for (const QFileInfo& info : std::as_const(infoList)) {
-        if(info.fileName() == "ai对话.json") continue; //过滤
-        QString sizeStr;
-        if (info.isFile()) {
-            sizeStr = QString::number(info.size()) + " bytes";
-        } else if (info.isDir()) {
-            sizeStr = "<DIR>";          // 目录不直接显示大小，或可改为递归计算
-        } else {
-            sizeStr = "?";              // 其他类型（如符号链接、设备等）
-        }
-        lines << info.fileName() + " (" + sizeStr + ")";
-    }
+    for (const QFileInfo& info : infoList) {
+        QString name = info.fileName();
+        if (name == "ai对话.json" || name.endsWith(".tmp", Qt::CaseInsensitive)) continue;
 
+        QString size = info.isFile() ? QString::number(info.size()) + " bytes"
+                                     : (info.isDir() ? "<DIR>" : "?");
+        lines << name + " (" + size + ")";
+
+        if (info.isFile() && name.endsWith(".py", Qt::CaseInsensitive)) {
+            QFile f(info.absoluteFilePath());
+            if (f.open(QIODevice::ReadOnly)) {
+                QByteArray data = f.readAll();
+                f.close();
+                QTextCodec *codec = QTextCodec::codecForName("UTF-8");
+                QString content = codec ? codec->toUnicode(data) : QString::fromLocal8Bit(data);
+                QStringList pyLines;
+                QRegularExpression regex(R"(^\s*(?:async\s+)?(def|class)\s+\w+\s*[\(:]?)");
+                for (const QString& line : content.split('\n')) {
+                    if (regex.match(line).hasMatch()) pyLines << line;
+                }
+                lines << pyLines;
+            }
+        }
+    }
     return lines.join("\n");
 }
+
+
 void AppWindow::onFileClicked(const QModelIndex &index)
 {
     if (!index.isValid()) return;
@@ -852,6 +906,9 @@ void AppWindow::内置函数()
     内置函数("uninstall_Plugin", "卸载当前插件", {"无参数"});
     内置函数("testplugin", "测试插件 测试指令是否正确返回", {"测试的指令"});
     内置函数("run_python", "执行python代码 捕获print 日志", {"python代码"});
+
+    内置函数("getFunctionCode", "读取某个py文件的某个函数代码", {"py文件名","函数名 如 my_function","类名 如果有 没有可空 如 MyClass"});
+    内置函数("replaceFunction", "替换个py文件的某个函数代码", {"py文件名","函数名 如 my_function","替换的代码 如","类名 如果有 没有可空 如 MyClass"});
 
 
     内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
@@ -1102,6 +1159,82 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         }
         return python_code(py_code);
     }
+    else if(tool_name == "getFunctionCode"){
+        QString pyfile_name = obj["p1"].toString();
+        QString myfun =  obj["p2"].toString();
+        QString myclass =  obj["p3"].toString();
+        if(pyfile_name.isEmpty()) return "参数1路径为空";
+        pyfile_name = m_dir+pyfile_name;
+        return getFunctionCode(pyfile_name,myfun,!myclass.isEmpty(),myclass);
+    }
+    else if(tool_name == "replaceFunction"){
+        QString pyfile_name = obj["p1"].toString();
+        QString myfun =  obj["p2"].toString();
+        QString py_code = obj["p3"].toString();
+        QString myclass =  obj["p4"].toString();
+        if(pyfile_name.isEmpty()) return "参数1路径为空";
+        pyfile_name = m_dir+pyfile_name;
+        // 1. 创建备份
+        QString backupPath = pyfile_name + ".tmp";
+        if (QFile::exists(backupPath)) QFile::remove(backupPath);
+        if (!QFile::copy(pyfile_name, backupPath)) {
+            return "无法创建备份文件: " + backupPath;
+        }
+
+        // 2. 在备份上执行替换
+        QString err;
+        bool ok = replaceFunction(backupPath, myfun, py_code, !myclass.isEmpty(), myclass,&err);
+        if (!ok) {
+            QFile::remove(backupPath);
+            return "替换失败 可能寻找函数语法错误 请使用其他工具替换";
+        }
+
+        // 3. 语法检查（尝试多种编码）
+        QString script = QString(
+                             "import sys, ast\n"
+                             "def check_syntax(filename):\n"
+                             "    encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']\n"
+                             "    content = None\n"
+                             "    for enc in encodings:\n"
+                             "        try:\n"
+                             "            with open(filename, 'r', encoding=enc) as f:\n"
+                             "                content = f.read()\n"
+                             "            break\n"
+                             "        except UnicodeDecodeError:\n"
+                             "            continue\n"
+                             "    if content is None:\n"
+                             "        print('Error: Cannot decode file with known encodings')\n"
+                             "        return\n"
+                             "    try:\n"
+                             "        ast.parse(content)\n"
+                             "        print('SYNTAX_OK')\n"
+                             "    except SyntaxError as e:\n"
+                             "        print(f'SyntaxError: {e}')\n"
+                             "    except Exception as e:\n"
+                             "        print(f'Error: {e}')\n"
+                             "check_syntax(r'%1')\n"
+                             ).arg(backupPath);
+
+        QString result = python_code(script);
+        if (result.contains("SYNTAX_OK")) {
+            // 4. 语法通过，覆盖原文件
+            if (!QFile::remove(pyfile_name)) {
+                if (!QFile::rename(backupPath, pyfile_name)) {
+                    return "替换成功但无法覆盖原文件，请检查权限，备份保留在 " + backupPath;
+                }
+            } else {
+                if (!QFile::rename(backupPath, pyfile_name)) {
+                    return "替换成功但无法重命名备份为原文件，备份位于 " + backupPath;
+                }
+            }
+            QFile::remove(backupPath);
+            return "替换成功 语法检查通过";
+        } else {
+            // 5. 语法不通过，删除备份，保留原文件
+            QFile::remove(backupPath);
+            return "替换后语法检查 不通过 返回：" + result + "\n本次文件未替换 请更新数据后尝试";
+        }
+    }
     else {
         result = "错误：未知的工具名称 " + tool_name;
     }
@@ -1211,35 +1344,7 @@ void AppWindow::onSendMessage(const QString &text)
 
 
     if (sxw.contains("messages") && sxw["messages"].isArray()) {
-        QJsonArray msgs = sxw["messages"].toArray();
-
-        bool systemFound = false;
-
-        for (int i = 0; i < msgs.size(); ++i) {
-            QJsonObject msg = msgs[i].toObject();
-            if (msg["role"].toString() == "system") {
-                // 使用当前最新的目录列表更新 content
-                msg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
-                msgs[i] = msg;
-                systemFound = true;
-                break; // 通常只有一个 system，找到就停
-            }
-        }
-
-        if (!systemFound && !g_system.isEmpty()) {
-            QJsonObject systemMsg;
-            systemMsg["role"] = "system";
-            systemMsg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
-            msgs.insert(0, systemMsg); // 插在最前面
-        }
-
-        QJsonObject userMsg;
-        userMsg["role"] = "user";
-        userMsg["content"] = text;
-        msgs.append(userMsg);
-
-        sxw["messages"] = msgs;
-
+        init_system(text);
     } else {
         // 如果 sxw 还没有 messages 数组，则直接创建一个新的
         QJsonArray msgs;
@@ -1280,7 +1385,38 @@ void AppWindow::onSendMessage(const QString &text)
     });
     m_execThread->start();
 }
+void AppWindow::init_system(const QString &text)
+{
+    QJsonArray msgs = sxw["messages"].toArray();
 
+    bool systemFound = false;
+
+    for (int i = 0; i < msgs.size(); ++i) {
+        QJsonObject msg = msgs[i].toObject();
+        if (msg["role"].toString() == "system") {
+            // 使用当前最新的目录列表更新 content
+            msg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
+            msgs[i] = msg;
+            systemFound = true;
+            break; // 通常只有一个 system，找到就停
+        }
+    }
+
+    if (!systemFound && !g_system.isEmpty()) {
+        QJsonObject systemMsg;
+        systemMsg["role"] = "system";
+        systemMsg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
+        msgs.insert(0, systemMsg); // 插在最前面
+    }
+    if(!text.isEmpty())
+    {
+        QJsonObject userMsg;
+        userMsg["role"] = "user";
+        userMsg["content"] = text;
+        msgs.append(userMsg);
+    }
+    sxw["messages"] = msgs;
+}
 
 QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
 {
@@ -1288,6 +1424,7 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
         QJsonObject obj;
         for(int i2=0; i2<3; ++i2) {
             //qDebug() << "上下文" << sxw;
+            init_system("");//更新系统提示词
             QByteArray response = ai_ui->Ai_post(url, key, sxw, 1800000);
             if(response.isEmpty()) {
                 err += "接口返回空\n";

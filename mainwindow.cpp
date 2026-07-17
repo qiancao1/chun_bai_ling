@@ -72,16 +72,17 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.1.3.16"
-#define APP_BUILD_NUMBER 16
+#define APP_VERSION_STR "v1.1.3.17"
+#define APP_BUILD_NUMBER 17
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.1.3.16 (2026-07-17)
+## v1.1.3.17 (2026-07-17)
 - 优化 原版mc插件的支持
 - 优化 数据库 一个原子变量到内存 减少一次数据库读取
-- 优化 ai生成插件添加 按钮模板 增加更多工具 增加加载卸载插件
+- 优化 ai生成插件添加 按钮模板 增加更多工具 增加加载卸载插件 针对某个函数 读写修改
 - 修复 富媒体分片上传 错误问题
+- 修复 py插件重载 指令正则类未清空
 - 修复 发送普通信息 图片无效问题
 - 修复 按钮生成小按钮 问题
 - 修复 被Ai删除的 \\n 文本
@@ -99,7 +100,7 @@ QString Homev=R"(
 - login{appid}  登录某个机器人
 - logout{appid} 下线某个机器人
 - botlist  查看机器人列表
-- boterr 查看最后错误 等指令 可用快捷添加 机器人到框架
+- boterr{appid} 查看最后错误 等指令 可用快捷添加 机器人到框架
 
 
 ## v1.1.2.14 (2026-07-05)

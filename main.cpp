@@ -179,6 +179,10 @@ void initDBs() {
     }
 }
 
+#include "pythonparser.h"  // 假设你的 PythonParser 头文件路径
+
+
+
 QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
@@ -256,6 +260,22 @@ int main(int argc, char *argv[]) {
     aidb= new LmdbKV("botdb/aidb");
     dsdb = new LmdbKV("botdb/dsdb");
     accdb = new LmdbKV("botdb/accountinfo");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     MainWindow w;
     w.show();

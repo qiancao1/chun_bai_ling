@@ -6,6 +6,7 @@
 #include <QTreeView>          // 改用 QTreeView
 #include <QFileSystemModel>   // 新增文件系统模型
 #include <QPushButton>
+#include <qcheckbox.h>
 #include <qjsonarray.h>
 #include <qjsonobject.h>
 #include <qpainter.h>
@@ -38,6 +39,7 @@ private slots:
 
 private:
     void Folder();
+    void init_system(const QString &text);
     void 内置函数(const QString &Nmae,const QString &remark,const QStringList &params);
     void 内置函数();
     QString tools_fun(const QString &tool_name, const QString &args, const QString &model);
@@ -47,7 +49,7 @@ private:
     QTreeView *fileTree;          // 换成树形视图
     QFileSystemModel *fileModel;  // 文件系统模型
     CodeEditor *codeEditor;
-
+    QCheckBox *nosh;
     QString lastSelectedFile;
     QJsonObject sxw;
     int model_index=0;

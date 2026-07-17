@@ -1279,7 +1279,7 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         info.python.onEnable = getCb("on_enable");
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
-        info.python.requires.clear();
+
         // 获取插件信息
         if (plugin_globals.contains("get_plugin_info")) {
             try {
@@ -1298,16 +1298,8 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                 readString("description", info.description);
                 readString("icon", info.icon);
 
-                if (dict.contains("requires") && py::isinstance<py::list>(dict["requires"])) {
-                    py::list reqs = dict["requires"].cast<py::list>();
-                    for (py::handle h : reqs) {
-                        if (py::isinstance<py::str>(h)) {
-                            info.python.requires << QString::fromStdString(h.cast<std::string>());
-                        }
-                    }
-                }
-                // 定义一个 lambda 来解析特定类型的规则列表
-                // 定义一个 lambda 解析特定类型的规则列表
+
+                info.python.rules.clear();
                 auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
                     py::str keyPy = py::str(typeKey.toStdString());  // 或
 

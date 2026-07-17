@@ -85,7 +85,9 @@ PYBIND11_EMBEDDED_MODULE(qq_api, m, py::mod_gil_not_used()) {
         .def_readwrite("at_you", &MessageEvent::at_you)
         .def_readwrite("raw", &MessageEvent::raw)
         .def_readwrite("callbackid", &MessageEvent::callbackId)
+        .def_readwrite("member_role", &MessageEvent::member_role)
         .def_readwrite("replyto", &MessageEvent::replyTo);
+
 
     py::class_<Ai_Fun>(m, "Aifun")
         .def(py::init<>())

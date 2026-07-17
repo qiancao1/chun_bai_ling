@@ -178,6 +178,7 @@ else()
             ui/appwindow.h ui/appwindow.cpp
 
             db/vectormemory.h
+            pythonparser.h pythonparser.cpp
 
 
 
