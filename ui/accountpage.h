@@ -18,10 +18,13 @@ public:
     void extracted(QJsonArray &arr);
     void saveAccounts(const AccountInfo *info);
 
+public slots:
+    void onDeleteAccount(int appid);
+
 private slots:
     void onAddAccount();
     void onEditAccount(int appid);
-    void onDeleteAccount(int appid);
+
     void onLoginStateChanged(int appid);
     void autoConnectBots();
 

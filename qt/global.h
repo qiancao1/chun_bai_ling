@@ -150,6 +150,7 @@ QByteArray R_file(const QString &path);
 bool W_file(const QString &path,const QByteArray &data);
 int accinfo(int appid);
 void processPendingEvents();
+QString python_code(const QString &py_code);
 
 class SendMessageTask2 : public QRunnable {
 public:
@@ -200,6 +201,19 @@ public:
             if(sentText.contains("{数量}"))
             {
                 sentText = subTextReplace(sentText,"{数量}",QString::number(m_user_list.size()));
+            }
+            if(sentText.contains("{混合}"))
+            {
+                QString nat;
+                int estimatedLen = m_user_list.size() * 32*4; // 视实际 ID 长度调整，也可遍历一次精确计算
+                nat.reserve(estimatedLen);
+                for(const auto &id : std::as_const(m_user_list))
+                {
+                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(m_appid).arg(id, id);
+                    nat.append(hh);
+                }
+                sentText = subTextReplace(sentText,"{混合}",nat);
+
             }
         }
         QQBotClient* client = m_botClients[m_appid];

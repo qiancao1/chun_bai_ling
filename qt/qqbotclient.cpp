@@ -63,10 +63,11 @@ void QQBotClient::start()
     if (m_info->online || m_isConnecting)
         return;
     m_isConnecting = true;
+    m_info->err.clear();
     AppendEventLog(QString("尝试登录：%1(%2)").arg(m_info->nickname,m_info->appid), 0x0082FD);
 
     if (!refreshAccessToken()) {
-        emit loginFailed("获取 access_token 失败，请检查 appid/secret 或网络");
+
         m_isConnecting = false;
         scheduleReconnect(10);
         return;
@@ -77,8 +78,7 @@ void QQBotClient::start()
     if (wsUrl.isEmpty()) {
         wsUrl = fetchGatewayUrl();
         if (wsUrl.isEmpty()) {
-            emit loginFailed("无法获取网关地址，可能是 token 无效或网络问题");
-            AppendEventLog("获取网关地址失败，token 可能无效", 0xff);
+
             m_isConnecting = false;
             scheduleReconnect(5);
             return;
@@ -99,6 +99,7 @@ void QQBotClient::start()
             m_info->online=true;
             fetchSelfInfo();
         }else{
+            m_info->err+="未启动webhook服务器 请允许后再试试\n";
             AppendEventLog("未启动webhook服务器 请允许后再试试");
         }
 
@@ -135,6 +136,7 @@ QString QQBotClient::fetchGatewayUrl()
 
     if (m_accessToken.isEmpty()) {
         AppendEventLog("无法获取网关：access_token 为空",0xff);
+        m_info->err+="access_token 为空 请设置access_token 后再次登录\n";
         return QString();
     }
 
@@ -155,6 +157,7 @@ QString QQBotClient::fetchGatewayUrl()
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("获取登录Ws错误: " + err.errorString(),0xff);
+        m_info->err+="获取登录Ws错误: " + err.errorString()+"\n";
         return QString();
     }
 
@@ -167,6 +170,7 @@ QString QQBotClient::fetchGatewayUrl()
             m_accessToken.clear();
         if (errMsg.isEmpty())
             errMsg = "未知错误，可能 token 无效或 appid 不正确";
+        m_info->err+="获取ws地址失败: " + errMsg+"\n";
         AppendEventLog("获取ws地址失败: " + errMsg,0xff);
     }
     return wsUrl;
@@ -181,7 +185,8 @@ bool QQBotClient::refreshAccessToken()
 
     // 动态获取 token
     if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
-        AppendEventLog("缺少 appid 或 secret，无法获取 token",0xff);
+        AppendEventLog("缺少 appid 或 secret，无法获取 AccessToken",0xff);
+        m_info->err+="缺少 appid 或 secret，无法获取 AccessToken\n";
         return false;
     }
 
@@ -202,6 +207,7 @@ bool QQBotClient::refreshAccessToken()
     if (reply->error() != QNetworkReply::NoError) {
         QByteArray data = reply->readAll();
         AppendEventLog("刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data,0xff);
+        m_info->err+="刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data;
         reply->deleteLater();
         return false;
     }
@@ -212,6 +218,7 @@ bool QQBotClient::refreshAccessToken()
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+data,0xff);
+         m_info->err+="解析 token 响应失败: " + err.errorString()+"\n返回内容："+data;
         return false;
     }
 
@@ -222,6 +229,7 @@ bool QQBotClient::refreshAccessToken()
         if (errMsg.isEmpty())
             errMsg = "appid 或 secret 错误（无具体返回信息）";
         AppendEventLog("获取 token 失败: " + errMsg,0xff);
+        m_info->err+="获取 token 失败: " + errMsg;
         return false;
     }
 

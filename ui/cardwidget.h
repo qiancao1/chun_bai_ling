@@ -16,6 +16,8 @@ public:
     void triggerLogin();
     void onTimeRefresh();       // 刷新在线时长显示
     AccountInfo *m_info;
+public slots:
+    void onLoginButton();
 
 signals:
     void settingClicked(int appid);
@@ -23,7 +25,7 @@ signals:
     void loginClicked(int appid);   // 登录/登出后通知外部更新数据
 
 private slots:
-    void onLoginButton();
+
     void onSettingButton();
     void onDeleteButton();
     void onLoginButtonA();

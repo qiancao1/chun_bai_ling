@@ -356,14 +356,13 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         saveAccounts(oldInfoPtr.get());
     }
 
-
-
     if (homePage) homePage->refreshRuntimeStats();
 }
 
 void AccountPage::onAddAccount() {
     openAccountEditor(AccountInfo(), false);
 }
+
 
 void AccountPage::onEditAccount(int appid) {
     AccountInfo *info = findAccount(appid);

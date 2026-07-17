@@ -82,10 +82,10 @@ void HomePage::setStyleSheetA()
             background: transparent;
         }
         QLabel#statIcon {
-            min-width: 44px;
-            min-height: 44px;
-            max-width: 44px;
-            max-height: 44px;
+            min-width: 24px;
+            min-height: 24px;
+            max-width: 24px;
+            max-height: 24px;
             border-radius: 14px;
             background: #FFF0DE;
             color: #FF914D;
@@ -305,15 +305,15 @@ QFrame* HomePage::createRecentPanel() {
     auto recentPanel = createPanel("recentPanel");
     //recentPanel->setMaximumWidth(400);               // 限制右侧宽度，让图表区域更宽
     auto recentLayout = new QVBoxLayout(recentPanel);
-    recentLayout->setContentsMargins(10, 10, 10, 10);
-    recentLayout->setSpacing(10);
+    recentLayout->setContentsMargins(5, 5, 5, 5);
+    recentLayout->setSpacing(5);
 
     auto recentTop = new QHBoxLayout;
     recentTop->addWidget(createLabel("插件消息统计", "sectionTitle"));
     recentLayout->addLayout(recentTop);
 
     m_pluginMessageLayout = new QVBoxLayout;
-    m_pluginMessageLayout->setSpacing(10);
+    m_pluginMessageLayout->setSpacing(5);
     m_pluginMessageLayout->addStretch();
     recentLayout->addLayout(m_pluginMessageLayout);
     return recentPanel;
@@ -620,16 +620,12 @@ void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
     } else {
         // 创建新的插件消息统计项
         auto row = new QHBoxLayout;
-        row->setSpacing(10);
+        row->setSpacing(4);
         auto iconLabel = createLabel("🔌", "statIcon"); // 可以根据需要用插件图片替代
         iconLabel->setAlignment(Qt::AlignCenter);
-        iconLabel->setFixedSize(32, 32);
-        iconLabel->setStyleSheet("QLabel#statIcon { background: #EEF9E9; font-size: 16px; border-radius: 10px; }");
-        
-        auto textLayout = new QVBoxLayout;
-        textLayout->setSpacing(3);
-        textLayout->addWidget(createLabel(pluginName, "conversationName"));
-        textLayout->addWidget(createLabel("已发送消息数", "mutedText"));
+        iconLabel->setFixedSize(16, 16);
+        iconLabel->setStyleSheet("QLabel#statIcon { background: #EEF9E9; font-size: 16px; border-radius: 3px; }");
+
         
         auto right = new QVBoxLayout;
         auto countLabel = createLabel(QString::number(count), "badge");
@@ -638,7 +634,7 @@ void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
         right->addWidget(countLabel);
         
         row->addWidget(iconLabel);
-        row->addLayout(textLayout, 1);
+        row->addWidget(createLabel(pluginName, "conversationName"), 1);
         row->addLayout(right);
         
         // 插入到伸缩弹簧之前

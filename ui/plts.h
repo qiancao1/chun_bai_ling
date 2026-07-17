@@ -21,6 +21,8 @@ private slots:
     void on_sctswj_clicked(bool checked);
     void on_tzts_clicked(bool checked);
     
+
+
 private:
     void extracted(QList<int> &pendingFriends);
     void extracted(QList<QString> &pendingGroups);

@@ -234,3 +234,4 @@ void plts::on_ksts_clicked(bool checked)
     m_saveTimer->setInterval(3000); // 3秒
     m_saveTimer->start();
 }
+

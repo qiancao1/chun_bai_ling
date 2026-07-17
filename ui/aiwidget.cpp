@@ -2562,9 +2562,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     if(session.accountInfo->context_len<5)
         session.accountInfo->context_len=5;
     trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
-
-
-    convertContextImagesToBase64(baseContext);
+    convertContextImagesToBase64(baseContext);//图片转b64
 
 
     session.isProcessing = true;

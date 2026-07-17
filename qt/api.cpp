@@ -908,35 +908,45 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
 
 QString sendPutRequest(const QString& url, const QByteArray& data, int timeoutMs)
 {
-    // 1. 构造请求
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
+    QNetworkRequest request((QUrl(url)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
 
-    // 2. 创建管理器（局部变量，在同步等待下安全）
     QNetworkAccessManager manager;
     QNetworkReply *reply = manager.put(request, data);
 
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    bool timeoutOccurred = false;
+    QObject::connect(&timer, &QTimer::timeout, [&]() {
+        timeoutOccurred = true;
+        reply->abort();   // 关键：中止请求
+        loop.quit();
+    });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     timer.start(timeoutMs);
     loop.exec();
 
-    QByteArray responseBody;
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        responseBody = reply->readAll();
-    } else {
-
-        responseBody.clear();
+    if (reply->error() != QNetworkReply::NoError) {
+        qWarning() << "Network error:" << reply->errorString();
+        return QString();
     }
 
-    reply->deleteLater();
-    return QString::fromUtf8(responseBody);
-}
+    // 检查 HTTP 状态码
+    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode < 200 || statusCode >= 300) {
+        QByteArray errBody = reply->readAll();
+        qWarning() << "HTTP error" << statusCode << ", body:" << errBody;
+        return QString();   // 明确失败
+    }
 
+    // 成功
+    QByteArray responseBody = reply->readAll();
+    // 这里可以提取 ETag 等（但你的 finish 接口可能不需要）
+    return QString::fromUtf8(responseBody);
+
+}
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString())
 {
     QString url;
@@ -1510,9 +1520,9 @@ QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int 
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
-    case 1: typeStr = "pic"; break;
-    case 2: typeStr = "audio"; break;
-    case 3: typeStr = "video"; break;
+    case 1: typeStr = "image"; break;
+    case 2: typeStr = "video"; break;
+    case 3: typeStr = "audio"; break;
     case 4: typeStr = "file"; break;
     default: typeStr = "unknown";
     }
@@ -1526,9 +1536,9 @@ QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int 
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
-    case 1: typeStr = "pic"; break;
-    case 2: typeStr = "audio"; break;
-    case 3: typeStr = "video"; break;
+    case 1: typeStr = "image"; break;
+    case 2: typeStr = "video"; break;
+    case 3: typeStr = "audio"; break;
     case 4: typeStr = "file"; break;
     default: typeStr = "unknown";
     }
@@ -1547,7 +1557,7 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
 
     QString url = get_url(targetType, openid, "files”");
     QString file_info,response;
-    for(int i=0;i<6;i++)
+    for(int i=0;i<10;i++)
     {
         response =_Post(url,obj,300000);
         if (response.isEmpty()) return QString();
@@ -1610,14 +1620,16 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QJsonArray parts = respObj["parts"].toArray();
     QJsonObject partFinishBase;
     partFinishBase["upload_id"] = upload_id;
+
+    int start=0;
     for (int i = 0; i < parts.size(); ++i) {
         QJsonObject part = parts[i].toObject();
         int index = part["index"].toInt();
         QString blockSize = part["block_size"].toString();
         int blockSizeA=blockSize.toInt();
         QString presignedUrl = part["presigned_url"].toString();
-        int start = (index - 1) * blockSizeA;
         QByteArray chunk = fileData.mid(start, blockSizeA);
+        start += blockSizeA;
         QString putResp = sendPutRequest(presignedUrl, chunk, 30000);
         QJsonObject finishJson;
         finishJson["upload_id"] = upload_id;
@@ -1629,6 +1641,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         QString finishUrl = get_url(targetType, openid, "upload_part_finish");
         QString finishResp = _Post(finishUrl, finishJson, 30000);
     }
+
     QString filesUrl = get_url(targetType, openid, "files");
     QString filesResp = _Post(filesUrl, respObj, 30000);
 
@@ -1687,7 +1700,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     // 5. 准备分片完成确认用的 JSON 基座
     QJsonObject partFinishBase;
     partFinishBase["upload_id"] = upload_id;
-
+    int start =0;
     // 6. 循环上传每个分片
     for (int i = 0; i < parts.size(); ++i) {
         QJsonObject part = parts[i].toObject();
@@ -1696,9 +1709,9 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         QString presignedUrl = part["presigned_url"].toString();
 
         // 取出分片数据
-        int start = (index - 1) * blockSize;
-        QByteArray chunk = data.mid(start, blockSize);
 
+        QByteArray chunk = data.mid(start, blockSize);
+        start+=blockSize;
         // PUT 上传分片
         QString putResp = sendPutRequest(presignedUrl, chunk, 30000);
         // 忽略响应，一般只要成功即可
@@ -1796,7 +1809,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
         if(!filePath.startsWith("http"))
         {
             fileMd5=calculateFileMD5(filePath);
-            //媒体类型：1 图片，2 视频，3 语音，4 文件
+            //媒体类型：1 图片，2 视频 ，3语音 ，4 文件
             if (cache_db && !fileMd5.isEmpty()) {
                 QString cacheKey = QString("media_%1").arg(fileMd5);
                 QString cached = cache_db->get(cacheKey);
@@ -1867,7 +1880,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,co
     return response;
 }
 
-//统一字符串方便其他语言
+
 void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup)
 {
     if (!message_reference.isEmpty()) {
@@ -1917,10 +1930,7 @@ QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
             QStringList fields = content.split(',');
             while (fields.size() < 9) fields.append(QString()); // 补足空字段
 
-            // 字段索引定义
-            // 0: 标题, 1: 数据, 2: 类型(0链接/1回调/2文本，默认2), 3: 立即发送(0/1，对应enter),
-            // 4: 引用(0/1，对应reply), 5: 风格(0-n，默认1, 9999为small),
-            // 6: 弹出内容, 7: 确认按钮文字, 8: 取消按钮文字
+
             QString label = fields[0].trimmed();
             QString actionData = fields[1].trimmed();
             int actionType = fields[2].trimmed().isEmpty() ? 2 : fields[2].trimmed().toInt();
@@ -2231,9 +2241,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
     }
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    newtext=sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
+    QString newtext2=sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
 
-    if (!text.isEmpty())
+    if (!newtext.isEmpty())
     {
 
         auto [index, realMsgId] = splitWrappedMsgId(msgid);
@@ -2241,14 +2251,14 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         QJsonArray prompt_keyboard;
         QString message_reference,mb;
 
-        QString textB=normalizeNewlinesToCR(text); //处理换行
+        QString textB=normalizeNewlinesToCR(newtext); //处理换行
 
         bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
         bool mbise= mb.isEmpty();
         if(textB.isEmpty() && mbise)
         {
             QString response = R"({"message":"发送内容不能为空"})";
-            addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+            addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
             return response;
         }
         QString response,fileinfo;
@@ -2271,7 +2281,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                 {
                     textB="#mb:#"+ mb+"#mb:#" ;
                 }else{
-                    addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+                    addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
                     return response;
                 }
             }
@@ -2320,7 +2330,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                     response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference);
                 }
             }
-            addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+            addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
             return response;
         }
         if(!mbise)
@@ -2340,7 +2350,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
             {
                 textB="#mb:#"+ mb+"#mb:#" ;
             }else{
-                addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+                addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
                 return response;
             }
         }
@@ -2375,10 +2385,10 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
                 response = send_messages(type, openid, textA,fileinfo, prompt_keyboard, message_reference, realMsgId, is_wakeup);
             }
         }
-        addmsglog(response,index,pname,text,now_us,type,realMsgId,openid);
+        addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
         return response;
     }
-    return newtext;
+    return newtext2;
 }
 
 QString QQBotClient::send_messages(int type, const QString &openid, const QString &text,const QString &info,

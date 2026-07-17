@@ -13,9 +13,6 @@ QString g_sandboxuuid;
 namespace py = pybind11;
 
 
-
-// ---------- Python 语法高亮器 ----------
-
 // ---------- CodeEditor 实现 ----------
 CodeEditor::CodeEditor(QWidget *parent) : QPlainTextEdit(parent)
 {
@@ -116,7 +113,7 @@ SandboxWindow::SandboxWindow(QWidget *parent)
 import urllib.parse
 import json
 import base64
-
+#请将引用到的库放 txt里面
 api = None
 
 def get_plugin_info(uuid):
@@ -129,7 +126,9 @@ def get_plugin_info(uuid):
         "author": "Your Name",
         "description": "基于中国气象局 CMA 接口，查询国内城市实时天气",
         "icon": "",
-        "requires": []
+        "startswith": [
+            {"key": "天气", "fun": "on_weather"}   # 匹配“天气”开头的消息
+        ]
     }
 
 def on_enable():
@@ -144,8 +143,9 @@ def on_unload():
 def on_set():
     pass
 
-def _parse_resp(resp_str):
+# on_message 已弃用，此处删除
 
+def _parse_resp(resp_str):
     try:
         data = json.loads(resp_str) if isinstance(resp_str, str) else resp_str
     except Exception as e:
@@ -156,7 +156,6 @@ def _parse_resp(resp_str):
         error = data.get("error", "未知错误")
         return False, None, f"请求失败：{error}"
 
-    # content 字段是 Base64 编码的 JSON
     try:
         content_bytes = base64.b64decode(data["content"])
         inner_data = json.loads(content_bytes.decode('utf-8'))
@@ -165,25 +164,23 @@ def _parse_resp(resp_str):
 
     return True, inner_data, None
 
-def query_weather(city):
+def _query_weather_internal(city):
     headers = {
         "Referer": "https://weather.cma.cn/web/weather/S1003.html",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
     }
 
-    # ---------- 1. 搜索城市 ----------
     timestamp = int(time.time() * 1000)
     encoded_city = urllib.parse.quote(city)
     search_url = f"https://weather.cma.cn/api/autocomplete?q={encoded_city}&limit=10&timestamp={timestamp}"
 
     resp_str = api.http_request(search_url, method="GET", headers=headers, timeout=15)
-    print("搜索原始响应:", resp_str)  # 调试
+    print("搜索原始响应:", resp_str)
 
     success, search_data, err = _parse_resp(resp_str)
     if not success:
         return err
 
-    # 处理搜索数据
     if search_data.get("code") != 0 or not search_data.get("data"):
         return f"未找到城市“{city}”，请检查名称是否正确"
 
@@ -191,7 +188,6 @@ def query_weather(city):
     selected_id = None
     selected_name = None
 
-    # 精确匹配
     for item in candidates:
         parts = item.split("|")
         if len(parts) >= 4:
@@ -201,7 +197,6 @@ def query_weather(city):
                 selected_name = cname
                 break
 
-    # 兜底：取第一个中国城市
     if not selected_id:
         for item in candidates:
             parts = item.split("|")
@@ -213,10 +208,9 @@ def query_weather(city):
     if not selected_id:
         return f"未找到“{city}”在国内的天气信息"
 
-    # ---------- 2. 查询实时天气 ----------
     weather_url = f"https://weather.cma.cn/api/now/{selected_id}"
     resp_str = api.http_request(weather_url, method="GET", headers=headers, timeout=15)
-    print("天气原始响应:", resp_str)  # 调试
+    print("天气原始响应:", resp_str)
 
     success, weather_data, err = _parse_resp(resp_str)
     if not success:
@@ -240,16 +234,16 @@ def query_weather(city):
     )
     return info
 
-def on_message(msg):
+def on_weather(msg):
     if not hasattr(msg, 'msg') or not isinstance(msg.msg, str):
-        return
+        return "无效消息"
     text = msg.msg.strip()
-    if not text.startswith("天气"):
-        return
-    city = text[2:].strip()
-    if not city:
-        return "请指定城市名，例如：天气 南宁"
-    return query_weather(city)
+    if text.startswith("天气"):
+        city = text[2:].strip()
+        if not city:
+            return "请指定城市名，例如：天气 南宁"
+        return _query_weather_internal(city)
+    return "请以“天气”开头"
 )");
     new PythonHighlighter(codeEditor->document());
 }

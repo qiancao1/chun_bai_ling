@@ -103,7 +103,12 @@ bool clearPTmpFolder()
 QString getPythonExecutable() {
 
     QString exePath = QStandardPaths::findExecutable("python3.14t");
+    if(exePath.isEmpty())
+    {
+        if(g_config["yiyu"].toInt()==0)
+            exePath = g_config["pythonHome"].toString();
 
+    }
     return exePath;
 }
 

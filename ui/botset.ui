@@ -62,7 +62,7 @@
      <item row="2" column="0">
       <widget class="QTextEdit" name="textEdit_3">
        <property name="placeholderText">
-        <string>用户加群时发送-#python开头为py代码 </string>
+        <string>用户加群时 #python 开头位py代码 可用保留{ID} {艾特} {数量}</string>
        </property>
       </widget>
      </item>

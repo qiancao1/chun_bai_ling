@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <qjsonarray.h>
 #include <qjsonobject.h>
+#include <qpainter.h>
 
 #include "sandboxwindow.h"
 
@@ -23,8 +24,8 @@ public:
     // 填充模型下拉框
     void setModels();
 
-
-    QListWidget *chatList;
+    QTextEdit *chatTextEdit;   // 替代原 chatListView
+    //QListWidget *chatList;
 
 signals:
 
@@ -36,9 +37,10 @@ private slots:
     void onSendMessage(const QString &text);
 
 private:
+    void Folder();
     void 内置函数(const QString &Nmae,const QString &remark,const QStringList &params);
     void 内置函数();
-    QString 函数处理(const QString &tool_name, const QString &args, const QString &model);
+    QString tools_fun(const QString &tool_name, const QString &args, const QString &model);
     QJsonArray m_fun;
     QLabel *pathLabel;
     QString m_dir;

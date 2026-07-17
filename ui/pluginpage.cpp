@@ -19,7 +19,7 @@
 #include <QApplication>
 #include <qlibrary.h>
 #include "AppWindow.h"
-#include "PluginDepDialog.h"
+
 #include "global.h"
 #include "node_plugin_manager.h"
 
@@ -105,7 +105,7 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
     else
         statusIndicator->setStyleSheet("background: #f38ba8; border-radius: 6px;");
 }
-
+QString getPythonExecutable();
 // ==================== PluginPage 实现 ====================
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
@@ -323,25 +323,66 @@ void PluginPage::setupUi()
             QMessageBox::warning(this,"",text);
         }
     });
-    connect(pypip, &QPushButton::clicked,this, [this]() {
-        if (currentSelected_index < 0 || currentSelected_index >= m_pluginList.size()) {
-            QMessageBox::warning(this, "提示", "请先选择一个插件。");
+
+
+    connect(pypip, &QPushButton::clicked, this, [this]() {
+        // 3. 获取 Python 解释器路径（您原先的函数）
+        QString pythonExe = getPythonExecutable();
+        if (pythonExe.isEmpty()) {
+            QMessageBox::warning(this, "错误", "未找到 python3.14t，请检查环境变量！");
             return;
         }
-        const PluginInfo &plugin = m_pluginList[currentSelected_index];
-        if (plugin.type != 0) { // 假设类型0为Python插件
-            QMessageBox::information(this, "提示", "只有 Python 插件才有依赖库管理。");
+        // 1. 设置初始目录为运行目录下的 plugin 文件夹
+        QString defaultDir = QCoreApplication::applicationDirPath() + "/plugin";
+        // 如果 plugin 目录不存在，对话框仍然会打开该路径（可能显示为空），
+        // 用户仍可手动切换到其他目录。若希望更友好，可以加一个判断并创建（可选）：
+        // if (!QDir(defaultDir).exists()) QDir().mkpath(defaultDir);
+
+        // 2. 弹出文件选择器，让用户选择 requirements.txt
+        QString reqPath = QFileDialog::getOpenFileName(
+            this,
+            "选择 requirements.txt 文件",
+            defaultDir,                  // 初始目录设为运行目录/plugin
+            "文本文件 (*.txt);;所有文件 (*)"
+            );
+
+        if (reqPath.isEmpty()) {
+            return; // 用户取消了选择
+        }
+
+
+
+        // 4. 构建完整的命令行字符串（跨平台适配）
+        QString cmdLine;
+
+#ifdef Q_OS_WIN
+        // Windows：使用 start 命令打开新的 CMD 窗口
+        // /k 表示执行完后保留窗口（方便查看报错信息），若想自动关闭可换为 /c
+        cmdLine = QString("cmd /c start \"安装Python依赖\" \"%1\" -m pip install -r \"%2\"")
+                      .arg(pythonExe, reqPath);
+#elif defined(Q_OS_LINUX)
+        // Linux：尝试使用 xterm（通常系统自带），执行完后保留窗口（exec bash）
+        QString xtermPath = QStandardPaths::findExecutable("xterm");
+        if (xtermPath.isEmpty()) {
+            QMessageBox::warning(this, "错误", "未找到 xterm 终端，请安装或改用其他终端。");
             return;
         }
-        // 获取 requires 列表（假设为 QStringList）
-        QStringList requires = plugin.python.requires; // 需要确保 PluginInfo 中有此成员
-        if (requires.isEmpty()) {
-            QMessageBox::information(this, "提示", "当前插件没有声明任何依赖库。");
-            return;
+        cmdLine = QString("%1 -e bash -c '%2 -m pip install -r \"%3\"; exec bash'")
+                      .arg(xtermPath, pythonExe, reqPath);
+#elif defined(Q_OS_MAC)
+        // macOS：使用 AppleScript 打开 Terminal.app
+        cmdLine = QString("osascript -e 'tell application \"Terminal\" to do script \"%1 -m pip install -r \\\"%2\\\"\"'")
+                      .arg(pythonExe, reqPath);
+#endif
+
+        // 5. 使用 startDetached 启动独立进程（不阻塞界面，且与主程序脱离）
+        bool success = QProcess::startDetached(cmdLine);
+        if (!success) {
+            QMessageBox::critical(this, "错误", "无法启动终端窗口，请检查系统环境！");
         }
-        PluginDepDialog dlg(requires, plugin.name, this);
-        dlg.exec();
     });
+
+
     connect(ai_c_j, &QPushButton::clicked,this, [this]() {
         auto *w = new AppWindow();
         w->setAttribute(Qt::WA_DeleteOnClose);
@@ -434,15 +475,44 @@ void PluginPage::initPluginList(const QList<PluginInfo> &plugins) {
     }
 }
 void PluginPage::appendPlugin(const PluginInfo &info) {
+    // 1. 数据操作：在当前线程执行，持有 GIL
     py::gil_scoped_acquire gil;
-    m_pluginList.append(info);
-    addPluginItemToUI(m_pluginList.size() - 1, info);
-}
+    try {
+        m_pluginList.append(info);
+        int index = m_pluginList.size() - 1;  // 新插入元素的索引
 
+        // 2. UI 更新投递到主线程，只传递索引（不拷贝 info）
+        QMetaObject::invokeMethod(qApp, [this, index]() {
+            // 主线程执行，获取 GIL，然后通过索引访问列表中的元素
+            py::gil_scoped_acquire gilMain;
+            try {
+                // 通过索引获取引用，避免拷贝
+                const PluginInfo& infoRef = m_pluginList.at(index);
+                addPluginItemToUI(index, infoRef);
+            } catch (const py::error_already_set& e) {
+                qWarning() << "Python error in addPluginItemToUI:" << e.what();
+                PyErr_Clear();
+            } catch (const std::exception& e) {
+                qWarning() << "C++ exception in addPluginItemToUI:" << e.what();
+            } catch (...) {
+                qWarning() << "Unknown exception in addPluginItemToUI";
+            }
+        }, Qt::QueuedConnection);
+
+    } catch (const py::error_already_set& e) {
+        qWarning() << "Python error in appendPlugin (data append):" << e.what();
+        PyErr_Clear();
+    } catch (const std::exception& e) {
+        qWarning() << "C++ exception in appendPlugin (data append):" << e.what();
+    } catch (...) {
+        qWarning() << "Unknown exception in appendPlugin (data append)";
+    }
+}
 // 在指定位置插入
 void PluginPage::insertPlugin(int index, const PluginInfo &info) {
     py::gil_scoped_acquire gil;
     m_pluginList.insert(index, info);
+
     insertPluginItemToUI(index, info);
 }
 
@@ -896,7 +966,25 @@ bool PluginPage::uninstall_Plugin(int index)
 
     return true;
 }
-
+bool PluginPage::uninstall_Plugin2(int index)
+{
+    if (index<=-1 || index>m_pluginList.length()) return false;
+    AppendEventLog("[卸载插件]"+m_pluginList[index].name);
+    if(!uninstall_Plugin(m_pluginList[index]))
+    {
+        showAutoCloseMessageBox("卸载失败","32位加载器没有响应");
+        return false;
+    }
+    removePlugin(index);
+    onPluginSelected(currentSelected_index);
+    detailIconLabel->clear();
+    detailNameLabel->clear();
+    detailTypeLabel->clear();
+    detailVersionLabel->clear();
+    detailAuthorLabel->clear();
+    detailDescLabel->clear();
+    return true;
+}
 QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<int> &array)  //运行时调用
 {
     int index = findPluginIndex(path);
@@ -930,6 +1018,8 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
         return QString();
     }
     if(!err.isEmpty()) return err;
+
+
     appendPlugin(info);
     plug_tji();
     return QString();

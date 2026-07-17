@@ -126,6 +126,7 @@ public:
     QString LoadPlugin_DLL(PluginInfo &info);
     QString LoadPlugin_py(PluginInfo &info);
     bool uninstall_Plugin(int index);//卸载
+    bool uninstall_Plugin2(int index);
     bool uninstall_Plugin(PluginInfo &info);
     bool Enabled_Plugin(int index);//启用
     bool Reload_Plugin(int index);//重载

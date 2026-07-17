@@ -119,7 +119,7 @@ public slots:
 
 signals:
     void loginSuccess();
-    void loginFailed(const QString &reason);
+
     void disconnected();
     void messageReceived(const QJsonObject &payload);
     void avatarDownloaded();

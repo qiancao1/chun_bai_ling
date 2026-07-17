@@ -306,7 +306,70 @@ QString 内置指令(MessageEvent &ev)
 
     return text;
 }
+QString addbot(int appid,const QString &secret,const QString &wsAddress,int type,const QString  &markdown,int wsIntents)
+{
+    if (appid==0) return "appid 为0";
+    if (secret.isEmpty()) return "secret 为空";
+    int existingIndex = -1;
+    for (int i = 0; i < m_accounts.size(); ++i) {
+        if (m_accounts[i]->appid_int == appid) {
+            existingIndex = i;
+            break;
+        }
+    }
+    if (existingIndex==-1) { //添加新
+        auto oldInfoPtr = std::make_shared<AccountInfo>();
+        oldInfoPtr->secret = secret;
+        oldInfoPtr->wsAddress = wsAddress;
+        oldInfoPtr->type = type;
+        int md=0;
+        if(markdown.isEmpty())
+            md=-1;
+        else
+            md = markdown.toInt();
+        if(md == -1)
+            oldInfoPtr->markdown = true;
+        else
+            oldInfoPtr->markdown = (md==1);
 
+        if(wsIntents == 0)
+            oldInfoPtr->wsIntents = 0;
+        else
+            oldInfoPtr->wsIntents = wsIntents;
+        m_accounts.append(oldInfoPtr);
+        QMetaObject::invokeMethod(qApp, [=]() {
+            accountPage->refreshCards2(oldInfoPtr.get());
+            homePage->refreshRuntimeStats();
+        });
+
+    } else {
+        auto oldInfoPtr = m_accounts[existingIndex];
+
+        oldInfoPtr->secret = secret;
+        oldInfoPtr->wsAddress = wsAddress;
+        oldInfoPtr->type = type;
+        int md=0;
+        if(markdown.isEmpty())
+            md=-1;
+        else
+            md = markdown.toInt();
+        if(md == -1)
+            oldInfoPtr->markdown = true;
+        else
+            oldInfoPtr->markdown = (md==1);
+        if(wsIntents == 0)
+            oldInfoPtr->wsIntents = 0;
+        else
+            oldInfoPtr->wsIntents = wsIntents;
+        accountPage->saveAccounts(oldInfoPtr.get());
+        QMetaObject::invokeMethod(qApp, [=]() {
+            homePage->refreshRuntimeStats();
+        });
+    }
+
+
+    return "添加成功 注意 重复appid,是覆盖请确定appid 正确";
+}
 QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
@@ -329,6 +392,91 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
     {
         setA->set_webui(true);
         return "已开启webui";
+    }
+    if(ev.at_you){
+        if(ev.msg=="botlist")
+        {
+            QString res;
+            res.append("#机器人列表🌴:\n");
+            for (const auto& bot : std::as_const(m_accounts)) {
+                QString status = bot->online ? "[在线](logout %1)" : "[离线](login %1)";
+                QString log;
+                if(bot->unid.isEmpty())
+                {
+                    log = QString(">![#24px #24px](%1) %2(%3) %4\n").arg(bot->avatarPath,bot->nickname,bot->appid,status.arg(bot->appid));
+                }else
+                    log = QString(">![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) %3(%4) %5\n").arg(bot->appid,bot->unid,bot->nickname,bot->appid,status.arg(bot->appid));
+                res.append(log);
+            }
+            res.append("#可用指令：\n[login](login {appid}) 登录指定机器人\n[logout](logout {appid}) 下线指定机器人\n"
+                       "[delbot](delbot {appid}) 删除一个机器人\n[addbot](addbot {appid,secret,type,markdown,wsIntents}) 添加一个机器人\n[boterr](boterr {appid}) 查看最后错误日志");
+            return  res;
+        }else if(ev.msg.startsWith("login"))
+        {
+            QString appid_str;
+            int cnt = extractParams(ev.msg, "login", 0, appid_str);
+            if (cnt == -1) return "login 缺少appid参数";
+            int appid = appid_str.toInt();
+
+            if (g_CW.contains(appid))
+            {
+                auto *cw = g_CW[appid];
+                if(cw->m_info->online) return "机器人已经在线 无须重复登录";
+                QMetaObject::invokeMethod(qApp, [=]() {
+                    cw->onLoginButton();
+                });
+                doWork(1000);
+                if(cw->m_info->err.isEmpty())
+                    return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误").arg(appid);
+                return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误\n疑似登录错误：\n>%2").arg(appid).arg(cw->m_info->err);
+            }else
+            {
+                return "要登录的 appid 在框架账号列表不存在";
+            }
+        }else if(ev.msg.startsWith("logout"))
+        {
+            QString appid_str;
+            int cnt = extractParams(ev.msg,"logout", 0, appid_str);
+            if (cnt == -1) return "login 缺少appid参数";
+            int appid = appid_str.toInt();
+            if (g_CW.contains(appid))
+            {
+                auto *cw = g_CW[appid];
+                if(!cw->m_info->online) return "机器人未在线 无须下线";
+                QMetaObject::invokeMethod(qApp, [=]() {
+                    cw->onLoginButton();
+                });
+                return "下线成功 请发送 [botlist]() 获取登录状态";
+            }else return "要下线的 appid 在框架账号列表不存在";
+
+        }else if(ev.msg.startsWith("addbot"))
+        {
+            QString appid_str,secret,wsaddr,type,markdown,wsIntents;
+            int cnt = extractParams(ev.msg, "addbot", 0, appid_str,secret,wsaddr,type,markdown,wsIntents);
+            if (cnt == -1) return "deletebot 缺少appid参数";
+            return addbot(appid_str.toInt(),secret,wsaddr,type.toInt(),markdown,wsIntents.toInt());
+        }else if(ev.msg.startsWith("delbot"))
+        {
+            QString appid_str;
+            int cnt = extractParams(ev.msg, "delbot", 0, appid_str);
+            if (cnt == -1) return "delbot 缺少appid参数";
+            int appid = appid_str.toInt();
+            QMetaObject::invokeMethod(qApp, [=]() {
+                accountPage->onDeleteAccount(appid);
+            });
+            return "删除成功 不检查appid 必定成功";
+        }else if(ev.msg.startsWith("boterr"))
+        {
+            QString appid_str;
+            int cnt = extractParams(ev.msg, "boterr", 0, appid_str);
+            if (cnt == -1) return "boterr 缺少appid参数";
+            int appid = appid_str.toInt();
+            if (g_CW.contains(appid))
+            {
+                auto *cw = g_CW[appid];
+                return "以下是机器人最后错误:\n> "+ cw->m_info->err+"\n\n如果是空代表无错误";
+            }else return "查看最后错误的appid 未添加在 账号列表";
+        }
     }
     if(ev.msg=="取")
     {
@@ -584,6 +732,12 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 {
                     sentText = subTextReplace(sentText,"{数量}","1");
                 }
+                if(sentText.contains("{混合}"))
+                {
+                    QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user).arg(ev.user);
+                    sentText = subTextReplace(sentText,"{混合}",hh);
+                }
+
             }
 
             return sentText;
@@ -1119,4 +1273,34 @@ QString python_code4(const QString &py_code,QList<QString> user_list)
         AppendEventLog("[Python] Execute code error: " + QString::fromUtf8(e.what()) ,0xff);
     }
     return QString();
+}
+QString python_code(const QString &py_code)
+{
+    py::gil_scoped_acquire gil;
+    py::object sys, stdout_old, stringio;
+    try {
+        // 重定向 stdout 以捕获 print 输出
+        sys = py::module_::import("sys");
+        stdout_old = sys.attr("stdout");
+        stringio = py::module_::import("io").attr("StringIO")();
+        sys.attr("stdout") = stringio;
+
+        // 准备执行环境（保留 qq_api 的全局命名空间，但不再注入 api/msg）
+        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        exec_globals["__builtins__"] = py::module_::import("builtins");
+
+        // 执行用户代码
+        py::exec(py_code.toStdString(), exec_globals);
+
+        // 恢复 stdout 并获取 print 输出
+        sys.attr("stdout") = stdout_old;
+        std::string output = py::str(stringio.attr("getvalue")());
+        return QString::fromStdString(output);
+    } catch (const std::exception &e) {
+        // 尝试恢复 stdout（避免影响后续调用），忽略恢复中的异常
+        if (!sys.is_none() && !stdout_old.is_none()) {
+            try { sys.attr("stdout") = stdout_old; } catch (...) {}
+        }
+        return QString::fromUtf8(e.what());
+    }
 }

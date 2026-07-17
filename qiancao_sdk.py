@@ -1,5 +1,7 @@
 import json
 import qq_api
+import random
+import string
 from typing import Optional, Union, Dict, List, Any
 
 
@@ -189,4 +191,100 @@ class QQApi:
         """
         return self._callback(self.API_ID_GET_MEMBER_LIST, appid, openid, str(limit))    
         
-        
+
+
+
+class ButtonGroup:
+    def __init__(self):
+        self.rows = [[]]          # 二维列表，每个元素是一个按钮字典
+        self.row = 0
+        self.col = 0
+
+    def _random_id(self, length=8):
+        return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+
+    def add(self,
+            name: str,                          # 按钮显示文本
+            data: str,                          # 按钮携带的数据（回调时返回）
+            action_type: int = 2,               # 动作类型：0=链接, 1=回调, 2=发送（默认2）
+            btn_id: str = None,                 # 按钮唯一ID，不传则自动生成
+            enter: bool = False,                # 是否立即发送（点击后立即执行）
+            reply: bool = False,                # 是否引用原消息
+            color: int = 1,                     # 按钮颜色样式，默认1
+            permission_type: int = 2,           # 权限类型：0=部分人, 1=管理员, 2=全部（默认2）
+            specify_users: list = None,         # 指定可用用户列表（permission_type=0时有效）
+            visited_label: str = "visited",     # 回调后按钮显示的文本（默认"visited"）
+            unsupport_tip: str = None,          # 不支持时的提示文本（回调code4弹窗）
+            modal_content: str = None,          # 确认框内容（最多40字符）
+            modal_confirm: str = None,          # 确认按钮文本（最多4字符）
+            modal_cancel: str = None,           # 取消按钮文本（最多4字符）
+            subscribe_id: int = None,           # 订阅模板ID（整数）
+            custom_subscribe_id: str = None):   # 自定义订阅模板ID（字符串）
+        """
+        在当前行列位置添加一个按钮，完成后自动移动到下一列。
+        参数均为英文，含义与原易语言类一致。
+        """
+        # 确保当前行列存在
+        while len(self.rows) <= self.row:
+            self.rows.append([])
+        row = self.rows[self.row]
+        while len(row) <= self.col:
+            row.append({})
+        btn = row[self.col]
+
+        # 填充按钮字段
+        btn["id"] = btn_id or self._random_id()
+        btn["action"] = {
+            "type": action_type,
+            "data": data,
+            "enter": enter,
+            "permission": {
+                "type": permission_type
+            }
+        }
+        if specify_users:
+            btn["action"]["permission"]["specify_user_ids"] = specify_users
+
+        btn["render_data"] = {
+            "label": name,
+            "style": color,
+            "visited_label": visited_label or "visited"
+        }
+
+        if reply:
+            btn["action"]["reply"] = True
+
+        if unsupport_tip:
+            btn["action"]["unsupport_tips"] = unsupport_tip
+
+        if modal_content:
+            btn["action"]["modal"] = {"content": modal_content}
+            if modal_confirm:
+                btn["action"]["modal"]["confirm_text"] = modal_confirm
+            if modal_cancel:
+                btn["action"]["modal"]["cancel_text"] = modal_cancel
+
+        if subscribe_id:
+            btn["action"]["subscribe_data"] = {
+                "template_ids": [{"template_id": subscribe_id}]
+            }
+            if custom_subscribe_id:
+                btn["action"]["subscribe_data"]["template_ids"][0]["custom_template_id"] = custom_subscribe_id
+
+        # 移动到下一列
+        self.col += 1
+
+    def newrow(self):
+        """换行，列归零"""
+        self.row += 1
+        self.col = 0
+        # 预先创建空行（防止索引越界）
+        while len(self.rows) <= self.row:
+            self.rows.append([])
+
+    def to_json(self, indent=None) -> str:
+        """输出 JSON 字符串，顶层包含 content.rows"""
+        return "#b:#"+json.dumps({"content": {"rows": self.rows}},
+                          ensure_ascii=False,
+                          indent=indent,
+                          separators=(',', ':') if indent is None else None)+"#b:#"

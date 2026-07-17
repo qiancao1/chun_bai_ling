@@ -405,7 +405,49 @@ private:
     QString reqId;
     ClientConnection *client;
 };
+QString addbot(const QJsonObject &params)
+{
+    int appid = params.value("appid").toInt();
+    QString secret = params.value("secret").toString();
 
+    if (appid==0) return "appid 为0";
+    if (secret.isEmpty()) return "secret 为空";
+
+    int existingIndex = -1;
+    for (int i = 0; i < m_accounts.size(); ++i) {
+        if (m_accounts[i]->appid_int == appid) {
+            existingIndex = i;
+            break;
+        }
+    }
+
+    if (existingIndex==-1) { //添加新
+        auto oldInfoPtr = std::make_shared<AccountInfo>();
+
+        oldInfoPtr->secret = secret;
+        oldInfoPtr->wsAddress = params.value("wsAddress").toString();
+        oldInfoPtr->type =params.value("type").toInt();
+        oldInfoPtr->markdown = params.value("markdown").toBool();
+        oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();
+        oldInfoPtr->markdown_pd_mb = params.value("markdown_pd_mb").toBool();
+        oldInfoPtr->wsIntents =params.value("wsIntents").toInt();
+        m_accounts.append(oldInfoPtr);
+        accountPage->refreshCards2(oldInfoPtr.get());
+    } else {
+        auto oldInfoPtr = m_accounts[existingIndex];
+        oldInfoPtr->secret = secret;
+        oldInfoPtr->wsAddress = params.value("wsAddress").toString();
+        oldInfoPtr->type =params.value("type").toInt();
+        oldInfoPtr->markdown = params.value("markdown").toBool();
+        oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();
+        oldInfoPtr->markdown_pd_mb = params.value("markdown_pd_mb").toBool();
+        oldInfoPtr->wsIntents =params.value("wsIntents").toInt();
+        accountPage->saveAccounts(oldInfoPtr.get());
+    }
+
+    if (homePage) homePage->refreshRuntimeStats();
+    return "";
+}
 QString botlist();
 void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
 {
@@ -431,7 +473,6 @@ void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
         QFileInfo fi(path);
         QString absolutePath = fi.absoluteFilePath();
 
-        // 限制只能读取 tmp/ 目录下的文件
         QDir tmpDir("tmp/");
         QString tmpAbsolute = tmpDir.absolutePath();
         if (!absolutePath.startsWith(tmpAbsolute)) {
@@ -521,7 +562,99 @@ void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
         if (!reqId.isEmpty()) response["reqId"] = reqId;
         client->sendMessage(response);
         return;
+    }else if(action == "addbot"){
+        QString res =addbot(params);
+        QJsonObject response;
+        response["success"] = res.isEmpty();
+        response["data"] = res;
+        response["cmd"] = "addbot";
+        if (!reqId.isEmpty()) response["reqId"] = reqId;
+        client->sendMessage(response);
+        return ;
+    }else if(action == "deletebot"){
+        int appid = params.value("appid").toInt();
+        accountPage->onDeleteAccount(appid);
+        QJsonObject response;
+        response["success"] = true;
+        response["data"] = "这个地方删除不做检查 百分百成功";
+        response["cmd"] = "deletebot";
+        if (!reqId.isEmpty()) response["reqId"] = reqId;
+        client->sendMessage(response);
+        return ;
+    }else if(action == "loginbot"){
+        int appid = params.value("appid").toInt();
+
+        if (g_CW.contains(appid))
+        {
+            auto *cw = g_CW[appid];
+            if(cw->m_info->online)
+            {
+                QJsonObject response;
+                response["success"] =true;
+                response["data"] = "已经在线 无须重复登录";
+                response["cmd"] = "loginbot";
+                if (!reqId.isEmpty()) response["reqId"] = reqId;
+                client->sendMessage(response);
+                return;
+            }
+            cw->onLoginButton();
+            QTimer::singleShot(5000, this, [=]() {
+                QString res = "登录失败 请查看日志";
+                if (cw->m_info->online) {
+                    res = "登录成功";
+                }
+
+                QJsonObject response;
+                response["success"] = (res == "登录成功");
+                response["data"] = res;
+                response["cmd"] = "loginbot";
+                if (!reqId.isEmpty()) response["reqId"] = reqId;
+                client->sendMessage(response);
+            });
+        }
+        else
+        {
+
+            QJsonObject response;
+            response["success"] = false;
+            response["data"] = "appid 不存在 不能登录";
+            response["cmd"] = "loginbot";
+            if (!reqId.isEmpty()) response["reqId"] = reqId;
+            client->sendMessage(response);
+        }
+
+        return;  // 函数立即返回，主线程不阻塞
+    }else if(action == "logoutbot"){
+        int appid = params.value("appid").toInt();
+
+        if (g_CW.contains(appid))
+        {
+            QJsonObject response;
+            response["success"] =true;
+
+            response["cmd"] = "logoutbot";
+            if (!reqId.isEmpty()) response["reqId"] = reqId;
+            auto *cw = g_CW[appid];
+            if(cw->m_info->online)
+            {
+                cw->onLoginButton();
+                response["data"] = "账号未在线 无须重复下线";
+            }else response["data"] = "下线成功";
+            client->sendMessage(response);
+        }
+        else
+        {
+            QJsonObject response;
+            response["success"] = false;
+            response["data"] = "appid 不存在 不能不能下线";
+            response["cmd"] = "logoutbot";
+            if (!reqId.isEmpty()) response["reqId"] = reqId;
+            client->sendMessage(response);
+        }
+
+        return;  // 函数立即返回，主线程不阻塞
     }
+
     else {
         sendError(client, "Unknown action: " + action, reqId);
     }

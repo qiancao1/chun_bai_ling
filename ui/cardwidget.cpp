@@ -178,9 +178,7 @@ QQBotClient* CardWidget::getOrCreateClient(AccountInfo *info)
     connect(client, &QQBotClient::loginSuccess, this, &CardWidget::onBotLoginSuccess);
     connect(client, &QQBotClient::avatarDownloaded, this, &CardWidget::refreshDisplay);
     connect(client, &QQBotClient::disconnected, this, &CardWidget::onBotDisconnected);
-    connect(client, &QQBotClient::loginFailed, this, [this, appid](const QString &reason) {
-        AppendEventLog(QString("机器人 %1 登录失败: %2").arg(appid).arg(reason), Qt::red);
-    });
+
     m_botClients[appid] = client;
 
     return client;

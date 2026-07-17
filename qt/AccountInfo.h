@@ -109,7 +109,7 @@ struct AccountInfo {
     QString fallbackReply;      // 指令未处理时的回应
     QString rqhy; //群成员加群提示文本
     QString bai_sr,bai_sc,bai_qy;
-
+    QString err; //最后错误
     QString tqhy;
     int tq_ychf=0; //退群延迟回复
     int tq_lq=0;
