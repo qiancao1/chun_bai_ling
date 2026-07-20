@@ -57,8 +57,8 @@ private:
     QLineEdit    *m_urlEdit , *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook,*webhook_ssl;
     QLineEdit    *m_token;
     QPushButton  *web_qr;
-    QPushButton  *m_confirmBtn,*python3_14t_but,*webhook_but,*webhook_ssl_but;
-    QLineEdit    *m_addrEdit,*python3_14t;
+    QPushButton  *m_confirmBtn,*webhook_but,*webhook_ssl_but;
+    QLineEdit    *m_addrEdit;
     QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg;
     QPushButton  *m_startStopBtn,*lts_but; //聊天室
     QTableWidget *m_tokenTable;

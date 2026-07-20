@@ -1811,7 +1811,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
             fileMd5=calculateFileMD5(filePath);
             //媒体类型：1 图片，2 视频 ，3语音 ，4 文件
             if (cache_db && !fileMd5.isEmpty()) {
-                QString cacheKey = QString("media_%1").arg(fileMd5);
+                QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
                 QString cached = cache_db->get(cacheKey);
                 if (!cached.isEmpty()) {
                     int timeIdx = cached.lastIndexOf(",time=");
@@ -1848,7 +1848,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
             {
                 send_messages(type,openid,pname,fileInfo,msgid,is_wakeup);
             }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty()) { //发的链接是没有md5的
-                cache_db->put(QString("media_%1").arg(fileMd5), fileInfo);
+                cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
             }
         }
 

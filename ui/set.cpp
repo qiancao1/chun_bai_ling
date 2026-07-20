@@ -27,6 +27,7 @@ set::~set()
 
 }
 
+
 void set::setupUI()
 {
     QVBoxLayout *mainVLayout = new QVBoxLayout(this);
@@ -113,14 +114,7 @@ void set::setupUI()
 
 
     modeLayout2->setAlignment(Qt::AlignLeft);
-    QLabel *modeLabela2 = new QLabel("py3.14t路径：", this);
-    python3_14t = new QLineEdit;
-    python3_14t->setPlaceholderText("如 [C:/python/] 不需要exe");
-    python3_14t_but = new QPushButton("确认");
-    python3_14t->setText(g_config["pythonHome"].toString());
-    modeLayout2->addWidget(modeLabela2,0,0);
-    modeLayout2->addWidget(python3_14t,0,1);
-    modeLayout2->addWidget(python3_14t_but,0,2);
+
 
     // 模式行
     QHBoxLayout *modeLayout = new QHBoxLayout;
@@ -311,13 +305,6 @@ void set::setupUI()
     });
 
     connect(m_addTokenBtn, &QPushButton::clicked, this, &set::onAddTokenRow);
-
-    connect(python3_14t_but, &QPushButton::clicked, [this](){
-        g_config["yiyu"] = 0;
-        g_config["pythonHome"] = python3_14t->text();
-        saveConfig();
-        QMessageBox::about(this,"","重启生效");
-    });
 
 
     connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);

@@ -105,8 +105,7 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
     else
         statusIndicator->setStyleSheet("background: #f38ba8; border-radius: 6px;");
 }
-QString getPythonExecutable();
-// ==================== PluginPage 实现 ====================
+
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
     setupUi();
@@ -188,8 +187,8 @@ void PluginPage::setupUi()
     formLayout2->addWidget(detailNameLabel);
     QHBoxLayout *iconNameLayout2 = new QHBoxLayout;
     iconNameLayout2->setSpacing(3);
-    pypip = new QPushButton("插件引用库");
-    pypip->setFixedWidth(100);
+    pypip = new QPushButton("安装py插件库");
+    pypip->setFixedWidth(120);
     ai_c_j= new QPushButton("Ai生成插件");
     ai_c_j->setFixedWidth(100);
 
@@ -326,19 +325,9 @@ void PluginPage::setupUi()
 
 
     connect(pypip, &QPushButton::clicked, this, [this]() {
-        // 3. 获取 Python 解释器路径（您原先的函数）
-        QString pythonExe = getPythonExecutable();
-        if (pythonExe.isEmpty()) {
-            QMessageBox::warning(this, "错误", "未找到 python3.14t，请检查环境变量！");
-            return;
-        }
-        // 1. 设置初始目录为运行目录下的 plugin 文件夹
-        QString defaultDir = QCoreApplication::applicationDirPath() + "/plugin";
-        // 如果 plugin 目录不存在，对话框仍然会打开该路径（可能显示为空），
-        // 用户仍可手动切换到其他目录。若希望更友好，可以加一个判断并创建（可选）：
-        // if (!QDir(defaultDir).exists()) QDir().mkpath(defaultDir);
 
-        // 2. 弹出文件选择器，让用户选择 requirements.txt
+        QString defaultDir = QCoreApplication::applicationDirPath() + "/plugin";
+
         QString reqPath = QFileDialog::getOpenFileName(
             this,
             "选择 requirements.txt 文件",
@@ -350,16 +339,15 @@ void PluginPage::setupUi()
             return; // 用户取消了选择
         }
 
-
-
-        // 4. 构建完整的命令行字符串（跨平台适配）
+        QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe"; //绝对路径 防止跑去跑系统的
         QString cmdLine;
 
 #ifdef Q_OS_WIN
-        // Windows：使用 start 命令打开新的 CMD 窗口
-        // /k 表示执行完后保留窗口（方便查看报错信息），若想自动关闭可换为 /c
-        cmdLine = QString("cmd /c start \"安装Python依赖\" \"%1\" -m pip install -r \"%2\"")
-                      .arg(pythonExe, reqPath);
+        cmdLine = QString("cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+                          "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
+                          "& echo   - \"Successfully installed\" 表示新库安装成功 "
+                          "& echo. & \"%1\" -m pip install -r \"%2\" & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\"")
+                              .arg(pythonExe, reqPath);
 #elif defined(Q_OS_LINUX)
         // Linux：尝试使用 xterm（通常系统自带），执行完后保留窗口（exec bash）
         QString xtermPath = QStandardPaths::findExecutable("xterm");
@@ -375,7 +363,7 @@ void PluginPage::setupUi()
                       .arg(pythonExe, reqPath);
 #endif
 
-        // 5. 使用 startDetached 启动独立进程（不阻塞界面，且与主程序脱离）
+
         bool success = QProcess::startDetached(cmdLine);
         if (!success) {
             QMessageBox::critical(this, "错误", "无法启动终端窗口，请检查系统环境！");
@@ -632,6 +620,8 @@ bool matchRule(const Rule &rule, const QString &msg) {
 
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
+    case MatchType::event:
+        break;
     }
     return false;
 }
@@ -641,7 +631,7 @@ void onMessageReceived(const MessageEvent &msg,int i) {
         py::gil_scoped_acquire gil;
 
         QString reply;
-        // 1. 优先按规则匹配
+
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
             if (matchRule(rule, msg.msg)) {
                 // 调用规则对应的函数
@@ -652,40 +642,35 @@ void onMessageReceived(const MessageEvent &msg,int i) {
                     else
                         reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
                 }
-
-
             }
         }
+
+        if(m_pluginList[i].python.event.contains(msg.msgType)){
+            auto &ev = m_pluginList[i].python.event[msg.msgType];
+            py::object ret = ev(msg);
+            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                if(reply.isEmpty())
+                    reply = QString::fromStdString(py::str(ret).cast<std::string>());
+                else
+                    reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
+            }
+        }
+
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
                 QString contactId = msg.groupId;
                 QString msgIdNormal = msg.msgId;
-                QString msgIdRetry = msg.msgId;
+
                 SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                            msgIdNormal, msgIdRetry,"["+m_pluginList[i].name+"|%1ms]", false);
+                                                            msgIdNormal,"["+m_pluginList[i].name+"|%1ms]", false);
                 QThreadPool::globalInstance()->start(task);
             }
             return ;
         }
-        // 2. 如果没有任何规则匹配，且有 on_message，则调用 on_message 作为兜底
-        if (m_pluginList[i].python.instance) {
-            py::object ret = m_pluginList[i].python.instance(msg);
-            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
-                QString reply = QString::fromStdString(py::str(ret).cast<std::string>());
-                if (!reply.isEmpty()) {
-                    QQBotClient *client = m_botClients[msg.appid];
-                    if (client) {
-                        QString contactId = msg.groupId;
-                        QString msgIdNormal = msg.msgId;
 
-                        SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                                    msgIdNormal, "","["+m_pluginList[i].name+"|%1ms]", false);
-                        QThreadPool::globalInstance()->start(task);
-                    }
-                }
-            }
-        }
+
+
     } catch (const std::exception &e) {
         AppendEventLog("[Python] " + m_pluginList[i].name + " 错误: " + e.what(), 0xff);
     } catch (...) {
@@ -1298,7 +1283,7 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                 readString("description", info.description);
                 readString("icon", info.icon);
 
-
+                info.python.event.clear();
                 info.python.rules.clear();
                 auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
                     py::str keyPy = py::str(typeKey.toStdString());  // 或
@@ -1351,8 +1336,12 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                                 caseSensitive = ruleDict["case_sensitive"].cast<bool>();
                             }
 
-                            // 添加到统一规则列表
-                            info.python.rules.append({matchType, key, funcObj, caseSensitive});
+                            if(matchType==MatchType::event)
+                            {
+                                info.python.event.insert(key,funcObj);
+                            }else{
+                                info.python.rules.append({matchType, key, funcObj, caseSensitive});
+                            }
                         }
                     }
                 };
@@ -1363,6 +1352,8 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                 parseRuleList("endswith", MatchType::EndsWith);
                 parseRuleList("contains", MatchType::Contains);
                 parseRuleList("regex", MatchType::Regex);
+                parseRuleList("event", MatchType::event);
+
 
             } catch (const py::error_already_set &e) {
                 return QString("执行 %1/main.py 中 get_plugin_info 函数异常：%2").arg(info.path, e.what());

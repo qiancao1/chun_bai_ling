@@ -107,11 +107,9 @@ class QQApi:
         - online_duration: 已格式化的在线时长字符串，例如 "2天3小时5分钟"
         """
         raw = self._callback(self.API_BOT_LIST, 0)
-        # _callback 正常情况下返回列表（因为 C++ 返回 JSON 数组）
         if isinstance(raw, list):
             return raw
         else:
-            # 异常情况返回空列表，也可以打印日志
             return []
 
     def get_openid(self,appid: int ,user_id:int) -> Dict:
@@ -194,62 +192,70 @@ class QQApi:
 
 
 
+import json
+import random
+import string
+
+
 class ButtonGroup:
     def __init__(self):
-        self.rows = [[]]          # 二维列表，每个元素是一个按钮字典
-        self.row = 0
-        self.col = 0
+        # 初始化一行，每行结构为 {"buttons": []}
+        self.rows = [{"buttons": []}]
+        self.current_row = 0   # 当前行索引
 
     def _random_id(self, length=8):
+        """生成随机ID（字母数字混合）"""
         return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
     def add(self,
-            name: str,                          # 按钮显示文本
-            data: str,                          # 按钮携带的数据（回调时返回）
-            action_type: int = 2,               # 动作类型：0=链接, 1=回调, 2=发送（默认2）
-            btn_id: str = None,                 # 按钮唯一ID，不传则自动生成
-            enter: bool = False,                # 是否立即发送（点击后立即执行）
-            reply: bool = False,                # 是否引用原消息
-            color: int = 1,                     # 按钮颜色样式，默认1
-            permission_type: int = 2,           # 权限类型：0=部分人, 1=管理员, 2=全部（默认2）
-            specify_users: list = None,         # 指定可用用户列表（permission_type=0时有效）
-            visited_label: str = "visited",     # 回调后按钮显示的文本（默认"visited"）
-            unsupport_tip: str = None,          # 不支持时的提示文本（回调code4弹窗）
-            modal_content: str = None,          # 确认框内容（最多40字符）
-            modal_confirm: str = None,          # 确认按钮文本（最多4字符）
-            modal_cancel: str = None,           # 取消按钮文本（最多4字符）
-            subscribe_id: int = None,           # 订阅模板ID（整数）
-            custom_subscribe_id: str = None):   # 自定义订阅模板ID（字符串）
+            name: str,                         # 按钮显示文本
+            data: str,                         # 按钮携带的数据（回调时返回）
+            action_type: int = 2,              # 动作类型：0=链接,1=回调,2=发送（默认2）
+            btn_id: str = None,                # 按钮唯一ID，不传则自动生成
+            enter: bool = False,               # 是否立即发送（点击后立即执行）
+            reply: bool = False,               # 是否引用原消息
+            color: int = 1,                    # 按钮颜色样式，默认1
+            permission_type: int = 2,          # 权限类型：0=部分人,1=管理员,2=全部（默认2）
+            specify_users: list = None,        # 指定可用用户列表（permission_type=0时有效）
+            visited_label: str = "visited",    # 回调后按钮显示的文本（默认"visited"）
+            unsupport_tip: str = None,         # 不支持时的提示文本（回调code4弹窗）
+            modal_content: str = None,         # 确认框内容（最多40字符）
+            modal_confirm: str = None,         # 确认按钮文本（最多4字符）
+            modal_cancel: str = None,          # 取消按钮文本（最多4字符）
+            subscribe_id: int = None,          # 订阅模板ID（整数）
+            custom_subscribe_id: str = None):  # 自定义订阅模板ID（字符串）
         """
-        在当前行列位置添加一个按钮，完成后自动移动到下一列。
-        参数均为英文，含义与原易语言类一致。
+        在当前行追加一个按钮，完成后不移动列（直接追加）。
+        若想换行，请调用 newrow() 方法。
         """
-        # 确保当前行列存在
-        while len(self.rows) <= self.row:
-            self.rows.append([])
-        row = self.rows[self.row]
-        while len(row) <= self.col:
-            row.append({})
-        btn = row[self.col]
+        # 确保当前行存在（防御）
+        while self.current_row >= len(self.rows):
+            self.rows.append({"buttons": []})
 
-        # 填充按钮字段
-        btn["id"] = btn_id or self._random_id()
-        btn["action"] = {
-            "type": action_type,
-            "data": data,
-            "enter": enter,
-            "permission": {
-                "type": permission_type
+        # 获取当前行的按钮列表
+        buttons = self.rows[self.current_row]["buttons"]
+
+        # 构造按钮字典
+        btn = {
+            "id": btn_id or self._random_id(),
+            "action": {
+                "type": action_type,
+                "data": data,
+                "enter": enter,
+                "permission": {
+                    "type": permission_type
+                }
+            },
+            "render_data": {
+                "label": name,
+                "style": color,
+                "visited_label": visited_label or "visited"
             }
         }
+
+        # 可选字段
         if specify_users:
             btn["action"]["permission"]["specify_user_ids"] = specify_users
-
-        btn["render_data"] = {
-            "label": name,
-            "style": color,
-            "visited_label": visited_label or "visited"
-        }
 
         if reply:
             btn["action"]["reply"] = True
@@ -271,19 +277,16 @@ class ButtonGroup:
             if custom_subscribe_id:
                 btn["action"]["subscribe_data"]["template_ids"][0]["custom_template_id"] = custom_subscribe_id
 
-        # 移动到下一列
-        self.col += 1
+        # 追加到当前行
+        buttons.append(btn)
 
     def newrow(self):
-        """换行，列归零"""
-        self.row += 1
-        self.col = 0
-        # 预先创建空行（防止索引越界）
-        while len(self.rows) <= self.row:
-            self.rows.append([])
+        """换行：新增一行，后续 add 将添加到新行"""
+        self.rows.append({"buttons": []})
+        self.current_row += 1
 
     def to_json(self, indent=None) -> str:
-        """输出 JSON 字符串，顶层包含 content.rows"""
+        """输出符合标准格式的 JSON 字符串，顶层包含 content.rows"""
         return "#b:#"+json.dumps({"content": {"rows": self.rows}},
                           ensure_ascii=False,
                           indent=indent,

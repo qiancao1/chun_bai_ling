@@ -252,7 +252,7 @@ public:
                     const QString& contactId,
                     const QString& text,
                     const QString& msgIdFirst,
-                    const QString& msgIdRetry,
+
                     const QString& pname,
                     bool mode)              // 参数名 chatPage
         : m_client(client),
@@ -260,29 +260,27 @@ public:
         m_contactId(contactId),
         m_text(text),
         m_msgIdFirst(msgIdFirst),
-        m_msgIdRetry(msgIdRetry),
         m_pname(pname),
         mode(mode)
     {
         setAutoDelete(true);
     }
-
     void run() override {
 
         QQBotClient* client = m_client;
         bool success = false;
         QString deleteid,ref;
         bool zh=false;
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
-
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if(m_msgType!=2) continue;
+            QString currentMsgId = (attempt == 0) ? m_msgIdFirst : "";
             QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, m_text, currentMsgId,zh,mode,聊天发送模式);
             if(rawData.isEmpty()) break;
             if (rawData.contains("ROBOT") || rawData.contains("消息提交安全审核成功")) { //检查发送成功 或主动推送
                 success = true;
                 break;
             }
-            if(attempt==0 && m_msgType==2)
+            if(attempt==1 && m_msgType==2)
             {
                 zh = true; //召回
             }
@@ -301,7 +299,6 @@ private:
     QString m_contactId;
     QString m_text;
     QString m_msgIdFirst;
-    QString m_msgIdRetry;
     QString m_pname;
     bool mode;
 };

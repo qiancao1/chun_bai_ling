@@ -98,37 +98,6 @@ bool clearPTmpFolder()
     }
     return ok;
 }
-#include <windows.h>
-#include <QProcess>
-QString getPythonExecutable() {
-
-    QString exePath = QStandardPaths::findExecutable("python3.14t");
-    if(exePath.isEmpty())
-    {
-        if(g_config["yiyu"].toInt()==0)
-            exePath = g_config["pythonHome"].toString();
-
-    }
-    return exePath;
-}
-
-QString getPythonPrefix() {
-    QString pythonExe = getPythonExecutable();
-    if (pythonExe.isEmpty()) {
-        return QString();
-    }
-
-    QProcess process;
-    process.start(pythonExe, QStringList() << "-c" << "import sys; print(sys.prefix)");
-    if (!process.waitForFinished(2000)) {
-        return QString();
-    }
-    QString output = process.readAllStandardOutput().trimmed();
-    if (output.isEmpty()) {
-        return QString();
-    }
-    return output;
-}
 
 void initdiv()
 {
@@ -139,13 +108,11 @@ void initdiv()
     dir.mkpath("tmp/file");
     dir.mkpath("data");
     dir.mkpath("botdb/memory");
-
     dir.mkpath("plugin");
     dir.mkpath("plugin_data");
 }
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
-
 
 
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
@@ -179,7 +146,6 @@ void initDBs() {
     }
 }
 
-#include "pythonparser.h"  // 假设你的 PythonParser 头文件路径
 
 
 
@@ -189,14 +155,14 @@ qint64 g_totalRuntime=0;
 QString webhook_sig(const QJsonObject &obj, const QString &secret);
 
 int main(int argc, char *argv[]) {
-    //自适应
+    //SetDllDirectoryW(L".\\bin");
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
     QApplication::setHighDpiScaleFactorRoundingPolicy(
         Qt::HighDpiScaleFactorRoundingPolicy::PassThrough
         );
 
-    qputenv("QT_DEBUG_PLUGINS", "1");
+    //qputenv("QT_DEBUG_PLUGINS", "1");
     SetUnhandledExceptionFilter(CrashHandler);
     QApplication a(argc, argv);
     qRegisterMetaType<MessageEvent>("MessageEvent");
@@ -219,32 +185,16 @@ int main(int argc, char *argv[]) {
     initdiv();
     loadconfig();
     clearPTmpFolder();
-    QString pythonHome;
-    if(g_config["yiyu"].toInt()!=1)
-    {
-        pythonHome= g_config["pythonHome"].toString();
-        if(pythonHome.isEmpty()) pythonHome = getPythonPrefix();
-
-        if (!pythonHome.isEmpty()) {
-            qputenv("PYTHONHOME", pythonHome.toUtf8());  // Qt 方式
-            g_config["pythonHome"] = pythonHome;
-        }
-    }
 
     std::unique_ptr<py::scoped_interpreter> interpreter;
     try {
         interpreter = std::make_unique<py::scoped_interpreter>();
+    } catch (const std::exception& e) {
+        QString text = QString("Python 解释器初始化失败(看看lib文件夹在不在):\n%1").arg(e.what());
+        QMessageBox::critical(nullptr, "错误", text);
+        return -1;
     } catch (...) {
-        QString text ="Python 解释器初始化失败，程序无法运行。 因为设置了py3.14t 路径问题 实际上本程序并不需要服务器安装py环境"
-                       "\n为什么出现这个错误 代表 程序获取到了 你py路径 但是初始化失败了\n\n\n最后 需要不设置 路径运行吗？ 实际上本项设置只是为了找到你pip的包\n"
-                       "如果你可以 设置到lib/site-packages/ 里面也是可以引用到的\n->"+pythonHome;
-        auto res = QMessageBox::critical(nullptr, "错误",text ,QMessageBox::Yes | QMessageBox::No);
-        if(res == QMessageBox::Yes)
-        {
-            g_config["yiyu"] = 1;
-            g_config["pythonHome"] = QString();
-            saveConfig();
-        }
+        QMessageBox::critical(nullptr, "错误", "未知异常");
         return -1;
     }
 

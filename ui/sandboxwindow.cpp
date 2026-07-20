@@ -126,6 +126,16 @@ def get_plugin_info(uuid):
         "author": "Your Name",
         "description": "基于中国气象局 CMA 接口，查询国内城市实时天气",
         "icon": "",
+        "event":[{"key":"GROUP_MEMBER_ADD","fun":""}], #事件订阅
+        "equals": [ #相等
+            #{"key": "/ping", "fun": "on_ping"}
+        ],
+        "contains": [
+            #{"key": "天气", "fun": "on_weather", "case_sensitive": False}
+        ],
+        "regex": [
+            #{"key": r"^/echo (.+)$", "fun": "on_echo"} #正则
+        ]
         "startswith": [
             {"key": "天气", "fun": "on_weather"}   # 匹配“天气”开头的消息
         ]
@@ -142,8 +152,6 @@ def on_unload():
 
 def on_set():
     pass
-
-# on_message 已弃用，此处删除
 
 def _parse_resp(resp_str):
     try:

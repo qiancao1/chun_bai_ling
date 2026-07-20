@@ -28,7 +28,8 @@ enum class MatchType {
     StartsWith,
     EndsWith,
     Contains,
-    Regex
+    Regex,
+    event
 };
 
 struct Rule {
@@ -41,7 +42,7 @@ struct Rule {
 
 struct PythonPluginobj {
     //py::dict globals;
-
+    QHash<QString,py::object> event;
     py::object instance;                 // on_message 函数
     py::object onSet;                   // 加载后调用
     py::object onEnable;                 // 启用时调用

@@ -22,7 +22,9 @@
 #include <QClipboard>
 bool g_不审核=false;
 
-QString g_system=R"(1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
+QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表格 # 特殊表情 加粗 比如数独 可以用表格 表格里面 支持md语法
+===================
+1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
 3.你可以使用读写功能修改某个文件 或查看 注意写出目录只能设置的路径 你写出只需要 xxx.py即可
 4.当用户要求你编码插件时,你直接写到文件,不需要输出要用户复制,当用户提出某个功能有问题时 你可以读取文件 并且写出
@@ -35,30 +37,96 @@ QString g_system=R"(1.注意 你可以直接调用读写工具 请勿输出要�
 11.请分多个py文件 写出 因为 当某个文件需要修改 如果内容太多就很麻烦 最好一个函数一个文件 这个由你决定
 12.如果引用到第三方库 将数据写到 requirements.txt 文件 没有就自己创建
 13.使用下面ButtonGroup 类创建按钮 api.send_messageEx(msg,回复内容+ButtonGroup.to_json()) 发送按钮
+13.艾特语法是 <@id> 如 "<@"+msg.user+">
+14.当前py环境是 python3.14.6t 自由线程版本
+15.为了减少请求次数 你在调用工具的时候 先考虑好 比如 要写出3个文件 就一次性调3个 工具 而不是一个一个来
+16.请不要使用 run_python 来打印无意义内容 我在调试的时候 发现你思考模式调 run_python 用print 打印文本 然后给下一次对话查看打印的消息 这种无意义执行就不用做了
+17.你可以用run_python来 检查py文件语法
+18.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
+19.由于环境是 pybind11 库，在运行目录 有个文件夹 plugin_data 你在里面创建个文件夹 写入数据，注意 由于运行目录是 exe的目录 并不是 py入口目录 你写出数据得在 plugin_data/插件名/xxx.json 这个插件名你自己设置 目录也是你创建 当然你也可以 IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "color_game_img") 来获取py文件目录
+20.严禁绝对路径 这种插件换路径就用不了
 ========
 #当前文件目录！！！ 请不要执行cmd查看目录 这里有实时文件目录 请勿读取 ai对话.json 这个是你的上下文存储文件
 注意 格式是 文件名 (文件大小) 读取就读文件名即可 文件大小你看看就知道了
+格式例子：
+xx.py
+    def xx():
+xx2.py
+    def xxx():
+
+注意 def 前面4个空格是 方便区分 并不是 原代码里面有4个空格 当你发现8个空格时实际上源码只有4个(一般类成员才可能) 因为有4个是添加来 方便查看的
 =======
 {{文件目录}}
 ========
 消息结构体
-# 当接收到消息事件时，event 对象包含以下字段（均为可读写属性）：
-# msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
-# msg.user         : 发送者标识 32字节hex(字符串)
-# msg.msgid        : 本条消息的唯一 ID（字符串）
-# msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 (字符串)
-# msg.member_role  : 发送人权限 0群主 1管理员 2群员 (整数)
-# msg.appid        : 应用/机器人 ID(整数)
-# msg.user_id      : 用户 ID（整数）
-# msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
-# msg.nickname     : 发送者昵称
-# msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
-# msg.at_you       : 布尔值，是否 @ 了当前机器人 (bool)
-# msg.raw          : 原始数据（JSON 字符串） (字符串)
-# msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
-# msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_messageEx(msg,msg.replyto+回复内容) (字符串)
+当接收到消息事件时，event 对象包含以下字段（均为可读写属性）：
+msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
+msg.user         : 发送者标识 32字节hex(字符串)
+msg.msgid        : 本条消息的唯一 ID（字符串）
+msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 (字符串)
+msg.member_role  : 发送人权限 0群主 1管理员 2群员 (整数)
+msg.appid        : 应用/机器人 ID(整数)
+msg.user_id      : 用户 ID（整数）
+msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
+msg.nickname     : 发送者昵称
+msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
+msg.at_you       : 布尔值，是否 @ 了当前机器人 (bool)
+msg.raw          : 原始数据（JSON 字符串） (字符串)
+msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
+msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_messageEx(msg,msg.replyto+回复内容) (字符串)
 ========================
+事件类型 可订阅 可以不用
+频道事件：
+GUILD_CREATE // 当机器人加入新guild时
+GUILD_UPDATE // 当guild资料发生变更时
+GUILD_DELETE // 当机器人退出guild时
+CHANNEL_CREATE // 当channel被创建时
+CHANNEL_UPDATE // 当channel被更新时
+CHANNEL_DELETE // 当channel被删除时
 
+GUILD_MEMBER_ADD // 当成员加入时
+GUILD_MEMBER_UPDATE  // 当成员资料变更时
+GUILD_MEMBER_REMOVE  // 当成员被移除时
+
+FORUM_THREAD_CREATE // 当用户创建主题时
+FORUM_THREAD_UPDATE // 当用户更新主题时
+FORUM_THREAD_DELETE // 当用户删除主题时
+FORUM_POST_CREATE // 当用户创建帖子时
+FORUM_POST_DELETE // 当用户删除帖子时
+FORUM_REPLY_CREATE  // 当用户回复评论时
+FORUM_REPLY_DELETE  // 当用户回复评论时
+FORUM_PUBLISH_AUDIT_RESULT  // 当用户发表审核通过时
+
+MESSAGE_CREATE // 发送消息事件，代表频道内的全部消息，而不只是 at 机器人的消息。内容与 AT_MESSAGE_CREATE 相同
+MESSAGE_DELETE // 删除（撤回）消息事件
+
+MESSAGE_REACTION_ADD  // 为消息添加表情表态
+MESSAGE_REACTION_REMOVE // 为消息删除表情表态
+
+DIRECT_MESSAGE_CREATE // 当收到用户发给机器人的私信消息时
+DIRECT_MESSAGE_DELETE // 删除（撤回）消息事件
+
+AT_MESSAGE_CREATE // 当收到@机器人的消息时
+PUBLIC_MESSAGE_DELETE // 当频道的消息被删除时
+
+群聊事件：
+GROUP_MEMBER_ADD  //用户添加群聊 可以msgid回复
+GROUP_MEMBER_REMOVE //有用户退出群 被踢出没事件 仅限本事件 不能回复信息 但是可以用主动 也就是msgid传空 调api.send_messageEx(msg,"xxx") 发送前将msg.msgid 清空即可
+
+C2C_MESSAGE_CREATE  // 用户单聊发消息给机器人时候
+FRIEND_ADD  // 用户添加使用机器人
+FRIEND_DEL  // 用户删除机器人
+C2C_MSG_REJECT  // 用户在机器人资料卡手动关闭"主动消息"推送
+C2C_MSG_RECEIVE // 用户在机器人资料卡手动开启"主动消息"推送开关
+GROUP_MESSAGE_CREATE //全量事件 无条件接收消息 不需要艾特 开启了全量的群不会收到 GROUP_AT_MESSAGE_CREATE 事件
+GROUP_AT_MESSAGE_CREATE // 用户在群里@机器人时收到的消息
+GROUP_ADD_ROBOT // 机器人被添加到群聊
+GROUP_DEL_ROBOT // 机器人被移出群聊
+GROUP_MSG_REJECT  // 群管理员主动在机器人资料页操作关闭通知
+GROUP_MSG_RECEIVE // 群管理员主动在机器人资料页操作开启通知
+
+INTERACTION_CREATE // 互动事件创建时 也就是回调
+================
 插件主要文件main.py 下面是main.py内容
 ======
 #main.py
@@ -73,9 +141,9 @@ def get_plugin_info(uuid):
         "version": "1.0.0",
         "author": "me",
         "description": "支持多种匹配",
-        "requires": [], #pip库
+        "event":[{"key":"GROUP_MEMBER_ADD","fun":""}],
         "equals": [ #相等
-            {"key": "/ping", "fun": "on_ping"},
+            {"key": "/ping", "fun": "on_ping"}
         ],
         "contains": [
             #{"key": "天气", "fun": "on_weather", "case_sensitive": False}
@@ -98,10 +166,6 @@ def on_unload(): #不用可以删除
     pass
 
 def on_set(): #不用可以删除
-    pass
-
-def on_message(msg):  #弃用但是保留 equals 等信息没命中才会 触发本函数 如果 不需要这个函数可以删除 equals 等没有值时 默认启用
-    #api.outlog(msg.msg)
     pass
 
 def on_ping(msg):
@@ -147,10 +211,7 @@ class QQApi:
         :param msgid: 消息ID，空字符串表示主动模式
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
         """
-        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _7=None, _8=None
-        return self._callback(self.API_SEND_MESSAGES,appid,
-                              type_, openid, text, msgid,
-                              "true" if is_wakeup else "false", None, None)
+        ...
 
     def delete_message(self,appid: int, type_: int, openid: str, msgid: str) -> Dict:
         """
@@ -159,7 +220,7 @@ class QQApi:
         :param openid: 会话对象ID
         :param msgid: 要删除的消息ID
         """
-        return self._callback(self.API_DELETE_MESSAGES,appid, type_, openid, msgid)
+        ...
 
     def respond_interaction(self, appid: int,interaction_id: str, code: int, data: str) -> Dict:
         """
@@ -168,7 +229,7 @@ class QQApi:
         :param code: 响应码（如 0 表示成功）
         :param data: 响应数据（JSON 字符串）
         """
-        return self._callback(self.API_RESPOND_INTERACTION,appid,interaction_id, str(code), data)
+        ...
 
     def botlist(self) -> List[Dict[str, Any]]:
         """
@@ -176,7 +237,7 @@ class QQApi:
         - appid, name, qq, avatarPath, received, send, online, id, union_openid, startup_time
         - online_duration: 已格式化的在线时长字符串，例如 "2天3小时5分钟"
         """
-        return = self._callback(self.API_BOT_LIST, 0)
+        ...
 
     def get_openid(self,appid: int ,user_id:int) -> Dict:
         return self._callback(self.API_GET_USER_OPENID, appid, str(user_id))
@@ -186,8 +247,7 @@ class QQApi:
     #释放gil 的http
     def http_request(self, url: str, method: str = "GET", headers: dict = None, body: bytes = None, timeout: int = 30) -> dict:
         headers_json = json.dumps(headers or {})
-        body_b64 = base64.b64encode(body).decode('ascii') if body is not None else ""
-        return self._callback(self.API_HTTP, 0, url, method.upper(), headers_json, body_b64, str(timeout))
+        ...
 
      # ---------- 补充的 API 封装 ----------
     def get_user_id(self, appid: int, user: str) -> Dict:
@@ -197,25 +257,25 @@ class QQApi:
         :param user: 32字节那个
         :return: 整数id
         """
-        return self._callback(self.API_ID_GET_USER_ID, appid, str(user_id))
+        ...
 
     def htmlimg1(self, text: str, width: int) -> Dict:
         """
-        将HTML文本渲染为图片（方式1 ） 返回图片标签 ![img](路径) 拼接到文本发送即可
+        将HTML文本渲染为图片（方式1 ） 返回图片标签 ![img](路径) 拼接到文本发送即可 QTextDocument 简单html制图 效率高
         :param text: HTML文本
         :param width: 图片宽度（或其它整型参数）
         """
-        return self._callback(self.API_ID_HTMLIMG1, 0, text, str(width))
+        ...
 
     def htmlimg2(self, text: str, width: int, height: int, extra: int = 0) -> Dict:
         """
-        将HTML文本渲染为图片（方式2） 返回图片标签 ![img](路径) 拼接到文本发送即可
+        将HTML文本渲染为图片（方式2） 返回图片标签 ![img](路径) 拼接到文本发送即可 浏览器截图 效率低
         :param text: HTML文本
         :param width: 宽度
         :param height: 高度
         :param extra: 额外参数，默认为0（http请求api超时时间）
         """
-        return self._callback(self.API_ID_HTMLIMG2, 0, text, str(width), str(height), str(extra))
+        ...
 
     def add_timer(self, appid: int, remark: str, time_str: str, execute_count: int, code: str) -> Dict:
         """
@@ -226,7 +286,7 @@ class QQApi:
         :param execute_count: 执行次数，超出销毁（参数3）
         :param code: Python代码（参数4）
         """
-        return self._callback(self.API_ID_DS, appid, remark, time_str, str(execute_count), code)
+        ...
 
     def get_member(self,appid: int,  openid : str, uset : str) -> Dict:
         """
@@ -235,7 +295,7 @@ class QQApi:
         :param openid: 群id（参数1）
         :param uset: 用户id（参数2）
         """
-        return self._callback(self.API_ID_GET_MEMBER, appid, openid, uset)
+        ...
 
 
 class ButtonGroup:
@@ -249,12 +309,12 @@ class ButtonGroup:
 
     def add(self,
             name: str,                          # 按钮显示文本
-            data: str,                          # 按钮携带的数据（回调时返回）
+            data: str,                          # 点击后数据 如果action_type 是2将本内容插入到聊天框 如果action_type=0 将转跳到网页
             action_type: int = 2,               # 动作类型：0=链接, 1=回调, 2=发送（默认2）
             btn_id: str = None,                 # 按钮唯一ID，不传则自动生成
             enter: bool = False,                # 是否立即发送（点击后立即执行）
             reply: bool = False,                # 是否引用原消息
-            color: int = 1,                     # 按钮颜色样式，默认1
+            color: int = 2,                     # 按钮样式 0-4 默认2
             permission_type: int = 2,           # 权限类型：0=部分人, 1=管理员, 2=全部（默认2）
             specify_users: list = None,         # 指定可用用户列表（permission_type=0时有效） -->ev.user 获取
             visited_label: str = "visited",     # 回调后按钮显示的文本（默认"visited"）
@@ -264,10 +324,6 @@ class ButtonGroup:
             modal_cancel: str = None,           # 取消按钮文本（最多4字符）
             subscribe_id: int = None,           # 订阅模板ID（整数）
             custom_subscribe_id: str = None):   # 自定义订阅模板ID（字符串）
-        """
-        在当前行列位置添加一个按钮，完成后自动移动到下一列。
-        参数均为英文，含义与原易语言类一致。
-        """
         ...
 
     def newrow(self):
@@ -280,92 +336,53 @@ class ButtonGroup:
 
     def to_json(self, indent=None) -> str:
         """输出 JSON 字符串，顶层包含 content.rows"""
-        return json.dumps({"content": {"rows": self.rows}},
-                          ensure_ascii=False,
-                          indent=indent,
-                          separators=(',', ':') if indent is None else None)
+        ...
 )";
 
 
 
-#include <QDialog>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QPlainTextEdit>
-#include <QPushButton>
-#include <QApplication>
-#include <QClipboard>
-#include <QMessageBox>
-#include <QFont>
-
-
-
-
-void AppWindow::addMessage(const QString &text, bool isUser)
+void AppWindow::addMessage(const QString &text, MessageType type)
 {
     if (text.trimmed().isEmpty()) return;
-    QMetaObject::invokeMethod(this, [this, text, isUser]() {
-        // 1. 卡片背景与边框（颜色稍微调深一点，确保AI的框在白色背景下能明显看出来）
-        QString cardBg = isUser ? "#E8F5E9" : "#EEF2F6";   // 用户浅绿，AI 浅灰蓝
-        QString cardBorder = isUser ? "#4CAF50" : "#9C27B0";
+    QString cardHtml = buildMessageHtml(text, type);
 
-        // 2. 【关键修改】将角色名从代码块中抽离出来
-        // 角色名单独用 <div> 包裹，文本颜色改为黑色，并保留换行
-        QString rolePrefix = isUser ? "👤 用户:" : "🤖 AI:";
-        QString roleHtml = QString("<div style='color: #000000; font-weight: bold; margin-bottom: 6px; font-size: 14px;'>%1</div>").arg(rolePrefix);
-
-        // 3. 纯文本内容使用代码块包裹（不再包含角色名）
-        QString wrapped = "```" + text + "```\n";
-        wrapped.replace("\n\n\n\n", "\n\n");
-        wrapped.replace("\n\n\n", "\n\n");
-
-        // 4. 拼接 HTML
-        QString finalHtml = roleHtml; // 先拼上角色名
-        QStringList parts = wrapped.split("```");
-
-        for (int i = 0; i < parts.size(); ++i) {
-            if (i % 2 == 0) {
-                // 外部文本（外层换行符等）
-                QString escaped = parts[i].toHtmlEscaped();
-                escaped.replace("\n", "<br>");
-                finalHtml += escaped;
-            } else {
-                // 【关键修改】代码块内部：确保文本颜色为黑色（配合你的 HTML 样例要求）
-                QString codeBg = isUser ? "#3398DE" : "#353834";
-                QString codeTextColor = "#ffffff"; // 纯黑文字
-
-                finalHtml += QString(
-                                 "<pre style='background:%1; color:%2; padding:8px 10px; border-radius:6px; "
-                                 "font-family:Consolas, monospace; font-size:12px; white-space:pre-wrap; "
-                                 "word-wrap:break-word; margin:0;'>"
-                                 "<code>%3</code></pre>"
-                                 ).arg(codeBg, codeTextColor, parts[i].toHtmlEscaped());
-            }
-        }
-
-        // 5. 构建外层卡片
-        QString cardHtml = QString(
-                               "<div style='margin-bottom: 8px; "
-                               "background: %1; "
-                               "border-left: 5px solid %2; "
-                               "border-radius: 6px; "
-                               "padding: 6px 10px; "
-                               "box-shadow: 0 1px 2px rgba(0,0,0,0.03);'>"
-                               "  %3"
-                               "</div>"
-                               ).arg(cardBg, cardBorder, finalHtml);
-
-        QTextCursor cursor(chatTextEdit->document());
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertHtml(cardHtml);
-        chatTextEdit->moveCursor(QTextCursor::End);
-        chatTextEdit->ensureCursorVisible();
-    }, Qt::QueuedConnection);
+    QTextCursor cursor(chatTextEdit->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertHtml(cardHtml);
+    chatTextEdit->moveCursor(QTextCursor::End);
+    chatTextEdit->ensureCursorVisible();
 }
 
+QString formatTokens(int count) {
+    if (count >= 1'000'000) {
+        return QString::number(count / 1'000'000.0, 'f', 4) + "M";
+    } else if (count >= 1'000) {
+        return QString::number(count / 1'000.0, 'f', 4) + "k";
+    } else {
+        return QString::number(count);
+    }
+}
+void AppWindow::addMessage2(const QString &text, MessageType type,const QString &toolname)
+{
+    if (text.trimmed().isEmpty()) return;
 
 
+    QString cardHtml = buildMessageHtml2(text, type,toolname);
+    QTextCursor cursor(chatTextEdit->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertHtml(cardHtml);
+    chatTextEdit->moveCursor(QTextCursor::End);
+    chatTextEdit->ensureCursorVisible();
+    statusBar()->showMessage(
+        QString("输入:%1  补全:%2  缓存:%3  |  输入:%4  补全:%5  缓存:%6")
+            .arg(formatTokens(m_prompt_tokens))
+            .arg(formatTokens(m_completion_tokens))
+            .arg(formatTokens(m_prompt_tokens_details))
+            .arg(formatTokens(m_prompt_tokens2))
+            .arg(formatTokens(m_completion_tokens2))
+            .arg(formatTokens(m_prompt_tokens_details2))
+        );
+}
 bool confirmCommandExecutionGui(const QString &model,const QString &cmd, QWidget *parent = nullptr) {
     QDialog dialog(parent);
     dialog.setWindowTitle("⚠️ 确认执行系统命令");
@@ -429,7 +446,7 @@ bool confirmCommandExecutionGui(const QString &model,const QString &cmd, QWidget
                 0
                 );
 
-            // 【切回主线程】更新 UI
+
             QMetaObject::invokeMethod(qApp, [=]() {
                 // 检查控件是否还存在（若对话框已关闭，则二者为 null）
                 if (btnPtr.isNull() || labelPtr.isNull()) {
@@ -481,13 +498,13 @@ bool confirmCommandExecutionGui(const QString &model,const QString &cmd, QWidget
     return dialog.exec() == QDialog::Accepted;
 }
 bool confirmCommandExecution(const QString &model, const QString &cmd, QWidget *parent=nullptr) {
-    // 如果已经在主线程，直接调用
+
     if(!g_不审核)
     {
         if (QThread::currentThread() == QCoreApplication::instance()->thread()) {
             return confirmCommandExecutionGui(model, cmd, parent);
         } else {
-            // 否则，通过 invokeMethod 转到主线程，并等待结果
+
             bool result = false;
             QEventLoop loop;
             QMetaObject::invokeMethod(qApp, [&]() {
@@ -590,7 +607,8 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
         "    padding: 10px;"
         "}"
         );
-
+    connect(chatTextEdit->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &AppWindow::onScrollChanged);
     mainLayout2->addWidget(chatTextEdit);
     // 输入区
     QHBoxLayout *inputLayout = new QHBoxLayout;
@@ -601,6 +619,7 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     // 核心修正：禁止水平滚动 + 启用 CSS 强制断行
     messageInput->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     messageInput->setLineWrapMode(QTextEdit::WidgetWidth);
+    messageInput->setAcceptRichText(false);
     messageInput->setStyleSheet(
         "QTextEdit {"
         "   border: 1px solid #E7D9C8;"
@@ -633,10 +652,25 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     });
     // 信号连接
     connect(sendBtn, &QPushButton::clicked, this, [=]() {
+
+
+        if(sendBtn->text()=="中断"){
+            if (m_stream) {
+                m_stream->userAborted = true;
+                if (m_stream->reply) {
+                    m_stream->reply->abort();
+                }
+
+                m_stream.reset();
+                return;
+            }
+            return;
+        }
+
         QString text = messageInput->toPlainText().trimmed();
         if (!text.isEmpty()) {
             messageInput->clear();
-            onSendMessage(text);
+            onSendMessage_stream(text);
 
         }
     });
@@ -662,7 +696,7 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     内置函数();
 
     if(!m_dir.isEmpty()) Folder();
-    statusBar()->showMessage("就绪");
+
 }
 
 AppWindow::~AppWindow() {}
@@ -709,12 +743,18 @@ void AppWindow::Folder()
 
     if (loadSuccess && sxw.contains("messages") && sxw["messages"].isArray()) {
         const QJsonArray msgs = sxw["messages"].toArray();
+        QString baoliu;
         for (const QJsonValue &val : msgs) {
             QJsonObject msgObj = val.toObject();
             QString role = msgObj["role"].toString();
             QString content = msgObj["content"].toString();
             if (role == "user") {
-                addMessage(content, true);
+                if(!baoliu.isEmpty())
+                {
+                    addMessage(baoliu,MessageType::AI);
+                    baoliu.clear();
+                }
+                addMessage(content,MessageType::User);
             } else if (role == "assistant") {
 
                 QString displayContent;
@@ -725,7 +765,7 @@ void AppWindow::Folder()
                 QStringList toolNames;
                 if (hasToolCalls) {
                     QJsonArray calls = msgObj["tool_calls"].toArray();
-                    for (const QJsonValue &callVal : calls) {
+                    for (const QJsonValue &callVal : std::as_const(calls)) {
                         QJsonObject callObj = callVal.toObject();
                         if (callObj.contains("function") && callObj["function"].isObject()) {
                             QJsonObject funcObj = callObj["function"].toObject();
@@ -750,21 +790,23 @@ void AppWindow::Folder()
                 }
 
                 // 如果既有内容又有工具，或者只有工具，都需要显示；如果什么都没有则跳过
-                if (!displayContent.trimmed().isEmpty()) {
-                    addMessage(displayContent, false);
-                }
+                baoliu +=+"\n"+ displayContent.trimmed()+"\n";
             }else if (role == "tool") {
-                    // 提取工具名（如果有）
                     QString toolName = msgObj["name"].toString();
-                    QString displayContent = content;
-                    if (!toolName.isEmpty()) {
-                        addMessage("[工具返回值 (" + toolName + ")] " + displayContent, false);
-                    } else {
-                        addMessage("[工具返回值] " + displayContent, false);
-                    }
+                    baoliu+="\n[工具返回(" + toolName + ")]：" + content.trimmed()+"\n";//删除 换行再添加 确保格式美观
             }
         }
+        if(!baoliu.isEmpty())
+        {
+            addMessage(baoliu,MessageType::AI);
+            baoliu.clear();
+        }
     }
+    QJsonObject usage = sxw["usage"].toObject();
+    m_prompt_tokens = usage["prompt_tokens"].toInt();
+    m_prompt_tokens_details = usage["prompt_tokens_details"].toInt();
+    m_completion_tokens = usage["completion_tokens"].toInt();
+    statusBar()->showMessage(QString("输入:%1 补全:%2 缓存:%3").arg(m_prompt_tokens).arg(m_completion_tokens).arg(m_prompt_tokens_details));
 }
 #include <QTextCodec>
 QString listDirectoryEntries(const QString& path) {
@@ -773,7 +815,7 @@ QString listDirectoryEntries(const QString& path) {
 
     QFileInfoList infoList = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot);
     QStringList lines;
-    for (const QFileInfo& info : infoList) {
+    for (const QFileInfo& info : std::as_const(infoList)) {
         QString name = info.fileName();
         if (name == "ai对话.json" || name.endsWith(".tmp", Qt::CaseInsensitive)) continue;
 
@@ -791,7 +833,7 @@ QString listDirectoryEntries(const QString& path) {
                 QStringList pyLines;
                 QRegularExpression regex(R"(^\s*(?:async\s+)?(def|class)\s+\w+\s*[\(:]?)");
                 for (const QString& line : content.split('\n')) {
-                    if (regex.match(line).hasMatch()) pyLines << line;
+                    if (regex.match(line).hasMatch()) pyLines << "    "+line;
                 }
                 lines << pyLines;
             }
@@ -799,7 +841,6 @@ QString listDirectoryEntries(const QString& path) {
     }
     return lines.join("\n");
 }
-
 
 void AppWindow::onFileClicked(const QModelIndex &index)
 {
@@ -894,18 +935,20 @@ void AppWindow::内置函数(const QString &Nmae,const QString &remark,const QSt
     toolObj["function"] = functionObj;
     m_fun.append(toolObj);
 }
+
 void AppWindow::内置函数()
 {
 
     内置函数("w_file", "将文本内容写入到指定的文件中，如果文件不存在则创建", {"文件路径", "文件内容"});
-    内置函数("r_file", "读取指定文件的内容并以文本形式返回", {"文件路径"});
+    内置函数("read_file", "读取指定文件的内容并以文本形式返回", {"文件路径"});
     内置函数("delete_file", "删除某个文件", {"文件路径"});
     内置函数("append_file", "追加内容", {"文件路径","追加文本"});
 
     内置函数("LoadPlugin", "添加当前插件到框架 如果不存在就添加 存在就重载 ", {"无参数"});
     内置函数("uninstall_Plugin", "卸载当前插件", {"无参数"});
-    内置函数("testplugin", "测试插件 测试指令是否正确返回", {"测试的指令"});
+    内置函数("testplugin", "测试插件 测试指令是否正确返回", {"测试的指令","事件 本项可空 如 GROUP_MEMBER_ADD"});
     内置函数("run_python", "执行python代码 捕获print 日志", {"python代码"});
+    内置函数("pypip", "pip 下载某python些库 请将需要安装的库写到 requirements.txt 文件", {"无参数"});
 
     内置函数("getFunctionCode", "读取某个py文件的某个函数代码", {"py文件名","函数名 如 my_function","类名 如果有 没有可空 如 MyClass"});
     内置函数("replaceFunction", "替换个py文件的某个函数代码", {"py文件名","函数名 如 my_function","替换的代码 如","类名 如果有 没有可空 如 MyClass"});
@@ -916,8 +959,11 @@ void AppWindow::内置函数()
     内置函数("exec_cmd", "在操作系统命令行中执行一个指令，并返回执行结果 注意 py环境是 是python3.14t.exe", {"执行命令"});
 
 }
+
 QString onMessageReceived2(const MessageEvent &msg,int i);
+
 QString browseWeb(const QString &urlString);
+
 QString AppWindow::tools_fun(const QString &tool_name, const QString &args, const QString &model)
 {
     // 1. 解析参数
@@ -956,7 +1002,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         file.close();
         result = "写入成功，已保存至文件：" + fileName;
 
-    } else if (tool_name == "r_file") {
+    } else if (tool_name == "read_file") {
         // ---------- 读文件 ----------
         QString fileName = obj["p1"].toString();
         if (fileName.isEmpty()) return "错误：读文件必须提供文件路径 (p1)";
@@ -989,8 +1035,9 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
 
 
 #if defined(Q_OS_WIN)
-        process.setNativeArguments("/c " + cmd); // 使用 cmd /c 执行
-        process.start("cmd.exe"); //m_dir
+        QStringList args;
+        args << "/c" << cmd;  // cmd 是你原本的命令字符串（如 'python -m pip install ...'）
+        process.start("cmd.exe", args);
 #else
         process.start(cmd);
 #endif
@@ -1028,7 +1075,6 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         result = browseWeb("https://cn.bing.com/search?q="+ QUrl::toPercentEncoding(obj["p1"].toString()) +"&first="+QString::number(y*10));
     }else if(tool_name == "llwy")
         result = browseWeb(obj["p1"].toString());
-    
     else if (tool_name == "delete_file") {
         QString filePath = obj["p1"].toString();
         if (filePath.isEmpty()) {
@@ -1049,7 +1095,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         if (!file.remove()) {
             return "错误：删除文件失败：" + file.errorString();
         }
-        return "文件删除成功：" + absPath;
+        return "文件删除成功：" + filePath;
     }
     else if (tool_name == "append_file") {
         QString filePath = obj["p1"].toString();
@@ -1075,7 +1121,6 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
 
         return "内容追加成功：" + absPath;
     }
-
     else if(tool_name == "LoadPlugin"){
 
         int index = pluginPage->findPluginIndex(m_dir);
@@ -1148,6 +1193,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
             ev.msg = obj["p1"].toString();
             ev.msgId = "msgid";
             ev.nickname = "test";
+            ev.msgType = obj["p2"].toString();
             return "测试返回结果(如果是空代表没返回)：" + onMessageReceived2(ev,index);
         }
 
@@ -1235,6 +1281,37 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
             return "替换后语法检查 不通过 返回：" + result + "\n本次文件未替换 请更新数据后尝试";
         }
     }
+    else if(tool_name == "pypip")
+    {
+
+        QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe"; //绝对路径 防止跑去跑系统的
+        QString cmdLine;
+
+#ifdef Q_OS_WIN
+        cmdLine = QString("cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+                          "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
+                          "& echo   - \"Successfully installed\" 表示新库安装成功 "
+                          "& echo. & \"%1\" -m pip install -r \"requirements.txt\" & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\"")
+                      .arg(pythonExe);
+#elif defined(Q_OS_LINUX)
+        // Linux：尝试使用 xterm（通常系统自带），执行完后保留窗口（exec bash）
+        QString xtermPath = QStandardPaths::findExecutable("xterm");
+        if (xtermPath.isEmpty()) {
+            QMessageBox::warning(this, "错误", "未找到 xterm 终端，请安装或改用其他终端。");
+            return;
+        }
+        cmdLine = QString("%1 -e bash -c '%2 -m pip install -r \"%3\"; exec bash'")
+                      .arg(xtermPath, pythonExe, reqPath);
+#elif defined(Q_OS_MAC)
+        // macOS：使用 AppleScript 打开 Terminal.app
+        cmdLine = QString("osascript -e 'tell application \"Terminal\" to do script \"%1 -m pip install -r \\\"%2\\\"\"'")
+                      .arg(pythonExe, reqPath);
+#endif
+
+
+        QProcess::startDetached(cmdLine);
+        return "由于下载是异步 这里不返回结果 请继续执行 如果你要查看结果 需要 执行 cmd 命令 查看";
+    }
     else {
         result = "错误：未知的工具名称 " + tool_name;
     }
@@ -1243,6 +1320,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
 }
 
 bool matchRule(const Rule &rule, const QString &msg);
+
 QString onMessageReceived2(const MessageEvent &msg,int i) {
 
     try {
@@ -1262,6 +1340,16 @@ QString onMessageReceived2(const MessageEvent &msg,int i) {
                 }
             }
         }
+        if(m_pluginList[i].python.event.contains(msg.msgType)){
+            auto &ev = m_pluginList[i].python.event[msg.msgType];
+            py::object ret = ev(msg);
+            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                if(reply.isEmpty())
+                    reply = QString::fromStdString(py::str(ret).cast<std::string>());
+                else
+                    reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
+            }
+        }
         return reply;
 
 
@@ -1272,6 +1360,7 @@ QString onMessageReceived2(const MessageEvent &msg,int i) {
     }
 
 }
+
 void AppWindow::setModels()
 {
     QString currentText = modelCombo->currentText();  // 假设 comboModel 是 QComboBox*
@@ -1284,13 +1373,20 @@ void AppWindow::setModels()
     if (index != -1)
         modelCombo->setCurrentIndex(index);
 }
+
 void AppWindow::clearChat()
 {
     if(m_dir.isEmpty()) return;
-    W_file(m_dir+"/ai对话.json","{}");
-    sxw = QJsonObject();
+    if(m_stream)
+    {
+        QMessageBox::warning(this,"无法清空","清空上下文需要 等ai请求接收才能清空 请点击中断后再试试");
+        return;
+    }
+    sxw.remove("messages");
+    W_file(m_dir+"/ai对话.json",QJsonDocument(sxw).toJson(QJsonDocument::Indented));
     chatTextEdit->clear();
 }
+
 QString AppWindow::Ai_posts(const QString &model) //内部使用请勿公开
 {
     QString err;
@@ -1340,7 +1436,7 @@ void AppWindow::onSendMessage(const QString &text)
     m_run = true;
     sendBtn->setText("中断");
     // 2. 界面显示用户消息
-    addMessage(text, true);
+    addMessage(text,  MessageType::User);
 
 
     if (sxw.contains("messages") && sxw["messages"].isArray()) {
@@ -1372,7 +1468,7 @@ void AppWindow::onSendMessage(const QString &text)
     m_execThread = QThread::create([this, model]() {
         QString aiReply = Ai_posts(model);
         sxw.remove("tools");
-         addMessage(aiReply, false);
+         addMessage(aiReply, MessageType::AI);
         QMetaObject::invokeMethod(this, [this, aiReply]() {
 
             W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
@@ -1385,6 +1481,8 @@ void AppWindow::onSendMessage(const QString &text)
     });
     m_execThread->start();
 }
+
+
 void AppWindow::init_system(const QString &text)
 {
     QJsonArray msgs = sxw["messages"].toArray();
@@ -1495,10 +1593,10 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
                     data = "调用函数完成 无返回值...";
                 }
                 if (!text.isEmpty()) {
-                    addMessage(text +"\n调用工具："+tool_name +"\n\n参数："+args+"\n\n返回结果："+data+"\n\n输入:"+QString::number(prompt)+" 补全:"+QString::number(completion), false);
+                    addMessage(text +"\n调用工具："+tool_name +"\n\n参数："+args+"\n\n返回结果："+data+"\n\n输入:"+QString::number(prompt)+" 补全:"+QString::number(completion),  MessageType::AI);
                     text = QString();
                 }else
-                    addMessage("调用工具："+tool_name +"\n\n参数："+args+"\n\n返回结果："+data+"\n\n输入:"+QString::number(prompt)+" 补全:"+QString::number(completion), false);
+                    addMessage("调用工具："+tool_name +"\n\n参数："+args+"\n\n返回结果："+data+"\n\n输入:"+QString::number(prompt)+" 补全:"+QString::number(completion),  MessageType::AI);
                 if(!data.isEmpty())
                 {
                     QJsonArray msgs = sxw["messages"].toArray();
@@ -1514,7 +1612,7 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
                 }
             }
             if (!text.isEmpty()) {
-                addMessage(text, false);
+                addMessage(text,  MessageType::AI);
                 text = QString();
             }
             if(qxzd) return QString();
@@ -1526,4 +1624,755 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
     return QString();
 }
 
+QString AppWindow::buildMessageHtml(const QString &text, MessageType type)
+{
+    // 根据类型设置样式
+    QString cardBg, cardBorder, rolePrefix,codeBg,codeTextColor;
+    switch (type) {
+    case MessageType::User:
+        cardBg = "#E8F5E9";
+        cardBorder = "#4CAF50";
+        rolePrefix = "👤 用户:";
+        codeBg = "#ED90BC";
+        codeTextColor = "#000";
+        break;
+    case MessageType::AI:
+        cardBg = "#EEF2F6";
+        cardBorder = "#9C27B0";
+        rolePrefix = "🤖 AI:";
+        codeBg = "#353834";
+        codeTextColor = "#ffffff";
+        break;
+    case MessageType::Tool:
+        cardBg = "#FFF8E1";   // 浅黄
+        cardBorder = "#FF9800"; // 橙色
+        rolePrefix = "🔧 工具调用:";
+        codeBg = "#9B9B9B";
+        codeTextColor = "#ffffff";
+        break;
 
+    case MessageType::sk:
+        cardBg = "#FFF8E1";   // 浅黄
+        cardBorder = "#FF9800"; // 橙色
+
+        codeBg = "#9B9B9B";
+        codeTextColor = "#000";
+        break;
+    }
+    QString roleHtml = QString("<div style='color: #000000; font-weight: bold; margin-bottom: 6px; font-size: 14px;'>%1</div>").arg(rolePrefix);
+
+
+    QString trimmedText = text.trimmed();
+    trimmedText.replace("```","");
+    QString wrapped = "```" + trimmedText + "```\n";
+    wrapped.replace("\n\n\n\n", "\n\n");
+    wrapped.replace("\n\n\n", "\n\n");
+
+    QString finalHtml = roleHtml;
+    QStringList parts = wrapped.split("```");
+    for (int i = 0; i < parts.size(); ++i) {
+        if (i % 2 == 0) {
+            QString escaped = parts[i].toHtmlEscaped();
+            escaped.replace("\n", "<br>");
+            finalHtml += escaped;
+        } else {
+            // 代码块颜色：工具和AI使用相同深色，用户使用蓝色系
+
+
+            finalHtml += QString(
+                             "<pre style='background:%1; color:%2; padding:8px 10px; border-radius:6px; "
+                             "font-family:Consolas, monospace; font-size:12px; white-space:pre-wrap; "
+                             "word-wrap:break-word; margin:0;'>"
+                             "<code>%3</code></pre>"
+                             ).arg(codeBg, codeTextColor, parts[i].toHtmlEscaped());
+        }
+    }
+
+    return QString(
+               "<div style='margin-bottom: 8px; "
+               "background: %1; "
+               "border-left: 5px solid %2; "
+               "border-radius: 6px; "
+               "padding: 6px 10px; "
+               "box-shadow: 0 1px 2px rgba(0,0,0,0.03);'>"
+               "  %3"
+               "</div>"
+               ).arg(cardBg, cardBorder, finalHtml);
+}
+QString AppWindow::buildMessageHtml2(const QString &text, MessageType type,const QString &toolname)
+{
+    // 根据类型设置样式
+    QString cardBg, cardBorder, rolePrefix,codeBg,codeTextColor,roleHtml;
+    switch (type) {
+    case MessageType::User:
+        cardBg = "#E8F5E9";
+        cardBorder = "#4CAF50";
+        rolePrefix = "👤 用户:";
+        codeBg = "#ED90BC";
+        codeTextColor = "#000"; //文本颜色
+        break;
+    case MessageType::AI:
+        cardBg = "#EEF2F6";
+        cardBorder = "#9C27B0";
+        rolePrefix = "📝 正文:";
+        codeBg = "#353834";
+        codeTextColor = "#ffffff";
+        break;
+    case MessageType::Tool:
+        cardBg = "#FFF8E1";   // 浅黄
+        cardBorder = "#FF9800"; // 橙色
+        rolePrefix = "🔧 调用工具("+toolname.trimmed()+"):";
+        codeBg = "#9B9B9B";
+        codeTextColor = "#000";
+        break;
+    case MessageType::sk:
+        cardBg = "#FFF8E1";   // 浅黄
+        cardBorder = "#FF9800"; // 橙色
+        rolePrefix = "💬 思考:";
+        codeBg = "#35DBFD";
+        codeTextColor = "#000";
+        break;
+    }
+
+
+
+    QString trimmedText = text.trimmed();
+    trimmedText.replace("```","");
+
+    trimmedText.replace("\n\n\n\n", "\n\n");
+    trimmedText.replace("\n\n\n", "\n\n");
+    roleHtml = QString("<div style='color: #000000; font-weight: bold; margin-bottom: 6px; font-size: 14px;'>%1</div>\n%2").arg(rolePrefix,trimmedText);
+    QString finalHtml =  QString(
+                             "<pre style='background:%1; color:%2; padding:8px 10px; border-radius:6px; "
+                             "font-family:Consolas, monospace; font-size:12px; white-space:pre-wrap; "
+                             "word-wrap:break-word; margin:0;'>"
+                             "<code>%3</code></pre><br>"
+                             ).arg(codeBg, codeTextColor,roleHtml);
+
+
+    return QString(
+               "<div style='margin-bottom: 8px; "
+               "background: %1; "
+               "border-left: 5px solid %2; "
+               "border-radius: 6px; "
+               "padding: 6px 10px; "
+               "box-shadow: 0 1px 2px rgba(0,0,0,0.03);'>"
+               "  %3"
+               "</div>"
+               ).arg(cardBg, cardBorder, finalHtml);
+}
+
+// ==================== AppWindow.cpp 实现 ====================
+
+void AppWindow::Ai_posts_stream(const QString &model,std::function<void (const QString &)> callback)
+{
+
+    m_stream = std::make_unique<StreamSession>();
+    m_stream->model = model;
+    m_stream->callback = callback;
+    m_stream->toolHandlers = m_toolHandlers; // 复制全局工具处理器
+
+    // 验证模型
+    bool found = false;
+    for (const auto &m : std::as_const(ai_ui->modelList)) {
+        if (m.name == model) {
+            sxw["model"] = m.name;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        if (callback) callback("未找到模型：" + model);
+        m_stream.reset();
+        return;
+    }
+
+
+    tryNextStreamEndpoint(m_stream.get());
+}
+
+void AppWindow::tryNextStreamEndpoint(StreamSession *s)
+{
+    if (s->userAborted) {
+        if (s->callback) s->callback("用户中断");
+        finishStreamSession(s, false);
+        return;
+    }
+
+    const ModelData* curModel = nullptr;
+    for (const auto &m : std::as_const(ai_ui->modelList)) {
+        if (m.name == s->model) {
+            curModel = &m;
+            break;
+        }
+    }
+    if (!curModel) {
+        if (s->callback) s->callback("模型未找到");
+        finishStreamSession(s, false);
+        return;
+    }
+
+    int totalInterfaces = curModel->enabledInterfaceIndices.size();
+    if (s->interfaceIndex >= totalInterfaces) {
+        QString errMsg = "所有接口均失败";
+        if (!m_err.isEmpty()) errMsg += "\n" + m_err;
+        if (s->callback) s->callback(errMsg);
+        finishStreamSession(s, false);
+        return;
+    }
+
+    int ifaceIdx = curModel->enabledInterfaceIndices[s->interfaceIndex];
+    auto &iface = ai_ui->globalInterfaces[ifaceIdx];
+    int keyCount = iface.keys.size();
+
+    if (s->keyIndex >= keyCount) {
+        s->interfaceIndex++;
+        s->keyIndex = 0;
+        tryNextStreamEndpoint(s);
+        return;
+    }
+
+    s->currentUrl = iface.url;
+    s->currentKey = iface.keys[s->keyIndex].key;
+
+    // 创建流式请求
+    startStreamRequest(s, s->currentUrl, s->currentKey);
+}
+
+void AppWindow::startStreamRequest(StreamSession *s, const QString &url, const QString &key)
+{
+    // 构建请求体
+    init_system("");  // 确保 sxw 正确
+    QJsonObject requestObj = sxw;
+    requestObj["stream"] = true;
+    QByteArray jsonData = QJsonDocument(requestObj).toJson(QJsonDocument::Compact);
+
+    QNetworkRequest request;
+    request.setUrl(QUrl(url));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Authorization", "Bearer " + key.toUtf8());
+
+    QNetworkAccessManager *manager = new QNetworkAccessManager(this);
+    s->reply = manager->post(request, jsonData);
+    s->reply->ignoreSslErrors();
+
+    connect(s->reply, &QNetworkReply::readyRead, this, &AppWindow::onStreamReadyRead);
+    connect(s->reply, &QNetworkReply::finished, this, &AppWindow::onStreamFinished);
+
+    // 初始化 UI 流式显示
+
+}
+// 滚动条值变化槽
+void AppWindow::onScrollChanged(int value)
+{
+    if (m_programScroll) return;   // 程序触发的滚动，不修改 zdgd
+    QScrollBar *bar = chatTextEdit->verticalScrollBar();
+    if (value < bar->maximum()) {
+        zdgd = false;   // 用户向上滚动，关闭自动滚动
+    } else {
+        zdgd = true;    // 用户滚到底部，重新开启自动滚动
+    }
+}
+
+// 程序触发的滚动到底部（不影响 zdgd 判断）
+void AppWindow::scrollToBottom()
+{
+    m_programScroll = true;
+    QScrollBar *bar = chatTextEdit->verticalScrollBar();
+    bar->setValue(bar->maximum());
+    m_programScroll = false;
+}
+void AppWindow::startStreamUI(StreamSession *s, const QString &title)
+{
+    QTextCursor cursor(chatTextEdit->document());
+    cursor.movePosition(QTextCursor::End);
+    s->aiReplyStartPos = cursor.position();
+    cursor.insertHtml(QString("<b style='color:#2C3E50;'>%1</b><br>").arg(title.toHtmlEscaped()));
+
+}
+
+void AppWindow::appendReasoningChunk(StreamSession *s, const QString &chunk)
+{
+    QTextCursor c(chatTextEdit->document());
+    c.movePosition(QTextCursor::End);
+    QString escaped = chunk.toHtmlEscaped().replace("\n", "<br>");
+    c.insertHtml(QString("<span style='color:#E26BF1; font-size:0.7em;'>%1</span>").arg(escaped));
+    if(zdgd)//自动往下滚动显示
+    {
+        scrollToBottom();
+    }
+}
+
+void AppWindow::appendContentChunk(StreamSession *s, const QString &chunk)
+{
+    QTextCursor c(chatTextEdit->document());
+    c.movePosition(QTextCursor::End);
+    QString escaped = chunk.toHtmlEscaped().replace("\n", "<br>");
+    c.insertHtml(QString("<span style='color:#212121;'>%1</span>").arg(escaped));
+    if(zdgd)//自动往下滚动显示
+    {
+       scrollToBottom();
+    }
+}
+
+void AppWindow::appendToolCallChunk(StreamSession *s, const QString &info)
+{
+    QTextCursor c(chatTextEdit->document());
+    c.movePosition(QTextCursor::End);
+    c.insertHtml(QString("<div style='color:#1565C0; font-family:monospace; margin:4px 0;'>%1</div>")
+                     .arg(info.toHtmlEscaped()));
+    if(zdgd)//自动往下滚动显示
+    {
+        scrollToBottom();
+    }
+}
+
+void AppWindow::onStreamReadyRead()
+{
+    if (!m_stream || !m_stream->reply) return;
+
+    QByteArray data = m_stream->reply->readAll();
+    m_stream->buffer.append(data);
+
+    // 先检查是否有 JSON 错误（非 data: 开头的错误响应）
+    QJsonParseError jsonErr;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &jsonErr);
+    if (jsonErr.error == QJsonParseError::NoError) {
+        QJsonObject obj = doc.object();
+        if (obj.contains("error")) {
+            QJsonObject errObj = obj["error"].toObject();
+            QString errText = errObj["message"].toString();
+            if (!errText.isEmpty()) {
+                errText += "\n" + errObj["metadata"].toObject()["raw"].toString();
+                m_err += "\n" + errText;
+            }
+            return;
+        }
+    }
+
+    // 按 SSE 规范拆分事件 (以 \n\n 分隔)
+    int idx;
+    while ((idx = m_stream->buffer.indexOf("\n\n")) != -1) {
+        QByteArray event = m_stream->buffer.left(idx);
+        m_stream->buffer.remove(0, idx + 2);
+        parseSSE(m_stream.get(), event.trimmed());
+    }
+}
+
+void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
+{
+    if (!line.startsWith("data: ")) return;
+    QByteArray data = line.mid(6);
+    if (data == "[DONE]") return; // 某些 API 用 [DONE] 结束，但我们依靠 finish_reason
+    m_ok = true;
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    if (err.error != QJsonParseError::NoError) return;
+
+    QJsonObject obj = doc.object();
+    QJsonObject usage = obj["usage"].toObject();
+    if(usage.contains("completion_tokens")){
+
+        int completion_tokens =usage["completion_tokens"].toInt();
+        int prompt_tokens =usage["prompt_tokens"].toInt();
+        int prompt_tokens_details =usage["prompt_tokens_details"].toInt();
+
+        m_completion_tokens +=completion_tokens;
+        m_prompt_tokens +=prompt_tokens;
+        m_prompt_tokens_details +=prompt_tokens_details;
+
+        m_completion_tokens2 +=completion_tokens;
+        m_prompt_tokens2 +=prompt_tokens;
+        m_prompt_tokens_details2 +=prompt_tokens_details;
+
+
+        m_completion_tokens3 +=completion_tokens;
+        m_prompt_tokens3 +=prompt_tokens;
+        m_prompt_tokens_details3 +=prompt_tokens_details;
+
+
+    }
+    QJsonArray choices = obj["choices"].toArray();
+    if (choices.isEmpty()) return;
+    QJsonObject choice = choices[0].toObject();
+    QJsonObject delta = choice["delta"].toObject();
+
+    if (delta.contains("reasoning_content")) {
+        QString chunk = delta["reasoning_content"].toString();
+        if (!chunk.isEmpty()) {
+
+            if(s->accumulatedReasoning.isEmpty()){
+                startStreamUI(s,"💬 思考:");
+            }
+            s->accumulatedReasoning.append(chunk);
+            appendReasoningChunk(s, chunk);
+        }
+    }
+
+    // 处理正文内容
+    QString chunk = delta["content"].toString();
+    if (!chunk.isEmpty()) {
+
+        if(s->accumulatedContent.isEmpty())
+        {
+            if(!s->accumulatedReasoning.isEmpty())
+            {
+                QTextCursor c(chatTextEdit->document());
+                c.setPosition(s->aiReplyStartPos);
+                c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                c.removeSelectedText();
+                addMessage2(s->accumulatedReasoning,MessageType::sk);
+                qDebug() <<s->accumulatedReasoning ;
+                s->accumulatedReasoning.clear();
+            }
+            startStreamUI(s,"📝 正文:");
+        }
+        s->accumulatedContent.append(chunk) ;
+        appendContentChunk(s, chunk);
+    }
+
+    // 处理工具调用
+    if (delta.contains("tool_calls")) {
+        QJsonArray calls = delta["tool_calls"].toArray();
+        for (const QJsonValue &v : std::as_const(calls)) {
+            QJsonObject call = v.toObject();
+            int index = call["index"].toInt();
+            QJsonObject newFunc = call["function"].toObject();
+            if (!s->toolCallsMap.contains(index)) {
+                s->toolCallsMap[index] = call;
+                if(!s->dyc){
+                    s->dyc =true;
+                    if(!s->accumulatedReasoning.isEmpty()){
+                        QTextCursor c(chatTextEdit->document());
+                        c.setPosition(s->aiReplyStartPos);
+                        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                        c.removeSelectedText();
+                        addMessage2(s->accumulatedReasoning,MessageType::sk);
+                        s->accumulatedReasoning.clear();
+                    }
+                    if(!s->accumulatedContent.isEmpty()){
+
+                        QTextCursor c(chatTextEdit->document());
+                        c.setPosition(s->aiReplyStartPos);
+                        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                        c.removeSelectedText();
+                        addMessage2(s->accumulatedContent,MessageType::AI);
+                    }
+                    startStreamUI(s,"🔧 调用工具("+newFunc["name"].toString()+")");
+                }
+
+            } else {
+                QJsonObject existing = s->toolCallsMap[index];
+                QJsonObject existingFunc = existing["function"].toObject();
+                QString existingArgs = existingFunc["arguments"].toString();
+
+
+                QString newArgs = newFunc["arguments"].toString();
+                if (!newArgs.isEmpty()) {
+                    existingArgs += newArgs;
+                }
+                appendToolCallChunk(s,newArgs);
+                existingFunc["arguments"] = existingArgs;
+                if (!newFunc["name"].isNull() && !newFunc["name"].toString().isEmpty()) {
+                    existingFunc["name"] = newFunc["name"];
+                }
+                existing["function"] = existingFunc;
+                if (!call["id"].isNull() && !call["id"].toString().isEmpty()) {
+                    existing["id"] = call["id"];
+                }
+                s->toolCallsMap[index] = existing;
+            }
+            // 实时显示工具调用名称（只显示一次）
+            static QSet<int> shownToolIndices; // 可以放到会话里
+            if (!shownToolIndices.contains(index)) {
+                QString toolName = call["function"].toObject()["name"].toString();
+                if (!toolName.isEmpty()) {
+                    shownToolIndices.insert(index);
+                }
+            }
+        }
+    }
+    /*
+    // 检查是否结束
+    QString finish = choice["finish_reason"].toString();
+    if (finish == "stop" || finish == "tool_calls") {
+
+        QJsonObject assistantMsg;
+        assistantMsg["role"] = "assistant";
+        assistantMsg["content"] = s->accumulatedContent;
+
+        if (!s->toolCallsMap.isEmpty()) {
+            QJsonArray toolCallsArray;
+            QList<int> keys = s->toolCallsMap.keys();
+            std::sort(keys.begin(), keys.end());
+            for (int idx : std::as_const(keys)) {
+                toolCallsArray.append(s->toolCallsMap[idx]);
+            }
+            assistantMsg["tool_calls"] = toolCallsArray;
+        }
+        QJsonArray msgs = sxw["messages"].toArray();
+        msgs.append(assistantMsg);
+        sxw["messages"] = msgs;
+        s->toolCallPending = (finish == "tool_calls");
+        s->finished = true;
+
+        if(!s->accumulatedContent.isEmpty()){
+            QTextCursor c(chatTextEdit->document());
+            c.setPosition(s->aiReplyStartPos);
+            c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+            c.removeSelectedText();
+            addMessage2(s->accumulatedContent,MessageType::AI);
+        }
+    }
+*/
+}
+
+void AppWindow::onStreamFinished()
+{
+    if (!m_stream) return;
+    auto *s = m_stream.get();
+    if (!s->reply) return;
+
+    bool success = (s->reply->error() == QNetworkReply::NoError);
+    QString error = success ? QString() : s->reply->errorString();
+
+    // 处理剩余 buffer
+    if (!s->buffer.isEmpty()) {
+        parseSSE(s, s->buffer);
+        s->buffer.clear();
+    }
+
+    s->reply->deleteLater();
+    s->reply = nullptr;
+    QJsonObject assistantMsg;
+    assistantMsg["role"] = "assistant";
+    assistantMsg["content"] = s->accumulatedContent;
+    QJsonArray toolCallsArray;
+    if (!s->toolCallsMap.isEmpty()) {
+
+        QList<int> keys = s->toolCallsMap.keys();
+        std::sort(keys.begin(), keys.end());
+        for (int idx : std::as_const(keys)) {
+            toolCallsArray.append(s->toolCallsMap[idx]);
+        }
+        assistantMsg["tool_calls"] = toolCallsArray;
+    }
+    QJsonArray msgs = sxw["messages"].toArray();
+    msgs.append(assistantMsg);
+    sxw["messages"] = msgs;
+
+
+
+    if(!s->accumulatedContent.isEmpty()){
+        QTextCursor c(chatTextEdit->document());
+        c.setPosition(s->aiReplyStartPos);
+        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+        addMessage2(QString("%1\n输入:%2  补全:%3  缓存:%4").arg(s->accumulatedContent)
+                        .arg(formatTokens(m_prompt_tokens3))
+                        .arg(formatTokens(m_completion_tokens3))
+                        .arg(formatTokens(m_prompt_tokens_details3)),MessageType::AI);
+        m_prompt_tokens3 = 0;
+        m_completion_tokens3 =0;
+        m_prompt_tokens_details3 = 0;
+
+    }
+
+    if (s->userAborted) {
+
+        if (!s->accumulatedContent.isEmpty() || !s->toolCallsMap.isEmpty()) {
+            QJsonObject assistantMsg;
+            assistantMsg["role"] = "assistant";
+            assistantMsg["content"] = s->accumulatedContent;  // 中断时已有的正文
+            if (!s->toolCallsMap.isEmpty()) {
+                QJsonArray toolCallsArray;
+                assistantMsg["tool_calls"] = toolCallsArray;
+            }
+            QJsonArray msgs = sxw["messages"].toArray();
+            msgs.append(assistantMsg);
+
+
+            sxw["messages"] = msgs;
+        }
+
+        if (s->callback) s->callback("用户中断");
+        finishStreamSession(s, false);
+        return;
+    }
+
+    // 错误处理与重试逻辑
+    if (!success) {
+        if (error.contains("token") && s->retryCount < 3) {
+            s->retryCount++;
+            // 回退最后一条消息（可能是无效的）
+            QJsonArray msgs = sxw["messages"].toArray();
+            if (msgs.size() > 1) {
+                msgs.removeLast();
+                sxw["messages"] = msgs;
+            }
+            startStreamRequest(s, s->currentUrl, s->currentKey);
+            return;
+        }
+
+        // 切换密钥或接口
+        s->retryCount = 0;
+        const ModelData* curModel = nullptr;
+        for (const auto &m : std::as_const(ai_ui->modelList)) {
+            if (m.name == s->model) {
+                curModel = &m;
+                break;
+            }
+        }
+        if (curModel) {
+            int ifaceIdx = curModel->enabledInterfaceIndices[s->interfaceIndex];
+            auto &iface = ai_ui->globalInterfaces[ifaceIdx];
+            int keyCount = iface.keys.size();
+            if (s->keyIndex + 1 < keyCount) {
+                s->keyIndex++;
+            } else {
+                s->interfaceIndex++;
+                s->keyIndex = 0;
+            }
+            tryNextStreamEndpoint(s);
+            return;
+        }
+        if (s->callback) s->callback(error);
+        finishStreamSession(s, false);
+        return;
+    }
+
+    // 成功：如果还有工具调用待处理，执行工具并继续
+    if (toolCallsArray.size()!=0) {
+        s->toolCallPending = false;
+        QJsonArray msgs = sxw["messages"].toArray();
+        if (!msgs.isEmpty()) {
+            QJsonObject last = msgs.last().toObject();
+
+            if (last["role"].toString() == "assistant" && last.contains("tool_calls")) {
+                const QJsonArray toolCalls = last["tool_calls"].toArray();
+                QString res,tool_name;
+                for (const QJsonValue &v : toolCalls) {
+                    QJsonObject call = v.toObject();
+                    QString id = call["id"].toString();
+                    QJsonObject func = call["function"].toObject();
+                    QString name = func["name"].toString();
+                    QString args = func["arguments"].toString();
+
+                    // 查找注册的工具处理器，否则调用默认 tools_fun
+                    QString result;
+                    if (s->toolHandlers.contains(name)) {
+                        result = s->toolHandlers[name](name, args);
+                    } else {
+                        result = tools_fun(name, args, sxw["model"].toString());
+                    }
+                    if (result.isEmpty()) result = "工具调用完成，无返回值";
+                    res += QString("调用工具：%1\n参数：%2\n返回：%3\n\n").arg(name, args, result);
+                    tool_name +=name+" ";
+
+                    QJsonObject toolMsg;
+                    toolMsg["role"] = "tool";
+                    toolMsg["content"] = result;
+                    toolMsg["tool_call_id"] = id;
+                    toolMsg["name"] = name;
+                    msgs.append(toolMsg);
+                }
+
+                QTextCursor c(chatTextEdit->document());
+                c.setPosition(s->aiReplyStartPos);
+                c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                c.removeSelectedText();
+                addMessage2(res, MessageType::Tool,tool_name);
+                sxw["messages"] = msgs;
+            }
+        }
+        // 继续请求，将工具结果送回模型
+        s->accumulatedReasoning.clear();
+        s->accumulatedContent.clear();
+        s->toolCallsMap.clear();
+        startStreamRequest(s, s->currentUrl, s->currentKey);
+        return;
+    }
+    if (s->callback) s->callback(QString());
+    finishStreamSession(s, true);
+}
+
+void AppWindow::finishStreamSession(StreamSession *s, bool success)
+{
+    Q_UNUSED(success);
+    m_stream.reset();
+}
+void AppWindow::onSendMessage_stream(const QString &text)
+{
+
+    if (m_dir.isEmpty()) {
+        QMessageBox::warning(this, "", "请先打开一个文件夹，因为本 AI 对话会涉及操作文件");
+        return;
+    }
+    zdgd = true;
+    sendBtn->setText("中断");
+    // 1. 显示用户消息
+    addMessage2(text, MessageType::User);
+
+    // 2. 构造上下文（与阻塞版一致）
+    if (!sxw.contains("messages") || !sxw["messages"].isArray()) {
+        QJsonArray msgs;
+        if (!g_system.isEmpty()) {
+            QJsonObject systemMsg;
+            systemMsg["role"] = "system";
+            systemMsg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
+            msgs.append(systemMsg);
+        }
+        QJsonObject userMsg;
+        userMsg["role"] = "user";
+        userMsg["content"] = text;
+        msgs.append(userMsg);
+        sxw["messages"] = msgs;
+    } else {
+        init_system(text);
+    }
+
+    ai_ui->trimToolResponses(sxw, 5, 64);
+    ai_ui->trimContextByMessageCount(sxw, 128);
+    QString model = modelCombo->currentText();
+    sxw["model"] = model;
+    sxw["tools"] = m_fun;
+    sxw.remove("usage");
+    m_completion_tokens2 =0;
+    m_prompt_tokens2 =0;
+    m_prompt_tokens_details2 =0;
+    m_completion_tokens3 =0;
+    m_prompt_tokens3 =0;
+    m_prompt_tokens_details3 =0;
+
+    m_ok = false;
+    Ai_posts_stream(model, [this](const QString &err) {
+        if(!m_ok)
+        {
+            addMessage2("错误：所有接口都未返回数据" , MessageType::AI);
+        }
+        QJsonArray msgs = sxw["messages"].toArray();
+        for (int i = 0; i < msgs.size(); ++i) {
+            QJsonObject msg = msgs[i].toObject();
+            if (msg["role"].toString() == "system") {
+                msg["content"] = "";
+                msgs[i] = msg;
+                sxw["messages"]=msgs;
+                break; // 通常只有一个 system，找到就停
+            }
+        }
+        sxw.remove("tools");
+        if (!err.isEmpty()) {
+            QTextCursor c(chatTextEdit->document());
+            c.movePosition(QTextCursor::End);
+            c.insertHtml("<br><br>");
+            addMessage2("错误：" + err, MessageType::AI);
+        }
+        QJsonObject obj;
+        obj["completion_tokens"] =m_completion_tokens;
+        obj["prompt_tokens"] =m_prompt_tokens;
+        obj["prompt_tokens_details"] =m_prompt_tokens_details;
+        sxw["usage"]=obj;
+        W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
+        sendBtn->setText("发送");
+    });
+}

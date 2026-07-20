@@ -595,7 +595,7 @@ void AiWidget::setupUi()
     interfaceTable->setColumnCount(2);
     interfaceTable->setHorizontalHeaderLabels(QStringList() << "备注" << "接口");
 
-    interfaceTable->setColumnWidth(0, 140);
+    interfaceTable->setColumnWidth(0, 100);
     interfaceTable->setColumnWidth(0, 140);
 
 
@@ -1384,6 +1384,44 @@ void AiWidget::refreshInterfaceTableForModel(int modelIndex) {
 
 
 void AiWidget::onInterfaceAdd() {
+
+
+
+    if(globalInterfaces.size()==0)
+    {
+        InterfaceData newIface;
+
+        newIface.remark = "Kimi";
+        newIface.url = "https://api.moonshot.cn/v1/chat/completions";
+        globalInterfaces.append(newIface);
+
+        newIface.remark = "Openai";
+        newIface.url = "https://api.openai.com/v1/chat/completions";
+        globalInterfaces.append(newIface);
+
+        newIface.remark = "DeepSeek";
+        newIface.url = "https://api.deepseek.com/chat/completions";
+        globalInterfaces.append(newIface);
+
+
+        newIface.remark = "小米";
+        newIface.url = "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions";
+        globalInterfaces.append(newIface);
+
+        newIface.remark = "智谱";
+        newIface.url = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+        globalInterfaces.append(newIface);
+
+
+        newIface.remark = "硅基流动";
+        newIface.url = "https://api.siliconflow.cn/v1/chat/completions";
+        globalInterfaces.append(newIface);
+
+        newIface.remark = "咸鱼中转";
+        newIface.url = "https://allgpt.xianyuw.cn/v1/chat/completions";
+        globalInterfaces.append(newIface);
+
+    }
     InterfaceData newIface;
     newIface.remark = "新接口";
     newIface.url = "https://";

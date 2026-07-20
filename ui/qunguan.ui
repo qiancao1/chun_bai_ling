@@ -72,6 +72,13 @@
       <number>0</number>
      </property>
      <item>
+      <widget class="QCheckBox" name="checkBox_2">
+       <property name="text">
+        <string>屏蔽机器人信息</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QCheckBox" name="checkBox">
        <property name="text">
         <string>启用刷屏检测</string>
@@ -114,13 +121,6 @@
       </widget>
      </item>
     </layout>
-   </item>
-   <item>
-    <widget class="QCheckBox" name="checkBox_2">
-     <property name="text">
-      <string>屏蔽机器人信息</string>
-     </property>
-    </widget>
    </item>
    <item>
     <widget class="QTextEdit" name="textEdit_2">
