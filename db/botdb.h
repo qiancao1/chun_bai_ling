@@ -80,8 +80,9 @@ public:
     bool getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes);
 
 
+    bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
 
-
+    bool batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes);
 
 
 

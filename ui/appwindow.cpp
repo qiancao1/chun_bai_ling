@@ -42,9 +42,11 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 15.为了减少请求次数 你在调用工具的时候 先考虑好 比如 要写出3个文件 就一次性调3个 工具 而不是一个一个来
 16.请不要使用 run_python 来打印无意义内容 我在调试的时候 发现你思考模式调 run_python 用print 打印文本 然后给下一次对话查看打印的消息 这种无意义执行就不用做了
 17.你可以用run_python来 检查py文件语法
-18.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
+18.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 图片语法还支持![#24px #24px](本地路径|链接)，#24px 是高宽 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
 19.由于环境是 pybind11 库，在运行目录 有个文件夹 plugin_data 你在里面创建个文件夹 写入数据，注意 由于运行目录是 exe的目录 并不是 py入口目录 你写出数据得在 plugin_data/插件名/xxx.json 这个插件名你自己设置 目录也是你创建 当然你也可以 IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "color_game_img") 来获取py文件目录
 20.严禁绝对路径 这种插件换路径就用不了
+21.内置 PIL 制图库 可以直接使用 可以添加到requirements.txt 也可以不用
+22.由于环境是 q.qq.com腾讯官方机器人 开放给qq所有人使用 用户可能比较多 你可能需要使用数据库来存数据 你可以用sqlite 以及其他数据库
 ========
 #当前文件目录！！！ 请不要执行cmd查看目录 这里有实时文件目录 请勿读取 ai对话.json 这个是你的上下文存储文件
 注意 格式是 文件名 (文件大小) 读取就读文件名即可 文件大小你看看就知道了
@@ -55,7 +57,7 @@ xx2.py
     def xxx():
 
 注意 def 前面4个空格是 方便区分 并不是 原代码里面有4个空格 当你发现8个空格时实际上源码只有4个(一般类成员才可能) 因为有4个是添加来 方便查看的
-=======
+======= 下面是文件结构 包括文件内函数 实时更新
 {{文件目录}}
 ========
 消息结构体
@@ -256,24 +258,6 @@ class QQApi:
         :param appid: Bot appid
         :param user: 32字节那个
         :return: 整数id
-        """
-        ...
-
-    def htmlimg1(self, text: str, width: int) -> Dict:
-        """
-        将HTML文本渲染为图片（方式1 ） 返回图片标签 ![img](路径) 拼接到文本发送即可 QTextDocument 简单html制图 效率高
-        :param text: HTML文本
-        :param width: 图片宽度（或其它整型参数）
-        """
-        ...
-
-    def htmlimg2(self, text: str, width: int, height: int, extra: int = 0) -> Dict:
-        """
-        将HTML文本渲染为图片（方式2） 返回图片标签 ![img](路径) 拼接到文本发送即可 浏览器截图 效率低
-        :param text: HTML文本
-        :param width: 宽度
-        :param height: 高度
-        :param extra: 额外参数，默认为0（http请求api超时时间）
         """
         ...
 
@@ -1285,29 +1269,11 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
     {
 
         QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe"; //绝对路径 防止跑去跑系统的
-        QString cmdLine;
-
-#ifdef Q_OS_WIN
-        cmdLine = QString("cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+        QString cmdLine = QString("cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
                           "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
                           "& echo   - \"Successfully installed\" 表示新库安装成功 "
-                          "& echo. & \"%1\" -m pip install -r \"requirements.txt\" & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\"")
-                      .arg(pythonExe);
-#elif defined(Q_OS_LINUX)
-        // Linux：尝试使用 xterm（通常系统自带），执行完后保留窗口（exec bash）
-        QString xtermPath = QStandardPaths::findExecutable("xterm");
-        if (xtermPath.isEmpty()) {
-            QMessageBox::warning(this, "错误", "未找到 xterm 终端，请安装或改用其他终端。");
-            return;
-        }
-        cmdLine = QString("%1 -e bash -c '%2 -m pip install -r \"%3\"; exec bash'")
-                      .arg(xtermPath, pythonExe, reqPath);
-#elif defined(Q_OS_MAC)
-        // macOS：使用 AppleScript 打开 Terminal.app
-        cmdLine = QString("osascript -e 'tell application \"Terminal\" to do script \"%1 -m pip install -r \\\"%2\\\"\"'")
-                      .arg(pythonExe, reqPath);
-#endif
-
+                          "& echo. & \"%1\" -m pip install -r \"%2\" & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\"")
+                      .arg(pythonExe,m_dir+"requirements.txt");
 
         QProcess::startDetached(cmdLine);
         return "由于下载是异步 这里不返回结果 请继续执行 如果你要查看结果 需要 执行 cmd 命令 查看";

@@ -82,6 +82,9 @@ QString Homev=R"(
 - 增加 插件市场
 - 优化 python 不再需要安装python 因为框架自带完全环境
 - 优化 聊天室 发送消息规则 msgid -> 主动 -> 召回
+- 优化 接收到消息自动删除/字符
+- 为内置关键词回复 添加 提示
+
 
 ## v1.1.3.17 (2026-07-17)
 - 优化 原版mc插件的支持
@@ -302,7 +305,7 @@ void showClickableLicenseInfo() {
         "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
         "完整源代码（含所有修改）请访问：<br>"
         "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
-        "<a href=\"https://gitee.com/qiancao1/qiancao\">Gitee</a><br><br>"
+        "<a href=\"https://gitee.com/linglan2/chun-bai-ling-dang\">Gitee</a><br><br>"
 
         "<b>使用的第三方库及许可：</b><br><br>"
 
@@ -1016,7 +1019,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 
 void MainWindow::checkUpdate() {
 
-    QUrl url("https://gitee.com/api/v5/repos/qiancao1/qiancao/releases/latest");
+    QUrl url("https://gitee.com/api/v5/repos/linglan2/chun-bai-ling-dang/releases/latest");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
 
@@ -1442,6 +1445,13 @@ void MainWindow::applyStyleSheet()
         QComboBox::drop-down:hover {
             background: #e0e0e0;
         }
+#tagLabel {
+    background: transparent !important;
+    color: #1E90FF;
+    font-size: 11px;
+    padding: 0px;
+    border: none;
+}
         QTableWidget { border: 1px solid #AE8AB1; gridline-color: #d0d0d0; }
         QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
     )");

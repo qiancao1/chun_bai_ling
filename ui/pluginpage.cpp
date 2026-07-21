@@ -20,6 +20,7 @@
 #include <qlibrary.h>
 #include "AppWindow.h"
 
+#include "PluginMarketWindow.h"
 #include "global.h"
 #include "node_plugin_manager.h"
 
@@ -160,6 +161,9 @@ void PluginPage::setupUi()
     rightCheckList->setStyleSheet("border: 1px solid #cccccc; border-radius: 4px;");
     rightCheckList->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     middleLayout->addWidget(rightCheckList);
+    plugin_sc = new QPushButton("插件市场");
+    middleLayout->addWidget(plugin_sc);
+
     //middleLayout->addStretch(); // 让列表顶部分布，下方留白
 
     // ========== 右侧：插件详情（不含账号列表） ==========
@@ -272,7 +276,11 @@ void PluginPage::setupUi()
         savePlugins();
         currentSelected_index=-1;
     });
-
+    connect(plugin_sc, &QPushButton::clicked, [this](){
+        PluginMarketWindow *win = new PluginMarketWindow(this);
+        win->setAttribute(Qt::WA_DeleteOnClose);
+        win->show();  // 或 win->exec() 模态
+    });
     connect(reloadBtn, &QPushButton::clicked, [this](){
 
         Reload_Plugin(currentSelected_index);
@@ -325,45 +333,42 @@ void PluginPage::setupUi()
 
 
     connect(pypip, &QPushButton::clicked, this, [this]() {
-
+        // 1. 选择 requirements.txt 文件
         QString defaultDir = QCoreApplication::applicationDirPath() + "/plugin";
-
         QString reqPath = QFileDialog::getOpenFileName(
             this,
             "选择 requirements.txt 文件",
-            defaultDir,                  // 初始目录设为运行目录/plugin
+            defaultDir,
             "文本文件 (*.txt);;所有文件 (*)"
             );
-
         if (reqPath.isEmpty()) {
-            return; // 用户取消了选择
-        }
-
-        QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe"; //绝对路径 防止跑去跑系统的
-        QString cmdLine;
-
-#ifdef Q_OS_WIN
-        cmdLine = QString("cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
-                          "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
-                          "& echo   - \"Successfully installed\" 表示新库安装成功 "
-                          "& echo. & \"%1\" -m pip install -r \"%2\" & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\"")
-                              .arg(pythonExe, reqPath);
-#elif defined(Q_OS_LINUX)
-        // Linux：尝试使用 xterm（通常系统自带），执行完后保留窗口（exec bash）
-        QString xtermPath = QStandardPaths::findExecutable("xterm");
-        if (xtermPath.isEmpty()) {
-            QMessageBox::warning(this, "错误", "未找到 xterm 终端，请安装或改用其他终端。");
             return;
         }
-        cmdLine = QString("%1 -e bash -c '%2 -m pip install -r \"%3\"; exec bash'")
-                      .arg(xtermPath, pythonExe, reqPath);
-#elif defined(Q_OS_MAC)
-        // macOS：使用 AppleScript 打开 Terminal.app
-        cmdLine = QString("osascript -e 'tell application \"Terminal\" to do script \"%1 -m pip install -r \\\"%2\\\"\"'")
-                      .arg(pythonExe, reqPath);
-#endif
 
+        QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
 
+        // 2. 检查 pip 是否可用，如果不可用则用 ensurepip 修复
+        QProcess checkPip;
+        checkPip.start(pythonExe, QStringList() << "-c" << "import pip");
+        if (!checkPip.waitForFinished(3000) || checkPip.exitCode() != 0) {
+            QMessageBox::information(this, "提示", "pip 未就绪，正在尝试修复...");
+            QProcess fixPip;
+            fixPip.start(pythonExe, QStringList() << "-m" << "ensurepip" << "--upgrade");
+            if (!fixPip.waitForFinished(10000) || fixPip.exitCode() != 0) {
+                QMessageBox::critical(this, "错误", "修复 pip 失败，请手动检查环境。");
+                return;
+            }
+            QMessageBox::information(this, "提示", "pip 修复成功。");
+        }
+
+        QString cmdLine = QString(
+                              "cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+                              "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
+                              "& echo   - \"Successfully installed\" 表示新库安装成功 "
+                              "& echo. & \"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\""
+                              ).arg(pythonExe, reqPath);
+
+        // 4. 启动新窗口（不阻塞 UI）
         bool success = QProcess::startDetached(cmdLine);
         if (!success) {
             QMessageBox::critical(this, "错误", "无法启动终端窗口，请检查系统环境！");

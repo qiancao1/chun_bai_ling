@@ -955,3 +955,57 @@ bool BotDB::clearSubscriptionsByMark(const QString &mark)
         return rc;
     });
 }
+bool BotDB::batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes)
+{
+    if (groupIdHexList.isEmpty())
+        return true;
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        for (const QString& hex : groupIdHexList) {
+            QByteArray keyData = QByteArray::fromHex(hex.toUtf8());
+            if (keyData.isEmpty())
+                return -1;   // 无效 key
+
+            MDB_val key, value;
+            key.mv_data = keyData.data();
+            key.mv_size = keyData.size();
+
+            int rc = mdb_get(txn, m_dbi_groups, &key, &value);
+            if (rc == MDB_NOTFOUND) {
+                // 构造记录：邀请者和 bitmap 均为 0
+                GroupRecord record{ createTimeMinutes, 0, 0 };
+                rc = putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+                if (rc != MDB_SUCCESS)
+                    return rc;
+            } else if (rc != MDB_SUCCESS) {
+                return rc;   // 其他错误（如磁盘问题）
+            }
+            // 若已存在，跳过
+        }
+        return MDB_SUCCESS;
+    });
+}
+bool BotDB::batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes)
+{
+    if (userSeqIds.isEmpty())
+        return true;
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        for (uint32_t seq : userSeqIds) {
+            QByteArray keyData(reinterpret_cast<const char*>(&seq), sizeof(seq));
+            MDB_val key, value;
+            key.mv_data = keyData.data();
+            key.mv_size = keyData.size();
+
+            int rc = mdb_get(txn, m_dbi_friends, &key, &value);
+            if (rc == MDB_NOTFOUND) {
+                rc = putRecord(txn, m_dbi_friends, keyData, &addTimeMinutes, sizeof(addTimeMinutes));
+                if (rc != MDB_SUCCESS)
+                    return rc;
+            } else if (rc != MDB_SUCCESS) {
+                return rc;
+            }
+        }
+        return MDB_SUCCESS;
+    });
+}

@@ -114,12 +114,12 @@ private:
     // 高性能匹配相关（静态成员，所有实例共享）
     struct RuleIndex {
         int ruleIdx = -1;
-        bool isHeaderMode = false;
-        bool isExactMode = false;
-        QStringList keywords;
-        QSet<QString> keywordSet;
-        QSet<QString> forbiddenSet;
-        QString reply;
+        int isExactMode = 0; //匹配模式
+        int keywordCount;    // 缓存 keywords.size()
+        int primaryLen;      // 缓存 keywords[0].length()
+        QStringList keywords; //关键词
+        QStringList forbiddenWords;//禁止词
+        QString reply; //回复
     };
     static QMap<int, AhoCorasick> s_acMatchers;
     static QMap<int, QList<RuleIndex>> s_rulesList;

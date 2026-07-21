@@ -773,14 +773,13 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
-
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
-
     int tabIndex= mapTypeToTabIndex(ev.type);
-
-
     ev.msg = ev.msg.trimmed();
+    if (ev.msg.startsWith("/")) {
+        ev.msg.remove(0, 1); // 从索引0开始，删除1个字符
+    }
     logMessageEvent(m_info->nickname,ev);
 
     QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
@@ -807,9 +806,6 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
     auto start = std::chrono::steady_clock::now();
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
-    auto end = std::chrono::steady_clock::now();
-    auto us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-
     mes.seq = ev.log;
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if(ws_server) ws_server->broadcastMessage(mes,ev.appid,ev.type,ev.groupId);

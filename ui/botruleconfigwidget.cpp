@@ -175,7 +175,7 @@ void BotRuleConfigWidget::setupUI()
 
 void BotRuleConfigWidget::initTable()
 {
-    QStringList headers = {"备注", "禁止词", "按钮JSON", "匹配类型", "候选词"};
+    QStringList headers = {"备注(|||分割)", "禁止词(|||分割)", "按钮JSON", "匹配类型", "候选词(|||分割)"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -188,7 +188,6 @@ void BotRuleConfigWidget::initTable()
 
 void BotRuleConfigWidget::列表行被单击()
 {
-
 
 
     if (g_appid!=0) {

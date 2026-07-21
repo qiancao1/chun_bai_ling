@@ -1239,6 +1239,7 @@ void ChatPage::updateAllContactLists(int index)
     const QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
     QSet<QPair<int, QString>> seen;
     sw = g_logdb[bufferIdx]->beginTransaction(true);
+    QMap<int, QSet<QString>> appidGroups;   // appid -> 去重后的群ID集合
     for (const QString &keyStr : list) {
         QStringList parts = keyStr.split(':');
         if (parts.size() != 3) continue;
@@ -1258,7 +1259,10 @@ void ChatPage::updateAllContactLists(int index)
 
         QPair<int, QString> key(appid, groupId);
         if (seen.contains(key)) continue;  // 每个群组只取最新一条
+
         seen.insert(key);
+        if(bufferIdx==1)
+            appidGroups[appid].insert(groupId);   // 自动去重
         Message msg;
         if(sw)
         {
@@ -1289,7 +1293,26 @@ void ChatPage::updateAllContactLists(int index)
 
 
     }
+
     if(sw) g_logdb[bufferIdx]->commitTransaction();
+    if(bufferIdx==1){
+        uint32_t nowMin = BotDB::nowMinutes();   // 获取当前分钟数
+        for (auto it = appidGroups.begin(); it != appidGroups.end(); ++it) {
+            int appid = it.key();
+            const QSet<QString>& groupSet = it.value();
+            if (groupSet.isEmpty()) continue;
+
+            // 转换为 QList
+            QList<QString> groupIdList = groupSet.values();
+
+            // 检查是否有对应的 BotDB 实例
+            if (g_botdb.contains(appid)) {
+                g_botdb[appid]->batchAddGroups(groupIdList, nowMin);
+            } else {
+                qWarning() << "未找到 appid" << appid << "对应的 BotDB 实例，跳过群组批量添加";
+            }
+        }
+    }
 }
 
 
@@ -1481,7 +1504,7 @@ void ChatPage::onContactItemClicked2(int appid,const QString &id,int type)
         loadChatHistory(m_appid,currentContactId,m_type);
     }
 }
-
+//加载聊天记录
 void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
 {
     int bufferIdx=0;
@@ -1512,6 +1535,7 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
             }
         }
         msgModel->setMessages(std::move(msg));
+
     } else {
         msgModel->clear();
     }

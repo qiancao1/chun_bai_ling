@@ -151,7 +151,7 @@ void KeywordMatchConfigWidget::setupUI() {
 
     QWidget *rightWidget = new QWidget;
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
-    QLabel *ruleLabel = new QLabel("关键词匹配规则表 (可拖拽行首移动)");
+    QLabel *ruleLabel = new QLabel("关键词匹配规则表 (可拖拽行首移动) 注意 只有精确 允许多key 也就是|||分割 其他代表这个关键词必须存在");
     ruleTable = new MovableKeywordTable;
     ruleTable->setAlternatingRowColors(true);
     ruleTable->setStyleSheet(
@@ -519,8 +519,6 @@ void KeywordMatchConfigWidget::loadAllRulesFromFile(const QString &filePath) {
         buildMatcherForRobot(robotId);
     }
 }
-
-// ---------- 高性能匹配器构建 ----------
 void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
     if (!rulesMap.contains(appid)) return;
     const auto &rules = rulesMap[appid];
@@ -529,31 +527,33 @@ void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
     QHash<QString, int> exactMap;
     AhoCorasick ac;
 
+    ruleList.reserve(rules.size());
+    exactMap.reserve(rules.size() * 2);
+
     for (int i = 0; i < rules.size(); ++i) {
         const auto &rule = rules[i];
-        if (!rule.enabled) continue;   // 只加入启用的规则
+        if (!rule.enabled) continue;
 
         RuleIndex ri;
         ri.ruleIdx = i;
-        ri.isHeaderMode = (rule.matchType == 1);
-        ri.isExactMode = (rule.matchType == 0);
-        ri.reply = rule.replyContent;
-        ri.keywords = rule.keywords;
-        ri.keywordSet = QSet<QString>(rule.keywords.begin(), rule.keywords.end());
-        ri.forbiddenSet = QSet<QString>(rule.forbiddenWords.begin(), rule.forbiddenWords.end());
-
-        // 精确匹配模式（只有一个关键词）单独用哈希表
-        if (ri.isExactMode && rule.keywords.size() == 1) {
-            QString kw = rule.keywords.first();
-            if (!exactMap.contains(kw))   // 保留顺序第一个
-                exactMap[kw] = ruleList.size();
+        ri.isExactMode = rule.matchType;
+        ri.reply = rule.replyContent;              // 浅拷贝（隐式共享）
+        ri.forbiddenWords = rule.forbiddenWords;   // 浅拷贝（重点）
+        ri.keywords = rule.keywords;               // 浅拷贝
+        ri.keywordCount = rule.keywords.size();
+        ri.primaryLen = rule.keywords.isEmpty() ? 0 : rule.keywords.first().length();
+        if (ri.isExactMode == 0) {
+            for (const QString &kw : rule.keywords) {   // 引用，不拷贝
+                if (!exactMap.contains(kw)) {
+                    exactMap[kw] = ruleList.size();
+                }
+            }
             ruleList.append(ri);
             continue;
         }
 
-        // 包含匹配或指令头匹配：将所有正向关键词加入 AC 自动机
         for (const QString &kw : rule.keywords) {
-            ac.insert(kw, ruleList.size());
+            ac.insert(kw, ruleList.size());   // AC 内部可能拷贝，但无法避免
         }
         ruleList.append(ri);
     }
@@ -565,49 +565,59 @@ void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
     s_matcherBuilt[appid] = true;
 }
 
-// ---------- 静态匹配接口 ----------
 QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
     if (!s_matcherBuilt.value(appid, false)) return QString();
     const auto &ac = s_acMatchers[appid];
     const auto &ruleList = s_rulesList[appid];
     const auto &exactMap = s_exactMaps[appid];
 
-    // 精确匹配优先
-    if (exactMap.contains(msg)) {
-        int idx = exactMap[msg];
+    auto it = exactMap.constFind(msg);
+    if (it != exactMap.end()) {
+        int idx = it.value();
         const auto &ri = ruleList[idx];
-        // 检查禁止词
         bool forbidden = false;
-        for (const QString &fw : ri.forbiddenSet) {
+        for (const QString &fw : ri.forbiddenWords) {
             if (msg.contains(fw)) { forbidden = true; break; }
         }
         if (!forbidden) return ri.reply;
     }
 
-    // AC 自动机扫描，获取所有命中的模式索引（规则列表中的位置）
     QSet<int> candidateSet = ac.scan(msg);
     QList<int> candidates = candidateSet.values();
-    std::sort(candidates.begin(), candidates.end());  // 按规则顺序处理
 
-    for (int idx : std::as_const(candidates)) {
+    std::sort(candidates.begin(), candidates.end(), [&](int a, int b) {
+        const auto &ruleA = ruleList[a];
+        const auto &ruleB = ruleList[b];
+
+
+        if (ruleA.keywordCount != ruleB.keywordCount) {
+            return ruleA.keywordCount > ruleB.keywordCount;
+        }
+
+        if (ruleA.primaryLen != ruleB.primaryLen) {
+            return ruleA.primaryLen > ruleB.primaryLen;
+        }
+
+        return a < b;
+    });
+
+    for (int idx : candidates) {
         const auto &ri = ruleList[idx];
-        if (ri.isExactMode) continue;   // 精确模式已在上面处理
+        if (ri.isExactMode == 0) continue;
 
-        // 检查禁止词
         bool forbidden = false;
-        for (const QString &fw : ri.forbiddenSet) {
+        for (const QString &fw : ri.forbiddenWords) {
             if (msg.contains(fw)) { forbidden = true; break; }
         }
         if (forbidden) continue;
 
-        // 根据模式匹配
-        if (!ri.isHeaderMode) {   // 包含模式：所有关键词必须全部出现
+        if (ri.isExactMode == 2) {
             bool allHit = true;
             for (const QString &kw : ri.keywords) {
                 if (!msg.contains(kw)) { allHit = false; break; }
             }
             if (allHit) return ri.reply;
-        } else {                  // 指令头模式
+        } else { // 指令头模式
             if (ri.keywords.isEmpty()) continue;
             QString header = ri.keywords.first();
             if (!msg.startsWith(header)) continue;
@@ -621,4 +631,3 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
     }
     return QString();
 }
-

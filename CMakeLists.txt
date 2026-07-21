@@ -179,6 +179,7 @@ else()
 
             db/vectormemory.h
             pythonparser.h pythonparser.cpp
+            pluginmarketwindow.h pluginmarketwindow.cpp
 
 
 

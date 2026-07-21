@@ -176,7 +176,7 @@ private:
     QLabel *detailStatusLabel;
     QListWidget *rightCheckList;
     QPushButton *pypip,*ai_c_j;
-
+    QPushButton *plugin_sc;
     QPushButton *loadBtn;
     QPushButton *addPluginBtn;   // 顶部按钮
     QPushButton *addPluginBtn2,*addPluginBtn3;   // 顶部按钮
