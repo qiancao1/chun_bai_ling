@@ -34,6 +34,7 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 7.当前py环境是 python3.14.6t 自由线程版本 所以全局变量请加锁
 8.如果引用到第三方库 将数据写到 requirements.txt 文件 没有就自己创建
 9.写好插件需要载入一次 这样子才知道能不能载入 会不会有啥保存
+10.注意优化 如 定时器不要启动多个 可以全局的 没必要 每个类都创建一个 什么代码都先考虑 单个 而不是放类里面重复创建
 ===================
 1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
@@ -72,7 +73,7 @@ msg.msgid        : 本条消息的唯一 ID（字符串）
 msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 (字符串)
 msg.member_role  : 发送人权限 0群主 1管理员 2群员 (整数)
 msg.appid        : 应用/机器人 ID(整数)
-msg.user_id      : 用户 ID（整数）
+msg.user_id      : 用户 ID（整数）小游戏 优先
 msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
 msg.nickname     : 发送者昵称
 msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)

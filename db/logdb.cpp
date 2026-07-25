@@ -45,6 +45,10 @@ LogDB::LogDB(const QString &dbPath, QObject *parent)
     for (size_t i = 0; i < m_bufferSize; ++i) {
         m_buffer[i].store(0, std::memory_order_relaxed);
     }
+    m_flushTimer = new QTimer(this);
+    m_flushTimer->setInterval(3000);   // 3000 毫秒
+    connect(m_flushTimer, &QTimer::timeout, this, &LogDB::flushCacheToDB);
+    m_flushTimer->start();
 }
 
 LogDB::~LogDB()
@@ -55,13 +59,23 @@ LogDB::~LogDB()
 // ========== 关闭 ==========
 void LogDB::close()
 {
-     QMutexLocker locker(&m_mutex);  // 防止并发关闭
-    if (m_env) {
-         if (m_currentTxn) {
-             mdb_txn_abort(m_currentTxn);
-             m_currentTxn = nullptr;
-         }
+    // 1. 停止定时器，防止在刷库过程中再次触发
+    if (m_flushTimer) {
+        m_flushTimer->stop();
+        delete m_flushTimer;
+        m_flushTimer = nullptr;
+    }
 
+    // 2. 刷库（将缓存数据写入数据库）—— 内部会加锁
+    flushCacheToDB();
+
+    // 3. 关闭数据库环境
+    QMutexLocker locker(&m_mutex);
+    if (m_env) {
+        if (m_currentTxn) {
+            mdb_txn_abort(m_currentTxn);
+            m_currentTxn = nullptr;
+        }
         if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
         mdb_env_close(m_env);
         m_env = nullptr;
@@ -69,9 +83,8 @@ void LogDB::close()
     }
     if (m_buffer) {
         delete[] m_buffer;
-        m_buffer = nullptr;   // 置空防止重复释放
+        m_buffer = nullptr;
     }
-
 }
 
 
@@ -224,68 +237,15 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
 // ---------- 公共接口 ----------
 uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg)
 {
-    QMutexLocker locker(&m_mutex);   // 整个写入过程加锁
+    QMutexLocker locker(&m_mutex);
     if (!m_env) return 0;
-
-    // 原子递增获取唯一序号
-    uint64_t seq = m_nextId.fetch_add(1, std::memory_order_relaxed);
-
-    QString keyStr = makeKey(appid, groupId, seq);
-    QByteArray keyBytes = keyStr.toUtf8();
-    QByteArray valueBlob;
-    if (!serializeMessage(msg, valueBlob)) return 0;
-
-    const int MAX_RETRY = 3;
-    for (int retry = 0; retry < MAX_RETRY; ++retry) {
-        MDB_txn *txn = nullptr;
-        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-        if (rc != MDB_SUCCESS) {
-            qWarning() << "appendLog: 开始事务失败" << mdb_strerror(rc);
-            return 0;
-        }
-
-        MDB_val key, value;
-        key.mv_data = keyBytes.data();
-        key.mv_size = keyBytes.size();
-        value.mv_data = valueBlob.data();
-        value.mv_size = valueBlob.size();
-
-        rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
-        if (rc == MDB_MAP_FULL) {
-            mdb_txn_abort(txn);
-            qWarning() << "appendLog: 空间不足，尝试扩容...";
-            if (!expandAndReopen()) {
-                return 0;   // 扩容失败
-            }
-            continue;       // 重试
-        } else if (rc != MDB_SUCCESS) {
-            mdb_txn_abort(txn);
-            qWarning() << "appendLog: mdb_put 失败" << mdb_strerror(rc);
-            return 0;
-        }
-
-        rc = mdb_txn_commit(txn);
-        if (rc == MDB_MAP_FULL) {
-            // 提交时也可能返回 FULL（罕见），同样处理
-            qWarning() << "appendLog: 提交时空间不足，尝试扩容...";
-            if (!expandAndReopen()) {
-                return 0;
-            }
-            continue;
-        } else if (rc != MDB_SUCCESS) {
-            qWarning() << "appendLog: 提交事务失败" << mdb_strerror(rc);
-            return 0;
-        }
-
-        // 写入成功
-        auto now = std::chrono::steady_clock::now();
-        qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-        setBufferDurationAndStatus(seq, now_us, 0);
-        return seq;
-    }
-
-    qWarning() << "appendLog: 重试次数耗尽，写入失败";
-    return 0;
+    uint64_t seq = m_nextId.fetch_add(1);
+    QString key = makeKey(appid, groupId, seq);
+    m_cache[key] = {msg, true};
+    auto now = std::chrono::steady_clock::now();
+    uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    setBufferDurationAndStatus(seq, now_us, 0);
+    return seq;
 }
 bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
 {
@@ -512,106 +472,166 @@ QStringList LogDB::getAllKeys() const
 bool LogDB::updateLog(const QString &keyStr, const Message &msg)
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_env) return false;
-
-
-    QByteArray keyBytes = keyStr.toUtf8();
-    QByteArray valueBlob;
-    if (!serializeMessage(msg, valueBlob)) return false;
-
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-    value.mv_data = valueBlob.data();
-    value.mv_size = valueBlob.size();
-
-    rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qWarning() << "LogDB: updateLog 失败:" << mdb_strerror(rc);
-        return false;
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        it->msg = msg;
+        it->dirty = true;   // 数据变更，需重新落盘
+        return true;
     }
-
-    rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: updateLog 提交失败:" << mdb_strerror(rc);
-        return false;
+    // 缓存没有，尝试从数据库加载后再更新
+    Message old;
+    if (loadFromDB(keyStr, old)) {
+        m_cache[keyStr] = {msg,true};
+        return true;
     }
-    return true;
+    return false;
 }
+
 bool LogDB::updateLog(const QString &appid, const QString &groupId, uint64_t seq, const Message &msg)
 {
-    QMutexLocker locker(&m_mutex);
     if (!m_env) return false;
-
     QString keyStr = makeKey(appid, groupId, seq);
-    QByteArray keyBytes = keyStr.toUtf8();
-    QByteArray valueBlob;
-    if (!serializeMessage(msg, valueBlob)) return false;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) return false;
+    QMutexLocker locker(&m_mutex);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        it->msg = msg;
+        it->dirty = true;   // 数据变更，需重新落盘
+        return true;
+    }
+    // 缓存没有，尝试从数据库加载后再更新
+    Message old;
+    if (loadFromDB(keyStr, old)) {
+        m_cache[keyStr] = {msg, true};
+        return true;
+    }
+    return false;
+}
+void LogDB::flushCacheToDB() {
+    QMutexLocker locker(&m_mutex);
+    if (!m_env || m_cache.isEmpty()) return;
 
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-    value.mv_data = valueBlob.data();
-    value.mv_size = valueBlob.size();
+    // 收集脏 key
+    QList<QString> dirtyKeys;
+    for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
+        if (it->dirty) dirtyKeys.append(it.key());
+    if (dirtyKeys.isEmpty()) return;
 
-    rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qWarning() << "LogDB: updateLog 失败:" << mdb_strerror(rc);
-        return false;
+    const int MAX_RETRY = 3;
+    for (int retry = 0; retry < MAX_RETRY; ++retry) {
+        MDB_txn *txn = nullptr;
+        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+        if (rc != MDB_SUCCESS) {
+            qWarning() << "flushCacheToDB: 开启事务失败" << mdb_strerror(rc);
+            return;
+        }
+
+        bool ok = true;
+        for (const QString &key : dirtyKeys) {
+            auto it = m_cache.find(key);
+            if (it == m_cache.end() || !it->dirty) continue;
+
+            QByteArray keyBytes = key.toUtf8();
+            QByteArray valueBlob;
+            if (!serializeMessage(it->msg, valueBlob)) {
+                ok = false;
+                break;
+            }
+            MDB_val k, v;
+            k.mv_data = keyBytes.data();
+            k.mv_size = keyBytes.size();
+            v.mv_data = valueBlob.data();
+            v.mv_size = valueBlob.size();
+
+            rc = mdb_put(txn, m_dbi_main, &k, &v, 0);
+            if (rc == MDB_MAP_FULL) {
+                // 空间不足，回滚事务，扩容后重试
+                mdb_txn_abort(txn);
+                if (!expandAndReopen()) {
+                    qWarning() << "flushCacheToDB: 扩容失败，本次刷库放弃";
+                    return;
+                }
+                // 扩容成功后，跳出循环，重新开始外层重试
+                ok = false;
+                break;
+            } else if (rc != MDB_SUCCESS) {
+                qWarning() << "flushCacheToDB: mdb_put 失败" << mdb_strerror(rc) << key;
+                ok = false;
+                break;
+            }
+        }
+
+        if (!ok) {
+            // 如果是因为扩容触发的失败，则继续外层循环重试（已回滚事务）
+            if (rc == MDB_MAP_FULL) continue;
+            // 其他错误，回滚并退出
+            if (txn) mdb_txn_abort(txn);
+            return;
+        }
+
+        // 提交事务
+        rc = mdb_txn_commit(txn);
+        if (rc == MDB_MAP_FULL) {
+            // 提交时也可能报空间不足，回滚后扩容重试
+            mdb_txn_abort(txn);
+            if (!expandAndReopen()) {
+                qWarning() << "flushCacheToDB: 提交时扩容失败";
+                return;
+            }
+            continue;
+        } else if (rc != MDB_SUCCESS) {
+            qWarning() << "flushCacheToDB: 提交事务失败" << mdb_strerror(rc);
+            mdb_txn_abort(txn);
+            return;
+        }
+
+        // 成功提交，标记所有脏数据为已持久化
+        for (const QString &key : dirtyKeys) {
+            auto it = m_cache.find(key);
+            if (it != m_cache.end()) it->dirty = false;
+        }
+        return; // 刷库成功
     }
 
-    rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: updateLog 提交失败:" << mdb_strerror(rc);
-        return false;
-    }
-    return true;
+    qWarning() << "flushCacheToDB: 重试次数耗尽，刷库失败";
 }
 
 bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const
 {
-    QMutexLocker locker(&m_mutex);
     if (!m_env) return false;
 
     QString keyStr = makeKey(appid, groupId, seq);
-    QByteArray keyBytes = keyStr.toUtf8();
-
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-
-    rc = mdb_get(txn, m_dbi_main, &key, &value);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        if (rc != MDB_NOTFOUND)
-            qWarning() << "LogDB: readLog 失败:" << mdb_strerror(rc);
-        return false;
+    QMutexLocker locker(&m_mutex);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        msg = it->msg;
+        return true;
     }
-
-    QByteArray blob((const char*)value.mv_data, value.mv_size);
-    bool ok = deserializeMessage(blob, msg);
-    mdb_txn_abort(txn);
-    return ok;
+    // 缓存未命中，从数据库读取并放入缓存（dirty=false）
+    if (loadFromDB(keyStr, msg)) {
+        m_cache[keyStr] = {msg, false};
+        return true;
+    }
+    return false;
 }
 bool LogDB::readLog(const QString &keyStr, Message &msg) const
 {
     QMutexLocker locker(&m_mutex);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        msg = it->msg;
+        return true;
+    }
+    // 缓存未命中，从数据库读取并放入缓存（dirty=false）
+    if (loadFromDB(keyStr, msg)) {
+        m_cache[keyStr] = {msg,false};
+        return true;
+    }
+    return false;
+}
+bool LogDB::loadFromDB(const QString &keyStr, Message &msg) const {
+    // 注意：此函数假设调用者已持有 m_mutex，因此不再加锁
     if (!m_env) return false;
-
 
     QByteArray keyBytes = keyStr.toUtf8();
 
@@ -626,8 +646,6 @@ bool LogDB::readLog(const QString &keyStr, Message &msg) const
     rc = mdb_get(txn, m_dbi_main, &key, &value);
     if (rc != MDB_SUCCESS) {
         mdb_txn_abort(txn);
-        if (rc != MDB_NOTFOUND)
-            qWarning() << "LogDB: readLog 失败:" << mdb_strerror(rc);
         return false;
     }
 
@@ -803,6 +821,7 @@ bool LogDB::reopenEnv(size_t minSize) {
     }
 
     m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
+    m_mapsize = targetSize;
     qDebug() << "LogDB 打开/扩容完成，实际 mapsize =" << targetSize
              << "，文件大小 =" << fileSize << "，下一个序号 =" << m_nextId.load();
     return true;

@@ -143,6 +143,17 @@ private:
     bool reopenEnv(size_t newMapsize);
     MDB_txn* m_currentTxn;   // 当前活动事务（由 beginTransaction 创建）
 
+    struct CacheEntry {
+        Message msg;
+
+        bool dirty;          // true = 尚未写入数据库
+    };
+    mutable QMap<QString, CacheEntry> m_cache;
+    QTimer* m_flushTimer;
+
+    bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
+    void flushCacheToDB() ;
+
     // 禁用拷贝
     LogDB(const LogDB&) = delete;
     LogDB& operator=(const LogDB&) = delete;
