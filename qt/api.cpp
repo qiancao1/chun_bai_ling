@@ -55,6 +55,8 @@ const int API_ID_DS=14;
 const int API_ID_AI=15;
 const int API_ID_GET_MEMBER=16;
 const int API_ID_GET_MEMBER_LIST=17;
+const int API_ID_GET_groups_info=18;
+const int API_ID_GET_groups_bot_state=19;
 
 QString renderInThread(const QString &htmlContent,int width = 400) ;
 inline QString toQString(const char* s) {
@@ -246,32 +248,50 @@ QString botlist()
 }
 QByteArray convertMp3ToSilk(const QByteArray &mp3Data);
 QString convertAudioToSilk(const QString &srcFilePath);
-QString calculateFileMD5(const QString &filePath)
+
+
+#include <QImageReader>
+#include <QBuffer>
+
+bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, int &height)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
         qWarning() << "无法打开文件:" << filePath;
-        return QString();
+        return false;
     }
 
-    QCryptographicHash hash(QCryptographicHash::Md5);
-    const qint64 bufferSize = 8192; // 8 KB 缓冲区
-    QByteArray buffer;
-    buffer.resize(bufferSize);
-
-    while (!file.atEnd()) {
-        qint64 bytesRead = file.read(buffer.data(), bufferSize);
-        if (bytesRead <= 0) {
-
-            return QString();
-        }
-        hash.addData(buffer.constData(), bytesRead);
-
-    }
-
+    // 1. 一次性读取整个文件到内存
+    QByteArray fileData = file.readAll();
     file.close();
-    QByteArray result = hash.result();
-    return QString::fromLatin1(result.toHex());
+
+    if (fileData.isEmpty()) {
+        qWarning() << "文件为空或读取失败:" << filePath;
+        return false;
+    }
+
+    // 2. 计算 MD5（直接对 fileData 做哈希）
+    QByteArray md5Result = QCryptographicHash::hash(fileData, QCryptographicHash::Md5);
+    md5 = QString::fromLatin1(md5Result.toHex());
+
+    // 3. 用 QImageReader 从内存数据中读取宽高（仅解析头部）
+    QBuffer buffer(&fileData);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    if (!reader.canRead()) {
+        qWarning() << "无法识别图片格式:" << filePath;
+        // 宽高保留默认值，但可以返回 false 表示图片格式无效
+        return false;
+    }
+    QSize size = reader.size();
+    if (size.isEmpty()) {
+        qWarning() << "无法获取图片尺寸:" << filePath;
+        return false;
+    }
+    width = size.width();
+    height = size.height();
+
+    return true;
 }
 
 
@@ -778,11 +798,35 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         result = client->get_groups_members(text,text2).toStdString();
         break;
     }
-    case API_ID_GET_MEMBER_LIST: {
+    case API_ID_GET_groups_info: {
         QString text = toQString(_1);
         if(text.isEmpty())
         {
             result ="获取用户信息 参数1 群id不能是空";
+            break;
+        }
+        int limit = toInt(_2);
+        if(limit<=0) limit =100;
+        result = client->get_groups_info(text).toStdString();
+        break;
+    }
+    case API_ID_GET_groups_bot_state: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="获取机器人状态 参数1 群id不能是空";
+            break;
+        }
+        int limit = toInt(_2);
+        if(limit<=0) limit =100;
+        result = client->get_groups_bot_state(text).toStdString();
+        break;
+    }
+    case API_ID_GET_MEMBER_LIST: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="获取群信息 参数1 群id不能是空";
             break;
         }
         int limit = toInt(_2);
@@ -950,10 +994,10 @@ QString sendPutRequest(const QString& url, const QByteArray& data, int timeoutMs
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString())
 {
     QString url;
-    if(type==0) url = "https://api.sgroup.qq.com/v2/groups/" + openid;
-    else if(type==1) url = "https://api.sgroup.qq.com/channels/" + openid;
-    else if(type==2) url = "https://api.sgroup.qq.com/v2/users/" + openid;
-    else url = "https://api.sgroup.qq.com/dms/" + openid;
+    if(type==0) url = "https://api.bot.qq.com/v2/groups/" + openid;
+    else if(type==1) url = "https://api.bot.qq.com/channels/" + openid;
+    else if(type==2) url = "https://api.bot.qq.com/v2/users/" + openid;
+    else url = "https://api.bot.qq.com/dms/" + openid;
     if(!text.isEmpty()) url +="/" + text;
     if(!text2.isEmpty()) url +="/" + text2;
     return url;
@@ -1034,8 +1078,8 @@ static bool extractParamValue(QStringView params, const QString &key, QString &v
  */
 struct ImageInfo {
     QString urlOrPath;
-    float x = 0.0f;
-    float y = 0.0f;
+    int x = 0;
+    int y = 0;
 };
 
 static ImageInfo parseImageTagContent(QStringView tagContent) {
@@ -1060,8 +1104,8 @@ static ImageInfo parseImageTagContent(QStringView tagContent) {
         extractParamValue(params, QStringLiteral("path"), info.urlOrPath);
     }
     QString xStr, yStr;
-    if (extractParamValue(params, QStringLiteral("x"), xStr)) info.x = xStr.toFloat();
-    if (extractParamValue(params, QStringLiteral("y"), yStr)) info.y = yStr.toFloat();
+    if (extractParamValue(params, QStringLiteral("x"), xStr)) info.x = xStr.toInt();
+    if (extractParamValue(params, QStringLiteral("y"), yStr)) info.y = yStr.toInt();
 
     return info;
 }
@@ -1135,7 +1179,9 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
             if(!firstImg.urlOrPath.startsWith("http"))
             {
-                fileMd5=calculateFileMD5(firstImg.urlOrPath);
+                int w=0,h=0;
+                calculateFileMD5AndSize(firstImg.urlOrPath,fileMd5,w,h);
+
             }else{
                 QCryptographicHash hash(QCryptographicHash::Md5);
                 hash.addData(firstImg.urlOrPath.toUtf8());
@@ -1187,13 +1233,16 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         QString result;
         result.reserve(text.size());
         int lastPos = 0;
-        for (const TagPos &tag : std::as_const(tags)) {
+        for (TagPos &tag : tags) {
             result.append(QStringView(text).mid(lastPos, tag.start - lastPos));
             QString url = tag.img.urlOrPath;
             if (!url.isEmpty()) {
                 // 仅对本地非 HTTP 路径处理（需要上传图床或从缓存获取）
                 if (!url.startsWith(QLatin1String("http"))) {
-                    QString fileMd5 = calculateFileMD5(url);
+                    QString fileMd5;
+
+                    if(!calculateFileMD5AndSize(url,fileMd5,tag.img.x,tag.img.y)) continue;
+
                     bool cacheHit = false;
                     QString cachedUrl;
 
@@ -1370,15 +1419,15 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
     bool firstProcessed = false;  // 用于 type==0 只处理第一个标签
 
     for (int idx = 0; idx < allTags.size(); ++idx) {
-        const ImgTag &tag = allTags[idx];
+        ImgTag &tag = allTags[idx];
         QString newUrl = tag.url;
         bool isHttp = newUrl.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
                       newUrl.startsWith(QLatin1String("https://"), Qt::CaseInsensitive);
 
         // 仅对本地非 HTTP 路径执行上传（HTTP 直接使用原链接）
         if (!isHttp && !newUrl.isEmpty()) {
-            QString fileMd5 = calculateFileMD5(newUrl);   // 计算文件 MD5
-
+            QString fileMd5;
+            if(!calculateFileMD5AndSize(newUrl,fileMd5,tag.width,tag.height)) continue;
             if (type == 0) {
                 // ========== 类型 0：富媒体上传，只处理第一个标签 ==========
                 if (!firstProcessed) {
@@ -1559,7 +1608,7 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
     QString file_info,response;
     for(int i=0;i<10;i++)
     {
-        response =_Post(url,obj,300000);
+        response =PostSync(url,obj,QString(),300000);
         if (response.isEmpty()) return QString();
         QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
         if (respDoc.isNull()) return QString();
@@ -1610,7 +1659,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     prepJson["sha1"] = sha1;
     prepJson["md5_10m"] = md5_10m;
     QString url = get_url(targetType, openid, "upload_prepare");
-    QString response = _Post(url, prepJson, 30000);
+    QString response = PostSync(url, prepJson, QString(),30000);
     if (response.isEmpty()) return QString();
     QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
     if (respDoc.isNull()) return QString();
@@ -1639,11 +1688,11 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         chunkMd5.addData(chunk);
         finishJson["md5"] = QString(chunkMd5.result().toHex());
         QString finishUrl = get_url(targetType, openid, "upload_part_finish");
-        QString finishResp = _Post(finishUrl, finishJson, 30000);
+        QString finishResp = PostSync(finishUrl, finishJson,QString(), 30000);
     }
 
     QString filesUrl = get_url(targetType, openid, "files");
-    QString filesResp = _Post(filesUrl, respObj, 30000);
+    QString filesResp = PostSync(filesUrl, respObj,QString(), 30000);
 
     if (filesResp.isEmpty()) return QString();
     QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
@@ -1685,7 +1734,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     prepJson["md5_10m"] = md5_10m;
 
     QString url = get_url(targetType, openid, "upload_prepare");
-    QString response = _Post(url, prepJson, 30000);
+    QString response = PostSync(url, prepJson,QString(), 30000);
     if (response.isEmpty()) return QString();
 
     // 4. 解析响应获取 upload_id 和 parts
@@ -1726,7 +1775,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         chunkMd5.addData(chunk);
         finishJson["md5"] = QString(chunkMd5.result().toHex());
         QString finishUrl = get_url(targetType, openid, "upload_part_finish");
-        QString finishResp = _Post(finishUrl, finishJson, 30000);
+        QString finishResp = PostSync(finishUrl, finishJson,QString(), 30000);
     }
 
     // 7. 完成上传，请求 /files
@@ -1734,7 +1783,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     filesJson["upload_id"] = upload_id;
 
     QString filesUrl = get_url(targetType, openid, "files");
-    QString filesResp = _Post(filesUrl, filesJson, 30000);
+    QString filesResp = PostSync(filesUrl, filesJson,QString(), 30000);
     if (filesResp.isEmpty()) return QString();
 
     QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
@@ -1808,33 +1857,36 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
         else if (mediaType == "file") fileType = 4;
         if(!filePath.startsWith("http"))
         {
-            fileMd5=calculateFileMD5(filePath);
-            //媒体类型：1 图片，2 视频 ，3语音 ，4 文件
-            if (cache_db && !fileMd5.isEmpty()) {
-                QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
-                QString cached = cache_db->get(cacheKey);
-                if (!cached.isEmpty()) {
-                    int timeIdx = cached.lastIndexOf(",time=");
-                    if (timeIdx != -1) {
-                        qint64 expire = cached.mid(timeIdx + 6).toLongLong();
-                        if (QDateTime::currentSecsSinceEpoch() < expire) {
-                            fileInfo = cached.left(timeIdx);
+            int w=0,h=0;
+            if(calculateFileMD5AndSize(filePath,fileMd5,w,h))
+            {
+
+                if (cache_db && !fileMd5.isEmpty()) {
+                    QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
+                    QString cached = cache_db->get(cacheKey);
+                    if (!cached.isEmpty()) {
+                        int timeIdx = cached.lastIndexOf(",time=");
+                        if (timeIdx != -1) {
+                            qint64 expire = cached.mid(timeIdx + 6).toLongLong();
+                            if (QDateTime::currentSecsSinceEpoch() < expire) {
+                                fileInfo = cached.left(timeIdx);
+                                needUpload = false;
+                            }
+                        } else {
+                            fileInfo = cached;
                             needUpload = false;
                         }
-                    } else {
-                        fileInfo = cached;
-                        needUpload = false;
                     }
                 }
-            }
-            if(needUpload && fileType==3)
-            {
-                needUpload=true;
-                QString newpath = filePath+".m4a";
-                if (!QFile::exists(newpath)) //检查有没有有就不转换了
-                    filePath = convertAudioToSilk(filePath);
-                else
-                    filePath=newpath;
+                if(needUpload && fileType==3)
+                {
+                    needUpload=true;
+                    QString newpath = filePath+".m4a";
+                    if (!QFile::exists(newpath)) //检查有没有有就不转换了
+                        filePath = convertAudioToSilk(filePath);
+                    else
+                        filePath=newpath;
+                }
             }
         }
         bool ok = true;
@@ -1874,7 +1926,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,co
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     initjgt(json, QJsonArray(),"",realMsgId,is_wakeup);
     QString url= get_url(type,openid,"messages");
-    QString response= _Post(url, json, 5000);
+    QString response= PostSync(url, json,QString(), 5000);
 
     addmsglog(response,index,pname,info,now_us,type,realMsgId,openid);
     return response;
@@ -2222,7 +2274,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
         headers = QString("multipart/form-data; boundary=%1").arg(boundary);
         postData = body;
     }
-    return _Post(url, postData,headers,10000);
+    return PostSync(url, postData,headers,10000);
 }
 QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int 发送类型)
@@ -2408,7 +2460,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
     json["content"] = text;
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
     QString url = get_url(type, openid, "messages");
-    return _Post(url, json, 10000);
+    return PostSync(url, json,QString(), 10000);
 }
 
 QString QQBotClient::send_messages_ark(int type,const QString &openid,QString &pname,const QJsonObject &ark,const QString &msgid,bool is_wakeup)
@@ -2432,7 +2484,7 @@ QString QQBotClient::send_messages_ark(int type,const QString &openid,const QJso
 
     initjgt(json,prompt_keyboard,"",msgid,is_wakeup);
     QString url= get_url(type,openid,"messages");
-    return _Post(url, json, 5000);
+    return PostSync(url, json,QString(), 5000);
 }
 QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                             const QJsonObject keyboard,const QString &message_reference,
@@ -2452,7 +2504,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
     QString url= get_url(type,openid,"messages");
-    return _Post(url, json, 5000);
+    return PostSync(url, json,QString(), 5000);
 }
 QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                             const QJsonObject keyboard,const QString &message_reference,
@@ -2479,7 +2531,7 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
 
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
     QString url= get_url(type,openid,"messages");
-    return _Post(url, json, 5000);
+    return PostSync(url, json,QString(), 5000);
 }
 //撤回信息
 QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid)
@@ -2522,7 +2574,7 @@ QString QQBotClient::generate_share_link(const QString& callback_data)
     }else{
         json["callback_data"] = m_info->appid;
     }
-    return _Post("https://api.sgroup.qq.com/v2/generate_url_link", json, 5000);
+    return PostSync("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000);
 }
 
 QString QQBotClient::get_members_list(const QString& group,int limit)
@@ -2532,17 +2584,17 @@ QString QQBotClient::get_members_list(const QString& group,int limit)
     json2["limit"] = limit;
     json["data"] =json2;
     QString url= get_url(0,group,"members");
-    return _Post(url, json, 10000);
+    return PostSync(url, json,"", 10000);
 }
 
 QString QQBotClient::get_groups_members(const QString& group,const QString &user)
 {
-    return _Get(get_url(0,group,"members",user), 10000);
+    return GetSync(get_url(0,group,"members",user),QString(), 10000);
 }
 //回应回调
 QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data)
 {
-    QString url = "https://api.sgroup.qq.com/interactions/" + interaction_id;
+    QString url = "https://api.bot.qq.com/interactions/" + interaction_id;
 
     QJsonObject json;
     json["code"] = code;
@@ -2578,4 +2630,12 @@ QString QQBotClient::respond_interaction(const QString &interaction_id, int code
 
     reply->deleteLater();
     return result;
+}
+QString QQBotClient::get_groups_info(const QString& group)
+{
+    return GetSync(get_url(0,group,"info"),QString(), 10000);
+}
+QString QQBotClient::get_groups_bot_state(const QString& group)
+{
+    return GetSync(get_url(0,group,"bot_state"),QString(), 10000);
 }

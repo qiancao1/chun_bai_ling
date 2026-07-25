@@ -36,7 +36,7 @@ private slots:
     void openFolder();
     void onFileClicked(const QModelIndex &index);  // 参数改成 QModelIndex
     void onSendMessage(const QString &text);
-
+    void saveCurrentFile();
 
 private:
     enum class MessageType {
@@ -67,12 +67,12 @@ private:
     void clearChat();
     QThread* m_execThread = nullptr;
     QTextEdit *messageInput;
-    QPushButton *sendBtn;
+    QPushButton *sendBtn,*sendBtn2;
     QPushButton *clearBtn;
     QComboBox *modelCombo;   // 新增模型下拉框
-
-
-
+    QString currentFilePath;
+    QString addmsg;
+    QString liu_text;
     struct StreamSession {
         QString model;
         std::function<void(const QString&)> callback;

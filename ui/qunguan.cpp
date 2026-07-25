@@ -27,6 +27,7 @@ void qunguan::on_pushButton_clicked()
         info->times =ui->time_Edit->text().toInt();
         info->tiaoshu=ui->tiao_Edit->text().toInt();
         info->shuap=ui->checkBox->isChecked();
+        info->pbbot=ui->checkBox_2->isChecked();
         accountPage->saveAccounts(info.get());
     }
 }
@@ -44,19 +45,6 @@ void qunguan::列表行被单击()
         ui->textEdit->setText(info->admin);
     }
 }
-void qunguan::on_checkBox_2_checkStateChanged(const Qt::CheckState &arg1)
-{
-    if (g_appid!=0) {
-        int index=accinfo(g_appid);
-        if(index==-1){
-            QMessageBox::warning(this,"失败","保存失败 保存的指定机器人 好像不在于账号列表 请重新选择 机器人");
-            return;
-        }
-        auto &info = m_accounts [index];
-        info->pbbot=ui->checkBox_2->isChecked();
-        accountPage->saveAccounts(info.get());
-    }
-}
 
 
 void qunguan::on_pushButton_2_clicked()
@@ -72,4 +60,7 @@ void qunguan::on_pushButton_2_clicked()
         accountPage->saveAccounts(info.get());
     }
 }
+
+
+
 

@@ -113,6 +113,8 @@ public:
     QString generate_share_link(const QString& callback_data);
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
+    QString get_groups_info(const QString& group);
+    QString get_groups_bot_state(const QString& group);
 
 public slots:
     void onTextMessageReceived(const QString &message);
@@ -161,6 +163,11 @@ private:
     QString _Post(const QString &url,const QJsonObject &json, int timeoutMs = 30000);
     QString _Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs = 30000);
     QString _Get(const QString &url, int timeoutMs);
+
+    QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);
+    QString PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
+    QString GetSync(const QString &url, const QString &contentType, int timeoutMs);
+
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
     QString processImageTags2(QString &text, int type, QString &info,int targetType, const QString &openid,QString &message_reference);
 

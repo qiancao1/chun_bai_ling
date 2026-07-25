@@ -14,15 +14,26 @@
 #include <qscrollbar.h>
 
 #include <QDialog>
-
+#include <QInputDialog>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QApplication>
 #include <QClipboard>
+#include <qshortcut.h>
 bool g_不审核=false;
 
 QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表格 # 特殊表情 加粗 比如数独 可以用表格 表格里面 支持md语法
+=======重要提示
+1.请分多个py文件 写出 因为 当某个文件需要修改 像ui 这种可能频繁修改添加ui的 如果内容太多就很麻烦 这个由你决定
+2.由于环境是 q.qq.com腾讯官方机器人 开放给qq所有人使用 用户可能比较多 你可能需要使用数据库来存数据 你可以用sqlite 以及其他数据库
+3.定时器 使用 threading.Timer(5.0, repeat_task) 时间自己决定
+4.像定时器 全局 等变量启动后 插件被卸载必须得关闭
+5.请注意 插件可能是在 多群环境运行 请根据用户说的类型来决定是 分群玩还是 分个人玩
+6.由于环境是 pybind11 库，在运行目录 有个文件夹 plugin_data 你在里面创建个文件夹 写入数据，注意： 由于运行目录是 exe的目录 并不是 py入口目录 你写出数据得在 【plugin_data/插件名/xxx.json】(本项指的是 插件在运行时写出的数据 不是你调工具（w_file）写出的完整) 这个插件名你自己设置 目录也是你创建 当然你也可以 IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "color_game_img") 来获取py文件目录
+7.当前py环境是 python3.14.6t 自由线程版本 所以全局变量请加锁
+8.如果引用到第三方库 将数据写到 requirements.txt 文件 没有就自己创建
+9.写好插件需要载入一次 这样子才知道能不能载入 会不会有啥保存
 ===================
 1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
@@ -33,20 +44,14 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 7.由于机器人 发送 是md格式 你可以在回复文本 添加 # ``` *** ![]() >  []() 等语法 注意[显示文本](点击后文本)语法是可点击按钮 例子 [开始游戏](加入谁是卧底) 当然 可以[开始游戏]() 圆括号内容不写内容 自动用[]内容
 8.当前系统环境是 win环境
 9.请在 返回的文本中 多添加[指令]() 等文本 因为在QQ点击这个标签可以快捷插入聊天框
-10.请注意 插件可能是在 多群环境运行 请根据用户说的类型来决定是 分群玩还是 分个人玩
-11.请分多个py文件 写出 因为 当某个文件需要修改 如果内容太多就很麻烦 最好一个函数一个文件 这个由你决定
-12.如果引用到第三方库 将数据写到 requirements.txt 文件 没有就自己创建
-13.使用下面ButtonGroup 类创建按钮 api.send_messageEx(msg,回复内容+ButtonGroup.to_json()) 发送按钮
-13.艾特语法是 <@id> 如 "<@"+msg.user+">
-14.当前py环境是 python3.14.6t 自由线程版本
-15.为了减少请求次数 你在调用工具的时候 先考虑好 比如 要写出3个文件 就一次性调3个 工具 而不是一个一个来
-16.请不要使用 run_python 来打印无意义内容 我在调试的时候 发现你思考模式调 run_python 用print 打印文本 然后给下一次对话查看打印的消息 这种无意义执行就不用做了
-17.你可以用run_python来 检查py文件语法
-18.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 图片语法还支持![#24px #24px](本地路径|链接)，#24px 是高宽 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
-19.由于环境是 pybind11 库，在运行目录 有个文件夹 plugin_data 你在里面创建个文件夹 写入数据，注意 由于运行目录是 exe的目录 并不是 py入口目录 你写出数据得在 plugin_data/插件名/xxx.json 这个插件名你自己设置 目录也是你创建 当然你也可以 IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "color_game_img") 来获取py文件目录
-20.严禁绝对路径 这种插件换路径就用不了
-21.内置 PIL 制图库 可以直接使用 可以添加到requirements.txt 也可以不用
-22.由于环境是 q.qq.com腾讯官方机器人 开放给qq所有人使用 用户可能比较多 你可能需要使用数据库来存数据 你可以用sqlite 以及其他数据库
+10.使用下面ButtonGroup 类创建按钮 api.send_messageEx(msg,回复内容+ButtonGroup.to_json()) 发送按钮
+11.艾特语法是 <@id> 如 "<@"+msg.user+">
+12.为了减少请求次数 你在调用工具的时候 先考虑好 比如 要写出3个文件 就一次性调3个 工具 而不是一个一个来
+13.你可以用run_python来 检查py文件语法
+14.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 图片语法还支持![#24px #24px](本地路径|链接)，#24px 是高宽 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
+15.制图请使用 PIL 制图库
+16.由于是QQ环境 请注意发送[]() 按钮时注意排版 由于这种按钮 腾讯会添加 一个箭头符号 相当于占两个中文长度 排版 是 [6字]() [6字]() 相当于 6+2(腾讯针对这类按钮 自动加的箭头)+6+2(腾讯针对这类按钮 自动加的箭头)=16 字符
+
 ========
 #当前文件目录！！！ 请不要执行cmd查看目录 这里有实时文件目录 请勿读取 ai对话.json 这个是你的上下文存储文件
 注意 格式是 文件名 (文件大小) 读取就读文件名即可 文件大小你看看就知道了
@@ -56,8 +61,7 @@ xx.py
 xx2.py
     def xxx():
 
-注意 def 前面4个空格是 方便区分 并不是 原代码里面有4个空格 当你发现8个空格时实际上源码只有4个(一般类成员才可能) 因为有4个是添加来 方便查看的
-======= 下面是文件结构 包括文件内函数 实时更新
+======= ！！！下面是文件结构 包括文件内函数 实时更新！！！
 {{文件目录}}
 ========
 消息结构体
@@ -132,8 +136,27 @@ INTERACTION_CREATE // 互动事件创建时 也就是回调
 插件主要文件main.py 下面是main.py内容
 ======
 #main.py
+#导入模块必须 from . import xxx 如果包含【文件夹】 可以 from .subfolder import xxx 因为进行模块隔离 注意 文件目录 必须 包含 【__init__.py】 文件 空的也行 你作为ai肯定了解这个
 api = None
 
+#其他方法的指令测试
+#equals("相等",icase=True) 区分大小写
+#startswith("匹配头部",icase=True)
+#endswith("消息尾部")
+#contains("消息包含") 不区分大小写 因为 icase 默认false
+#regex("正则")
+#event("GROUP_MEMBER_ADD") 订阅事件
+"""
+#指令 注册 与 get_plugin_info 二选一
+@equals("ping")
+def ping(msg):
+    return "ping 这个指令只是例子 非异步 可以返回"
+
+@equals("ping2")
+async def ping2(msg):
+    msg_id = await api.send_message_async(msg, "这是异步消息 因为本api会堵塞等待返回值 先转移线程权")
+    return f"发送成功，消息 ID 是: {msg_id}"
+"""
 def get_plugin_info(uuid):
     import qiancao_sdk
     global api
@@ -141,9 +164,12 @@ def get_plugin_info(uuid):
     return {
         "name": "我的机器人",
         "version": "1.0.0",
+        "version2": 1, #用于判断是否需要更新的 整数版本号
         "author": "me",
+        "id":"test_1", #由于上传插件市场的id 建议使用作者+时间戳
         "description": "支持多种匹配",
         "event":[{"key":"GROUP_MEMBER_ADD","fun":""}],
+        #与 @equals 等注册方式 二选一 也可以并存 但是Ai 写代码 我建议你使用 get_plugin_info 因为 工具提供了一个 替换方法 方便ai在不重写整个文件替换方法 但是 没法替换指令 当然你使用 get_plugin_info 添加指令 就可以替换这个函数 进行小范围写个 同时可以让用户 方便查看写了什么指令
         "equals": [ #相等
             {"key": "/ping", "fun": "on_ping"}
         ],
@@ -155,18 +181,22 @@ def get_plugin_info(uuid):
         ],
         "regex": [
             {"key": r"^/echo (.+)$", "fun": "on_echo"} #正则
+        ],
+        "endswith":[
+            #{"key": "天气", "fun": "query_weather"}
         ]
     }
-
+#插件被启用 载入时如果是启用也会调
 def on_enable(): #不用可以删除
     pass
-
+#禁用
 def on_disable(): #不用可以删除
     pass
-
+#插件被卸载
 def on_unload(): #不用可以删除
     pass
 
+#用户点击设置 如果不创建窗口可以删除 使用TK创建 不要启动线程来管理窗口 必须得堵塞主线程
 def on_set(): #不用可以删除
     pass
 
@@ -175,8 +205,8 @@ def on_ping(msg):
 
 def on_echo(msg):
     return "你的id: " + msg.user
-
-
+)"
+R"(
 ================提供的api=============
 #qiancao_sdk.py 以下api都是 同步返回 不是异步 调用api时自动释放gil
 import json
@@ -214,6 +244,24 @@ class QQApi:
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
         """
         ...
+    async def send_message_async(self, appid: int, type_: int, openid: str, text: str,
+                                 msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """
+        异步发送普通消息（新版插件请使用此方法）。
+        """
+        return await asyncio.to_thread(
+            self.send_message,
+            appid, type_, openid, text, msgid, is_wakeup
+        )
+
+    async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+        """
+        异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
+        """
+        return await asyncio.to_thread(
+            self.send_messageEx,
+            msg, text, is_wakeup
+        )
 
     def delete_message(self,appid: int, type_: int, openid: str, msgid: str) -> Dict:
         """
@@ -280,7 +328,6 @@ class QQApi:
         :param uset: 用户id（参数2）
         """
         ...
-
 
 class ButtonGroup:
     def __init__(self):
@@ -359,12 +406,9 @@ void AppWindow::addMessage2(const QString &text, MessageType type,const QString 
     chatTextEdit->ensureCursorVisible();
     statusBar()->showMessage(
         QString("输入:%1  补全:%2  缓存:%3  |  输入:%4  补全:%5  缓存:%6")
-            .arg(formatTokens(m_prompt_tokens))
-            .arg(formatTokens(m_completion_tokens))
-            .arg(formatTokens(m_prompt_tokens_details))
-            .arg(formatTokens(m_prompt_tokens2))
-            .arg(formatTokens(m_completion_tokens2))
-            .arg(formatTokens(m_prompt_tokens_details2))
+            .arg(formatTokens(m_prompt_tokens), formatTokens(m_completion_tokens),
+                 formatTokens(m_prompt_tokens_details), formatTokens(m_prompt_tokens2),
+                 formatTokens(m_completion_tokens2), formatTokens(m_prompt_tokens_details2))
         );
 }
 bool confirmCommandExecutionGui(const QString &model,const QString &cmd, QWidget *parent = nullptr) {
@@ -507,7 +551,7 @@ bool confirmCommandExecution(const QString &model, const QString &cmd, QWidget *
 
 AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle("AI生成插件 请先打开一个文件夹，如果没有你就创建一个 打开 仅限 框架目录/plugin/里面 然后就可以让ai写代码了");
+    setWindowTitle("AI生成插件 请先打开一个文件夹，如果没有你就创建一个 打开 仅限 框架目录plugin/ 或 plugins/里面 然后就可以让ai写代码了 可以编辑代码 ctrl+s 保存");
     resize(1200, 700);
     m_dir = g_config["aicode_dir"].toString();
     QWidget *central = new QWidget(this);
@@ -613,6 +657,7 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
         "}"
         );
     sendBtn = new QPushButton("发送");
+    sendBtn2 = new QPushButton("发送");
     clearBtn = new QPushButton("清空对话");
     inputLayout->addWidget(messageInput, 1);
     mainLayout2->addLayout(inputLayout);
@@ -628,6 +673,7 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     nosh = new QCheckBox("不审核");
     inputLayout0->addWidget(nosh);
     inputLayout0->addWidget(clearBtn);
+    inputLayout0->addWidget(sendBtn2);
     inputLayout0->addWidget(sendBtn);
     mainLayout2->addLayout(inputLayout0);
 
@@ -658,9 +704,27 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
 
         }
     });
+    connect(sendBtn2, &QPushButton::clicked, this, [=]() {
+
+        QString text = messageInput->toPlainText().trimmed();
+        if(sendBtn->text()=="中断"){
+            if (m_stream) {
+                addmsg+=text;
+                messageInput->clear();
+                return;
+            }
+
+        }
+
+
+        if (!text.isEmpty()) {
+            messageInput->clear();
+            onSendMessage_stream(text);
+
+        }
+    });
     connect(ai_ui, &AiWidget::modelListUpdated, this, [this]() {
-        // 【关键】使用 invokeMethod 强制在主线程执行 UI 更新
-        // 哪怕发射信号的线程是子线程，Qt 也会自动切换到主线程来执行 lambda
+
         QMetaObject::invokeMethod(this, [this]() {
             setModels();
         }, Qt::QueuedConnection);
@@ -680,17 +744,24 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
     内置函数();
 
     if(!m_dir.isEmpty()) Folder();
-
+    QShortcut *saveShortcut = new QShortcut(QKeySequence::Save, this);
+    connect(saveShortcut, &QShortcut::activated, this, &AppWindow::saveCurrentFile);
 }
 
 AppWindow::~AppWindow() {}
 
 void AppWindow::openFolder()
 {
-    m_dir = QFileDialog::getExistingDirectory(this, "选择文件夹");
-    if (m_dir.isEmpty()) return;
-    m_dir = m_dir+"/";
+    QString dir = QFileDialog::getExistingDirectory(this, "选择文件夹");
+    if (dir.isEmpty()) return;
+    m_dir = dir+"/";
     g_config["aicode_dir"] = m_dir;
+    m_prompt_tokens=0;
+    m_prompt_tokens_details=0;
+    m_completion_tokens=0;
+    m_prompt_tokens2=0;
+    m_prompt_tokens_details2=0;
+    m_completion_tokens2=0;
     saveConfig();
     Folder();
 }
@@ -792,40 +863,94 @@ void AppWindow::Folder()
     m_completion_tokens = usage["completion_tokens"].toInt();
     statusBar()->showMessage(QString("输入:%1 补全:%2 缓存:%3").arg(m_prompt_tokens).arg(m_completion_tokens).arg(m_prompt_tokens_details));
 }
-#include <QTextCodec>
+
+
+
+
+
 QString listDirectoryEntries(const QString& path) {
     QDir dir(path);
     if (!dir.exists()) return QString();
-
+    QStringList result;
     QFileInfoList infoList = dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot);
-    QStringList lines;
+    // 排序：目录在前，文件在后（按名称）
+    std::sort(infoList.begin(), infoList.end(),
+              [](const QFileInfo& a, const QFileInfo& b) {
+                  if (a.isDir() != b.isDir())
+                      return a.isDir() > b.isDir();  // 目录优先
+                  return a.fileName().compare(b.fileName(), Qt::CaseInsensitive) < 0;
+              });
+
+    const QString indent = "    ";  // 4 个空格
     for (const QFileInfo& info : std::as_const(infoList)) {
         QString name = info.fileName();
-        if (name == "ai对话.json" || name.endsWith(".tmp", Qt::CaseInsensitive)) continue;
+        // 过滤不需要的文件
+        if (name == "ai对话.json" || name.endsWith(".tmp", Qt::CaseInsensitive))
+            continue;
 
-        QString size = info.isFile() ? QString::number(info.size()) + " bytes"
-                                     : (info.isDir() ? "<DIR>" : "?");
-        lines << name + " (" + size + ")";
+        QString line =   name;
+        if (info.isDir()) {
+            line += " <DIR>";
+        } else if (info.isFile()) {
+            // 显示文件大小
+            line += QString(" (%1 bytes)").arg(info.size());
+        }
+        result.append(line);
 
+        // 如果是 .py 文件，提取函数和类定义
         if (info.isFile() && name.endsWith(".py", Qt::CaseInsensitive)) {
-            QFile f(info.absoluteFilePath());
-            if (f.open(QIODevice::ReadOnly)) {
-                QByteArray data = f.readAll();
-                f.close();
-                QTextCodec *codec = QTextCodec::codecForName("UTF-8");
-                QString content = codec ? codec->toUnicode(data) : QString::fromLocal8Bit(data);
+            QFile file(info.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly)) {
+                QByteArray data = file.readAll();
+                file.close();
+                // 使用 QString::fromUtf8 直接转换（Qt 5/6 通用）
+                QString content = QString::fromUtf8(data);
+
+                // 正则匹配 def 或 class 定义（支持 async def）
+                QRegularExpression regex(R"(^\s*(?:async\s+)?(def|class)\s+(\w+)\s*[\(:]?)");
                 QStringList pyLines;
-                QRegularExpression regex(R"(^\s*(?:async\s+)?(def|class)\s+\w+\s*[\(:]?)");
                 for (const QString& line : content.split('\n')) {
-                    if (regex.match(line).hasMatch()) pyLines << "    "+line;
+                    QRegularExpressionMatch match = regex.match(line);
+                    if (match.hasMatch()) {
+                        // 提取类型和名称，例如 "def on_message" 或 "class MyClass"
+                        QString type = match.captured(1);
+                        QString name = match.captured(2);
+                        pyLines.append(indent + type + " " + name);
+                    }
                 }
-                lines << pyLines;
+                if (!pyLines.isEmpty()) {
+                    result.append(pyLines);
+                }
             }
         }
     }
-    return lines.join("\n");
-}
 
+    return result.join("\n");
+}
+void AppWindow::saveCurrentFile()
+{
+    if (currentFilePath.isEmpty()) {
+        statusBar()->showMessage("没有打开的文件可保存", 2000);
+        return;
+    }
+
+    QFile file(currentFilePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        statusBar()->showMessage("无法写入文件：" + file.errorString(), 3000);
+        return;
+    }
+
+    QTextStream out(&file);
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+    out.setEncoding(QStringConverter::Utf8);
+#else
+    out.setCodec("UTF-8");
+#endif
+    out << codeEditor->toPlainText();
+    file.close();
+
+    statusBar()->showMessage("文件已保存：" + QFileInfo(currentFilePath).fileName(), 2000);
+}
 void AppWindow::onFileClicked(const QModelIndex &index)
 {
     if (!index.isValid()) return;
@@ -843,6 +968,7 @@ void AppWindow::onFileClicked(const QModelIndex &index)
     // 如果是文件夹，仅显示路径
     if (fileInfo.isDir()) {
         codeEditor->setPlainText("当前选中目录：" + fileInfo.absoluteFilePath());
+        currentFilePath.clear();   // 清空，避免误保存
         return;
     }
 
@@ -869,6 +995,7 @@ void AppWindow::onFileClicked(const QModelIndex &index)
 #else
             stream.setCodec("UTF-8");
 #endif
+            currentFilePath = fileInfo.absoluteFilePath();   // <-- 添加这一行
             codeEditor->setPlainText(stream.readAll());
             file.close();
         } else {
@@ -923,7 +1050,7 @@ void AppWindow::内置函数(const QString &Nmae,const QString &remark,const QSt
 void AppWindow::内置函数()
 {
 
-    内置函数("w_file", "将文本内容写入到指定的文件中，如果文件不存在则创建", {"文件路径", "文件内容"});
+    内置函数("w_file", "将文本内容写入到指定的文件中，如果文件不存在则创建", {"文件路径 支持不存在的文件夹 如 xx/a.py 不存在就创建", "文件内容"});
     内置函数("read_file", "读取指定文件的内容并以文本形式返回", {"文件路径"});
     内置函数("delete_file", "删除某个文件", {"文件路径"});
     内置函数("append_file", "追加内容", {"文件路径","追加文本"});
@@ -931,7 +1058,7 @@ void AppWindow::内置函数()
     内置函数("LoadPlugin", "添加当前插件到框架 如果不存在就添加 存在就重载 ", {"无参数"});
     内置函数("uninstall_Plugin", "卸载当前插件", {"无参数"});
     内置函数("testplugin", "测试插件 测试指令是否正确返回", {"测试的指令","事件 本项可空 如 GROUP_MEMBER_ADD"});
-    内置函数("run_python", "执行python代码 捕获print 日志", {"python代码"});
+    内置函数("run_python", "执行python代码 捕获print 日志", {"python代码 注意默认路径是在 exe路径"});
     内置函数("pypip", "pip 下载某python些库 请将需要安装的库写到 requirements.txt 文件", {"无参数"});
 
     内置函数("getFunctionCode", "读取某个py文件的某个函数代码", {"py文件名","函数名 如 my_function","类名 如果有 没有可空 如 MyClass"});
@@ -940,7 +1067,7 @@ void AppWindow::内置函数()
 
     内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
     内置函数("llwye","浏览网页 返回提取后的文本 当用户发送链接时 可以使用 也可以请求某些api 当用户让你帮我对接api时",QStringList() << "链接 如 https://www.baidu.com");
-    内置函数("exec_cmd", "在操作系统命令行中执行一个指令，并返回执行结果 注意 py环境是 是python3.14t.exe", {"执行命令"});
+    内置函数("exec_cmd", "在操作系统命令行中执行一个指令，并返回执行结果 注意 可能无法执行python 指令", {"执行命令 注意已经自动 cd 到 py文件目录 非exe目录"});
 
 }
 
@@ -971,12 +1098,20 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         if (fileName.isEmpty()) return "错误：写文件必须提供文件路径 (p1)";
 
         QString fullPath = QDir(m_dir).filePath(fileName);
+
+        // 【新增】确保目标文件的父目录存在
+        QDir parentDir = QFileInfo(fullPath).dir();
+        if (!parentDir.exists()) {
+            if (!parentDir.mkpath(".")) {
+                return "错误：无法创建目录 " + parentDir.path();
+            }
+        }
+
         QFile file(fullPath);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             return "错误：无法打开或创建文件 " + fileName + "。请检查权限或路径。";
         }
         QTextStream out(&file);
-        // 【关键修改】强制 UTF-8 编码写入
 #if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
         out.setEncoding(QStringConverter::Utf8);
 #else
@@ -1106,8 +1241,8 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         return "内容追加成功：" + absPath;
     }
     else if(tool_name == "LoadPlugin"){
-
-        int index = pluginPage->findPluginIndex(m_dir);
+        QString path = subTextReplace(m_dir, QCoreApplication::applicationDirPath()+"/","");
+        int index = pluginPage->findPluginIndex(path);
         if(index!=-1)
         {
             AppendEventLog("[重载插件]"+m_pluginList[index].name);
@@ -1128,10 +1263,13 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
                 QMetaObject::invokeMethod(qApp, [=]() {
                     pluginPage->updatePluginItemInUI(index);
                 }, Qt::QueuedConnection);
-
-                return "重载成功";
+                if(m_pluginList[index].enabled){
+                    if(m_pluginList[index].python.onEnable)
+                        m_pluginList[index].python.onEnable();
+                }
+                return "重载成功 注意 热重载有很多问题 你可能需要让用户重启 才能让代码完整";
             }
-            err ="[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+err;
+            err ="[重载插件]"+m_pluginList[index].name+" 失败 错误信息:"+err+"\n注意 热重载有很多问题 你可能需要让用户重启 才能让代码完整";
             AppendEventLog(err);
             QMetaObject::invokeMethod(qApp, [=]() {
                 pluginPage->removePlugin(index);
@@ -1140,17 +1278,25 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
             return err;
         }
         QList<int> arr;
-        QString err =pluginPage->LoadPlugin(m_dir,0,false,arr);
+        QString err =pluginPage->LoadPlugin(path,0,false,arr);
 
         if(err.isEmpty()){
             pluginPage->savePlugins();
             err = "载入成功";
+            index = pluginPage->findPluginIndex(path);
+            if(index!=-1){
+                if(m_pluginList[index].enabled){
+                    if(m_pluginList[index].python.onEnable)
+                        m_pluginList[index].python.onEnable();
+                }
+            }
+
         }
         return err;
     }
     else if(tool_name == "uninstall_Plugin"){
-
-        int index = pluginPage->findPluginIndex(m_dir);
+        QString path = subTextReplace(m_dir, QCoreApplication::applicationDirPath()+"/","");
+        int index = pluginPage->findPluginIndex(path);
         if(index!=-1)
         {
             QMetaObject::invokeMethod(qApp, [=]() {
@@ -1158,14 +1304,14 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
                 pluginPage->savePlugins();
             }, Qt::QueuedConnection);
 
-            return "卸载成功";
+            return "卸载成功 注意 热重载有很多问题 你可能需要让用户重启 才能让代码完整";
         }
 
         return "当前插件未载入 不能卸载";
     }
     else if(tool_name == "testplugin"){
-
-        int index = pluginPage->findPluginIndex(m_dir);
+        QString path = subTextReplace(m_dir, QCoreApplication::applicationDirPath()+"/","");
+        int index = pluginPage->findPluginIndex(path);
         if(index!=-1)
         {
             MessageEvent ev;
@@ -1216,7 +1362,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         bool ok = replaceFunction(backupPath, myfun, py_code, !myclass.isEmpty(), myclass,&err);
         if (!ok) {
             QFile::remove(backupPath);
-            return "替换失败 可能寻找函数语法错误 请使用其他工具替换";
+            return "替换失败 可能寻找函数语法错误 请使用其他工具替换 正确使用方法 参数1 py文件名 参数2 函数名 参数3 替换到的函数 参数4 类名(如果有)";
         }
 
         // 3. 语法检查（尝试多种编码）
@@ -1478,6 +1624,7 @@ void AppWindow::init_system(const QString &text)
         userMsg["role"] = "user";
         userMsg["content"] = text;
         msgs.append(userMsg);
+        addMessage2(text, MessageType::User);
     }
     sxw["messages"] = msgs;
 }
@@ -1808,7 +1955,15 @@ void AppWindow::tryNextStreamEndpoint(StreamSession *s)
 void AppWindow::startStreamRequest(StreamSession *s, const QString &url, const QString &key)
 {
     // 构建请求体
-    init_system("");  // 确保 sxw 正确
+    QJsonObject obj;
+    obj["completion_tokens"] =m_completion_tokens;
+    obj["prompt_tokens"] =m_prompt_tokens;
+    obj["prompt_tokens_details"] =m_prompt_tokens_details;
+    sxw["usage"]=obj;
+    W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
+
+    init_system(addmsg);  // 确保 sxw 正确
+    addmsg.clear();
     QJsonObject requestObj = sxw;
     requestObj["stream"] = true;
     QByteArray jsonData = QJsonDocument(requestObj).toJson(QJsonDocument::Compact);
@@ -1969,9 +2124,16 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
 
             if(s->accumulatedReasoning.isEmpty()){
                 startStreamUI(s,"💬 思考:");
+                s->accumulatedReasoning.reserve(64*1024);//预分配 64k
+                liu_text.reserve(64);
             }
             s->accumulatedReasoning.append(chunk);
-            appendReasoningChunk(s, chunk);
+            liu_text.append(chunk);
+            if(liu_text.size()>40){
+                appendReasoningChunk(s, liu_text);
+                liu_text.clear();
+                liu_text.reserve(64);
+            }
         }
     }
 
@@ -1981,6 +2143,9 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
 
         if(s->accumulatedContent.isEmpty())
         {
+            s->accumulatedContent.reserve(64*1024);
+            liu_text.clear();
+            liu_text.reserve(64);
             if(!s->accumulatedReasoning.isEmpty())
             {
                 QTextCursor c(chatTextEdit->document());
@@ -1988,13 +2153,18 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
                 c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
                 c.removeSelectedText();
                 addMessage2(s->accumulatedReasoning,MessageType::sk);
-                qDebug() <<s->accumulatedReasoning ;
                 s->accumulatedReasoning.clear();
             }
             startStreamUI(s,"📝 正文:");
         }
         s->accumulatedContent.append(chunk) ;
-        appendContentChunk(s, chunk);
+        liu_text.append(chunk);
+        if(liu_text.size()>40){
+            appendContentChunk(s, liu_text);
+            liu_text.clear();
+            liu_text.reserve(64);
+        }
+
     }
 
     // 处理工具调用
@@ -2005,9 +2175,12 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
             int index = call["index"].toInt();
             QJsonObject newFunc = call["function"].toObject();
             if (!s->toolCallsMap.contains(index)) {
+
                 s->toolCallsMap[index] = call;
                 if(!s->dyc){
                     s->dyc =true;
+                    liu_text.clear();
+                    liu_text.reserve(64);
                     if(!s->accumulatedReasoning.isEmpty()){
                         QTextCursor c(chatTextEdit->document());
                         c.setPosition(s->aiReplyStartPos);
@@ -2037,7 +2210,13 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
                 if (!newArgs.isEmpty()) {
                     existingArgs += newArgs;
                 }
-                appendToolCallChunk(s,newArgs);
+
+                liu_text.append(newArgs);
+                if(liu_text.size()>40){
+                    appendToolCallChunk(s, liu_text);
+                    liu_text.clear();
+                    liu_text.reserve(64);
+                }
                 existingFunc["arguments"] = existingArgs;
                 if (!newFunc["name"].isNull() && !newFunc["name"].toString().isEmpty()) {
                     existingFunc["name"] = newFunc["name"];
@@ -2134,10 +2313,8 @@ void AppWindow::onStreamFinished()
         c.setPosition(s->aiReplyStartPos);
         c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
         c.removeSelectedText();
-        addMessage2(QString("%1\n输入:%2  补全:%3  缓存:%4").arg(s->accumulatedContent)
-                        .arg(formatTokens(m_prompt_tokens3))
-                        .arg(formatTokens(m_completion_tokens3))
-                        .arg(formatTokens(m_prompt_tokens_details3)),MessageType::AI);
+        addMessage2(QString("%1\n输入:%2  补全:%3  缓存:%4").arg(s->accumulatedContent, formatTokens(m_prompt_tokens3), formatTokens(m_completion_tokens3),
+                                                                 formatTokens(m_prompt_tokens_details3)),MessageType::AI);
         m_prompt_tokens3 = 0;
         m_completion_tokens3 =0;
         m_prompt_tokens_details3 = 0;
@@ -2258,6 +2435,14 @@ void AppWindow::onStreamFinished()
         startStreamRequest(s, s->currentUrl, s->currentKey);
         return;
     }
+    if(!addmsg.isEmpty())
+    {
+        s->accumulatedReasoning.clear();
+        s->accumulatedContent.clear();
+        s->toolCallsMap.clear();
+        startStreamRequest(s, s->currentUrl, s->currentKey);
+        return;
+    }
     if (s->callback) s->callback(QString());
     finishStreamSession(s, true);
 }
@@ -2276,10 +2461,7 @@ void AppWindow::onSendMessage_stream(const QString &text)
     }
     zdgd = true;
     sendBtn->setText("中断");
-    // 1. 显示用户消息
-    addMessage2(text, MessageType::User);
 
-    // 2. 构造上下文（与阻塞版一致）
     if (!sxw.contains("messages") || !sxw["messages"].isArray()) {
         QJsonArray msgs;
         if (!g_system.isEmpty()) {
@@ -2293,6 +2475,7 @@ void AppWindow::onSendMessage_stream(const QString &text)
         userMsg["content"] = text;
         msgs.append(userMsg);
         sxw["messages"] = msgs;
+        addMessage2(text, MessageType::User);
     } else {
         init_system(text);
     }

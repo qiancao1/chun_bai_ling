@@ -15,6 +15,7 @@
 #include <QUrl>
 #include <QDesktopServices>
 #include <qnetworkaccessmanager.h>
+#include <qprogressdialog.h>
 
 // 插件信息结构
 struct PluginInfo2 {
@@ -27,10 +28,10 @@ struct PluginInfo2 {
     QString versionName;          // 显示版本号
     QString detailUrl;
     QString downloadUrl;
-    QString gitee;                // 可选 Gitee 地址
-    bool isInstalled;
-    bool hasUpdate;
-    int installedVersionCode;
+
+    bool isInstalled=false;
+    bool hasUpdate=false;
+    QString type;
     QString installedVersionName;
     QStringList tags;
 };
@@ -60,6 +61,7 @@ private:
     QLabel *m_tagLabel;
     QPushButton *m_actionBtn;
     QPushButton *m_detailBtn;
+    QLabel *m_versionLabel;
 };
 
 // 插件市场主窗口
@@ -73,6 +75,7 @@ private slots:
     void refreshList();
     void onSearchChanged(const QString &text);
     void onCategoryChanged(int index);
+    void onCategoryChanged2(int index);
     void onTabChanged(int index);
     void onInstallRequested(const QString &id);
     void onOpenDetail(const QString &url);
@@ -80,21 +83,24 @@ private slots:
 
 private:
     void setupUI();
-
+    void applyStyleSheet();
     void filterAndDisplay();
-
+    void startDownload(PluginInfo2 *info, const QUrl &url, int redirectDepth);
+    void finishInstall(PluginInfo2 *info, const QString &zipPath, QProgressDialog *progress);
     QTabWidget *m_tabWidget;
     QListWidget *m_listWidget;  // 当前显示的列表（每个tab共用一个）
     QLineEdit *m_searchEdit;
     QComboBox *m_categoryCombo;
+    QComboBox *m_plugin_type;
     QPushButton *m_refreshBtn;
     QLabel *m_statusLabel;
 
     QList<PluginInfo2> m_allPlugins;
     QString m_currentCategory;
+    QString m_plugin_type_str;
     QString m_currentKeyword;
     int m_currentTabIndex;      // 0=可用,1=已安装,2=可更新
-
+    int Installed_type=0;
     QNetworkAccessManager *m_networkManager;
     bool m_isLoading;
     void fetchPluginsFromGitee();

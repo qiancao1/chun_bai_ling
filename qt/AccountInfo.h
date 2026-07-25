@@ -76,24 +76,36 @@ struct AccountInfo {
     QList<zdywb> zdywb;
     int dyindex=0;
     int appid_int=0;
+
     int type = 0;               // 0: WebSocket, 1: Webhook
     int message_received = 0;
+
     int message_sent = 0;
     int received = 0;
+
     int sent = 0;
     int wsIntents = 0;          // 订阅事件的位掩码
+
     int 今日加群数量=0;
     int 今日退群数量=0;
+
     int 今日好友数量=0;
     int 今日删除好友数量=0;
+
     int 今日频道数量=0;
     int 今日退出频道数量=0;
+
     int 日计时变量=0;
     int fasjg=0;
+
     int times =5;//检测时间
     int tiaoshu=5; //刷屏条数
-    QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
-    bool pbbot=false;
+
+    int tq_ychf=0; //退群延迟回复
+    int tq_lq=0;
+
+    int rq_ychf=0;
+    bool pbbot=true;
     bool autoConnect = false;
     bool online = false;
     bool ark=false;
@@ -104,6 +116,7 @@ struct AccountInfo {
     bool shuap=false;//刷屏检测
     bool xiangliang=false; //向量数据库
     qint64 startup_time = 0;
+    QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
     QString admin;
     QString welcomeMsg;         // 被添加时的欢迎词
     QString fallbackReply;      // 指令未处理时的回应
@@ -111,9 +124,7 @@ struct AccountInfo {
     QString bai_sr,bai_sc,bai_qy;
     QString err; //最后错误
     QString tqhy;
-    int tq_ychf=0; //退群延迟回复
-    int tq_lq=0;
-    int rq_ychf=0;
+
 
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）

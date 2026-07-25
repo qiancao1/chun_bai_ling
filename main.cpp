@@ -67,8 +67,6 @@ void loadconfig()
         file.close();
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
-
-
 }
 
 void saveConfig()
@@ -109,6 +107,7 @@ void initdiv()
     dir.mkpath("data");
     dir.mkpath("botdb/memory");
     dir.mkpath("plugin");
+    dir.mkpath("plugins");
     dir.mkpath("plugin_data");
 }
 #include <DbgHelp.h>
@@ -155,7 +154,7 @@ qint64 g_totalRuntime=0;
 QString webhook_sig(const QJsonObject &obj, const QString &secret);
 
 int main(int argc, char *argv[]) {
-    //SetDllDirectoryW(L".\\bin");
+    SetDllDirectoryW(L".\\DLLs");
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
     QApplication::setHighDpiScaleFactorRoundingPolicy(
@@ -189,6 +188,18 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<py::scoped_interpreter> interpreter;
     try {
         interpreter = std::make_unique<py::scoped_interpreter>();
+        py::exec(R"(
+import sys
+import os
+
+base = os.path.abspath('.')  # 或你指定的根目录
+plugin_root = os.path.join(base, 'plugin')
+plugins_root = os.path.join(base, 'plugins')
+if os.path.exists(plugin_root):
+    sys.path.insert(0, base)  # 父目录，以便 import plugin.xxx
+if os.path.exists(plugins_root):
+    sys.path.insert(0, base)
+)");
     } catch (const std::exception& e) {
         QString text = QString("Python 解释器初始化失败(看看lib文件夹在不在):\n%1").arg(e.what());
         QMessageBox::critical(nullptr, "错误", text);
@@ -242,6 +253,6 @@ int main(int argc, char *argv[]) {
     }
     pluginPage->foruninstall_Plugin();
     QThreadPool::globalInstance()->waitForDone();
-
+    TerminateProcess(GetCurrentProcess(), 0);
     return ret;
 }

@@ -57,6 +57,25 @@ class QQApi:
                               type_, openid, text, msgid,
                               "true" if is_wakeup else "false", None, None)
 
+    async def send_message_async(self, appid: int, type_: int, openid: str, text: str, 
+                                 msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """
+        异步发送普通消息（新版插件请使用此方法）。
+        """
+        return await asyncio.to_thread(
+            self.send_message,
+            appid, type_, openid, text, msgid, is_wakeup
+        )
+
+    async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+        """
+        异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
+        """
+        return await asyncio.to_thread(
+            self.send_messageEx,
+            msg, text, is_wakeup
+        )
+                              
     def send_ark(self, appid: int,type_: int, openid: str, ark: Union[Dict, str],
                  msgid: str = "", is_wakeup: bool = False) -> Dict:
         """
@@ -107,10 +126,26 @@ class QQApi:
         - online_duration: 已格式化的在线时长字符串，例如 "2天3小时5分钟"
         """
         raw = self._callback(self.API_BOT_LIST, 0)
+        
+        # 如果已经是列表，直接返回
         if isinstance(raw, list):
             return raw
-        else:
-            return []
+        
+        # 如果是字符串，尝试解析为 JSON
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return parsed
+                else:
+                    # 解析结果不是列表，按需处理，这里返回空列表
+                    return []
+            except json.JSONDecodeError:
+                # 解析失败，可记录日志，返回空列表
+                return []
+        
+        # 其他类型，返回空列表
+        return []
 
     def get_openid(self,appid: int ,user_id:int) -> Dict:
         return self._callback(self.API_GET_USER_OPENID, appid, str(user_id))

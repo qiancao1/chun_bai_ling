@@ -113,8 +113,21 @@ SandboxWindow::SandboxWindow(QWidget *parent)
 import urllib.parse
 import json
 import base64
-#请将引用到的库放 txt里面
+#请将引用到的库放 requirements.txt里面
 api = None
+
+
+#equals("相等",icase=True) 区分大小写
+#startswith("匹配头部",icase=True)
+#endswith("消息尾部")
+#contains("消息包含") 不区分大小写 因为 icase 默认false
+#regex("正则")
+#event("GROUP_MEMBER_ADD") 订阅事件
+
+#例子
+@equals("ping")
+def ping(msg):
+    return "ping 这个指令只是例子"
 
 def get_plugin_info(uuid):
     import qiancao_sdk
@@ -135,10 +148,11 @@ def get_plugin_info(uuid):
         ],
         "regex": [
             #{"key": r"^/echo (.+)$", "fun": "on_echo"} #正则
-        ]
+        ],
         "startswith": [
             {"key": "天气", "fun": "on_weather"}   # 匹配“天气”开头的消息
-        ]
+        ],
+        #"endswith":[{"key": "天气", "fun": "on_weather"}] #消息尾部包含
     }
 
 def on_enable():

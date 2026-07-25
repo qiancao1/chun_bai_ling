@@ -40,6 +40,7 @@
 #include <QJsonObject>
 #include <qapplication.h>
 #include <qjsondocument.h>
+
 #include "node_plugin_manager.h"
 #include "node_process.h"
 #include "qqbotclient.h"
@@ -272,7 +273,7 @@ public:
         QString deleteid,ref;
         bool zh=false;
         for (int attempt = 0; attempt < 3; ++attempt) {
-            if(m_msgType!=2) continue;
+            if(attempt==2 && m_msgType!=2) continue;
             QString currentMsgId = (attempt == 0) ? m_msgIdFirst : "";
             QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, m_text, currentMsgId,zh,mode,聊天发送模式);
             if(rawData.isEmpty()) break;

@@ -123,6 +123,9 @@ private:
     size_t m_bufferSize;
     std::atomic<uint64_t>* m_buffer;   // 改为 8 字节原子类型
 
+    size_t m_mapsize;                // 当前映射大小
+
+
     // ---- 数据库成员 ----
     QString m_dbPath;
     MDB_env *m_env;
@@ -136,7 +139,8 @@ private:
 
     bool serializeMessage(const Message &msg, QByteArray &data) const;
     bool deserializeMessage(const QByteArray &data, Message &msg) const;
-
+    bool expandAndReopen();
+    bool reopenEnv(size_t newMapsize);
     MDB_txn* m_currentTxn;   // 当前活动事务（由 beginTransaction 创建）
 
     // 禁用拷贝

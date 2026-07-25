@@ -669,8 +669,9 @@ void ___dsrw(){
                                 ai_ui->onNewMessage(info, ev,false,true);
                             }, Qt::QueuedConnection);
                         }
-                        return;
+                        continue;
                     }
+
                 }
 
 

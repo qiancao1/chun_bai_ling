@@ -157,7 +157,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
 
     info.shuap = obj["shuap"].toBool();
-    info.pbbot =obj["pbbot"].toBool();
+    info.pbbot =obj["pbbot"].toBool(true);
     info.tiaoshu = obj["tiaoshu"].toInt(5);
 
     //ai白名单

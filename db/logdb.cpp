@@ -155,85 +155,11 @@ bool LogDB::open()
         return false;
     }
 
-    int rc = mdb_env_create(&m_env);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "LogDB: mdb_env_create 失败:" << mdb_strerror(rc);
-        return false;
-    }
-
-    mdb_env_set_maxdbs(m_env, 1);          // 只需要一个子库
-    mdb_env_set_mapsize(m_env, DEFAULT_MAPSIZE);  // 可按需调大
-
-    // 3. 打开环境（使用高性能但安全的选项）
-    QByteArray pathBytes = m_dbPath.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(),
-                      MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "LogDB: mdb_env_open 失败:" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    MDB_txn *txn = nullptr;
-    rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "LogDB: 开始事务失败:" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    rc = mdb_dbi_open(txn, "logs", MDB_CREATE, &m_dbi_main);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qCritical() << "LogDB: 打开 logs 子库失败:" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    // 5. 从数据库中恢复最大序号（原子变量初始值）
-    uint64_t maxSeq = 0;
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc == MDB_SUCCESS) {
-        MDB_val key, value;
-        // 直接定位到最后一条（最大 key）
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-        if (rc == MDB_SUCCESS) {
-            // 解析 key 中的序号部分（格式: "000...020:appid:groupid"）
-            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-            QStringList parts = keyStr.split(':');
-            if (!parts.isEmpty()) {
-                bool ok;
-                uint64_t seq = parts[0].toULongLong(&ok);
-                if (ok && seq > maxSeq) {
-                    maxSeq = seq;
-                }
-            }
-        }
-        mdb_cursor_close(cursor);
-    } else {
-        // 游标打开失败（很少见），忽略，maxSeq 保持为 0
-        qWarning() << "LogDB: 打开游标失败，无法读取最大序号，从 1 开始";
-    }
-
-    // 6. 提交事务（此时数据库已打开，序号已恢复）
-    rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "LogDB: 提交事务失败:" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    // 7. 设置原子变量，下一个序号 = 最大序号 + 1
-    m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
-
-    qDebug() << "LogDB 已打开，下一个序号从" << m_nextId.load() << "开始";
-    return true;
+    // 直接调用 reopenEnv 完成初始打开
+    m_mapsize = DEFAULT_MAPSIZE;
+    return reopenEnv(m_mapsize);
 }
+
 QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
 {
     QString seqStr = QString("%1").arg(seq, SEQ_DIGITS, 10, QChar('0'));
@@ -298,6 +224,7 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
 // ---------- 公共接口 ----------
 uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg)
 {
+    QMutexLocker locker(&m_mutex);   // 整个写入过程加锁
     if (!m_env) return 0;
 
     // 原子递增获取唯一序号
@@ -308,30 +235,58 @@ uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Me
     QByteArray valueBlob;
     if (!serializeMessage(msg, valueBlob)) return 0;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) return 0;
+    const int MAX_RETRY = 3;
+    for (int retry = 0; retry < MAX_RETRY; ++retry) {
+        MDB_txn *txn = nullptr;
+        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+        if (rc != MDB_SUCCESS) {
+            qWarning() << "appendLog: 开始事务失败" << mdb_strerror(rc);
+            return 0;
+        }
 
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-    value.mv_data = valueBlob.data();
-    value.mv_size = valueBlob.size();
+        MDB_val key, value;
+        key.mv_data = keyBytes.data();
+        key.mv_size = keyBytes.size();
+        value.mv_data = valueBlob.data();
+        value.mv_size = valueBlob.size();
 
-    rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        return 0;
+        rc = mdb_put(txn, m_dbi_main, &key, &value, 0);
+        if (rc == MDB_MAP_FULL) {
+            mdb_txn_abort(txn);
+            qWarning() << "appendLog: 空间不足，尝试扩容...";
+            if (!expandAndReopen()) {
+                return 0;   // 扩容失败
+            }
+            continue;       // 重试
+        } else if (rc != MDB_SUCCESS) {
+            mdb_txn_abort(txn);
+            qWarning() << "appendLog: mdb_put 失败" << mdb_strerror(rc);
+            return 0;
+        }
+
+        rc = mdb_txn_commit(txn);
+        if (rc == MDB_MAP_FULL) {
+            // 提交时也可能返回 FULL（罕见），同样处理
+            qWarning() << "appendLog: 提交时空间不足，尝试扩容...";
+            if (!expandAndReopen()) {
+                return 0;
+            }
+            continue;
+        } else if (rc != MDB_SUCCESS) {
+            qWarning() << "appendLog: 提交事务失败" << mdb_strerror(rc);
+            return 0;
+        }
+
+        // 写入成功
+        auto now = std::chrono::steady_clock::now();
+        qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        setBufferDurationAndStatus(seq, now_us, 0);
+        return seq;
     }
 
-    rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) return 0;
-    auto now = std::chrono::steady_clock::now();
-    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    setBufferDurationAndStatus(seq,now_us,0);
-    return seq;
+    qWarning() << "appendLog: 重试次数耗尽，写入失败";
+    return 0;
 }
-
 bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
 {
     QMutexLocker locker(&m_mutex);
@@ -761,4 +716,115 @@ bool LogDB::cleanDatabase(int keepN)
     mdb_cursor_close(cursor);
     rc = mdb_txn_commit(delTxn);
     return rc == MDB_SUCCESS;
+}
+
+// 在 LogDB.cpp 中实现
+bool LogDB::reopenEnv(size_t minSize) {
+    // 1. 获取当前数据文件大小（data.mdb）
+    QFileInfo fileInfo(m_dbPath + "/data.mdb");
+    size_t fileSize = fileInfo.exists() ? (size_t)fileInfo.size() : 0;
+
+    // 2. 计算目标 mapsize：至少为 minSize，且大于文件大小，留有余量
+    size_t targetSize = std::max(minSize, fileSize * 2);          // 翻倍
+    targetSize = std::max(targetSize, fileSize + 10ULL * 1024 * 1024); // 至少多 10MB
+    targetSize = std::min(targetSize, MAX_MAPSIZE);               // 不超过上限
+
+    // 4. 关闭旧环境
+    if (m_env) {
+        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        m_dbi_main = 0;
+    }
+
+    // 5. 创建新环境
+    int rc = mdb_env_create(&m_env);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "reopenEnv: mdb_env_create 失败" << mdb_strerror(rc);
+        return false;
+    }
+
+    mdb_env_set_maxdbs(m_env, 1);
+    mdb_env_set_mapsize(m_env, targetSize);
+
+    QByteArray pathBytes = m_dbPath.toUtf8();
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "reopenEnv: mdb_env_open 失败" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        return false;
+    }
+
+    // 6. 打开子库、恢复序号（与原来相同）
+    MDB_txn *txn = nullptr;
+    rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "reopenEnv: 开始事务失败" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        return false;
+    }
+
+    rc = mdb_dbi_open(txn, "logs", MDB_CREATE, &m_dbi_main);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        qCritical() << "reopenEnv: 打开 logs 子库失败" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        return false;
+    }
+
+    // 恢复最大序号
+    uint64_t maxSeq = 0;
+    MDB_cursor *cursor = nullptr;
+    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
+    if (rc == MDB_SUCCESS) {
+        MDB_val key, value;
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+        if (rc == MDB_SUCCESS) {
+            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+            QStringList parts = keyStr.split(':');
+            if (!parts.isEmpty()) {
+                bool ok;
+                uint64_t seq = parts[0].toULongLong(&ok);
+                if (ok && seq > maxSeq) maxSeq = seq;
+            }
+        }
+        mdb_cursor_close(cursor);
+    }
+
+    rc = mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "reopenEnv: 提交事务失败" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        return false;
+    }
+
+    m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
+    qDebug() << "LogDB 打开/扩容完成，实际 mapsize =" << targetSize
+             << "，文件大小 =" << fileSize << "，下一个序号 =" << m_nextId.load();
+    return true;
+}
+
+bool LogDB::expandAndReopen()
+{
+    // 必须在持有 m_mutex 时调用
+    size_t newSize = m_mapsize * 2;
+    if (newSize > MAX_MAPSIZE) newSize = MAX_MAPSIZE;
+    if (newSize == m_mapsize) {
+        qWarning() << "LogDB: 已达到最大 mapsize，无法继续扩容";
+        return false;
+    }
+
+    // 关闭当前环境（注意：此时不应有任何活动事务）
+    if (m_env) {
+        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        m_dbi_main = 0;
+    }
+
+    return reopenEnv(newSize);
 }

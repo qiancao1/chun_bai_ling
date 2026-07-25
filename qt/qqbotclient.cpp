@@ -30,7 +30,9 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QDir>
-
+#include <qwaitcondition.h>
+#include <QFutureWatcher>
+#include <netmanager.h>
 // 在文件头部包含 WinHttpClient 封装
 
 
@@ -140,7 +142,7 @@ QString QQBotClient::fetchGatewayUrl()
         return QString();
     }
 
-    QUrl url("https://api.sgroup.qq.com/gateway");
+    QUrl url("https://api.bot.qq.com/gateway");
     QNetworkRequest request(url);
 
     request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
@@ -190,7 +192,7 @@ bool QQBotClient::refreshAccessToken()
         return false;
     }
 
-    QUrl url("https://bots.qq.com/app/getAppAccessToken");
+    QUrl url("https://api.bot.qq.com/app/getAppAccessToken");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
@@ -804,7 +806,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     mes.Color_0 = Color_1;
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
-    auto start = std::chrono::steady_clock::now();
+
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
     mes.seq = ev.log;
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
@@ -1146,6 +1148,51 @@ void QQBotClient::resetReconnectAttempts()
     m_reconnectAttempts = 0;
     m_reconnectTimer.stop();
 }
+
+
+QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
+    return future.get();
+}
+QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
+    std::future<QString> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
+    return future.get();
+}
+
+QString QQBotClient::GetSync(const QString &url, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+
+    std::future<QString> future = NetManager::instance()->get(url, headers, timeoutMs);
+    return future.get();
+}
+//弃用
 QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)
 {
 
@@ -1175,7 +1222,7 @@ QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const
     reply->deleteLater();
     return response;
 }
-
+//弃用
 QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int timeoutMs)
 {
     // 1. 准备 JSON 数据
@@ -1207,6 +1254,7 @@ QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int time
     reply->deleteLater();
     return response;
 }
+//弃用
 QString QQBotClient::_Get(const QString &url, int timeoutMs)
 {
 
@@ -1241,7 +1289,7 @@ QString QQBotClient::_Get(const QString &url, int timeoutMs)
 void QQBotClient::fetchSelfInfo()
 {
     if (!m_info->online) return;
-    QUrl url("https://api.sgroup.qq.com/users/@me");
+    QUrl url("https://api.bot.qq.com/users/@me");
     QNetworkRequest request(url);
     request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
     request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());

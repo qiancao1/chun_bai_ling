@@ -66,23 +66,25 @@
 #include <QProgressDialog>
 #include <qmessagebox.h>
 
-
-
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.1.3.17"
-#define APP_BUILD_NUMBER 17
+#define APP_VERSION_STR "v1.1.5.20"
+#define APP_BUILD_NUMBER 20
 
 QString Homev=R"(
 # 更新日志🌸
-## v1.1.5.20 (2026-07-20)
+## v1.1.5.20 (2026-07-25)
 - 用户 ai生成插件改为流式 增加事件订阅 添加按钮sdk
-- 增加 插件市场
+- 增加 插件市场 怎么上传 先发群里面吧
+- 优化 api请求方式
+- 优化 python 针对异步的 支持 增加 新的指令注册方式 <--经过测试 似乎py有专门异步线程
 - 优化 python 不再需要安装python 因为框架自带完全环境
 - 优化 聊天室 发送消息规则 msgid -> 主动 -> 召回
 - 优化 接收到消息自动删除/字符
+- 修复 日志数据库 满了不自动扩容问题
+- 修复 python热重载 缓存未清理问题
 - 为内置关键词回复 添加 提示
 
 
@@ -140,7 +142,7 @@ QString Homev=R"(
 - 优化 发送图片格式 [image,path=xx] 改为 !\[img](路径|链接) [image,path=xx] 仍然可用
 
 ## v1.0.4.5 (2026-06-23)
-- 好好好 茜草改名为 纯白铃
+- 好好好 茜草改名为 纯白铃铛
 - 添加 订阅 也可以叫定时 可以推送订阅信息的群 支持自定义提交参数
 - 修复 js子进程不会自动退出问题
 - 优化 适配云崽 【部分】单js插件
@@ -230,7 +232,8 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
 
     resize(1040, 660);
     setMinimumSize(900, 560);
-    setWindowTitle("纯白铃");
+    setWindowTitle("纯白铃铛");
+
     setupUi();
     xr();
     applyStyleSheet();
@@ -241,6 +244,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     m_heartbeatTimer = new QTimer(this);
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
+        if(框架退出) return;
         auto ss=stackedWidget->currentWidget();
         if (ss == accountPage) {
             for (CardWidget* card : std::as_const(g_CW)) {
@@ -301,7 +305,7 @@ void showClickableLicenseInfo() {
     msgBox.setIcon(QMessageBox::Information);
 
     QString richText =
-        "<h3>纯白铃 - QQ 机器人管理平台</h3>"
+        "<h3>纯白铃铛 - QQ 机器人管理平台</h3>"
         "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
         "完整源代码（含所有修改）请访问：<br>"
         "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
@@ -484,7 +488,7 @@ void MainWindow::setupUi()
     QPushButton *Sandbox2 = createNavButton("沙盒", QIcon(":/icons/sandbox.png"));
 
     QPushButton *btnAdvancedConfig = createNavButton("高级配置", QIcon(":/icons/advanced.png"));
-
+    QPushButton *btn_newui = createNavButton("扩展页面", QIcon(":/icons/advanced.png"));
     btnGroup = new QButtonGroup(this);
     btnGroup->setExclusive(true);
     btnGroup->addButton(btnHome, 0);
@@ -494,7 +498,7 @@ void MainWindow::setupUi()
     btnGroup->addButton(btnChat, 4);
     btnGroup->addButton(Sandbox2, 5);
     btnGroup->addButton(btnAdvancedConfig, 6);
-
+    //btnGroup->addButton(btn_newui, 7);
 
     connect(btnGroup, QOverload<int>::of(&QButtonGroup::idClicked),
             [this](int id) {
@@ -529,6 +533,10 @@ void MainWindow::setupUi()
     sideLayout->addWidget(btnChat);
     sideLayout->addWidget(Sandbox2);
     sideLayout->addWidget(btnAdvancedConfig);   // 新按钮
+    //QLabel *kzui = new QLabel("———————");
+    //kzui->setAlignment(Qt::AlignCenter);
+    //sideLayout->addWidget(kzui);   // 新按钮
+    //sideLayout->addWidget(btn_newui);   // 新按钮
     sideLayout->addStretch();
 
 
@@ -616,7 +624,7 @@ void MainWindow::createTitleBar()
     QVBoxLayout *textLayout = new QVBoxLayout;
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-    QLabel *mainLabel = new QLabel(QString("纯白铃 %1").arg(APP_VERSION_STR));
+    QLabel *mainLabel = new QLabel(QString("纯白铃铛 %1").arg(APP_VERSION_STR));
     mainLabel->setObjectName("leftMainLabel");
 
 

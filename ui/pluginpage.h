@@ -23,6 +23,24 @@ class PluginManager;   // 前置声明
 
 
 namespace py = pybind11;
+const char* myCallback(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
+                       const char* _3, const char* _4, const char* _5,
+                       const char* _6, const char* _7, const char* _8);
+const char* myCallbackA(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
+                        const char* _3, const char* _4, const char* _5,
+                        const char* _6, const char* _7, const char* _8);
+typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
+                                            const char* _3, const char* _4, const char* _5,
+                                            const char* _6, const char* _7, const char* _8);
+
+
+
+
+typedef const char* (*GetPluginInfoFunc)(char*,UniversalApiCallback);
+typedef void (*OnMessageFunc)(const char*);
+typedef void (*OnFunc0)();
+
+
 enum class MatchType {
     Equals,
     StartsWith,
@@ -42,7 +60,7 @@ struct Rule {
 
 struct PythonPluginobj {
     //py::dict globals;
-    QHash<QString,py::object> event;
+    QMap<QString,py::object> event;
     py::object instance;                 // on_message 函数
     py::object onSet;                   // 加载后调用
     py::object onEnable;                 // 启用时调用
@@ -58,22 +76,6 @@ struct JsPlugin {
     bool isReady = false;          // 是否已就绪（收到 ready 消息）
     QJsonObject pendingRequest;    // 如果请求响应模式需要，可以暂存
 };
-const char* myCallback(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
-                       const char* _3, const char* _4, const char* _5,
-                       const char* _6, const char* _7, const char* _8);
-const char* myCallbackA(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
-                       const char* _3, const char* _4, const char* _5,
-                       const char* _6, const char* _7, const char* _8);
-typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
-                                            const char* _3, const char* _4, const char* _5,
-                                            const char* _6, const char* _7, const char* _8);
-
-
-
-
-typedef const char* (*GetPluginInfoFunc)(char*,UniversalApiCallback);
-typedef void (*OnMessageFunc)(const char*);
-typedef void (*OnFunc0)();
 
 
 struct DLLPluginobj {
@@ -85,9 +87,11 @@ struct DLLPluginobj {
     OnFunc0 onSet;
 };
 struct PluginInfo {
+    QString id;
     QString name; //插件名字
-    int type;        // "DLL" 或 "内置"
+
     QString version; //版本
+
     QString author; //作者
     QString description; // 插件说明
     QString path;    // 路径
@@ -99,6 +103,8 @@ struct PluginInfo {
     JsPlugin js;
     QString uuid;
     QList<int> appid;
+    int type=0;        // "DLL" 或 "内置"
+    int version_int=0; //版本
     int SendQuantity=0;
     bool enabled;
 };
@@ -130,6 +136,7 @@ public:
     bool uninstall_Plugin2(int index);
     bool uninstall_Plugin(PluginInfo &info);
     bool Enabled_Plugin(int index);//启用
+    bool Enabled_Plugin(PluginInfo &info);
     bool Reload_Plugin(int index);//重载
     bool disable_Plugin(PluginInfo &info);//禁用
     void savePlugins();
@@ -148,21 +155,25 @@ public:
     QString sendData32(int type,PluginInfo &info,const QString &appidlist = QString());
     QString LoadPlugin_DLL32(PluginInfo &info);
     void syncPluginsTo32();
+    QString anzpip(const QString &reqPath);
+    //void safeCall(const py::object &func);
 
 private slots:
     void onPluginSelected(int row);
     void onAccountCheckStateChanged(QListWidgetItem *item);
     void onPluginRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
-
+    void stopAsyncioThread();
 
 private:
     void setupUi();
+    void initPython();
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
     void LoadPlugin_Python();
     void LoadPlugin_JS();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
+    void onMessageReceived(const MessageEvent &msg,int i);
     QListWidget *pluginListWidget;
     QPushButton *reloadBtn;
     QPushButton *openDirBtn;
@@ -183,8 +194,10 @@ private:
     QPushButton *uninstallBtn;   // 卸载按钮
     QPushButton *setBtn;
     int currentSelected_index;
-
-
+    std::thread m_asyncio_thread; // 改成成员变量
+    py::object m_asyncio_mod;
+    py::object m_run_coro_func;
+    py::object *m_loop_ptr = nullptr; // 改成指针
 };
 
 #endif // PLUGINPAGE_H

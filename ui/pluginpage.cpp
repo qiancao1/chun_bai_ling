@@ -26,16 +26,14 @@
 
 #include <QListWidget>
 
-
 static void safeCall(const py::object &func) {
     if (func.is_none()) return;
     if (!py::isinstance<py::function>(func) && !PyCallable_Check(func.ptr())) return;
     try {
-         py::gil_scoped_acquire gil;
+        py::gil_scoped_acquire gil;
         func();
     } catch (...) {}
 }
-
 PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     : QWidget(parent)
 {
@@ -110,10 +108,43 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
     setupUi();
-    loadPlugins();
-    //setStyleSheet("* { border: 1px solid red; }");
+    initPython();
+
+    QTimer::singleShot(0, this, &PluginPage::loadPlugins);
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &PluginPage::stopAsyncioThread);
 }
-#include <QMenu>
+
+void PluginPage::stopAsyncioThread() {
+    if (m_asyncio_thread.joinable()) {
+        m_asyncio_thread.detach();
+    }
+    //std::quick_exit(0);
+}
+void PluginPage::initPython() {
+    py::gil_scoped_acquire gil;
+
+    m_asyncio_mod = py::module_::import("asyncio");
+    m_run_coro_func = m_asyncio_mod.attr("run_coroutine_threadsafe");
+
+    std::promise<py::object> loop_promise;
+    std::future<py::object> loop_future = loop_promise.get_future();
+
+    m_asyncio_thread = std::thread([this, loop_promise = std::move(loop_promise)]() mutable {
+
+        py::gil_scoped_acquire acquire;
+        py::object local_loop;
+        local_loop = m_asyncio_mod.attr("new_event_loop")();
+        m_asyncio_mod.attr("set_event_loop")(local_loop);
+        loop_promise.set_value(local_loop);
+
+        local_loop.attr("run_forever")(); // 死循环
+
+    });
+
+    // 注意：这里不要直接 m_loop = ...，而是用 new！
+    py::object loop_obj = loop_future.get();
+    m_loop_ptr = new py::object(loop_obj); // 【关键！】在堆上分配，绝不会在析构时触发 Py_DECREF
+}
 void PluginPage::setupUi()
 {
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
@@ -274,11 +305,12 @@ void PluginPage::setupUi()
     connect(uninstallBtn, &QPushButton::clicked, [this](){
         uninstall_Plugin(currentSelected_index);
         savePlugins();
-        currentSelected_index=-1;
+
     });
     connect(plugin_sc, &QPushButton::clicked, [this](){
-        PluginMarketWindow *win = new PluginMarketWindow(this);
-        win->setAttribute(Qt::WA_DeleteOnClose);
+        PluginMarketWindow *win = new PluginMarketWindow();
+        win->setWindowFlags(Qt::Dialog); // 确保是普通对话框
+
         win->show();  // 或 win->exec() 模态
     });
     connect(reloadBtn, &QPushButton::clicked, [this](){
@@ -344,34 +376,9 @@ void PluginPage::setupUi()
         if (reqPath.isEmpty()) {
             return;
         }
-
-        QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
-
-        // 2. 检查 pip 是否可用，如果不可用则用 ensurepip 修复
-        QProcess checkPip;
-        checkPip.start(pythonExe, QStringList() << "-c" << "import pip");
-        if (!checkPip.waitForFinished(3000) || checkPip.exitCode() != 0) {
-            QMessageBox::information(this, "提示", "pip 未就绪，正在尝试修复...");
-            QProcess fixPip;
-            fixPip.start(pythonExe, QStringList() << "-m" << "ensurepip" << "--upgrade");
-            if (!fixPip.waitForFinished(10000) || fixPip.exitCode() != 0) {
-                QMessageBox::critical(this, "错误", "修复 pip 失败，请手动检查环境。");
-                return;
-            }
-            QMessageBox::information(this, "提示", "pip 修复成功。");
-        }
-
-        QString cmdLine = QString(
-                              "cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
-                              "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
-                              "& echo   - \"Successfully installed\" 表示新库安装成功 "
-                              "& echo. & \"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\""
-                              ).arg(pythonExe, reqPath);
-
-        // 4. 启动新窗口（不阻塞 UI）
-        bool success = QProcess::startDetached(cmdLine);
-        if (!success) {
-            QMessageBox::critical(this, "错误", "无法启动终端窗口，请检查系统环境！");
+        QString err = anzpip(reqPath);
+        if (!err.isEmpty()) {
+            QMessageBox::critical(this, "错误", err);
         }
     });
 
@@ -382,7 +389,33 @@ void PluginPage::setupUi()
         w->show();
     });
 }
+QString PluginPage::anzpip(const QString &reqPath)
+{
+    QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
 
+
+    QProcess checkPip;
+    checkPip.start(pythonExe, QStringList() << "-c" << "import pip");
+    if (!checkPip.waitForFinished(3000) || checkPip.exitCode() != 0) {
+        QMessageBox::information(this, "提示", "pip 未就绪，正在尝试修复...");
+        QProcess fixPip;
+        fixPip.start(pythonExe, QStringList() << "-m" << "ensurepip" << "--upgrade");
+        if (!fixPip.waitForFinished(10000) || fixPip.exitCode() != 0) {
+            return "修复 pip 失败，请手动检查环境。";
+        }
+        QMessageBox::information(this, "提示", "pip 修复成功。");
+    }
+
+    QString cmdLine = QString(
+                          "cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+                          "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
+                          "& echo   - \"Successfully installed\" 表示新库安装成功 "
+                          "& echo. & \"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\""
+                          ).arg(pythonExe, reqPath);
+
+
+    return QProcess::startDetached(cmdLine)? "" :"无法启动终端窗口，请检查系统环境！";
+}
 void PluginPage::onPluginRowsMoved(const QModelIndex &parent, int start, int end,
                                    const QModelIndex &destination, int row)
 {
@@ -468,13 +501,11 @@ void PluginPage::initPluginList(const QList<PluginInfo> &plugins) {
     }
 }
 void PluginPage::appendPlugin(const PluginInfo &info) {
-    // 1. 数据操作：在当前线程执行，持有 GIL
-    py::gil_scoped_acquire gil;
+
+
     try {
         m_pluginList.append(info);
         int index = m_pluginList.size() - 1;  // 新插入元素的索引
-
-        // 2. UI 更新投递到主线程，只传递索引（不拷贝 info）
         QMetaObject::invokeMethod(qApp, [this, index]() {
             // 主线程执行，获取 GIL，然后通过索引访问列表中的元素
             py::gil_scoped_acquire gilMain;
@@ -630,35 +661,41 @@ bool matchRule(const Rule &rule, const QString &msg) {
     }
     return false;
 }
-void onMessageReceived(const MessageEvent &msg,int i) {
+void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
 
     try {
         py::gil_scoped_acquire gil;
 
         QString reply;
 
+        auto process_ret = [&](py::object ret) {
+
+            if (m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
+                m_run_coro_func(ret, m_loop_ptr); // 非阻塞丢入循环
+            }
+            // 如果是同步函数返回的字符串
+            else if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                QString str = QString::fromStdString(py::str(ret).cast<std::string>());
+                if (reply.isEmpty()) reply = str;
+                else reply += "\n" + str;
+            }
+        };
+
+        // --- 2. 处理 Rule 列表 ---
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
             if (matchRule(rule, msg.msg)) {
-                // 调用规则对应的函数
                 py::object ret = rule.function(msg);
-                if (!ret.is_none() && py::isinstance<py::str>(ret)) {
-                    if(reply.isEmpty())
-                        reply = QString::fromStdString(py::str(ret).cast<std::string>());
-                    else
-                        reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
-                }
+
+
+                process_ret(ret);
             }
         }
 
-        if(m_pluginList[i].python.event.contains(msg.msgType)){
+        if (m_pluginList[i].python.event.contains(msg.msgType)) {
             auto &ev = m_pluginList[i].python.event[msg.msgType];
             py::object ret = ev(msg);
-            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
-                if(reply.isEmpty())
-                    reply = QString::fromStdString(py::str(ret).cast<std::string>());
-                else
-                    reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
-            }
+            QString str = QString::fromStdString(py::str(ret).cast<std::string>());
+            process_ret(ret); // 复用处理逻辑
         }
 
         if (!reply.isEmpty()) {
@@ -826,7 +863,7 @@ bool PluginPage::disable_Plugin(PluginInfo &info)
 
 bool PluginPage::Reload_Plugin(int index) //32ok
 {
-    if (index<=-1 && index>m_pluginList.length()) return false;
+    if (index<=-1 || index>m_pluginList.length()) return false;
     AppendEventLog("[重载插件]"+m_pluginList[index].name);
     bool enabled = m_pluginList[index].enabled;
     if (m_pluginList[index].enabled) disable_Plugin(m_pluginList[index]);//调禁用
@@ -858,6 +895,10 @@ bool PluginPage::Reload_Plugin(int index) //32ok
     }
     if(err.isEmpty())
     {
+        if(m_pluginList[index].id.isEmpty())
+        {
+            m_pluginList[index].id = m_pluginList[index].name;
+        }
         updatePluginItemInUI(index);
         return true;
     }
@@ -897,6 +938,24 @@ bool PluginPage::Enabled_Plugin(int index)
     info.enabled = true;
     return true;
 }
+bool PluginPage::Enabled_Plugin(PluginInfo &info)
+{
+
+    if (info.type == 0) {
+        safeCall(info.python.onEnable);
+    } else if (info.type == 1) {
+        if (info.DLL.onEnable) info.DLL.onEnable();
+    } else if (info.type == 2) {
+        if (sendData32(2, info) != "true") return false;
+    } else if (info.type == 3) {
+        if (!NodePluginManager::instance().enablePlugin(info.uuid)) return false;
+    } else {
+        return false;
+    }
+    info.enabled = true;
+    return true;
+}
+
 void PluginPage::foruninstall_Plugin()
 {
     for(int i=0;i<m_pluginList.size();++i)
@@ -912,6 +971,55 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
 
     if (info.type == 0) {
         safeCall(info.python.onUnload);
+        py::gil_scoped_acquire gil;
+        info.python.event.clear();
+        info.python.rules.clear();
+        info.python.instance = py::object();
+        info.python.onSet = py::object();
+        info.python.onEnable = py::object();
+        info.python.onDisable = py::object();
+        info.python.onUnload = py::object();
+
+        try {
+            py::exec(R"(
+import sys, os, gc
+
+# 清理函数（用于热重载）
+def clean_plugin(plugin_path):
+    # 转为绝对路径，并确保以分隔符结尾
+    abs_path = os.path.abspath(plugin_path)
+    if not abs_path.endswith(os.sep):
+        abs_path += os.sep
+    sys.path = [p for p in sys.path if os.path.abspath(p) != abs_path.rstrip(os.sep)]
+    to_remove = []
+    for mod_name, mod in list(sys.modules.items()):
+        if hasattr(mod, '__file__') and mod.__file__:
+            file_path = os.path.abspath(mod.__file__)
+            if file_path.endswith(('.pyc', '.pyo')):
+                file_path = file_path[:-1]
+            if file_path.startswith(abs_path):
+                to_remove.append(mod_name)
+
+    print("=== 热重载删除模块 ===")
+    for name in to_remove:
+        print("  -", name)
+
+    for name in to_remove:
+        del sys.modules[name]
+
+    gc.collect()
+    return to_remove
+
+)");
+        // 执行清理函数并获取结果
+
+            py::object clean_func = py::module_::import("__main__").attr("clean_plugin");
+            py::object result = clean_func(info.path.toStdString());
+            qDebug() << "清理完成，删除了" << py::len(result) << "个模块";
+        } catch (const py::error_already_set& e) {
+            qWarning() << "清理插件模块异常:" << e.what();
+        }
+
     } else if (info.type == 1) {
         if (info.DLL.onUnload) info.DLL.onUnload();
         if (info.dllLib) {
@@ -944,18 +1052,23 @@ bool PluginPage::uninstall_Plugin(int index)
 
         return false;
     }
+
+
+
     removePlugin(index);
     onPluginSelected(currentSelected_index);
-
-    detailIconLabel->clear();
-    detailNameLabel->clear();
-    detailTypeLabel->clear();
-    detailVersionLabel->clear();
-    detailAuthorLabel->clear();
-    detailDescLabel->clear();
-
+    if(currentSelected_index==-1){
+        detailIconLabel->clear();
+        detailNameLabel->clear();
+        detailTypeLabel->clear();
+        detailVersionLabel->clear();
+        detailAuthorLabel->clear();
+        detailDescLabel->clear();
+    }
     return true;
 }
+
+
 bool PluginPage::uninstall_Plugin2(int index)
 {
     if (index<=-1 || index>m_pluginList.length()) return false;
@@ -965,6 +1078,8 @@ bool PluginPage::uninstall_Plugin2(int index)
         showAutoCloseMessageBox("卸载失败","32位加载器没有响应");
         return false;
     }
+
+
     removePlugin(index);
     onPluginSelected(currentSelected_index);
     detailIconLabel->clear();
@@ -1008,8 +1123,23 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
         return QString();
     }
     if(!err.isEmpty()) return err;
+    if(info.id.isEmpty())
+    {
+        info.id = info.name;
+    }
 
-
+    try {
+        if(info.enabled){
+            Enabled_Plugin(info);
+        }
+    } catch (const py::error_already_set& e) {
+        qWarning() << "Python error in appendPlugin (data append):" << e.what();
+        PyErr_Clear();
+    } catch (const std::exception& e) {
+        qWarning() << "C++ exception in appendPlugin (data append):" << e.what();
+    } catch (...) {
+        qWarning() << "Unknown exception in appendPlugin (data append)";
+    }
     appendPlugin(info);
     plug_tji();
     return QString();
@@ -1045,6 +1175,7 @@ void PluginPage::LoadPlugin_Python() //按钮
     dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"/");
     dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"\\");
     QList<int> empty{};
+    dir+="/";
     QString err = LoadPlugin(dir,0,false,empty);
     if(!err.isEmpty())
     {
@@ -1128,16 +1259,16 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
             if (obj.contains("author")) info.author = obj["author"].toString();
             if (obj.contains("description")) info.description = obj["description"].toString();
             if (obj.contains("icon")) info.icon = obj["icon"].toString();
+            if (obj.contains("id")) info.id = obj["id"].toString();
+            if (obj.contains("version2")) info.version_int = obj["version2"].toInt();
+
         } else {
             uninstall_Plugin(info);
             return info.path + " get_plugin_info 返回的内容非json 或不是标准json";
         }
     }
     if(info.name.isEmpty()) return info.path + "get_plugin_info 函数中未正确 返回插件名字";
-    if(info.enabled)
-    {
-        if(info.DLL.onEnable) info.DLL.onEnable();
-    }
+
     return QString();
 }
 
@@ -1199,6 +1330,8 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     info.author      = obj["author"].toString();
     info.description = obj["description"].toString();
     info.icon        = obj["icon"].toString();
+    info.id = obj["id"].toString();
+    info.version_int = obj["version2"].toInt();
     info.type=2;
     return QString();   // 成功
 }
@@ -1232,36 +1365,109 @@ void PluginPage::syncPluginsTo32()
 
 QString PluginPage::LoadPlugin_py(PluginInfo &info)
 {
-    QString mainPy = info.path+"/main.py";
-    if (!QFile::exists(mainPy)) return info.path+"/main.py 文件不存在";
+    bool isReload = !info.python.rules.isEmpty() || !info.python.event.isEmpty();
+    if (isReload) {
+        qDebug() << "热重载插件:" << info.path << "，执行清理旧缓存";
+
+        // 1. 调用旧插件的 on_unload
+        if (info.python.onUnload && !info.python.onUnload.is_none()) {
+            try {
+                info.python.onUnload();
+            } catch (const py::error_already_set& e) {
+                qWarning() << "on_unload 执行异常:" << e.what();
+            }
+        }
+
+        // 2. 清空 C++ 侧持有的所有 Python 对象引用
+        info.python.event.clear();
+        info.python.rules.clear();
+        info.python.instance = py::object();
+        info.python.onSet = py::object();
+        info.python.onEnable = py::object();
+        info.python.onDisable = py::object();
+        info.python.onUnload = py::object();
+
+        // 3. 清理 sys.path 中该插件目录（如果还残留），并从 sys.modules 删除该插件所有模块
+        py::exec(R"(
+import sys, os, gc
+
+# 清理函数（用于热重载）
+def clean_plugin(plugin_path):
+    # 转为绝对路径，并确保以分隔符结尾
+    abs_path = os.path.abspath(plugin_path)
+    if not abs_path.endswith(os.sep):
+        abs_path += os.sep
+
+    # 从 sys.path 中移除该插件目录（如果存在）
+    sys.path = [p for p in sys.path if os.path.abspath(p) != abs_path.rstrip(os.sep)]
+
+    # 收集所有属于该插件的模块（基于 __file__ 路径）
+    to_remove = []
+    for mod_name, mod in list(sys.modules.items()):
+        if hasattr(mod, '__file__') and mod.__file__:
+            file_path = os.path.abspath(mod.__file__)
+            if file_path.endswith(('.pyc', '.pyo')):
+                file_path = file_path[:-1]
+            if file_path.startswith(abs_path):
+                to_remove.append(mod_name)
+
+    print("=== 热重载删除模块 ===")
+    for name in to_remove:
+        print("  -", name)
+
+    for name in to_remove:
+        del sys.modules[name]
+
+    gc.collect()
+    return to_remove
+
+)");
+        // 执行清理函数并获取结果
+        try {
+            py::object clean_func = py::module_::import("__main__").attr("clean_plugin");
+            py::object result = clean_func(info.path.toStdString());
+            qDebug() << "清理完成，删除了" << py::len(result) << "个模块";
+        } catch (const py::error_already_set& e) {
+            qWarning() << "清理插件模块异常:" << e.what();
+        }
+    }
+
+    // 4. 加载插件（使用包结构）
+    QString mainPy = info.path + "main.py";
+    if (!QFile::exists(mainPy)) {
+        return info.path + "main.py 文件不存在";
+    }
 
     try {
-        // 设置 sys.path
-        py::exec(QString("import sys; sys.path.insert(0, '%1')").arg(info.path).toStdString());
+        // 将插件路径转换为模块名：例如 "plugin/漂流瓶" -> "plugin.漂流瓶"
+        QString moduleName = info.path;
+        // 标准化路径分隔符为点号
+        moduleName.replace('/', '.').replace('\\', '.');
+        // 移除末尾可能残留的点
+        if (moduleName.endsWith('.')) moduleName.chop(1);
+        // 加上主模块名
+        QString fullModuleName = moduleName + ".main";  // 例如 "plugin.漂流瓶.main"
 
-        // 创建插件的独立全局命名空间
-        py::dict plugin_globals;
-        plugin_globals["__builtins__"] = py::module_::import("builtins");
-        plugin_globals["__name__"] = py::str(info.path.toStdString());
-        plugin_globals["qq_api"] = py::module_::import("qq_api");
-        plugin_globals["sys"] = py::module_::import("sys");
-
-        // 执行文件，将 locals 也设为 plugin_globals，保证所有定义都进入同一个字典
-        py::eval_file(mainPy.toStdString(), plugin_globals, plugin_globals);
+        qDebug() << "正在导入插件模块:" << fullModuleName;
 
 
-        if (plugin_globals.contains("on_message"))
+        py::module_ plugin_module = py::module_::import(fullModuleName.toUtf8().constData());
+        py::dict plugin_globals = plugin_module.attr("__dict__");
+
+        // 5. 提取 on_message（入口函数）
+        if (plugin_globals.contains("on_message")) {
             info.python.instance = plugin_globals["on_message"];
+        }
 
+        // 6. 提取生命周期回调
         auto getCb = [&](const char *name) -> py::object {
             if (plugin_globals.contains(name)) {
                 py::object obj = plugin_globals[name];
                 return (py::isinstance<py::function>(obj) || PyCallable_Check(obj.ptr())) ? obj : py::object();
             }
-            return {};
+            return py::object();
         };
-
-        if(info.uuid.isEmpty()) {
+        if (info.uuid.isEmpty()) {
             QUuid uuid = QUuid::createUuid();
             info.uuid = uuid.toString(QUuid::WithoutBraces);
         }
@@ -1270,7 +1476,48 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
 
-        // 获取插件信息
+        // 7. 解析 _plugin_commands（规则注册）
+        info.python.event.clear();
+        info.python.rules.clear();
+        if (plugin_globals.contains("_plugin_commands") && py::isinstance<py::dict>(plugin_globals["_plugin_commands"])) {
+            py::dict commands = plugin_globals["_plugin_commands"].cast<py::dict>();
+
+            auto processList = [&](const char* key, MatchType matchType) {
+                if (!commands.contains(key) || !py::isinstance<py::list>(commands[key])) return;
+
+                py::list list = commands[key].cast<py::list>();
+                for (auto item : list) {
+                    py::dict cmd = item.cast<py::dict>();
+                    QString keyStr = QString::fromStdString(cmd["key"].cast<std::string>());
+                    QString funName = QString::fromStdString(cmd["fun"].cast<std::string>());
+
+                    py::object funcObj = plugin_globals[py::str(funName.toStdString())];
+                    if (funcObj.is_none() || !(py::isinstance<py::function>(funcObj) || PyCallable_Check(funcObj.ptr()))) {
+                        qWarning() << "指令/事件函数" << funName << "不存在或不可调用，跳过";
+                        continue;
+                    }
+
+                    if (matchType == MatchType::event) {
+                        info.python.event.insert(keyStr, funcObj);
+                    } else {
+                        bool caseSensitive = true;
+                        if (cmd.contains("case_sensitive")) {
+                            caseSensitive = cmd["case_sensitive"].cast<bool>();
+                        }
+                        info.python.rules.append({matchType, keyStr, funcObj, caseSensitive});
+                    }
+                }
+            };
+
+            processList("equals", MatchType::Equals);
+            processList("startswith", MatchType::StartsWith);
+            processList("endswith", MatchType::EndsWith);
+            processList("contains", MatchType::Contains);
+            processList("regex", MatchType::Regex);
+            processList("event", MatchType::event);
+        }
+
+        // 8. 获取插件信息（get_plugin_info）
         if (plugin_globals.contains("get_plugin_info")) {
             try {
                 py::dict dict = plugin_globals["get_plugin_info"](py::str(info.uuid.toStdString()));
@@ -1287,22 +1534,21 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                 readString("author", info.author);
                 readString("description", info.description);
                 readString("icon", info.icon);
+                readString("id", info.id);
+                if (dict.contains("version2") && !dict["version2"].is_none()) {
+                    info.version_int = dict["version2"].cast<int>();
+                }
 
-                info.python.event.clear();
-                info.python.rules.clear();
+                // 解析规则列表（与原来一致）
                 auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
-                    py::str keyPy = py::str(typeKey.toStdString());  // 或
-
-                    if (dict.contains(keyPy) && py::isinstance<py::list>(dict[keyPy])) {
-                        py::list ruleList = dict[keyPy].cast<py::list>();
+                    if (dict.contains(py::str(typeKey.toStdString())) && py::isinstance<py::list>(dict[py::str(typeKey.toStdString())])) {
+                        py::list ruleList = dict[py::str(typeKey.toStdString())].cast<py::list>();
                         for (py::handle item : ruleList) {
                             if (!py::isinstance<py::dict>(item)) {
                                 qWarning() << typeKey << "规则项不是字典，跳过";
                                 continue;
                             }
                             py::dict ruleDict = item.cast<py::dict>();
-
-                            // 提取 key（必填）
                             QString key;
                             if (ruleDict.contains("key") && !ruleDict["key"].is_none()) {
                                 key = QString::fromStdString(ruleDict["key"].cast<std::string>());
@@ -1310,8 +1556,6 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                                 qWarning() << typeKey << "规则缺少 key，跳过";
                                 continue;
                             }
-
-                            // 提取 fun（必填）-> 从 plugin_globals 获取函数对象
                             QString funName;
                             if (ruleDict.contains("fun") && !ruleDict["fun"].is_none()) {
                                 funName = QString::fromStdString(ruleDict["fun"].cast<std::string>());
@@ -1319,13 +1563,9 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                                 qWarning() << typeKey << "规则缺少 fun，跳过";
                                 continue;
                             }
-
-                            // 从 plugin_globals 查找函数对象
                             py::object funcObj;
-
-                            py::str funStd = py::str(funName.toStdString());  // 或
-                            if (plugin_globals.contains(funStd)) {
-                                py::object obj = plugin_globals[funStd];
+                            if (plugin_globals.contains(py::str(funName.toStdString()))) {
+                                py::object obj = plugin_globals[py::str(funName.toStdString())];
                                 if (py::isinstance<py::function>(obj) || PyCallable_Check(obj.ptr())) {
                                     funcObj = obj;
                                 }
@@ -1334,24 +1574,18 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                                 qWarning() << "函数" << funName << "不存在或不可调用，跳过该规则";
                                 continue;
                             }
-
-                            // 提取 case_sensitive（可选，默认为 true）
                             bool caseSensitive = true;
                             if (ruleDict.contains("case_sensitive") && !ruleDict["case_sensitive"].is_none()) {
                                 caseSensitive = ruleDict["case_sensitive"].cast<bool>();
                             }
-
-                            if(matchType==MatchType::event)
-                            {
-                                info.python.event.insert(key,funcObj);
-                            }else{
+                            if (matchType == MatchType::event) {
+                                info.python.event.insert(key, funcObj);
+                            } else {
                                 info.python.rules.append({matchType, key, funcObj, caseSensitive});
                             }
                         }
                     }
                 };
-
-                // 依次解析各个顶层键
                 parseRuleList("equals", MatchType::Equals);
                 parseRuleList("startswith", MatchType::StartsWith);
                 parseRuleList("endswith", MatchType::EndsWith);
@@ -1359,23 +1593,21 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
                 parseRuleList("regex", MatchType::Regex);
                 parseRuleList("event", MatchType::event);
 
-
             } catch (const py::error_already_set &e) {
                 return QString("执行 %1/main.py 中 get_plugin_info 函数异常：%2").arg(info.path, e.what());
             }
         }
 
-        if (info.name.isEmpty())
-            return info.path+"/main.py 中 get_plugin_info 函数未返回插件名称";
-
+        if (info.name.isEmpty()) {
+            return info.path + "/main.py 中 get_plugin_info 函数未返回插件名称";
+        }
 
         return QString();
+
     } catch (const py::error_already_set &e) {
         return QString("%1 错误: %2").arg(info.path, e.what());
     }
 }
-
-
 
 void PluginPage::savePlugins() {
     QJsonArray arr;
@@ -1447,6 +1679,8 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     info.author = metadata["author"].toString();
     info.description = metadata["description"].toString();
     info.icon = metadata["icon"].toString();
+    info.id = metadata["id"].toString();
+    info.version_int = metadata["version2"].toInt();
     info.type = 3;
 
     return QString();
