@@ -45,6 +45,7 @@ QQBotClient::QQBotClient(AccountInfo *info, QObject *parent)
     m_reconnectAttempts(0), m_heartbeatIntervalSec(30),
     m_invalidHeartbeatCount(0), m_seq(0), m_tokenExpireTime(0)
 {
+
     connect(&m_webSocket, &QWebSocket::connected, this, &QQBotClient::onConnected);
     connect(&m_webSocket, &QWebSocket::disconnected, this, &QQBotClient::onDisconnected);
     connect(&m_webSocket, &QWebSocket::textMessageReceived, this, &QQBotClient::onTextMessageReceived);

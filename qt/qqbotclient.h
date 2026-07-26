@@ -174,7 +174,7 @@ private:
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
 
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
-    QString processImageTags2(QString &text, int type, QString &info,int targetType, const QString &openid,QString &message_reference);
+
 
 private:
 
