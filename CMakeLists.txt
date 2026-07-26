@@ -181,6 +181,7 @@ else()
             pythonparser.h pythonparser.cpp
             pluginmarketwindow.h pluginmarketwindow.cpp
             netmanager.h netmanager.cpp
+            pluginmarket.h
 
 
 

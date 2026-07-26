@@ -353,6 +353,7 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         oldInfoPtr->markdown_pd = newInfo->markdown_pd;
         oldInfoPtr->markdown_pd_mb = newInfo->markdown_pd_mb;
         oldInfoPtr->wsIntents = newInfo->wsIntents;
+
         saveAccounts(oldInfoPtr.get());
     }
 

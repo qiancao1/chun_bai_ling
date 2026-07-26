@@ -24,6 +24,7 @@
 #include <pybind11/functional.h>
 
 #include <QApplication>
+#include "PluginMarketWindow.h"
 #include "cardwidget.h"
 #include "mainwindow.h"
 #include <QFile>
@@ -43,11 +44,11 @@ LmdbKV *cache_db=nullptr;
 std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
-
+QList<PluginInfo2> m_allPlugins;
 LmdbKV *aidb=nullptr;
 LmdbKV *dsdb=nullptr;
 LmdbKV *accdb=nullptr;
-
+MessageEvent *g_cqev=nullptr;
 int g_appid;
 void loadconfig()
 {
@@ -67,6 +68,22 @@ void loadconfig()
         file.close();
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
+    QJsonObject obj = g_config["zdcq"].toObject();
+    if (!obj.isEmpty()) {
+
+        g_config.remove("zdcq");
+        saveConfig();
+
+        // 创建新的事件对象（使用 new，或 QSharedPointer）
+        MessageEvent *ev = new MessageEvent;
+        ev->type   = obj["type"].toInt();
+        ev->msgId  = obj["msgid"].toString();
+        ev->groupId= obj["openid"].toString();
+        ev->log    = obj["time"].toDouble();
+        ev->appid  = obj["appid"].toInt();
+        g_cqev = ev;   // 全局指针指向动态对象
+    }
+
 }
 
 void saveConfig()
@@ -253,6 +270,9 @@ if os.path.exists(plugins_root):
     }
     pluginPage->foruninstall_Plugin();
     QThreadPool::globalInstance()->waitForDone();
+
+
     TerminateProcess(GetCurrentProcess(), 0);
+
     return ret;
 }

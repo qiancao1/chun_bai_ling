@@ -9,8 +9,8 @@ void NetManager::init() {
     m_netThread = new QThread(this);
     m_netThread->start(); // 后台线程自带 QEventLoop
 
-    // 依然保持 12 个 QNAM 打破 6 并发限制
-    for(int i = 0; i < 12; i++) {
+    // 依然保持 100 个 QNAM 打破 6 并发限制
+    for(int i = 0; i < 100; i++) {
         QNetworkAccessManager *mgr = new QNetworkAccessManager();
         mgr->moveToThread(m_netThread);
         m_netManagers.append(mgr);
@@ -53,6 +53,54 @@ std::future<QString> NetManager::post(const QString &url, const QByteArray &json
     return future; // 毫秒级返回
 }
 
+std::future<QString> NetManager::put(const QString &url, const QByteArray &jsonData,
+                                      const QHash<QString, QString> &headers, int timeoutMs) {
+    // 1. 使用 shared_ptr 管理 promise，保证跨线程安全
+    auto promise = std::make_shared<std::promise<QString>>();
+    std::future<QString> future = promise->get_future();
+
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for(auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        QNetworkReply *reply = mgr->put(request, jsonData);
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::finished, [promise, reply]() {
+
+            if (reply->error() != QNetworkReply::NoError) {
+                promise->set_exception(std::make_exception_ptr(
+                    std::runtime_error(reply->errorString().toStdString())
+                    ));
+            } else {
+                int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                if (statusCode >= 200 && statusCode < 300) {
+                    promise->set_value(QString::fromUtf8(reply->readAll()));
+                } else {
+                    promise->set_exception(std::make_exception_ptr(
+                        std::runtime_error(("HTTP error " + std::to_string(statusCode)).c_str())
+                        ));
+                }
+            }
+
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
+
+    return future; // 毫秒级返回
+}
 std::future<QString> NetManager::get(const QString &url,const QHash<QString, QString> &headers, int timeoutMs) {
 
     auto promise = std::make_shared<std::promise<QString>>();
@@ -88,6 +136,41 @@ std::future<QString> NetManager::get(const QString &url,const QHash<QString, QSt
     return future; // 毫秒级返回
 }
 
+std::future<QString> NetManager::Patch (const QString &url, const QByteArray &jsonData,
+                                      const QHash<QString, QString> &headers, int timeoutMs) {
+    // 1. 使用 shared_ptr 管理 promise，保证跨线程安全
+    auto promise = std::make_shared<std::promise<QString>>();
+    std::future<QString> future = promise->get_future();
+
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for(auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        QNetworkReply *reply = mgr->sendCustomRequest(request, "PATCH", jsonData);
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::finished, [promise, reply]() {
+            QString response = QString::fromUtf8(reply->readAll());
+            // 2. 把结果填进 promise（唤醒 future.get()）
+            promise->set_value(response);
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
+
+    return future; // 毫秒级返回
+}
 void NetManager::cleanup() {
 
     if (!m_netThread) return;

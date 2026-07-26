@@ -103,8 +103,9 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
     author->setStyleSheet("background-color: #DFA9F1;");
 
 
-    tagVersionLayout->addWidget(author);
+
     tagVersionLayout->addWidget(bq_type);
+    tagVersionLayout->addWidget(author);
     tagVersionLayout->addWidget(m_tagLabel);
 
 

@@ -70,7 +70,7 @@ xx2.py
 msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
 msg.user         : 发送者标识 32字节hex(字符串)
 msg.msgid        : 本条消息的唯一 ID（字符串）
-msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 (字符串)
+msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 与艾特标签'<@user>' 32字节hex 不需要区分是否艾特了你 取到的必定是其他用户 (字符串)
 msg.member_role  : 发送人权限 0群主 1管理员 2群员 (整数)
 msg.appid        : 应用/机器人 ID(整数)
 msg.user_id      : 用户 ID（整数）小游戏 优先

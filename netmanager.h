@@ -14,6 +14,10 @@ public:
     std::future<QString> post(const QString &url, const QByteArray &jsonData,
                               const QHash<QString, QString> &headers, int timeoutMs);
     std::future<QString> get(const QString &url,const QHash<QString, QString> &headers, int timeoutMs) ;
+    std::future<QString> Patch (const QString &url, const QByteArray &jsonData,
+                               const QHash<QString, QString> &headers, int timeoutMs);
+    std::future<QString> put(const QString &url, const QByteArray &jsonData,
+                                         const QHash<QString, QString> &headers, int timeoutMs);
 private:
     NetManager() { init(); }
     ~NetManager() { cleanup(); }

@@ -27,6 +27,7 @@
 #include <QTimer>
 #include "AccountInfo.h"
 #include <QColor>
+#include <future>
 struct logdb
 {
     QString groupId;     // 群id / 子频道id / 私聊对方的id
@@ -115,6 +116,7 @@ public:
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
     QString get_groups_info(const QString& group);
     QString get_groups_bot_state(const QString& group);
+    QString set_mute(int type,const QString& group,const QString &user,qint64 mute_seconds);
 
 public slots:
     void onTextMessageReceived(const QString &message);
@@ -143,9 +145,9 @@ private:
     void initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup);
     QString send_Media(int type, const QString &openid, QString &pname, const QString &info,  qint64 now_us,const QString &msgid, bool is_wakeup);
     QString sendOneMedia(int type, const QString &openid, QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup);
-    QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok);
+    QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
-                            qint64& expireTime,QString &md5, bool &ok);
+                            qint64& expireTime,QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
     void addmsglog(QString &response, int index, QString &pname, const QString &text, qint64 now_us, int type, QString &msgid, const QString &openid);
     void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
@@ -167,6 +169,9 @@ private:
     QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);
     QString PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
     QString GetSync(const QString &url, const QString &contentType, int timeoutMs);
+    QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
+
+    QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
 
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
     QString processImageTags2(QString &text, int type, QString &info,int targetType, const QString &openid,QString &message_reference);

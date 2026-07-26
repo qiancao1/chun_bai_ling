@@ -23,7 +23,7 @@
 #include <qtcpserver.h>
 #include <QNetworkReply>
 #include "chatpage.h"
-
+#include "pluginmarket.h"
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
@@ -333,7 +333,7 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
             oldInfoPtr->markdown = (md==1);
 
         if(wsIntents == 0)
-            oldInfoPtr->wsIntents = 0;
+            oldInfoPtr->wsIntents = 1191186432;
         else
             oldInfoPtr->wsIntents = wsIntents;
         m_accounts.append(oldInfoPtr);
@@ -370,10 +370,511 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
 
     return "添加成功 注意 重复appid,是覆盖请确定appid 正确";
 }
+
+#include <QString>
+#include <QStringList>
+#include <QList>
+#include <QUrl>
+#include <QDebug>
+
+
+// ---------- 辅助函数（从之前的回答中已有） ----------
+bool updateGlobalPluginList(QString& errorMsg);   // 从网络拉取并填充 m_allPlugins
+
+static bool isPluginInstalled(const QString& id) {
+    for (const PluginInfo &p : std::as_const(m_pluginList)) {
+        if (p.id == id) return true;
+    }
+    return false;
+}
+
+// ---------- 处理 #插件市场 指令 ----------
+QString handlePluginMarket(const QString& msg) {
+    // 1. 解析参数
+    QString cmd = msg.trimmed();
+    if (!cmd.startsWith("#插件市场"))
+        return "错误：指令格式不正确";
+
+    QString args = cmd.mid(QString("#插件市场").length()).trimmed();
+    int page = 1;
+    QString keyword;
+    QString tagFilter;
+
+    if (!args.isEmpty()) {
+        const QStringList parts = args.split(' ', Qt::SkipEmptyParts);
+        for (const QString& part : parts) {
+            if (part.startsWith("标签:", Qt::CaseInsensitive)) {
+                tagFilter = part.mid(3).trimmed();
+            } else {
+                bool ok;
+                int num = part.toInt(&ok);
+                if (ok && num > 0) {
+                    page = num;
+                } else {
+                    if (!keyword.isEmpty()) keyword += " ";
+                    keyword += part;
+                }
+            }
+        }
+    }
+
+    // 2. 确保插件列表已加载
+    if (m_allPlugins.isEmpty()) {
+        QString err;
+        if (!updateGlobalPluginList(err)) {
+            return QString("获取插件列表失败：%1").arg(err);
+        }
+    }
+
+    // 3. 过滤插件
+    QList<PluginInfo2> filtered;
+    for (const PluginInfo2& info : std::as_const(m_allPlugins)) {
+        // 标签过滤
+        if (!tagFilter.isEmpty()) {
+            bool tagMatched = false;
+            for (const QString& tag : info.tags) {
+                if (tag.contains(tagFilter, Qt::CaseInsensitive)) {
+                    tagMatched = true;
+                    break;
+                }
+            }
+            if (!tagMatched) continue;
+        }
+
+        // 关键词搜索（名称 + 备注）
+        if (!keyword.isEmpty()) {
+            if (!info.name.contains(keyword, Qt::CaseInsensitive) &&
+                !info.remark.contains(keyword, Qt::CaseInsensitive)) {
+                continue;
+            }
+        }
+
+        filtered.append(info);
+    }
+
+    // 4. 分页
+    const int pageSize = 20;
+    int total = filtered.size();
+    int totalPages = (total + pageSize - 1) / pageSize;
+
+    if (total == 0)
+        return "没有匹配的插件。";
+    if (page > totalPages)
+        return QString("页码超出，共 %1 页，当前请求第 %2 页").arg(totalPages).arg(page);
+
+    int start = (page - 1) * pageSize;
+    int end = qMin(start + pageSize, total);
+
+    // 5. 构建 Markdown 回复
+    QString result;
+    result += QString("📦 **插件列表** (第 %1/%2 页，共 %3 个，筛选后 %4 个)\n\n")
+                  .arg(page)
+                  .arg(totalPages)
+                  .arg(m_allPlugins.size())
+                  .arg(total);
+
+    for (int i = start; i < end; ++i) {
+        const PluginInfo2& info = filtered[i];
+        int displayIndex = i + 1;  // 当前页内的序号（从1开始）
+
+        // 检查是否已安装
+        bool installed = isPluginInstalled(info.id);
+
+        // 插件名 + 安装链接（使用上下文参数，保证点击后能准确定位）
+        // 链接格式： #安装插件 序号 页码 搜索词 标签
+        // 注意：如果搜索词或标签包含空格，需用引号或URL编码，为简单，我们假设无空格
+        QString installLink;
+        if (installed) {
+            installLink = "[已安装]";
+        } else {
+            // 构建参数：将当前过滤条件传递过去
+            QString argsForLink;
+            argsForLink += QString::number(displayIndex) + " " + QString::number(page);
+            if (!keyword.isEmpty()) argsForLink += " " + keyword;
+            if (!tagFilter.isEmpty()) argsForLink += " 标签:" + tagFilter;
+            installLink = QString("[安装](#安装插件 %1)").arg(argsForLink);
+        }
+
+        result += QString("**%1.%2** %3\n")
+                      .arg(displayIndex)
+                      .arg(info.name)
+                      .arg(installLink);
+
+        // 第二行：类型和说明
+        result += QString("> [%1] %2\n\n")
+                      .arg(info.type.isEmpty() ? "未知" : info.type)
+                      .arg(info.remark);
+    }
+
+    // 6. 翻页提示
+    if (page < totalPages) {
+        result += QString("输入 `#插件市场 %1` 查看下一页\n").arg(page + 1);
+    }
+    if (page > 1) {
+        result += QString("输入 `#插件市场 %1` 查看上一页\n").arg(page - 1);
+    }
+    if (!keyword.isEmpty() || !tagFilter.isEmpty()) {
+        result += "提示：使用 `#插件市场 页码 搜索词` 或 `#插件市场 页码 标签:标签名` 筛选\n";
+    }
+
+    return result;
+}
+
+
+QString onMessageReceived(const QString& msg) {
+    if (msg.startsWith("#插件市场")) {
+        return handlePluginMarket(msg);
+    }
+    else if (msg.startsWith("#安装插件")) {
+        // ---------- 处理安装，不单独写函数，内联 ----------
+        QString cmd = msg.trimmed();
+        QString args = cmd.mid(QString("#安装插件").length()).trimmed();
+        QStringList parts = args.split(' ', Qt::SkipEmptyParts);
+        if (parts.isEmpty()) {
+
+            return "安装失败：缺少插件序号";
+        }
+
+        bool ok;
+        int localIndex = parts[0].toInt(&ok);
+        if (!ok || localIndex < 1) {
+
+            return "安装失败：无效的序号";
+        }
+
+        // 解析上下文参数（页码、搜索词、标签）
+        int page = 1;
+        QString keyword;
+        QString tagFilter;
+        if (parts.size() > 1) {
+            int pageNum = parts[1].toInt(&ok);
+            if (ok && pageNum > 0) page = pageNum;
+        }
+        if (parts.size() > 2) {
+            keyword = parts[2];
+        }
+        if (parts.size() > 3) {
+            tagFilter = parts[3];
+        }
+
+        // 确保插件列表已加载
+        if (m_allPlugins.isEmpty()) {
+            QString err;
+            if (!updateGlobalPluginList(err)) {
+
+                return "获取插件列表失败：" + err;
+            }
+        }
+
+        // 重建过滤列表（与市场指令逻辑一致）
+        QList<PluginInfo2> filtered;
+        for (const PluginInfo2& info : std::as_const(m_allPlugins)) {
+            if (!tagFilter.isEmpty()) {
+                bool tagMatched = false;
+                for (const QString& tag : info.tags) {
+                    if (tag.contains(tagFilter, Qt::CaseInsensitive)) {
+                        tagMatched = true;
+                        break;
+                    }
+                }
+                if (!tagMatched) continue;
+            }
+            if (!keyword.isEmpty()) {
+                if (!info.name.contains(keyword, Qt::CaseInsensitive) &&
+                    !info.remark.contains(keyword, Qt::CaseInsensitive)) {
+                    continue;
+                }
+            }
+            filtered.append(info);
+        }
+
+        // 检查序号
+        if (localIndex < 1 || localIndex > filtered.size()) {
+
+            return QString("安装失败：序号 %1 超出范围（当前筛选结果共 %2 个）")
+                .arg(localIndex).arg(filtered.size());
+        }
+
+        const PluginInfo2& target = filtered[localIndex - 1];
+
+        // 检查是否已安装
+        if (isPluginInstalled(target.id)) {
+            return "该插件已安装，无需重复安装。";
+        }
+        return "安装插件没写呢";
+    }
+    return "";
+}
+
+bool extractLoadParams(const QString &cmd, int &type, QString &path) {
+    QStringList parts = cmd.split(' ', Qt::SkipEmptyParts);
+    if (parts.size() < 3) return false;
+    bool ok;
+    type = parts[1].toInt(&ok);
+    if (!ok) return false;
+    path = parts[2];
+    return true;
+}
+
 QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
     if(info->admin.isEmpty()) return QString();
     if(!info->admin.contains(ev.user)) return QString();
+    if(ev.msg=="#纯白铃铛")
+    {
+        int js=0,dll=0,dll32=0,python=0;
+        for(const auto & p :std::as_const(m_pluginList))
+        {
+            if(p.type==0) python++;
+            else if(p.type ==1) dll++;
+            else if(p.type ==2) dll32++;
+            else if(p.type ==3) js++;
+        }
+        return
+            QString("**基础**\n"
+            ">[取]() 获取某条信息原始数据\n"
+            "[md]() 复读指令\n"
+            "[重启框架]() 字面意思\n"
+            "[接口测试]() 字面意思\n\n"
+            "**webui**\n"
+            ">[webui]() 网页ui\n"
+            "[关闭webui]() | [开启webui]()\n\n"
+            "**机器人管理**\n"
+            ">[login]() <appid> 登录某个机器人\n"
+            ">[logout]() <appid> 下线某个bot\n"
+            ">[delbot]() <appid> 删除某个bit\n"
+            ">[boterr]() <appid> 查看最后登录错误\n"
+            ">[botlist]() 查看框架机器人列表\n"
+            ">[addbot]() <appid> <secret> {登录类型0 ws|1 webhook} {启用md} {事件订阅}\n\n"
+            "**插件相关**\n"
+            ">JS:%1 | Python:%4\nDLL:%2 | DLL32:%3\n[#插件列表]() 查看完整指令\n\n"
+
+            "**其他**\n"
+            ">[开启拟人]() | [关闭拟人]()\n"
+            "[%5]() 启用或取消白名单系统\n"
+            "[%6]() {群id|好友id} 设置白名单\n"
+            "[%7]() {群id|好友id} 取消白名单\n"
+
+            "\n\n---\n\n**以上指令机器管理员专属**\n>'<>'为必填 '{}'可选")
+                        .arg(js).arg(dll).arg(dll32).arg(python)
+
+                        .arg(info->bai_qy.isEmpty() ? "未设置" : info->bai_qy,
+                 info->bai_sr.isEmpty() ? "未设置" : info->bai_sr,
+                 info->bai_sc.isEmpty() ? "未设置" : info->bai_sc);
+    }
+    if (ev.msg == "#插件列表") {
+        // 你已有的代码，保持不变
+        QString res;
+        res.reserve(1024);
+        res.append("**插件列表**\n>");
+        for (int i = 0; i < m_pluginList.size(); ++i) {
+            auto &p = m_pluginList[i];
+            res.append(QString::number(i));
+            res.append(".");
+            if (p.type == 0)  res.append("[Py] ");
+            else if (p.type == 1) res.append("[x64] ");
+            else if (p.type == 2) res.append("[x32] ");
+            else if (p.type == 3) res.append("[JS] ");
+            res.append(p.name);
+            if (p.enabled)
+                res.append(" [禁用](#禁用插件");
+            else
+                res.append(" [启用](#启用插件");
+            res.append(QString::number(i));
+            res.append(") ");
+            res.append("[卸载](#卸载插件");
+            res.append(QString::number(i));
+            res.append(")\n");
+        }
+        res.append("可用指令：\n[#插件列表]()\n[#重载插件]() <序号>\n[#启用插件]() <序号>\n[#禁用插件]() <序号>\n[#卸载插件]() <序号>\n[#加载插件]() <路径>\n[#扫描插件]() 查看现有插件");
+        return res;
+    }
+
+    // ---------- 启用插件 ----------
+    if (ev.msg.startsWith("#启用插件")) {
+
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#启用插件", 0, index_ser);
+        if (cnt == -1) return "[启用插件] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        QMetaObject::invokeMethod(qApp, [index]() {
+            pluginPage->Enabled_Plugin(m_pluginList[index]); // 假设返回 bool
+
+        }, Qt::BlockingQueuedConnection); // 注意：使用 BlockingQueuedConnection 会阻塞当前线程直到 lambda 执行完毕
+        return QString("已启用插件 %1").arg(m_pluginList[index].name);
+    }
+
+    // ---------- 禁用插件 ----------
+    if (ev.msg.startsWith("#禁用插件")) {
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#禁用插件", 0, index_ser);
+        if (cnt == -1) return "[禁用插件] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        if (QThread::currentThread() == qApp->thread()) {
+            pluginPage->disable_Plugin(m_pluginList[index]);
+        } else {
+            QMetaObject::invokeMethod(qApp, [index]() {
+                pluginPage->disable_Plugin(m_pluginList[index]);
+            }, Qt::BlockingQueuedConnection);
+        }
+        return  QString("已禁用插件 %1").arg(m_pluginList[index].name);
+    }
+    // ---------- 重载插件 ----------
+    if (ev.msg.startsWith("#重载插件")) {
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#重载插件", 0, index_ser);
+        if (cnt == -1) return "[重载插件] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        if (QThread::currentThread() == qApp->thread()) {
+            pluginPage->Reload_Plugin(index); // 注意参数可能是序号
+        } else {
+            QMetaObject::invokeMethod(qApp, [index]() {
+            pluginPage->Reload_Plugin(index);
+            }, Qt::BlockingQueuedConnection);
+        }
+        return QString("已重载插件 %1").arg(m_pluginList[index].name);
+    }
+
+    // ---------- 卸载插件 ----------
+    if (ev.msg.startsWith("#卸载插件")) {
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#卸载插件", 0, index_ser);
+        if (cnt == -1) return "[卸载插件] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        QString name = m_pluginList[index].name;
+        if (QThread::currentThread() == qApp->thread()) {
+            pluginPage->uninstall_Plugin2(index);
+            pluginPage->savePlugins();
+        } else {
+            QMetaObject::invokeMethod(qApp, [index]() {
+                pluginPage->uninstall_Plugin2(index);
+                pluginPage->savePlugins();
+            }, Qt::BlockingQueuedConnection);
+        }
+
+        return QString("已卸载插件 %1").arg(name) ;
+    }
+    QString rrrr = onMessageReceived(ev.msg);
+    if(!rrrr.isEmpty()) return rrrr;
+    // ---------- 加载插件 ----------
+    if (ev.msg.startsWith("#加载插件")) {
+
+        QString path = ev.msg.mid(QString("#加载插件").length()).trimmed();
+        if (path.isEmpty()) {
+            return "错误：用法 #加载插件 <路径> dll 类型需指定dll js python只需要指定文件夹";
+        }
+
+        // ----- 自动检测类型 -----
+        QFileInfo info(path);
+        if (!info.exists()) {
+            return QString("错误：路径不存在 - %1").arg(path);
+        }
+
+        int type = -1;  // 最终确定的类型
+        if (info.isFile() && info.suffix().compare("dll", Qt::CaseInsensitive) == 0) {
+            // DLL 文件，默认以 64 位方式加载（内部自动降级 32 位）
+            type = 1;
+        } else if (info.isDir()) {
+            // 检查入口文件，优先 Python
+            QString pyPath = path + "/main.py";
+            QString jsPath = path + "/main.js";
+            if (QFile::exists(pyPath)) {
+                type = 0;   // Python
+            } else if (QFile::exists(jsPath)) {
+                type = 3;   // JS
+            } else {
+                return QString("错误：文件夹 %1 中没有 main.py 或 main.js，无法加载").arg(path);
+            }
+        } else {
+            return QString("错误：路径不是 DLL 文件或文件夹 - %1").arg(path);
+        }
+
+        // ----- 执行加载（在主线程）-----
+        QString resultMsg;
+        if (QThread::currentThread() == qApp->thread()) {
+            QList<int> dummy;
+            resultMsg = pluginPage->LoadPlugin(path, type, true, dummy);
+        } else {
+            QMetaObject::invokeMethod(qApp, [path, type, &resultMsg]() {
+                QList<int> dummy;
+                resultMsg = pluginPage->LoadPlugin(path, type, true, dummy);
+            }, Qt::BlockingQueuedConnection);
+        }
+
+        if (!resultMsg.isEmpty())
+            return "加载插件失败，错误内容："+resultMsg;
+        else {
+            pluginPage->savePlugins();
+            return "加载成功 发送 [#插件列表]() 查看";
+
+        }
+    }
+    if (ev.msg == "#扫描插件" || ev.msg == "#插件文件列表") {
+        QString result;
+        result.reserve(4096);
+        result.append("**📂 可用插件文件（点击加载）**\n");
+
+        QStringList dirs = {"plugin", "plugins"};
+        for (const QString &dirName : dirs) {
+            QDir dir(dirName);
+            if (!dir.exists()) {
+                result.append(QString("\n**%1** 目录不存在\n").arg(dirName));
+                continue;
+            }
+
+            result.append(QString("\n**%1** 目录:\n>").arg(dirName));
+
+            const QStringList dllFiles = dir.entryList(QStringList() << "*.dll", QDir::Files, QDir::Name);
+            const QStringList subDirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+            if (dllFiles.isEmpty() && subDirs.isEmpty()) {
+                result.append("  (空)\n");
+                continue;
+            }
+
+            // DLL 文件
+            for (const QString &dll : dllFiles) {
+                QString fullPath = dirName + "/" + dll;
+                result.append(QString("  `%1` [加载](#加载插件 %2)\n").arg(dll, fullPath));
+            }
+
+            // 文件夹
+            for (const QString &sub : subDirs) {
+                QString fullPath = dirName + "/" + sub;
+                QString pyPath = fullPath + "/main.py";
+                QString jsPath = fullPath + "/main.js";
+                bool hasPy = QFile::exists(pyPath);
+                bool hasJs = QFile::exists(jsPath);
+
+
+                if (hasPy) {
+                    result.append(QString("  `%1`").arg(sub));
+                    result.append(QString(" [加载](#加载插件 %1/)").arg(fullPath));
+                } else if (hasJs) {
+                    result.append(QString("  `%1`").arg(sub));
+                    result.append(QString(" [加载](#加载插件 %1/)").arg(fullPath));
+                } else {
+                    continue;
+                }
+                result.append("\n");
+            }
+        }
+
+        result.append("\n💡 点击加载按钮自动识别类型：DLL 或 Python/JS（优先 Python）");
+        return result;
+    }
     if(ev.msg=="webui")
     {
         if(ev.type == 2 || ev.type == 3)
@@ -382,6 +883,49 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             return QString("%1://%2:%3/webui/index.html?token=%4").arg(g_config["SSL"].toBool() ? "https" : "http",g_ip).arg(port).arg(ws_token);
         }
         return "请在 私聊环境获取链接 否则其他人登录可恶意操作";
+    }
+    if(ev.msg=="重启框架")
+    {
+
+        return "发送[#确认重启框架]() 来重启";
+    }
+    if(ev.msg=="#确认重启框架")
+    {
+        QJsonObject obj;
+        obj["msgid"] = ev.msgId;
+        obj["type"]   = ev.type;
+        obj["openid"] = ev.groupId;
+        obj["time"]   = QDateTime::currentSecsSinceEpoch();
+        obj["appid"]  = ev.appid;
+        g_config["zdcq"] = obj;
+        saveConfig();   // 必须同步写入磁盘
+        QMetaObject::invokeMethod(qApp, []() {
+
+            for (auto &c : m_botClients) {
+                c->stop();   // 假设 stop 是同步的，会等待数据发送完毕
+            }
+            for (const auto &c : std::as_const(g_botdb)) {
+                c->close();   // 假设 stop 是同步的，会等待数据发送完毕
+            }
+            if (bridge) {
+                bridge->writeResponseToBlock(1, "{\"type\":6}");
+                bridge->stopServer();   // 同步停止
+            }
+            for(const auto &db : std::as_const(g_logdb))
+            {
+                db->close();
+            }
+            pluginPage->foruninstall_Plugin();
+            QThreadPool::globalInstance()->waitForDone();
+            QString program = QCoreApplication::applicationFilePath();
+            QStringList args = QCoreApplication::arguments();
+            QProcess::startDetached(program, args);
+            ::TerminateProcess(GetCurrentProcess(), 0);
+        }, Qt::QueuedConnection);
+
+
+
+        return "正在重启";
     }
     if(ev.msg=="关闭webui")
     {
@@ -451,10 +995,10 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
         }else if(ev.msg.startsWith("addbot"))
         {
-            QString appid_str,secret,wsaddr,type,markdown,wsIntents;
-            int cnt = extractParams(ev.msg, "addbot", 0, appid_str,secret,wsaddr,type,markdown,wsIntents);
-            if (cnt == -1) return "deletebot 缺少appid参数";
-            return addbot(appid_str.toInt(),secret,wsaddr,type.toInt(),markdown,wsIntents.toInt());
+            QString appid_str,secret,type,markdown,wsIntents;
+            int cnt = extractParams(ev.msg, "addbot", 0, appid_str,secret,type,markdown,wsIntents);
+            if (cnt == -1) return "addbot 缺少appid secret参数";
+            return addbot(appid_str.toInt(),secret,QString(),type.toInt(),markdown,wsIntents.toInt());
         }else if(ev.msg.startsWith("delbot"))
         {
             QString appid_str;
@@ -478,6 +1022,28 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             }else return "查看最后错误的appid 未添加在 账号列表";
         }
     }
+    if(ev.msg=="接口测试")
+    {
+        QString resu;
+
+        if(m_botClients.contains(info->appid_int))
+        {
+            resu.reserve(1024);
+            QQBotClient *client = m_botClients[info->appid_int];
+            resu.append("**/get_groups_info**\n>");
+            resu.append( client->get_groups_info(ev.groupId));
+
+            resu.append("\n\n**/get_groups_bot_state**\n>");
+            resu.append( client->get_groups_bot_state(ev.groupId));
+
+            resu.append("\n\n**/set_mute**\n>");
+            resu.append(client->set_mute(0,ev.groupId,ev.user,60));
+
+            resu.append("\n\n**/get_members_list**\n>");
+            resu.append(client->get_members_list(ev.groupId,5));
+        }
+        return resu;
+    }
     if(ev.msg=="取")
     {
         QJsonParseError err;
@@ -485,8 +1051,9 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         if (err.error == QJsonParseError::NoError && !dom.isNull()) {
             return dom.toJson(QJsonDocument::Indented);
         }
-        return ev.raw.toUtf8();  // 若 ev.raw 是 QString，需要转为 QByteArray
+        return "```json\n"+ ev.raw+"\n```\n";  // 若 ev.raw 是 QString，需要转为 QByteArray
     }
+
     if(ev.msg.startsWith("md"))
     {
         QString text = ev.msg.mid(2).trimmed(); // 删除"md"并去除前导空白
@@ -734,7 +1301,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 }
                 if(sentText.contains("{混合}"))
                 {
-                    QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user).arg(ev.user);
+                    QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user, ev.user);
                     sentText = subTextReplace(sentText,"{混合}",hh);
                 }
 
@@ -1043,8 +1610,7 @@ QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int
 
 QString uploadImageToCdn(const QString &path)
 {
-    QString url = upload(path);
-    if(!url.isEmpty())    return url;
+    QString url;
 
 
     if(setA->远程服务器)

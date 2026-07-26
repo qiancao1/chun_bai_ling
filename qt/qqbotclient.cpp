@@ -1192,6 +1192,35 @@ QString QQBotClient::GetSync(const QString &url, const QString &contentType, int
     std::future<QString> future = NetManager::instance()->get(url, headers, timeoutMs);
     return future.get();
 }
+QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
+    std::future<QString> future = NetManager::instance()->Patch(url,jsonbyte ,headers, timeoutMs);
+    return future.get();
+}
+
+QString QQBotClient::put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+
+    std::future<QString> future = NetManager::instance()->put(url,data ,headers, timeoutMs);
+    return future.get();
+}
 //弃用
 QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)
 {
@@ -1334,6 +1363,15 @@ void QQBotClient::fetchSelfInfo()
             QString avatarPath = avatarDir + m_info->appid + ".png";
             downloadAvatar(avatarUrl, avatarPath);
             m_info->avatarPath = avatarPath;
+        }
+        if (g_cqev && m_info && g_cqev->appid == m_info->appid_int) {
+            QString pname = "[私有指令]";
+            QString text = QString("重启成功 耗时%1秒...")
+                               .arg(QDateTime::currentSecsSinceEpoch() - g_cqev->log);
+            send_messages(g_cqev->type, g_cqev->groupId, pname, text, g_cqev->msgId);
+
+            delete g_cqev;   // 释放内存
+            g_cqev = nullptr;
         }
         m_info->autoConnect=true;
         emit loginSuccess(); //通知界面修改

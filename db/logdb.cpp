@@ -46,7 +46,7 @@ LogDB::LogDB(const QString &dbPath, QObject *parent)
         m_buffer[i].store(0, std::memory_order_relaxed);
     }
     m_flushTimer = new QTimer(this);
-    m_flushTimer->setInterval(3000);   // 3000 毫秒
+    m_flushTimer->setInterval(4000);   // 4000 毫秒
     connect(m_flushTimer, &QTimer::timeout, this, &LogDB::flushCacheToDB);
     m_flushTimer->start();
 }
@@ -235,18 +235,7 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
 }
 
 // ---------- 公共接口 ----------
-uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg)
-{
-    QMutexLocker locker(&m_mutex);
-    if (!m_env) return 0;
-    uint64_t seq = m_nextId.fetch_add(1);
-    QString key = makeKey(appid, groupId, seq);
-    m_cache[key] = {msg, true};
-    auto now = std::chrono::steady_clock::now();
-    uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    setBufferDurationAndStatus(seq, now_us, 0);
-    return seq;
-}
+
 bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
 {
     QMutexLocker locker(&m_mutex);
@@ -507,8 +496,15 @@ bool LogDB::updateLog(const QString &appid, const QString &groupId, uint64_t seq
     }
     return false;
 }
+// 原 flushCacheToDB 改为：
 void LogDB::flushCacheToDB() {
     QMutexLocker locker(&m_mutex);
+    flushCacheToDBUnlocked();
+}
+
+// 新增不加锁版本（复制原逻辑，去掉锁）
+void LogDB::flushCacheToDBUnlocked() {
+    // 假设已持有锁
     if (!m_env || m_cache.isEmpty()) return;
 
     // 收集脏 key
@@ -522,7 +518,7 @@ void LogDB::flushCacheToDB() {
         MDB_txn *txn = nullptr;
         int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
         if (rc != MDB_SUCCESS) {
-            qWarning() << "flushCacheToDB: 开启事务失败" << mdb_strerror(rc);
+            qWarning() << "flushCacheToDBUnlocked: 开启事务失败" << mdb_strerror(rc);
             return;
         }
 
@@ -545,57 +541,67 @@ void LogDB::flushCacheToDB() {
 
             rc = mdb_put(txn, m_dbi_main, &k, &v, 0);
             if (rc == MDB_MAP_FULL) {
-                // 空间不足，回滚事务，扩容后重试
                 mdb_txn_abort(txn);
                 if (!expandAndReopen()) {
-                    qWarning() << "flushCacheToDB: 扩容失败，本次刷库放弃";
+                    qWarning() << "flushCacheToDBUnlocked: 扩容失败";
                     return;
                 }
-                // 扩容成功后，跳出循环，重新开始外层重试
                 ok = false;
                 break;
             } else if (rc != MDB_SUCCESS) {
-                qWarning() << "flushCacheToDB: mdb_put 失败" << mdb_strerror(rc) << key;
+                qWarning() << "flushCacheToDBUnlocked: mdb_put 失败" << mdb_strerror(rc) << key;
                 ok = false;
                 break;
             }
         }
 
         if (!ok) {
-            // 如果是因为扩容触发的失败，则继续外层循环重试（已回滚事务）
             if (rc == MDB_MAP_FULL) continue;
-            // 其他错误，回滚并退出
             if (txn) mdb_txn_abort(txn);
             return;
         }
 
-        // 提交事务
         rc = mdb_txn_commit(txn);
         if (rc == MDB_MAP_FULL) {
-            // 提交时也可能报空间不足，回滚后扩容重试
             mdb_txn_abort(txn);
             if (!expandAndReopen()) {
-                qWarning() << "flushCacheToDB: 提交时扩容失败";
+                qWarning() << "flushCacheToDBUnlocked: 提交时扩容失败";
                 return;
             }
             continue;
         } else if (rc != MDB_SUCCESS) {
-            qWarning() << "flushCacheToDB: 提交事务失败" << mdb_strerror(rc);
+            qWarning() << "flushCacheToDBUnlocked: 提交事务失败" << mdb_strerror(rc);
             mdb_txn_abort(txn);
             return;
         }
 
-        // 成功提交，标记所有脏数据为已持久化
-        for (const QString &key : dirtyKeys) {
-            auto it = m_cache.find(key);
-            if (it != m_cache.end()) it->dirty = false;
-        }
-        return; // 刷库成功
+        // 成功提交，清空缓存
+        m_cache.clear();
+        return;
     }
 
-    qWarning() << "flushCacheToDB: 重试次数耗尽，刷库失败";
+    qWarning() << "flushCacheToDBUnlocked: 重试次数耗尽，清空缓存（数据可能丢失）";
+    m_cache.clear();
 }
 
+// appendLog 中添加主动刷库
+uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg) {
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return 0;
+    uint64_t seq = m_nextId.fetch_add(1);
+    QString key = makeKey(appid, groupId, seq);
+    m_cache[key] = {msg, true};
+    // 更新环形缓冲区
+    auto now = std::chrono::steady_clock::now();
+    uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    setBufferDurationAndStatus(seq, now_us, 0);
+
+    // 如果缓存达到上限，立即刷库
+    if (m_cache.size() >= 10000) {
+        flushCacheToDBUnlocked();  // 已在锁内，直接调用不加锁版本
+    }
+    return seq;
+}
 bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const
 {
     if (!m_env) return false;

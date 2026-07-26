@@ -95,7 +95,7 @@ private:
     QPushButton *m_refreshBtn;
     QLabel *m_statusLabel;
 
-    QList<PluginInfo2> m_allPlugins;
+
     QString m_currentCategory;
     QString m_plugin_type_str;
     QString m_currentKeyword;

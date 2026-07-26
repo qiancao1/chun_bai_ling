@@ -1528,7 +1528,7 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
 
 
     if (msg.size()!=0) {
-        for (int i = msg.size()-1; i < 0; --i) {
+        for (int i = msg.size()-1; i > 0; --i) {
             if (!msg[i].isSelf) {
                 m_msgid = msg[i].ch;
                 break;

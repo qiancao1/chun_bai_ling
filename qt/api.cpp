@@ -805,8 +805,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取用户信息 参数1 群id不能是空";
             break;
         }
-        int limit = toInt(_2);
-        if(limit<=0) limit =100;
+
         result = client->get_groups_info(text).toStdString();
         break;
     }
@@ -817,8 +816,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取机器人状态 参数1 群id不能是空";
             break;
         }
-        int limit = toInt(_2);
-        if(limit<=0) limit =100;
+
         result = client->get_groups_bot_state(text).toStdString();
         break;
     }
@@ -949,48 +947,6 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
     return qMakePair(addr, realMsgId);
 }
 
-
-QString sendPutRequest(const QString& url, const QByteArray& data, int timeoutMs)
-{
-    QNetworkRequest request((QUrl(url)));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
-
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.put(request, data);
-
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-
-    bool timeoutOccurred = false;
-    QObject::connect(&timer, &QTimer::timeout, [&]() {
-        timeoutOccurred = true;
-        reply->abort();   // 关键：中止请求
-        loop.quit();
-    });
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();
-
-    if (reply->error() != QNetworkReply::NoError) {
-        qWarning() << "Network error:" << reply->errorString();
-        return QString();
-    }
-
-    // 检查 HTTP 状态码
-    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if (statusCode < 200 || statusCode >= 300) {
-        QByteArray errBody = reply->readAll();
-        qWarning() << "HTTP error" << statusCode << ", body:" << errBody;
-        return QString();   // 明确失败
-    }
-
-    // 成功
-    QByteArray responseBody = reply->readAll();
-    // 这里可以提取 ETag 等（但你的 finish 接口可能不需要）
-    return QString::fromUtf8(responseBody);
-
-}
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString())
 {
     QString url;
@@ -1504,19 +1460,26 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                 if (cacheValid) {
                     newUrl = cachedUrl;
                 } else {
-                    // 上传图床
-                    QString uploadedUrl = uploadImageToCdn(newUrl);
+                    QString uploadedUrl = upload(newUrl); //优先本地
+                    if(uploadedUrl.isEmpty()){
+                        qint64 time=0;
+                        QString md5;
+                        bool ok=false;
+                        uploadRichMedia(targetType,openid,1,newUrl,time,md5,ok,uploadedUrl); //富媒体
+                        if(!ok)
+                            uploadedUrl = uploadImageToCdn(newUrl);//备用
+                        else
+                            if(!uploadedUrl.isEmpty()) uploadedUrl+="&response-content-type=image%2Fpng";
+                    }
                     if (!uploadedUrl.isEmpty()) {
                         newUrl = uploadedUrl;
-                        // 存入缓存
                         qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
                         cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
                     } else {
                         newUrl = tag.url; // 上传失败，保留原路径
                     }
                 }
-
-                // 重组为 Markdown 图片格式
+                qDebug() <<cachedUrl;
                 int w = (tag.width > 0) ? tag.width : 1000;
                 int h = tag.height;
                 QString markdownImg;
@@ -1527,7 +1490,6 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
                 }
                 text.replace(tag.start, tag.length, markdownImg);
             }else if (type == 2) {
-
                 info = newUrl;
                 text.replace(tag.start, tag.length, QString());
             }
@@ -1559,12 +1521,12 @@ QString QQBotClient::processImageTags2(QString &text, int type, QString &info,
 QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok)
 {
     qint64 expireTime=0;
-    QString md5,info;
+    QString md5,info,url;
     if(filePath.startsWith("http"))
     {
         info = uploadRichMedia_url(targetType,openid,fileType,filePath,expireTime,ok);
     }else{
-        info = uploadRichMedia(targetType,openid,fileType,filePath,expireTime,md5,ok);
+        info = uploadRichMedia(targetType,openid,fileType,filePath,expireTime,md5,ok,url);
     }
     if(!ok) return info;
     QString typeStr;
@@ -1580,8 +1542,8 @@ QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int 
 QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok)
 {
     qint64 expireTime=0;
-    QString md5;
-    QString info = uploadRichMedia(targetType,openid,fileType,data,filename,expireTime,md5,ok);
+    QString md5,url;
+    QString info = uploadRichMedia(targetType,openid,fileType,data,filename,expireTime,md5,ok,url);
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
@@ -1628,7 +1590,7 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
 }
 
 QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int fileType, const QString& filePath,
-                                     qint64& expireTime,QString &md5,bool &ok) {
+                                     qint64& expireTime,QString &md5,bool &ok,QString &outurl) {
     // 1. 读取文件
     ok=false;
     QFile file(filePath);
@@ -1669,7 +1631,8 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QJsonArray parts = respObj["parts"].toArray();
     QJsonObject partFinishBase;
     partFinishBase["upload_id"] = upload_id;
-
+    const int MAX_RETRIES = 3;
+    const int BASE_TIMEOUT_MS = 60000;
     int start=0;
     for (int i = 0; i < parts.size(); ++i) {
         QJsonObject part = parts[i].toObject();
@@ -1679,7 +1642,29 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         QString presignedUrl = part["presigned_url"].toString();
         QByteArray chunk = fileData.mid(start, blockSizeA);
         start += blockSizeA;
-        QString putResp = sendPutRequest(presignedUrl, chunk, 30000);
+        bool success = false;
+        int retry=0;
+        int currentTimeout = BASE_TIMEOUT_MS;
+        while (retry < MAX_RETRIES && !success) {
+            try {
+
+                put(presignedUrl, chunk, "application/octet-stream", currentTimeout);
+                success = true;
+            } catch (const std::exception &e) {
+                qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
+                retry++;
+                if (retry < MAX_RETRIES) {
+                    int sleepMs = 1000 * (1 << (retry - 1));
+                    QThread::msleep(sleepMs);
+                    currentTimeout += 10000;
+                }
+            }
+        }
+        if(success==false)
+        {
+            ok=false;
+            return QString("在上传%1分片时重试多次失败").arg(index);
+        }
         QJsonObject finishJson;
         finishJson["upload_id"] = upload_id;
         finishJson["part_index"] = index;
@@ -1700,13 +1685,17 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QJsonObject filesObj = filesRespDoc.object();
     QString file_info = filesObj["file_info"].toString();
     if (file_info.isEmpty()) return filesResp; // 错误信息
+    outurl = filesObj["raw_url"].toString();
+
+
+    //qDebug() <<filesObj;
     expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
     ok=true;
     return file_info;
 }
 
 QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
-                                    qint64& expireTime,QString &md5,bool &ok) {
+                                    qint64& expireTime,QString &md5,bool &ok,QString &outurl) {
 
 
     qint64 fileSize = data.size();
@@ -1750,22 +1739,41 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QJsonObject partFinishBase;
     partFinishBase["upload_id"] = upload_id;
     int start =0;
-    // 6. 循环上传每个分片
+    const int MAX_RETRIES = 3;
+    const int BASE_TIMEOUT_MS = 30000;
     for (int i = 0; i < parts.size(); ++i) {
         QJsonObject part = parts[i].toObject();
         int index = part["index"].toInt();
         int blockSize = part["block_size"].toInt();
         QString presignedUrl = part["presigned_url"].toString();
-
-        // 取出分片数据
-
         QByteArray chunk = data.mid(start, blockSize);
         start+=blockSize;
-        // PUT 上传分片
-        QString putResp = sendPutRequest(presignedUrl, chunk, 30000);
-        // 忽略响应，一般只要成功即可
 
-        // 报告分片完成
+        bool success = false;
+        int retry=0;
+        int currentTimeout = BASE_TIMEOUT_MS;
+        while (retry < MAX_RETRIES && !success) {
+            try {
+
+                put(presignedUrl, chunk, "application/octet-stream", currentTimeout);
+                success = true;
+            } catch (const std::exception &e) {
+                qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
+                retry++;
+                if (retry < MAX_RETRIES) {
+                    int sleepMs = 1000 * (1 << (retry - 1));
+                    QThread::msleep(sleepMs);
+                    currentTimeout += 10000;
+                }
+            }
+        }
+        if(success==false)
+        {
+            ok=false;
+            return QString("在上传%1分片时重试多次失败").arg(index);
+        }
+        //QString putResp = put(presignedUrl, chunk,"application/octet-stream", 30000);
+
         QJsonObject finishJson;
         finishJson["upload_id"] = upload_id;
         finishJson["part_index"] = index;
@@ -1791,7 +1799,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QJsonObject filesObj = filesRespDoc.object();
     QString file_info = filesObj["file_info"].toString();
     if (file_info.isEmpty()) return filesResp; // 错误信息
-
+    outurl = filesObj["raw_url"].toString();
     // 获取过期时间（秒为单位）
     expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
     ok=true;
@@ -2293,7 +2301,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
     }
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    QString newtext2=sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
 
     if (!newtext.isEmpty())
     {
@@ -2638,4 +2646,18 @@ QString QQBotClient::get_groups_info(const QString& group)
 QString QQBotClient::get_groups_bot_state(const QString& group)
 {
     return GetSync(get_url(0,group,"bot_state"),QString(), 10000);
+}
+QString QQBotClient::set_mute(int type,const QString& group,const QString &user,qint64 mute_seconds)
+{
+    QString url = QString("https://api.bot.qq.com/%1/%2/mute").arg(type==0?"v2/groups":"guilds",group);
+    QJsonObject obj;
+    if(mute_seconds>31104000)//判定为时间戳
+        obj["mute_end_timestamp"]=mute_seconds;
+    else
+        obj["mute_seconds"] = mute_seconds;
+    if(!user.isEmpty()){
+        QStringList list = user.split(",");
+        obj["user_ids"] = QJsonArray::fromStringList(list);
+    }
+    return PatchSync(url,obj,QString(),10000) ;
 }

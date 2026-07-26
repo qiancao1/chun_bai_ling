@@ -153,7 +153,7 @@ private:
 
     bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
     void flushCacheToDB() ;
-
+    void flushCacheToDBUnlocked();   // 不加锁版本
     // 禁用拷贝
     LogDB(const LogDB&) = delete;
     LogDB& operator=(const LogDB&) = delete;

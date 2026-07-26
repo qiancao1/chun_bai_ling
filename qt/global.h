@@ -50,6 +50,7 @@
 #include "sandboxwindow.h"
 #include "set.h"
 #include "websocketserver.h"
+#include "PluginMarketWindow.h"
 class Global
 {
 public:
@@ -128,6 +129,9 @@ extern int 聊天发送模式;
 extern int 定时检查变量;
 extern bool 框架退出;
 extern int plugin_n;
+extern QList<PluginInfo2> m_allPlugins;
+extern MessageEvent *g_cqev;
+
 void showAutoCloseMessageBox(const QString &title, const QString &text, int timeoutMs = 5000);
 void AppendEventLog(const QString &msg, int color=Color_0);
 QString upload(const QString &path);
@@ -152,6 +156,11 @@ bool W_file(const QString &path,const QByteArray &data);
 int accinfo(int appid);
 void processPendingEvents();
 QString python_code(const QString &py_code);
+
+
+
+
+
 
 class SendMessageTask2 : public QRunnable {
 public:
@@ -245,7 +254,6 @@ private:
     QList<QString> m_user_list;
 };
 
-
 class SendMessageTask : public QRunnable {
 public:
     SendMessageTask(QQBotClient* client,
@@ -303,7 +311,6 @@ private:
     QString m_pname;
     bool mode;
 };
-
 
 class JsApiTask : public QRunnable {
 public:
@@ -382,12 +389,6 @@ private:
 
 };
 
-
-#include <QString>
-#include <QList>
-#include <QChar>
-
-// ----- 字符分类（同前） -----
 enum CharCategory { CatUnknown, CatChinese, CatLetter, CatDigit, CatSymbol };
 
 static CharCategory getCategory(const QChar &ch) {
@@ -397,7 +398,6 @@ static CharCategory getCategory(const QChar &ch) {
     return CatSymbol;
 }
 
-// ----- 核心提取函数（模板） -----
 template<typename... Args>
 int extractParams(const QString &text, const QString &cmd, int filter, Args&... args) {
     // 1. 检查指令
