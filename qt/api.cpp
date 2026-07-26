@@ -1429,7 +1429,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         text = convertMdLinksKeepHttp(text);
     else
         text = convertMarkdownLinksToXml(text);
-    qDebug() <<text;
+
     return text;
 }
 QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok)
