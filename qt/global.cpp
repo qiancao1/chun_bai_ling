@@ -1041,6 +1041,9 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
             resu.append("\n\n**/get_members_list**\n>");
             resu.append(client->get_members_list(ev.groupId,5));
+
+            resu.append("\n\n**/del_members**\n>");
+            resu.append(client->del_members(ev.type,ev.groupId,info->unid));
         }
         return resu;
     }

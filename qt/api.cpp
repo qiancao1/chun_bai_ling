@@ -1373,11 +1373,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                             .arg(tag.coreText).arg(w).arg(h).arg(newUrl);
                         } else {
                             // 没有尺寸信息，只保留核心文本
-                            markdownImg = QStringLiteral("![%1](%2)").arg(tag.coreText).arg(newUrl);
+                            markdownImg = QStringLiteral("![%1](%2)").arg(tag.coreText, newUrl);
                         }
                     } else {
                         // 用户已指定（或已补全）尺寸，直接使用修正后的 alt
-                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.alt).arg(newUrl);
+                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.alt,newUrl);
                     }
                 } else {
                     // 旧 [image] 标签，保持原有生成逻辑
@@ -1406,9 +1406,9 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 if (tag.isMdImg) {
                     if (tag.needPadding) {
                         // 无法获取尺寸，只保留核心文本（不加尺寸）
-                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.coreText).arg(newUrl);
+                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.coreText,newUrl);
                     } else {
-                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.alt).arg(newUrl);
+                        markdownImg = QStringLiteral("![%1](%2)").arg(tag.alt,newUrl);
                     }
                 } else {
                     // 旧 [image] 标签，保持原逻辑（默认宽度 1000）
@@ -2451,26 +2451,7 @@ QString QQBotClient::delete_messages(int type, const QString &openid, const QStr
 {
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     QString url = get_url(type, openid, "messages", realMsgId);
-
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
-    request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.deleteResource(request);
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(30000);  // 30秒超时，可根据需要调整
-    loop.exec();
-
-    QByteArray result = reply->readAll();
-    reply->deleteLater();
-    return QString::fromUtf8(result);
+    return DeleteSync(url,QJsonObject(),QString(),10000);
 }
 
 
@@ -2514,35 +2495,13 @@ QString QQBotClient::respond_interaction(const QString &interaction_id, int code
     if (!data.isEmpty()) {
         json["data"] = data;
     }
-
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
     QByteArray body = QJsonDocument(json).toJson(QJsonDocument::Compact);
-    QNetworkReply *reply = manager.put(request, body);
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(10000); // 5秒超时
-    loop.exec();
-    QString result;
-    if (timer.isActive()) {
-        if (reply->error() == QNetworkReply::NoError) {
-            result = QString::fromUtf8(reply->readAll());
-        } else {
-            result = QString("Error: %1").arg(reply->errorString());
-        }
-    } else {
-        reply->abort();
-        result = "Error: timeout";
+    try {
+       return put(url,body,QString(),5000);
+    } catch (const std::exception &e) {
+        return e.what();  // 失败返回空字符串
     }
 
-    reply->deleteLater();
-    return result;
 }
 QString QQBotClient::get_groups_info(const QString& group)
 {
@@ -2552,6 +2511,19 @@ QString QQBotClient::get_groups_bot_state(const QString& group)
 {
     return GetSync(get_url(0,group,"bot_state"),QString(), 10000);
 }
+QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days)
+{
+    QString url = get_url(type,group,"members",user);
+    if(add_blacklist || delete_history_msg_days!=0){
+        QJsonObject obj;
+        obj["add_blacklist"] = add_blacklist;
+        obj["delete_history_msg_days"]=delete_history_msg_days;
+        return DeleteSync(url,obj,QString(),10000);
+    }
+    return DeleteSync(url,QJsonObject(),QString(),10000);
+
+}
+
 QString QQBotClient::set_mute(int type,const QString& group,const QString &user,qint64 mute_seconds)
 {
     QString url = QString("https://api.bot.qq.com/%1/%2/mute").arg(type==0?"v2/groups":"guilds",group);

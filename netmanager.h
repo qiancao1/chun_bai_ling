@@ -18,6 +18,11 @@ public:
                                const QHash<QString, QString> &headers, int timeoutMs);
     std::future<QString> put(const QString &url, const QByteArray &jsonData,
                                          const QHash<QString, QString> &headers, int timeoutMs);
+
+    std::future<QString> Delete(const QString &url,
+                                const QByteArray &data,
+                                const QHash<QString, QString> &headers = {},
+                                int timeoutMs = 30000);
 private:
     NetManager() { init(); }
     ~NetManager() { cleanup(); }

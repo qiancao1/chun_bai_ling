@@ -105,7 +105,7 @@ public:
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
     QString uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok);
-
+    QString del_members (int type,const QString& group,const QString &user,bool add_blacklist = false,int delete_history_msg_days=0);
     //撤回
     QString delete_messages(int type, const QString &openid, const QString &msgid);
     //获取邀请链接
@@ -172,7 +172,7 @@ private:
     QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
 
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
-
+    QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 
 

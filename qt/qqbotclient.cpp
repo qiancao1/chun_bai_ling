@@ -1222,6 +1222,21 @@ QString QQBotClient::put(const QString &url, const QByteArray &data, const QStri
     std::future<QString> future = NetManager::instance()->put(url,data ,headers, timeoutMs);
     return future.get();
 }
+
+QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
+    std::future<QString> future = NetManager::instance()->Delete(url, jsonbyte, headers, timeoutMs);
+    return future.get();
+}
 //弃用
 QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)
 {

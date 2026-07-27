@@ -35,6 +35,8 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 8.如果引用到第三方库 将数据写到 requirements.txt 文件 没有就自己创建
 9.写好插件需要载入一次 这样子才知道能不能载入 会不会有啥保存
 10.注意优化 如 定时器不要启动多个 可以全局的 没必要 每个类都创建一个 什么代码都先考虑 单个 而不是放类里面重复创建
+11.最重要的 先列出清单 比如道具 以及是否多人 是否要显示用户昵称(可能包含违禁词) 以及尽量省略指令 指令不应该过长 等先列出来让用户确认
+12.用于是手机版 所以游戏返回文本请注意排版
 ===================
 1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
@@ -710,14 +712,14 @@ AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
         QString text = messageInput->toPlainText().trimmed();
         if(sendBtn->text()=="中断"){
             if (m_stream) {
-                addmsg+=text;
+                addmsg+=text+"\n";
                 messageInput->clear();
                 return;
             }
 
         }
 
-
+        addmsg.clear();
         if (!text.isEmpty()) {
             messageInput->clear();
             onSendMessage_stream(text);
@@ -973,9 +975,9 @@ void AppWindow::onFileClicked(const QModelIndex &index)
         return;
     }
 
-    // 1. 文件大小限制：超过 100KB 不予加载
-    if (fileInfo.size() > 100 * 1024) {
-        codeEditor->setPlainText(QString("错误：文件大小为 %1 KB，超过 100KB 预览限制，无法打开。").arg(fileInfo.size() / 1024));
+    // 1. 文件大小限制：超过 300KB 不予加载
+    if (fileInfo.size() > 300 * 1024) {
+        codeEditor->setPlainText(QString("错误：文件大小为 %1 KB，超过 300KB 预览限制，无法打开。").arg(fileInfo.size() / 1024));
         return;
     }
 

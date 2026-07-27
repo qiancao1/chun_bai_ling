@@ -171,6 +171,45 @@ std::future<QString> NetManager::Patch (const QString &url, const QByteArray &js
 
     return future; // 毫秒级返回
 }
+
+// NetManager.cpp
+std::future<QString> NetManager::Delete(const QString &url,
+                                        const QByteArray &data,
+                                        const QHash<QString, QString> &headers,
+                                        int timeoutMs) {
+    auto promise = std::make_shared<std::promise<QString>>();
+    std::future<QString> future = promise->get_future();
+
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        // ★★★ 关键修改：使用 sendCustomRequest 发送 DELETE 请求体和数据 ★★★
+        QNetworkReply *reply = mgr->sendCustomRequest(request, "DELETE", data);
+
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::finished, [promise, reply]() {
+            QString response = QString::fromUtf8(reply->readAll());
+            promise->set_value(response);   // 无论成败，都返回原始响应
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
+
+    return future;
+}
 void NetManager::cleanup() {
 
     if (!m_netThread) return;
