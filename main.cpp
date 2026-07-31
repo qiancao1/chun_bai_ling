@@ -36,6 +36,10 @@
 #include "logdb.h"
 #include <QStandardPaths>
 #include <QMessageBox>
+#include <QSystemTrayIcon>
+#include <qmenu.h>
+
+
 namespace py = pybind11;
 
 QJsonObject g_config;
@@ -52,7 +56,6 @@ MessageEvent *g_cqev=nullptr;
 int g_appid;
 void loadconfig()
 {
-
     bool ok = false;
     QFile file("data/config.json");
     if (file.open(QIODevice::ReadOnly))
@@ -83,7 +86,6 @@ void loadconfig()
         ev->appid  = obj["appid"].toInt();
         g_cqev = ev;   // 全局指针指向动态对象
     }
-
 }
 
 void saveConfig()
@@ -103,7 +105,6 @@ bool clearPTmpFolder()
     if (!dir.exists()) {
         return true;
     }
-
     const QStringList dllFiles = dir.entryList(QDir::Files);
     bool ok = true;
     for (const QString &file : dllFiles) {
@@ -130,7 +131,6 @@ void initdiv()
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
 
-
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 {
     // 创建 minidump 文件
@@ -143,12 +143,9 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
         MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mei, NULL, NULL);
         CloseHandle(hFile);
     }
-
-
     QMessageBox::about(NULL,  "Error","程序崩溃，已生成 crash.dmp 如果你是第一次 运行时报错这个 请按照微软运行库 请打开 下崽器 输入1 下载安装");
     return EXCEPTION_EXECUTE_HANDLER; // 终止进程
 }
-
 
 void initDBs() {
     for (int i = 0; i < 5; ++i) {
@@ -161,8 +158,6 @@ void initDBs() {
         }
     }
 }
-
-
 
 
 QString browseWeb(const QString &urlString);
@@ -256,6 +251,37 @@ if os.path.exists(plugins_root):
 
 
     MainWindow w;
+
+    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+        QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
+        trayIcon->setIcon(QIcon(":/icons/app_icon.ico")); // 从资源文件加载[reference:2][reference:3]
+        trayIcon->setToolTip("纯白铃铛");
+        QMenu *menu = new QMenu();
+        QAction *showAction = new QAction("显示主窗口", menu);
+        QAction *hideAction = new QAction("隐藏主窗口", menu);
+        menu->addSeparator(); // 添加分隔线
+        QAction *quitAction = new QAction("退出", menu);
+        menu->addAction(showAction);
+        menu->addAction(hideAction);
+        menu->addAction(quitAction);
+        trayIcon->setContextMenu(menu);
+        QObject::connect(showAction, &QAction::triggered, &w, &QMainWindow::show);
+        QObject::connect(hideAction, &QAction::triggered, &w, &QMainWindow::hide);
+        QObject::connect(quitAction, &QAction::triggered, &a, &QApplication::quit);
+        QObject::connect(trayIcon, &QSystemTrayIcon::activated,
+                         [&w](QSystemTrayIcon::ActivationReason reason) {
+                             if (reason == QSystemTrayIcon::Trigger) { // 单击[reference:9]
+                                 if (w.isHidden()) {
+                                     w.show();
+                                 } else {
+                                     w.hide();
+                                 }
+                             }
+                         });
+        trayIcon->show();
+    }
+
+
     w.show();
     int ret = a.exec();
     框架退出=true;

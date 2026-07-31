@@ -115,6 +115,7 @@ struct AccountInfo {
     bool e_bai=true;
     bool shuap=false;//刷屏检测
     bool xiangliang=false; //向量数据库
+    bool juece;
     qint64 startup_time = 0;
     QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
     QString admin;

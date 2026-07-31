@@ -45,33 +45,82 @@ int mapTypeToTabIndex(int type)
     }
 }
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
+QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 int plugin_n=0;
 void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
 {
-
+    if (!m_botClients.contains(appid)) return;
+    QQBotClient *c = m_botClients[appid];
+    if (c->m_info->fallbackReply.isEmpty()) return;
     int tabIndex=type + 1;
     if(tabIndex<1 || tabIndex>4) return;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     if(index<0) return;
-
-
     int n = g_logdb [tabIndex]->incrementBufferStatus(index);
-    if(n == 255) return; //255代表被处理了
+    if(n >= 250) return; //255代表被处理了
     //qDebug()<< "未回应计数：" <<entry.n;
-    if(n>=plugin_n && m_botClients.contains(appid))
+    if(n>=plugin_n)
     {
 
-        QQBotClient *c =  m_botClients[appid];
-        if(c->m_info->fallbackReply.isEmpty()) return;
-        QString text="[未被处理回应]";
-        c->send_messages(type,openid,text,c->m_info->fallbackReply,msgid);
+        QMetaObject::invokeMethod(qApp, [=]() {
+            // 以下代码在主线程运行
+
+            if (m_openidTimers.contains(openid)) {
+                QTimer *oldTimer = m_openidTimers[openid];
+                oldTimer->start();  // 重新计时 5 秒
+                qDebug() << "重置定时" << openid;
+                return;  // 无需创建新定时器
+            }
+
+            // 2. 创建新的单次定时器
+            QTimer *timer = new QTimer();
+            timer->setSingleShot(true);
+            timer->setInterval(10000);
+
+            // 3. 连接回调（注意 lambda 捕获所有需要的变量）
+            QObject::connect(timer, &QTimer::timeout, qApp, [=]() {
+                // 回调执行时，该定时器已触发，需要从 map 中移除
+                m_openidTimers.remove(openid);  // 先移除自身
+
+                // 执行业务逻辑
+                if (!m_botClients.contains(appid)) {
+                    timer->deleteLater();
+                    return;
+                }
+                QQBotClient *c = m_botClients[appid];
+                if (c->m_info->fallbackReply.isEmpty()) {
+                    timer->deleteLater();
+                    return;
+                }
+                QString text = "[未被处理回应]";
+                c->send_messagesAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
+
+                timer->deleteLater();  // 任务完成，清理定时器
+            });
+
+            // 4. 保存定时器到 map，并启动
+            m_openidTimers.insert(openid, timer);
+            timer->start();
+
+            qDebug() << "添加定时（或重置）" << openid;
+        }, Qt::QueuedConnection);
     }
 
+}
+void cancelTimer(const QString &openid)
+{
+    QMetaObject::invokeMethod(qApp, [=]() {
+        if (!m_openidTimers.contains(openid)) return;
+
+        QTimer *timer = m_openidTimers.take(openid);  // 从 map 取出
+        timer->stop();
+        timer->deleteLater();  // 安全销毁
+        qDebug() << "取消定时" << openid;
+    }, Qt::QueuedConnection);
 }
 
 void AppendEventLog(const QString &msg,int color)
 {
-
 
     Message m;
     m.msg= msg;
@@ -122,10 +171,7 @@ QString normalizeNewlinesToCR(const QString &input)
         }
         ++i;
     }
-    if(result.contains("\\n"))
-    {
-        result = subTextReplace(result,"\\n","\r");
-    }
+    result.replace("\\n","\r");
     return result;
 }
 QString python_code3(const QString &py_code,const MessageEvent &msg)
@@ -497,13 +543,12 @@ QString handlePluginMarket(const QString& msg) {
 
         result += QString("**%1.%2** %3\n")
                       .arg(displayIndex)
-                      .arg(info.name)
-                      .arg(installLink);
+                      .arg(info.name,installLink);
+
 
         // 第二行：类型和说明
         result += QString("> [%1] %2\n\n")
-                      .arg(info.type.isEmpty() ? "未知" : info.type)
-                      .arg(info.remark);
+                      .arg(info.type.isEmpty() ? "未知" : info.type, info.remark);
     }
 
     // 6. 翻页提示
@@ -542,14 +587,9 @@ QString onMessageReceived(const QString& msg) {
             return "安装失败：无效的序号";
         }
 
-        // 解析上下文参数（页码、搜索词、标签）
-        int page = 1;
         QString keyword;
         QString tagFilter;
-        if (parts.size() > 1) {
-            int pageNum = parts[1].toInt(&ok);
-            if (ok && pageNum > 0) page = pageNum;
-        }
+
         if (parts.size() > 2) {
             keyword = parts[2];
         }
@@ -1172,7 +1212,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
 
     pluginPage->dispatch_message(ev.raw,ev);
-    if(ev.at_you || !ev.fullType) botnomsg(ev.appid,ev.type,ev.groupId,ev.msgId);
+
 }
 
 
@@ -1291,21 +1331,14 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 sentText =info->rqhy;
                 if(sentText.contains("{艾特}"))
                 {
-                    sentText = subTextReplace(sentText,"{艾特}","<@"+ev.user+">");
+                    sentText.replace("{艾特}","<@"+ev.user+">");
                 }
-
-                if(sentText.contains("{ID}"))
-                {
-                    sentText = subTextReplace(sentText,"{ID}",ev.user);
-                }
-                if(sentText.contains("{数量}"))
-                {
-                    sentText = subTextReplace(sentText,"{数量}","1");
-                }
+                sentText.replace("{ID}",ev.user);
+                sentText.replace("{数量}","1");
                 if(sentText.contains("{混合}"))
                 {
                     QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user, ev.user);
-                    sentText = subTextReplace(sentText,"{混合}",hh);
+                    sentText.replace("{混合}",hh);
                 }
 
             }
@@ -1611,28 +1644,6 @@ QString upload(const QString &path);
 QString uploadImageSync(const QString& serverUrl, const QString& token, const QString& filePath,int timeoutMs = 30000, QString* errorMsg = nullptr);
 QString uploadImageByPath(const QString &serverUrl,const QString &localPath, int timeoutMs,QString *errorMsg);
 
-QString uploadImageToCdn(const QString &path)
-{
-    QString url;
-
-
-    if(setA->远程服务器)
-    {
-        if(setA->远程链接.contains("127.0.0.1")) //看看是不是这条电脑 另一个开的图床
-        {
-            QString err;
-            url = uploadImageByPath(setA->远程链接,path,30000,&err);
-        }else{
-            url = uploadImageSync(setA->远程链接,setA->远程token,path);
-        }
-    }
-    if(url.isEmpty())
-    {
-        url=uploadToMhimg(path,nullptr);
-    }
-
-    return url;
-}
 
 QString joinIntListFast(const QList<int>& list, const QString& sep) {
     if (list.isEmpty()) return {};

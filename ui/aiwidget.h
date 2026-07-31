@@ -66,11 +66,12 @@ struct SessionContext {
     int ts=0;
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
     int duihts=0;
-
+    int cflx=0;//触发类型 1艾特 2其他
     VectorMemory* memory = nullptr;
     QString groupId;
     QString msgId;
     QString openid;
+
     AccountInfo* accountInfo = nullptr;
 };
 class AiWidget : public QWidget
@@ -83,9 +84,10 @@ public:
     QString Ai_post(AccountInfo *info, const MessageEvent &ev);
 
     QString Ai_post(const QString &model, const QString &msg, int type);
-    QString Ai_posts(const MessageEvent &ev, int &模型开始下标, int model_index, QJsonObject &sxw, int timeoutMs);
+    QString Ai_posts(const MessageEvent &ev, int model_index, QJsonObject &sxw, int timeoutMs);
     QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
-    QByteArray Ai_post(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
+    QByteArray Ai_post3(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
+
     QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
     void list_c(); // 切换机器人
@@ -104,8 +106,7 @@ signals:
     void newMessageArrived(AccountInfo* info, MessageEvent ev, bool send,bool notime);
     void asyncReplyReceived(const QString &openid, const QString &reply,
                             const QJsonObject &updatedContext,       // mutableContext（含 AI 回复）
-                            int oldMsgCount,
-                            int newStartIndex);
+                            int oldMsgCount);
     void modelListUpdated(); // 仅仅作为一个“通知”
 
 private slots:
@@ -113,8 +114,7 @@ private slots:
     void onCleanupTimer();
     void onAsyncReply(const QString &openid, const QString &reply,
                       const QJsonObject &updatedContext,    // baseContextCopy
-                      int oldMsgCount,
-                      int newStartIndex);
+                      int oldMsgCount);
     // --- 机器人列表相关 ---
 
 
@@ -170,7 +170,7 @@ private:
     QTabWidget *tabWidget;
     Aifujia *ai_fujia;
     QCheckBox *feibaimd,*chkGroupChat, *chkGroupPersonal, *chkPrivateChat;
-    QCheckBox *chkChannel, *chkAtTrigger, *chkChannelPersonal, *chkImageRec,*chkniren,*向量数据库;
+    QCheckBox *chkChannel, *chkAtTrigger, *chkChannelPersonal, *chkImageRec,*chkniren,*向量数据库,*juece;//决策
 
     QLabel *lblRobotName, *lblModel, *lblSetting, *lblContext;
     QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply,*lblPplx;
@@ -254,7 +254,7 @@ private:
 
     QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type);
     void flushPendingMessages(const QString& openid,bool send);
-    int m_modelStartIndex;                      // 全局轮询下标
+
 
     QTimer* m_cleanupTimer = nullptr;
     void startHourlyCleanupTimer();

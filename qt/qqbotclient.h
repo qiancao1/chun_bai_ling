@@ -27,7 +27,8 @@
 #include <QTimer>
 #include "AccountInfo.h"
 #include <QColor>
-#include <future>
+#include <qnetworkreply.h>
+
 struct logdb
 {
     QString groupId;     // 群id / 子频道id / 私聊对方的id
@@ -66,6 +67,18 @@ struct MessageEvent
     uint64_t log=0;
     QString toString() const;
 };
+struct MessageLogContext {
+    QString openid;
+    QString pname;
+    QString jsonString;
+    qint64 now_us;
+    int index;
+    int type;
+
+
+};
+
+
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
 class QQBotClient : public QObject
 {
@@ -85,23 +98,31 @@ public:
     QString onTextMessage(const QString &message);
     // 发送消息接口
     QString send_messages(int type, const QString &openid, QString &pname, QString &text, const QString &msgid=QString(),
-                          bool is_wakeup=false, bool mode=false, int 发送类型 = 0);
+                          bool is_wakeup=false, bool mode=false, int = 0, bool noref=false);
+    QString send_messagesAsync(int type, const QString &openid,QString &pname, QString &text,
+                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int 发送类型=0,bool noref=false);
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
                           const QString &message_reference, const QString &msgid,
-                          bool is_wakeup);
-    QString send_messages_ark(int type, const QString &openid, QString &pname, const QJsonObject &ark,
-                              const QString &msgid, bool is_wakeup=false);
-    QString send_messages_ark(int type,const QString &openid,const QJsonObject &ark,const QJsonArray prompt_keyboard,
-                              const QString &msgid,bool is_wakeup=false);
+                          bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
 
-    QString send_messages_markdown(int type,const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
-                                   const QJsonObject keyboard,const QString &message_reference,
-                                   const QString &msgid,bool is_wakeup=false);
-    QString send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
-                                          const QJsonObject keyboard,const QString &message_reference,
-                                          const QString &msgid,bool is_wakeup);
-    QString send_messages_pd(const QString &url, const QString &msgId, const QString &content, const QString &imagePath, const QString &message_reference);
+    QString send_messages_ark(int type, const QString &openid, QString &pname, const QJsonObject &ark,
+                              const QString &msgid, bool is_wakeup=false, int seq_index=0,const MessageLogContext ctx = MessageLogContext());
+
+
+
+    QString send_messages_markdown(int type, const QString &openid, const QString &markdown, const QJsonArray prompt_keyboard,
+                                   const QJsonObject keyboard, const QString &message_reference,
+                                   const QString &msgid, bool is_wakeup=false, int seq_index=0, const MessageLogContext ctx = MessageLogContext(), bool noref=false);
+
+
+    QString send_messages_mb(int type, const QString &openid, const QString &markdown, const QJsonArray prompt_keyboard,
+                             const QJsonObject keyboard, const QString &message_reference,
+                             const QString &msgid, bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
+
+
+    QString send_messages_pd(const QString &url, const QString &msgId, const QString &content, const QString &imagePath,
+                             const QString &message_reference, int seq_index, const MessageLogContext ctx, bool noref);
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
     QString uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok);
@@ -117,6 +138,9 @@ public:
     QString get_groups_info(const QString& group);
     QString get_groups_bot_state(const QString& group);
     QString set_mute(int type,const QString& group,const QString &user,qint64 mute_seconds);
+
+
+
 
 public slots:
     void onTextMessageReceived(const QString &message);
@@ -142,14 +166,15 @@ private:
     void parseMessageEvent(QJsonObject &payload,const QString &text);
     QString fetchGatewayUrl();
     bool refreshAccessToken();
-    void initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup);
-    QString send_Media(int type, const QString &openid, QString &pname, const QString &info,  qint64 now_us,const QString &msgid, bool is_wakeup);
-    QString sendOneMedia(int type, const QString &openid, QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup);
+    void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
+    QString send_Media(int type, const QString &openid, QString &pname, const QString &info, qint64 now_us,
+                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
+    QString sendOneMedia(int type, const QString &openid, QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext ctx);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
-    void addmsglog(QString &response, int index, QString &pname, const QString &text, qint64 now_us, int type, QString &msgid, const QString &openid);
+    void addmsglog(const QString &response, int index, const QString &pname, const QString &text, qint64 now_us, int type, const QString &openid);
     void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();
@@ -175,7 +200,18 @@ private:
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 
+    using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 
+    // 异步 POST，自动处理 token 过期刷新和去重重试（递归实现）
+    void PostAsync(const QString& url, const QJsonObject& json,
+                   const QString& contentType, int timeoutMs,
+                   Callback finalCallback);
+    void doPost(const QString& url, const QJsonObject& json,
+                         const QString& contentType, int timeoutMs,
+                Callback finalCallback, int retryCount);
+    void postRawAsync(const QString &url, const QByteArray &data,
+                               const QHash<QString, QString> &headers, int timeoutMs,
+                      Callback callback);
 private:
 
 
@@ -184,6 +220,7 @@ private:
     QTimer m_heartbeatTimer; //心跳
     QTimer m_reconnectTimer; //重连
     bool 代理=false;
+    bool suo=false;
     QString m_accessToken;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
     QString m_sessionId;

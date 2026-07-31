@@ -27,6 +27,7 @@
 #include <qimagereader.h>
 #include <qnetworkreply.h>
 #include <QRandomGenerator>
+#include <netmanager.h>
 
 bool 不加载=false;
 
@@ -372,7 +373,7 @@ void AiWidget::setupUi()
     rightLayout->setContentsMargins(2, 2, 2, 2);
 
     // 第一行：复选框 + 保存机器人按钮
-    QHBoxLayout *hboxChecks = new QHBoxLayout();
+    QGridLayout *hboxChecks = new QGridLayout();
     hboxChecks->setSpacing(2);
 
 
@@ -386,20 +387,24 @@ void AiWidget::setupUi()
     chkImageRec      = new QCheckBox("识图", tab1);
     向量数据库      = new QCheckBox("向量记忆库", tab1);
     chkniren      = new QCheckBox("拟人(@咸鱼王)", tab1);
-
-    hboxChecks->addWidget(chkGroupChat);
-    hboxChecks->addWidget(chkGroupPersonal);
-    hboxChecks->addWidget(chkPrivateChat);
-    hboxChecks->addWidget(chkChannel);
-    hboxChecks->addWidget(chkChannelPersonal);
-
-    hboxChecks->addWidget(chkAtTrigger);
-    hboxChecks->addWidget(chkImageRec);
-    hboxChecks->addWidget(向量数据库);
-    hboxChecks->addWidget(chkniren);
-
+    juece      = new QCheckBox("群决策", tab1);
+    hboxChecks->addWidget(chkGroupChat,0,0);
+    hboxChecks->addWidget(chkGroupPersonal,0,1);
+    hboxChecks->addWidget(chkPrivateChat,0,2);
+    hboxChecks->addWidget(chkChannel,0,3);
+    hboxChecks->addWidget(chkChannelPersonal,0,4);
     btnSaveRobot = new QPushButton("保存机器人", tab1);
-    hboxChecks->addWidget(btnSaveRobot);
+    hboxChecks->addWidget(btnSaveRobot,0,5);
+
+    hboxChecks->addWidget(chkAtTrigger,1,0);
+    hboxChecks->addWidget(chkImageRec,1,1);
+    hboxChecks->addWidget(向量数据库,1,2);
+    hboxChecks->addWidget(chkniren,1,3);
+    hboxChecks->addWidget(juece,1,4);
+
+
+
+
     rightLayout->addLayout(hboxChecks);
     QGridLayout *hboxChecks2 = new QGridLayout();
 
@@ -857,7 +862,7 @@ void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
     chkGroupChat->setChecked(acc->enableGroupChat);
     chkGroupPersonal->setChecked(acc->enableGroupPersonal);
     chkPrivateChat->setChecked(acc->enablePrivateChat);
-
+    juece->setChecked(acc->juece);
     chkChannel->setChecked(acc->enableChannel);
     chkAtTrigger->setChecked(acc->atTrigger);
     chkChannelPersonal->setChecked(acc->enableChannelPersonal);
@@ -974,7 +979,7 @@ void AiWidget::on_btnSaveRobot_clicked()
         acc->enableGroupChat = chkGroupChat->isChecked();
         acc->enableGroupPersonal = chkGroupPersonal->isChecked();
         acc->enablePrivateChat = chkPrivateChat->isChecked();
-
+        acc->juece = juece->isChecked();
         acc->enableChannel = chkChannel->isChecked();
         acc->atTrigger = chkAtTrigger->isChecked();
         acc->enableChannelPersonal = chkChannelPersonal->isChecked();
@@ -2423,6 +2428,7 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
     if(info->atTrigger && ev.at_you){}
     else if(info->pplx == 1 && ev.msg.contains(info->Ai_nickname)){}
     else if(info->pplx == 2 && ev.msg.startsWith(info->Ai_nickname)){}
+    else if(info->niren){}
     else return QString();
     if (ev.msg == "清除记忆") {
         QString openid;
@@ -2512,13 +2518,15 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
     // 计算 openid
     QString openid;
     switch (ev.type) {
-    case 0: openid = info->enableGroupPersonal ? ev.groupId : ev.user; break;
-    case 1: openid = info->enableChannelPersonal ? ev.groupId : ev.user; break;
+    case 0: openid = info->enableGroupPersonal ? ev.user: ev.groupId ; break;
+    case 1: openid = info->enableChannelPersonal ? ev.user : ev.groupId ; break;
     case 2: openid = ev.groupId; break;
     default: return;
     }
 
     auto &session = m_sessions[openid];
+    if(!notime)
+        session.cflx = ev.at_you ? 1:2;
     if (!session.timer) {
         session.sjs = info->触发概率;
         session.timer = new QTimer(this);
@@ -2563,6 +2571,7 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
         return ;
     }
     if(notime){
+
         flushPendingMessages(openid,send);
         return;
     }
@@ -2578,41 +2587,6 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
 void AiWidget::flushPendingMessages(const QString &openid,bool send)
 {
     auto &session = m_sessions[openid];
-    //session.baseContext 改为下面
-    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
-    int oldMsgCount = 0;
-    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
-        oldMsgCount = baseContext["messages"].toArray().size();
-    }
-    if(!send){
-        if (session.pendingMessages.isEmpty())
-            return;
-
-        for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
-            appendPendingMessageToContext(baseContext, pm);
-        }
-        session.pendingMessages.clear();
-    }
-
-
-    trimContextImages(baseContext, 6);//处理图片
-    trimToolResponses(baseContext, 5, 64);
-    if(session.accountInfo->context_len<5)
-        session.accountInfo->context_len=5;
-    trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
-    convertContextImagesToBase64(baseContext);//图片转b64
-
-
-    session.isProcessing = true;
-
-    // 构造空 MessageEvent
-    MessageEvent ev;
-    ev.appid = session.appid;
-    ev.type = session.type;
-    ev.groupId = session.groupId;
-    ev.msgId = session.msgId;
-    ev.user = session.openid;
-    ev.msg = "";
 
     AccountInfo* info = session.accountInfo;
     if (!info) {
@@ -2632,8 +2606,94 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         session.isProcessing = false;
         return;
     }
+    bool juecejg =true;
+    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
+    QJsonObject juece_mode=baseContext;
+    QString fh;
+    if(!send && session.type==0 && info->juece && session.cflx!=1){
+        if (session.pendingMessages.isEmpty())
+            return;
 
-    if (session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()) {
+        QString setting;
+        for (const auto &sd : std::as_const(m_globalSettings)) {
+            if (sd.name == info->setting) {
+                setting = sd.content;
+                break;
+            }
+        }
+        trimContextByMessageCount(juece_mode, 24); //限制上下文
+        QJsonArray msgs = juece_mode["messages"].toArray();
+        QJsonObject systemMsg;
+        systemMsg["role"] = "system";
+        systemMsg["content"] = "你是群聊对话中决策AI\n你的任务是查看下面对话 是否有对话提到了你，以及和你的设定相符合的内容，\n"
+                               "1.如你主要扮演原神中的纳西妲，当聊天内容包含原神你就可以返回'【提到】'\n"
+                               "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到"
+                               "3.或者你的上下文正在聊天"
+                               "如果提到了 请回复'【提到】'文本 我会判定 你返回的内容有没有这个字符"
+                               "下面是用户给你的角色设定：\n"+setting;
+        msgs[0] = systemMsg;
+        QJsonObject systemMsg2;
+        systemMsg2["role"] = "user";
+        systemMsg2["content"] = "下面是新的对话内容";
+        msgs.append(systemMsg2);
+        juece_mode["messages"] = msgs;
+
+        for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
+            appendPendingMessageToContext(juece_mode, pm);
+        }
+
+        fh = Ai_posts(MessageEvent(),model_index,juece_mode,60000);
+        juecejg = fh.contains("【提到】");
+
+    }
+
+
+    //session.baseContext 改为下面
+
+
+    int oldMsgCount = 0;
+    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
+        oldMsgCount = baseContext["messages"].toArray().size();
+    }
+    if(!send){
+        if (session.pendingMessages.isEmpty())
+            return;
+
+        for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
+            appendPendingMessageToContext(baseContext, pm);
+        }
+        session.pendingMessages.clear();
+    }
+
+    if(!juecejg) //决策没提到 直接返回
+    {
+        AppendEventLog(QString("%1(%2) ai决策 不返回内容：%3").arg(openid,info->Ai_nickname,fh));
+        baseContext.remove("tools");
+        aidb->put(openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
+        return;
+    }
+    trimContextImages(baseContext, 6);//处理图片
+    trimToolResponses(baseContext, 5, 64);
+    if(session.accountInfo->context_len<5)
+        session.accountInfo->context_len=5;
+    trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
+    convertContextImagesToBase64(baseContext);//图片转b64
+
+
+    session.isProcessing = true;
+
+    // 构造空 MessageEvent
+    MessageEvent ev;
+    ev.appid = session.appid;
+    ev.type = session.type;
+    ev.groupId = session.groupId;
+    ev.msgId = session.msgId;
+    ev.user = session.openid;
+    ev.msg = "";
+
+
+
+    if (ev.type==2 && session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()) {
 
         QString lastUserMsg;
         QJsonArray msgs = baseContext["messages"].toArray();
@@ -2688,7 +2748,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 
                     QString memoryText = "【用户历史信息】\n";
                     for (const auto &[id, score] : results) {
-
+                        qDebug() <<"向量"<<score;
                         std::string meta = session.memory->getMetadata(id);
                         if (!meta.empty()) {
                             memoryText += "- " + QString::fromStdString(meta) + "\n";
@@ -2718,10 +2778,8 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 
     QThreadPool::globalInstance()->start([this, ev, model_index, baseContext, oldMsgCount, timeoutMs, openid]() {
         QJsonObject mutableContext = baseContext;
-        int startIndex = m_modelStartIndex;
-        QString reply = Ai_posts(ev, startIndex, model_index, mutableContext, timeoutMs);
-        int newStartIndex = startIndex;
-        emit asyncReplyReceived(openid, reply, mutableContext, oldMsgCount, newStartIndex);
+        QString reply = Ai_posts(ev, model_index, mutableContext, timeoutMs);
+        emit asyncReplyReceived(openid, reply, mutableContext, oldMsgCount);
         if (m_botClients.contains(ev.appid)) {
             auto *db = g_botdb[ev.appid];
 
@@ -2759,9 +2817,8 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 
 void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
                             const QJsonObject &updatedContext,      // mutableContext
-                            int oldMsgCount,int newStartIndex)
+                            int oldMsgCount)
 {
-    m_modelStartIndex = newStartIndex;
 
     auto it = m_sessions.find(openid);
     if (it == m_sessions.end())
@@ -2829,22 +2886,21 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         QString newMsgs = trimContextByMessageCount2(baseContext, 10);
 
         QString prompt = R"(
-从最下面对话中提取关于用户的**有长期记忆价值的内容**，用于存入向量记忆库。
+从对话中提取关于用户的**有长期记忆价值的事实**，每条用一句话描述。
 
-**应该提取的内容**：
-- 用户的个人信息（年龄、职业、城市、家庭成员等）
-- 用户的兴趣爱好、偏好、习惯
+**只提取**：
+- 用户的个人信息（年龄、职业、城市、家人等）
+- 用户的兴趣爱好、喜好、习惯
 - 用户的长期目标、计划
-- 用户提到的过去经历、重要事件
 - 用户的固定观点、价值观
-- 用户喜欢什么
+
+**不要提取**：
+- 对助手的称呼、调侃、抱怨
+- 临时的情绪或困惑
+- 对对话本身的评价
 
 只返回 JSON 数组，不要其他内容。
-对话内容：标准json数组 如 "["用户喜欢水果","用户喜欢科幻剧情"]" 如果没有什么东西符合 可以返回"[]" json要求标准格式 不要返回以下格式-> "[] 没有可提取内容","```json
-["xxx"]
-```" 这样子json无法解析
-
-请解析下面内容
+对话内容：
 )" + newMsgs;
 
         AccountInfo* acc = session.accountInfo;
@@ -2906,7 +2962,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
                 bool isDuplicate = false;
                 if (!results.empty()) {
                     double score = results[0].second;
-                    if (score >= threshold) {
+                    if (score <= threshold) {
                         isDuplicate = true;
                         qDebug() << "跳过重复事实:" << fact << "相似度:" << score;
                     }
@@ -2942,7 +2998,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         QJsonObject obj;
         for(int i2=0; i2<3; ++i2) {
             //qDebug() << "上下文" << sxw;
-            QByteArray response = Ai_post(url, key, sxw, timeoutMs);
+            QByteArray response = Ai_post3(url, key, sxw, timeoutMs);
             if(response.isEmpty()) {
                 err += "接口返回空\n";
                 return QString();
@@ -2992,6 +3048,8 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         // 将 AI 响应加入上下文
         if (sxw.contains("messages") && sxw["messages"].isArray()) {
             QJsonArray msgs = sxw["messages"].toArray();
+            if(arr2.size()==0)
+                obj3.remove("tool_calls");
             msgs.append(obj3);
             sxw["messages"] = msgs;
         }
@@ -3098,56 +3156,43 @@ QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
     appendPendingMessageToContext(obj, parseImageTagsAndDownload(msg)); //下载
     convertContextImagesToBase64(obj);
 
-    int index2=0;
     if(timeoutMs<=0) timeoutMs=30000;
     if(timeoutMs<=5000) timeoutMs=5000;
-    return Ai_posts(MessageEvent(),index2,index,obj,timeoutMs);
+    return Ai_posts(MessageEvent(),index,obj,timeoutMs);
 }
 
-QString AiWidget::Ai_posts(const MessageEvent &ev,int &模型开始下标,int model_index,QJsonObject &sxw,int timeoutMs) //内部使用请勿公开
+QString AiWidget::Ai_posts(const MessageEvent &ev,int model_index,QJsonObject &sxw,int timeoutMs) //内部使用请勿公开
 {
     QString err;
     int kswz = modelList[model_index].enabledInterfaceIndices.size();
-    for(int i = 0;i<kswz;++i)//接口循环
-    {
-        //模型开始下标 原子+1
-        int jk= 模型开始下标 % modelList[model_index].enabledInterfaceIndices.size();//实时获取
-        模型开始下标++;
-        auto &key = globalInterfaces[jk].keys;
+    for(int n1=0 ;n1<kswz;++n1){
+        int index2 =modelList[model_index].enabledInterfaceIndices[n1];
+        auto &key = globalInterfaces[index2].keys;
         int len = key.size();
         for(int i2=0;i2< len;++i2)
         {
-            int index = globalInterfaces[jk].key_index++;
+            int index = globalInterfaces[index2].key_index++;
             index = index % len;
-            QString text =  Ai_post(ev,globalInterfaces[jk].url,key[index].key,sxw,err,timeoutMs);
+            QString text =  Ai_post(ev,globalInterfaces[index2].url,key[index].key,sxw,err,timeoutMs);
             if(text.isEmpty()) continue;
             return text;
         }
-
     }
+
+
     return err;
 }
 
-QByteArray AiWidget::Ai_post(const QString &url,const QString &key, QJsonObject &sxw,int timeoutMs)
+QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject &sxw,int timeoutMs)
 {
-
     QByteArray jsonData = QJsonDocument(sxw).toJson(QJsonDocument::Compact);
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("Bearer " + key).toUtf8());
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, jsonData);
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();   // 阻塞直到请求完成或超时
-    QByteArray response= reply->readAll();
-    reply->deleteLater();
-    return response;
+    QHash<QString, QString> headers;
+    headers.insert("Content-Type", "application/json");
+    headers.insert("Authorization", "Bearer " + key);
+    std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
+    QString resp = future.get();
+
+    return resp.toUtf8();
 }
 
 

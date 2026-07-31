@@ -84,7 +84,27 @@ public:
             // 如果 CAS 失败，old 已被更新为当前值，继续循环
         }
     }
-
+    uint64_t setBuffer_250(uint64_t seq, bool &ok)
+    {
+        size_t idx = seq % m_bufferSize;
+        uint64_t old = m_buffer[idx].load(std::memory_order_acquire);
+        while (true) {
+            uint8_t status = static_cast<uint8_t>(old & 0xFF);
+            if (status >= 250) {
+                ok = false;
+                return old >> 8;   // 返回时间
+            }
+            uint64_t newVal = (old & ~0xFFULL) | 250ULL;  // 保留时间，状态设为255
+            // 尝试原子交换
+            if (m_buffer[idx].compare_exchange_weak(old, newVal,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
+                ok = true;
+                return newVal >> 8;   // 返回时间（与 old >> 8 相同）
+            }
+            // 如果 CAS 失败，old 已被更新为当前值，继续循环
+        }
+    }
     // 获取时间戳（微秒）
     uint64_t getBufferTime(uint64_t seq) const {
         return getBufferRaw(seq) >> 8;

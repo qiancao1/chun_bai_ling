@@ -33,6 +33,9 @@
 #include <qwaitcondition.h>
 #include <QFutureWatcher>
 #include <netmanager.h>
+
+
+
 // 在文件头部包含 WinHttpClient 封装
 
 
@@ -181,15 +184,21 @@ QString QQBotClient::fetchGatewayUrl()
 
 bool QQBotClient::refreshAccessToken()
 {
+    if(suo)
+    {
+        doWork(500);
+        return true;
+    }
     qint64 now = QDateTime::currentSecsSinceEpoch();
     if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
         return true;
 
-
+    suo = true;
     // 动态获取 token
     if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
         AppendEventLog("缺少 appid 或 secret，无法获取 AccessToken",0xff);
         m_info->err+="缺少 appid 或 secret，无法获取 AccessToken\n";
+        suo =false;
         return false;
     }
 
@@ -212,6 +221,7 @@ bool QQBotClient::refreshAccessToken()
         AppendEventLog("刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data,0xff);
         m_info->err+="刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data;
         reply->deleteLater();
+         suo =false;
         return false;
     }
 
@@ -219,9 +229,11 @@ bool QQBotClient::refreshAccessToken()
     reply->deleteLater();
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+data,0xff);
-         m_info->err+="解析 token 响应失败: " + err.errorString()+"\n返回内容："+data;
+        m_info->err+="解析 token 响应失败: " + err.errorString()+"\n返回内容："+data;
+          suo =false;
         return false;
     }
 
@@ -233,6 +245,7 @@ bool QQBotClient::refreshAccessToken()
             errMsg = "appid 或 secret 错误（无具体返回信息）";
         AppendEventLog("获取 token 失败: " + errMsg,0xff);
         m_info->err+="获取 token 失败: " + errMsg;
+        suo =false;
         return false;
     }
 
@@ -241,6 +254,7 @@ bool QQBotClient::refreshAccessToken()
     m_tokenExpireTime = now + expiresIn - 60;
     AppendEventLog(QString("Token 刷新成功，有效期至 %1")
                   .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+     suo =false;
     return true;
 }
 
@@ -335,7 +349,7 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
         QString url = att["url"].toString();
 
         // 构建前缀部分（不变）
-        QString prefix;
+        QString prefix,asr_refer_text;
         if (contentType.contains("image")) {
             int height = att["height"].toDouble();
             int width = att["width"].toDouble();
@@ -343,6 +357,12 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
         } else if (contentType.contains("file")) {
             prefix = "[file,name=";
         } else if (contentType.contains("voice")) {
+            asr_refer_text = att["asr_refer_text"].toString();
+            QString url2 = att["voice_wav_url"].toString();
+            if(!url2.isEmpty())
+            {
+                url = url2;
+            }
             prefix = "[audio,name=";
         } else if (contentType.contains("video")) {
             prefix = "[video,name=";
@@ -386,12 +406,23 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
                 msg+=extraInfo;
             }
         }else{
-            QString extraInfo = prefix + filename +
-                                QString(",type=%1,size=%2,url=%3]")
-                                    .arg(contentType)
-                                    .arg(size)
-                                    .arg(url);
-            msg+=extraInfo;
+            if(!asr_refer_text.isEmpty())
+            {
+                QString extraInfo = prefix + filename +
+                                    QString(",type=%1,size=%2,text=%3,url=%4]")
+                                        .arg(contentType)
+                                        .arg(size).arg(asr_refer_text,url);
+
+                msg+=extraInfo;
+            }else{
+                QString extraInfo = prefix + filename +
+                                    QString(",type=%1,size=%2,url=%3]")
+                                        .arg(contentType)
+                                        .arg(size)
+                                        .arg(url);
+                msg+=extraInfo;
+            }
+
         }
         // 如果未找到，则不递增 i（与原逻辑一致）
     }
@@ -459,7 +490,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(!m_info->unid.isEmpty() && ev.msg.contains(m_info->unid))
         {
             ev.at_you = true;
-            ev.msg = subTextReplace(ev.msg,"<@"+m_info->unid+">","");
+            ev.msg.remove("<@"+m_info->unid+">");
         }
 
     }
@@ -489,7 +520,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(ev.msg.contains(m_info->pduid))
         {
             ev.at_you = true;
-            ev.msg = subTextReplace(ev.msg,"<@!"+m_info->pduid+">","");
+            ev.msg.remove("<@!"+m_info->pduid+">");
+
         }
     }
     else if (ev.msgType == "DIRECT_MESSAGE_CREATE") {
@@ -1162,9 +1194,20 @@ QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, co
         headers.insert("Content-Type", contentType);
     }
     std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
-    return future.get();
+    QString resp = future.get();
+    if (resp.contains("token not exist or expire")) {
+        refreshAccessToken();
+        headers.insert("Authorization", "QQBot " + m_accessToken);
+        future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
+        resp = future.get();
+
+    }
+    return resp;
+
 }
-QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
+
+QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
+                              const QString &contentType, int timeoutMs) {
 
     QHash<QString, QString> headers;
     headers.insert("X-Union-Appid", m_info->appid);
@@ -1174,10 +1217,106 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData, c
     } else {
         headers.insert("Content-Type", contentType);
     }
-    QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
+
+    QJsonObject currentJson = jsonData;
+
+    QByteArray jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
     std::future<QString> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
-    return future.get();
+    QString resp = future.get();
+
+    if (resp.contains("token not exist or expire")) {
+        m_accessToken.clear();
+        refreshAccessToken();
+        suo =false;
+        headers.insert("Authorization", "QQBot " + m_accessToken);
+        jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
+        future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
+        resp = future.get();
+        return resp;
+    }
+
+    if (url.contains("/messages") && resp.contains("被去重")) {
+        currentJson["msg_seq"] = m_info->message_sent + m_info->message_received;
+        jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
+        future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
+        resp = future.get();
+        return resp;
+    }
+    return resp;
 }
+
+
+
+void QQBotClient::PostAsync(const QString& url, const QJsonObject& json,
+                            const QString& contentType, int timeoutMs,
+                            Callback finalCallback) {
+    // 启动递归重试，初始重试次数为 0
+    doPost(url, json, contentType, timeoutMs, finalCallback, 0);
+}
+
+void QQBotClient::doPost(const QString& url, const QJsonObject& json,
+                         const QString& contentType, int timeoutMs,
+                         Callback finalCallback, int retryCount) {
+    // 构建请求头
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+
+    QByteArray jsonData = QJsonDocument(json).toJson(QJsonDocument::Compact);
+
+    // 发起异步请求（context = this，回调在 this 所在线程执行）
+    NetManager::instance()->postAsync(url, jsonData, headers, timeoutMs, this,
+                                      [this, url, json, contentType, timeoutMs, finalCallback, retryCount]
+                                      (const QString& response, QNetworkReply::NetworkError error) {
+
+                                        if (response.contains("token not exist or expire") && retryCount < 2) {
+                                            m_accessToken.clear();
+                                            refreshAccessToken();  // 刷新
+                                            suo =false;
+                                            doPost(url, json, contentType, timeoutMs, finalCallback, retryCount + 1);
+                                            return;
+                                        }
+
+
+                                        if (response.contains("被去重") && retryCount < 3) {
+                                            if(json["noref"].toBool()) return;
+                                            QJsonObject modifiedJson = json;
+                                            modifiedJson["msg_seq"] = m_info->message_sent + m_info->message_received;
+                                            doPost(url, modifiedJson, contentType, timeoutMs, finalCallback, retryCount + 1);
+                                            return;
+                                        }
+
+                                        QString logResp = response;
+                                        if (error != QNetworkReply::NoError) logResp += "\n[Network Error: " + QString::number(error) + "]";
+
+                                        finalCallback(logResp, error);
+                                    });
+}
+
+//    {"message":"token not exist or expire","code":11244,"err_code":11244,"trace_id":"5142e0238bc8314d8aa222dd3bee4949"}
+
+void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
+                               const QHash<QString, QString> &headers, int timeoutMs,
+                               Callback callback) {
+    NetManager::instance()->postAsync(url, data, headers, timeoutMs, this,
+                                      [this, url, data, headers, timeoutMs, callback]
+                                      (const QString &response, QNetworkReply::NetworkError error) {
+                                          if (response.contains("token not exist or expire")) {
+                                              refreshAccessToken();
+                                              QHash<QString, QString> newHeaders = headers;
+                                              newHeaders["Authorization"] = "QQBot " + m_accessToken;
+                                              postRawAsync(url, data, newHeaders, timeoutMs, callback);
+                                              return;
+                                          }
+                                          callback(response, error);
+                                      });
+}
+
 
 QString QQBotClient::GetSync(const QString &url, const QString &contentType, int timeoutMs) {
 

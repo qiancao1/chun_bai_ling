@@ -6,12 +6,11 @@
 #include <QColorDialog>
 #include <QTimer>
 #include <qclipboard.h>
-#include "jjm.h"
 #include "websocketserver.h"
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
-void setUploadTokens(const QStringList &tokens);
-void set_ip(const QString &ip);
+
+
 QString ffmpegdiv;
 extern QString g_ip;
 extern bool e_img;
@@ -108,56 +107,11 @@ void set::setupUI()
     remoteLayout1->addWidget(urlLabel5);
     remoteLayout1->addWidget(colorPreview2);
 
-    QGridLayout *modeLayout2 = new QGridLayout;
-    modeLayout2->setAlignment(Qt::AlignLeft);
-
-
-
-    modeLayout2->setAlignment(Qt::AlignLeft);
-
-
-    // 模式行
-    QHBoxLayout *modeLayout = new QHBoxLayout;
-    modeLayout->setAlignment(Qt::AlignLeft);
-    QLabel *modeLabel = new QLabel(tr("模式："), this);
-    m_remoteRadio = new QRadioButton(tr("使用别人的图床"), this);
-    m_localRadio  = new QRadioButton(tr("自己启动图床【如果点击切换会停止图床】"), this);
-    modeLayout->addWidget(modeLabel);
-    modeLayout->addWidget(m_remoteRadio);
-    modeLayout->addWidget(m_localRadio);
-    modeLayout->addStretch();
-
-    // 远程图床配置行
-    QHBoxLayout *remoteLayout = new QHBoxLayout;
-    remoteLayout->setAlignment(Qt::AlignLeft);
-    QLabel *urlLabel = new QLabel(tr("使用别人图床："), this);
-    m_urlEdit = new QLineEdit(this);
-    m_urlEdit->setPlaceholderText(tr("https://example.com/api/upload"));
-    m_urlEdit->setMinimumWidth(250);
-    QLabel *urlLabel2 = new QLabel(tr("Token："), this);
-    m_token = new QLineEdit(this);
-    m_token->setPlaceholderText(tr("可空..."));
-
-
-    m_confirmBtn = new QPushButton(tr("确认"), this);
-    remoteLayout->addWidget(urlLabel);
-    remoteLayout->addWidget(m_urlEdit);
-    remoteLayout->addWidget(urlLabel2);
-    remoteLayout->addWidget(m_token);
-
-    remoteLayout->addWidget(m_confirmBtn);
-
-    // 本地图床配置行
-
-
-
     webhook = new QLineEdit(this);
     webhook_but = new QPushButton("确认");
 
-    webhook_ssl = new QLineEdit(this);
-    webhook_ssl_but = new QPushButton("确认");
 
-    webhook_ssl->setPlaceholderText("可选，证书放置 运行目录/ssl.key,ssl.crt,ssl.pem");
+    //webhook_ssl->setPlaceholderText("可选，证书放置 运行目录/ssl.key,ssl.crt,ssl.pem");
 
     webws_port = new QLineEdit(this);
     web_qr = new QPushButton("确认");
@@ -181,8 +135,7 @@ void set::setupUI()
     webhook->setText(QString::number(port));
     webhook->setPlaceholderText("8080");
     webhook->setMaximumWidth(70);
-    QString SSL = g_config["webhook_ssl"].toString();
-    webhook_ssl->setText(SSL);
+
 
 
     webws_port->setText(QString::number(port2));
@@ -190,8 +143,21 @@ void set::setupUI()
     QUuid uuid= QUuid::createUuid();
     ws_token = uuid.toString(QUuid::WithoutBraces);
 
+
+    m_addrEdit = new QLineEdit(this);
+    m_addrEdit->setPlaceholderText(tr("如 abcd.com 或 22.33.44.55"));
+    m_addrEdit->setMinimumWidth(150);
+    m_startStopBtn = new QPushButton("保存", this);
+    lts_but = new QPushButton("复制聊天室链接", this);
+
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
     remoteLayout2->setAlignment(Qt::AlignLeft);
+
+    remoteLayout2->addWidget(new QLabel("对外链接："));
+    remoteLayout2->addWidget(m_addrEdit);
+    remoteLayout2->addWidget(m_startStopBtn);
+
+
     remoteLayout2->addWidget(new QLabel("webhook端口："));
     remoteLayout2->addWidget(webhook);
     remoteLayout2->addWidget(webhook_but);
@@ -200,90 +166,49 @@ void set::setupUI()
     remoteLayout2->addWidget(webws_port);
     remoteLayout2->addWidget(web_qr);
 
-    remoteLayout2->addWidget(new QLabel(" SSL密码："));
-    remoteLayout2->addWidget(webhook_ssl);
-    remoteLayout2->addWidget(webhook_ssl_but);
-
+    remoteLayout2->addWidget(lts_but);
 
 
     QHBoxLayout *localLayout = new QHBoxLayout;
     localLayout->setAlignment(Qt::AlignLeft);
-    QLabel *addrLabel = new QLabel(tr("对外链接："), this);
-    m_addrEdit = new QLineEdit(this);
-    m_addrEdit->setPlaceholderText(tr("如 abcd.com 或 22.33.44.55"));
-    m_addrEdit->setMinimumWidth(150);
-    m_startStopBtn = new QPushButton("保存", this);
-    lts_but = new QPushButton("复制聊天室链接", this);
+
+
     Ewebhook = new QCheckBox;
     Ews = new QCheckBox;
     ESSL = new QCheckBox;
     Eimg = new QCheckBox;
+    loadimg = new QCheckBox;
     Ewebhook->setText("启动用webhook");
     Ews->setText("启用web管理");
     ESSL->setText("启用SSL");
     Eimg->setText("启用图床");
+    loadimg->setText("启用其他本地图床");
+    远程服务器 = g_config["y_img"].toBool();
+    loadimg->setChecked(远程服务器);
 
-
-    e_img = g_config["e_img"].toBool();
     Eimg->setChecked(e_img);
-    localLayout->addWidget(addrLabel);
-    localLayout->addWidget(m_addrEdit);
 
-    localLayout->addWidget(m_startStopBtn);
-    localLayout->addWidget(lts_but);
+    m_loadport = new QLineEdit(this);
+    m_loadport->setPlaceholderText(tr("8080"));
+    m_loadport->setMinimumWidth(50);
+    远程端口 = g_config["y_port"].toString();
+    m_loadport->setText(远程端口);
+    m_loadbut = new QPushButton("确认", this);
 
     localLayout->addWidget(Ewebhook);
     localLayout->addWidget(Ews);
     localLayout->addWidget(ESSL);
     localLayout->addWidget(Eimg);
+    localLayout->addWidget(loadimg);
+    localLayout->addWidget(m_loadport);
+    localLayout->addWidget(m_loadbut);
     mainVLayout->addLayout(remoteLayout1);
 
 
-    mainVLayout->addLayout(modeLayout2);
-
-    mainVLayout->addLayout(modeLayout);
-    mainVLayout->addLayout(remoteLayout);
     mainVLayout->addLayout(remoteLayout2);
     mainVLayout->addLayout(localLayout);
-    // ----- IP 白名单配置区域 -----
-    QLabel *tableLabel = new QLabel(tr("Token 管理：启用/禁用、上传次数统计"), this);
 
-    m_tokenTable = new QTableWidget(this);
-    m_tokenTable->setColumnCount(3);
-    m_tokenTable->setHorizontalHeaderLabels({tr("启用(备注)"), tr("Token"), tr("上传次数")});
-    m_tokenTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    m_tokenTable->setAlternatingRowColors(true);
-    m_tokenTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_tokenTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
-    m_tokenTable->setMaximumHeight(200);
 
-    QString style = R"(
-    QTableWidget::item:selected {
-        background-color: #E3B0B9;   /* 选中行背景色（深蓝色） */
-        color: white;                 /* 选中行文字颜色 */
-    }
-    QTableWidget::item:hover {
-        background-color: #e0e7ff;   /* 鼠标悬停行背景色（浅蓝色） */
-        color: black;                /* 悬停行文字颜色 */
-    }
-    )";
-
-    // 应用到表格（或整个应用）
-    m_tokenTable->setStyleSheet(style);
-    // 添加/删除行按钮
-    QHBoxLayout *btnLayout = new QHBoxLayout;
-    m_addTokenBtn = new QPushButton(tr("添加 Token"), this);
-    m_delTokenBtn = new QPushButton(tr("删除选中"), this);
-    m_saveTokenBtn = new QPushButton(tr("保存 Token 设置"), this);
-    btnLayout->addWidget(m_addTokenBtn);
-    btnLayout->addWidget(m_delTokenBtn);
-
-    btnLayout->addWidget(m_saveTokenBtn);
-
-    mainVLayout->addWidget(tableLabel);
-    mainVLayout->addWidget(m_tokenTable);
-    mainVLayout->addLayout(btnLayout);
-    mainVLayout->addStretch();
 
     // 信号槽连接（新增）
     connect(bt, &QPushButton::clicked, [this](){
@@ -291,6 +216,12 @@ void set::setupUI()
         g_config["ffmpeg"]= ffmpegdiv;
         saveConfig();
     });
+    connect(m_loadbut, &QPushButton::clicked, [this](){
+        远程端口 = m_loadport->text();
+        g_config["y_port"]= 远程端口;
+        saveConfig();
+    });
+
     connect(bt2, &QPushButton::clicked, [this](){
         int configCapacity= m_日志数量->text().toInt();
         if(configCapacity<1000 && configCapacity>0)
@@ -304,14 +235,6 @@ void set::setupUI()
         QMessageBox::warning(this,"修改日志数量","修改完成 这里是修改数据库日志保留数据 日志不保存在内存");
     });
 
-    connect(m_addTokenBtn, &QPushButton::clicked, this, &set::onAddTokenRow);
-
-
-    connect(m_delTokenBtn, &QPushButton::clicked, this, &set::onDeleteTokenRow);
-    connect(m_saveTokenBtn, &QPushButton::clicked, this, &set::onWhitelistChanged);  // 复用原名槽
-
-    connect(m_confirmBtn, &QPushButton::clicked, [this](){ saveRemoteConfig();});
-    //图床链接 保存
     connect(m_startStopBtn, &QPushButton::clicked, [this](){
         g_ip=m_addrEdit->text().trimmed();
         g_config["local_server_ip"]= g_ip;
@@ -381,6 +304,12 @@ void set::setupUI()
     connect(Eimg, &QCheckBox::clicked, [this](){
         e_img= Eimg->isChecked();
         g_config["e_img"]=e_img;
+        saveConfig();
+
+    });
+    connect(loadimg, &QCheckBox::clicked, [this](){
+        远程服务器= Eimg->isChecked();
+        g_config["y_img"]=远程服务器;
         saveConfig();
 
     });
@@ -503,180 +432,19 @@ void set::set_webui(bool value)
     }, Qt::QueuedConnection); // 使用 QueuedConnection 确保异步投递到主线程
 
 }
-void set::onAddTokenRow()
-{
-    int row = m_tokenTable->rowCount();
-    m_tokenTable->insertRow(row);
 
-    QTableWidgetItem *checkItem = new QTableWidgetItem();
-    checkItem->setCheckState(Qt::Unchecked);
-    m_tokenTable->setItem(row, 0, checkItem);
 
-    QTableWidgetItem *tokenItem = new QTableWidgetItem("新Token");
-    tokenItem->setFlags(tokenItem->flags() | Qt::ItemIsEditable);   // 可编辑
-    m_tokenTable->setItem(row, 1, tokenItem);
-
-    QTableWidgetItem *countItem = new QTableWidgetItem("0");
-    countItem->setFlags(countItem->flags() & ~Qt::ItemIsEditable);  // 只读
-    m_tokenTable->setItem(row, 2, countItem);
-
-    m_tokenTable->scrollToBottom();
-}
-
-void set::onDeleteTokenRow()
-{
-    int curRow = m_tokenTable->currentRow();
-    if (curRow >= 0) {
-        m_tokenTable->removeRow(curRow);
-    } else {
-        QMessageBox::information(this, tr("提示"), tr("请先选中要删除的行"));
-    }
-}
-void set::onTokenItemChanged(QTableWidgetItem *item)
-{
-    // 如果修改的是上传次数列（第3列），立即恢复原值并提示
-    if (item->column() == 2) {
-        // 获取原来的值
-        int row = item->row();
-        QTableWidgetItem *oldCountItem = m_tokenTable->item(row, 2);
-        if (oldCountItem) {
-            QString original = oldCountItem->text();
-            item->setText(original);
-        }
-        QMessageBox::warning(this, tr("只读"), tr("上传次数不能手动修改，将由系统自动统计。"));
-    }
-}
-void set::onWhitelistChanged()
-{
-    QJsonArray tokenArray;
-    QStringList enabledTokens;
-
-    int rows = m_tokenTable->rowCount();
-    for (int i = 0; i < rows; ++i) {
-        QTableWidgetItem *checkItem = m_tokenTable->item(i, 0);
-        QTableWidgetItem *tokenItem = m_tokenTable->item(i, 1);
-        QTableWidgetItem *countItem = m_tokenTable->item(i, 2);
-
-        if (!tokenItem) continue;
-        QString token = tokenItem->text().trimmed();
-        if (token.isEmpty()) continue;
-
-        bool enabled = (checkItem && checkItem->checkState() == Qt::Checked);
-        int uploadCount = countItem ? countItem->text().toInt() : 0;
-
-        QJsonObject obj;
-        QString text;
-        if(checkItem) text = checkItem->text();
-        if(!text.isEmpty())
-            obj["remark"] = text;
-
-        QByteArray key = MachineKey::generateKey(text);
-        obj["token"] = MachineKey::encrypt(token, key);
-
-        obj["enabled"] = enabled;
-        obj["uploadCount"] = uploadCount;
-        tokenArray.append(obj);
-
-        if (enabled) {
-            enabledTokens.append(token);
-        }
-    }
-
-    g_config["token_table_data"] = tokenArray;
-    saveConfig();
-
-    setUploadTokens(enabledTokens);
-
-    QMessageBox::information(this, tr("保存成功"), tr("Token 白名单已更新"));
-}
 
 
 void set::loadConfig()
 {
-    // 读取模式
-    bool useLocal = g_config["image_server_mode_local"].toBool();
-    if (useLocal) {
-        m_localRadio->setChecked(true);
-    } else {
-        m_remoteRadio->setChecked(true);
-        远程服务器=true;
-    }
-    // 读取远程地址
     ffmpegdiv = g_config["ffmpeg"].toString();
     if(ffmpegdiv.isEmpty())
         ffmpegdiv="ffmpeg/";
     m_ffmpegpath->setText(ffmpegdiv);
-    远程链接 = g_config["image_server_url"].toString();
-    m_urlEdit->setText(远程链接);
-    远程token=g_config["image_server_token"].toString();
-    m_token->setText(远程token);
+
     g_ip = g_config["local_server_ip"].toString();
-
     m_addrEdit->setText(g_ip);
-
-    QJsonArray tokenArray = g_config["token_table_data"].toArray();
-    m_tokenTable->setRowCount(0);
-        QStringList enabledTokens;
-    for (const QJsonValue &val : std::as_const(tokenArray)) {
-        QJsonObject obj = val.toObject();
-        QString remark = obj["remark"].toString();
-        QString token = obj["token"].toString();
-        QByteArray key = MachineKey::generateKey(remark);
-        token = MachineKey::decrypt(token, key);
-        bool enabled = obj["enabled"].toBool(false);
-        if (enabled) enabledTokens.append(token);
-        int uploadCount = obj["uploadCount"].toInt(0);
-        int row = m_tokenTable->rowCount();
-        m_tokenTable->insertRow(row);
-        QTableWidgetItem *checkItem = new QTableWidgetItem();
-        checkItem->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
-        checkItem->setText(remark);
-        m_tokenTable->setItem(row, 0, checkItem);
-
-        QTableWidgetItem *tokenItem = new QTableWidgetItem(token);
-        tokenItem->setFlags(tokenItem->flags() | Qt::ItemIsEditable);
-        m_tokenTable->setItem(row, 1, tokenItem);
-
-        QTableWidgetItem *countItem = new QTableWidgetItem(QString::number(uploadCount));
-        countItem->setFlags(countItem->flags() & ~Qt::ItemIsEditable);
-        m_tokenTable->setItem(row, 2, countItem);
-    }
-    setUploadTokens(enabledTokens);
-}
-void set::incrementTokenUsage(const QString &token)
-{
-    // 查找表格中匹配的 Token（忽略大小写敏感？按需）
-    for (int i = 0; i < m_tokenTable->rowCount(); ++i) {
-        QTableWidgetItem *tokenItem = m_tokenTable->item(i, 1);
-        if (tokenItem && tokenItem->text() == token) {
-            QTableWidgetItem *countItem = m_tokenTable->item(i, 2);
-            if (countItem) {
-                int newCount = countItem->text().toInt() + 1;
-                countItem->setText(QString::number(newCount));
-                // 立即保存到配置（可选，也可在退出或保存时统一保存）
-                // 但为保证数据不丢失，可以调用保存函数
-                // onWhitelistChanged();  // 会保存全部数据并更新白名单
-            }
-            break;
-        }
-    }
-}
-void set::saveModeConfig()
-{
-    bool useLocal = m_localRadio->isChecked();
-    g_config["image_server_mode_local"]= useLocal;
-    saveConfig();
-}
-
-void set::saveRemoteConfig()
-{
-    QString url = m_urlEdit->text().trimmed();
-    if (!url.isEmpty()) {
-        g_config["image_server_url"]= url;
-        g_config["image_server_token"]=  m_token->text().trimmed();
-        saveConfig();
-    }
-    // 可选：提示保存成功
 }
 
 

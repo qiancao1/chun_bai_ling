@@ -17,6 +17,41 @@ void NetManager::init() {
     }
 }
 
+void NetManager::postAsync(const QString& url, const QByteArray& data,
+                           const QHash<QString, QString>& headers, int timeoutMs,
+                           QObject* context, Callback callback) {
+    // 轮询选择一个 NAM
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    // 将请求投递到 mgr 所在线程（如果 mgr 在主线程，则直接执行）
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        QNetworkReply* reply = mgr->post(request, data);
+        QTimer* timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        // 使用 context 作为 receiver，使得槽（lambda）在 context 的线程执行
+        QObject::connect(reply, &QNetworkReply::finished, context, [reply, callback]() {
+            QByteArray raw = reply->readAll();
+            QString response = QString::fromUtf8(raw);
+            QNetworkReply::NetworkError err = reply->error();
+            reply->deleteLater();
+            callback(response, err);
+        });
+    }, Qt::QueuedConnection);
+}
+
 std::future<QString> NetManager::post(const QString &url, const QByteArray &jsonData,
                                       const QHash<QString, QString> &headers, int timeoutMs) {
     // 1. 使用 shared_ptr 管理 promise，保证跨线程安全

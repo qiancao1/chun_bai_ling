@@ -200,17 +200,18 @@ public:
                     first = false;
                     nat.append("<@").append(id).append(">");
                 }
-                sentText = subTextReplace(sentText,"{艾特}",nat);
+
+                sentText.replace("{艾特}",nat);
             }
 
             if(sentText.contains("{ID}"))
             {
                 QString result = m_user_list.join(",");
-                sentText = subTextReplace(sentText,"{ID}",result);
+                sentText.replace("{ID}",result);
             }
             if(sentText.contains("{数量}"))
             {
-                sentText = subTextReplace(sentText,"{数量}",QString::number(m_user_list.size()));
+                sentText.replace("{数量}",QString::number(m_user_list.size()));
             }
             if(sentText.contains("{混合}"))
             {
@@ -222,9 +223,15 @@ public:
                     QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(m_appid).arg(id, id);
                     nat.append(hh);
                 }
-                sentText = subTextReplace(sentText,"{混合}",nat);
-
+                sentText.replace("{混合}",nat);
             }
+
+
+
+
+
+
+
         }
         QQBotClient* client = m_botClients[m_appid];
         bool zh=false;

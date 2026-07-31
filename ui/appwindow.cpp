@@ -47,7 +47,7 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 7.由于机器人 发送 是md格式 你可以在回复文本 添加 # ``` *** ![]() >  []() 等语法 注意[显示文本](点击后文本)语法是可点击按钮 例子 [开始游戏](加入谁是卧底) 当然 可以[开始游戏]() 圆括号内容不写内容 自动用[]内容
 8.当前系统环境是 win环境
 9.请在 返回的文本中 多添加[指令]() 等文本 因为在QQ点击这个标签可以快捷插入聊天框
-10.使用下面ButtonGroup 类创建按钮 api.send_messageEx(msg,回复内容+ButtonGroup.to_json()) 发送按钮
+10.使用下面ButtonGroup 类创建按钮 api.send_msgEx(msg,回复内容+ButtonGroup.to_json()) 发送按钮
 11.艾特语法是 <@id> 如 "<@"+msg.user+">
 12.为了减少请求次数 你在调用工具的时候 先考虑好 比如 要写出3个文件 就一次性调3个 工具 而不是一个一个来
 13.你可以用run_python来 检查py文件语法
@@ -82,7 +82,7 @@ msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
 msg.at_you       : 布尔值，是否 @ 了当前机器人 (bool)
 msg.raw          : 原始数据（JSON 字符串） (字符串)
 msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
-msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_messageEx(msg,msg.replyto+回复内容) (字符串)
+msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_msgEx(msg,msg.replyto+回复内容) (字符串)
 ========================
 事件类型 可订阅 可以不用
 频道事件：
@@ -120,7 +120,7 @@ PUBLIC_MESSAGE_DELETE // 当频道的消息被删除时
 
 群聊事件：
 GROUP_MEMBER_ADD  //用户添加群聊 可以msgid回复
-GROUP_MEMBER_REMOVE //有用户退出群 被踢出没事件 仅限本事件 不能回复信息 但是可以用主动 也就是msgid传空 调api.send_messageEx(msg,"xxx") 发送前将msg.msgid 清空即可
+GROUP_MEMBER_REMOVE //有用户退出群 被踢出没事件 仅限本事件 不能回复信息 但是可以用主动 也就是msgid传空 调api.send_msgEx(msg,"xxx") 发送前将msg.msgid 清空即可
 
 C2C_MESSAGE_CREATE  // 用户单聊发消息给机器人时候
 FRIEND_ADD  // 用户添加使用机器人
@@ -265,6 +265,16 @@ class QQApi:
             self.send_messageEx,
             msg, text, is_wakeup
         )
+    #推荐本API
+    def send_msgEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+        """发送消息立即返回 上面的api都是堵塞返回结果 这个是立即返回不获取结果"""
+        ...
+
+    def send_msg(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """
+        发送普通消息。不返回结果
+        """
+        ...
 
     def delete_message(self,appid: int, type_: int, openid: str, msgid: str) -> Dict:
         """
@@ -1639,7 +1649,7 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
         for(int i2=0; i2<3; ++i2) {
             //qDebug() << "上下文" << sxw;
             init_system("");//更新系统提示词
-            QByteArray response = ai_ui->Ai_post(url, key, sxw, 1800000);
+            QByteArray response = ai_ui->Ai_post3(url, key, sxw, 1800000);
             if(response.isEmpty()) {
                 err += "接口返回空\n";
                 return QString();
@@ -2151,10 +2161,13 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
             liu_text.reserve(64);
             if(!s->accumulatedReasoning.isEmpty())
             {
-                QTextCursor c(chatTextEdit->document());
-                c.setPosition(s->aiReplyStartPos);
-                c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-                c.removeSelectedText();
+                if(s->aiReplyStartPos!=-1){
+                    QTextCursor c(chatTextEdit->document());
+                    c.setPosition(s->aiReplyStartPos);
+                    c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                    c.removeSelectedText();
+                    s->aiReplyStartPos=-1;
+                }
                 addMessage2(s->accumulatedReasoning,MessageType::sk);
                 s->accumulatedReasoning.clear();
             }
@@ -2185,19 +2198,27 @@ void AppWindow::parseSSE(StreamSession *s, const QByteArray &line)
                     liu_text.clear();
                     liu_text.reserve(64);
                     if(!s->accumulatedReasoning.isEmpty()){
-                        QTextCursor c(chatTextEdit->document());
-                        c.setPosition(s->aiReplyStartPos);
-                        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-                        c.removeSelectedText();
+                        if(s->aiReplyStartPos!=-1){
+                            QTextCursor c(chatTextEdit->document());
+                            c.setPosition(s->aiReplyStartPos);
+                            c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                            c.removeSelectedText();
+                            s->aiReplyStartPos=-1;
+                        }
                         addMessage2(s->accumulatedReasoning,MessageType::sk);
                         s->accumulatedReasoning.clear();
                     }
                     if(!s->accumulatedContent.isEmpty()){
 
-                        QTextCursor c(chatTextEdit->document());
-                        c.setPosition(s->aiReplyStartPos);
-                        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-                        c.removeSelectedText();
+                        if(s->aiReplyStartPos!=-1){
+                            QTextCursor c(chatTextEdit->document());
+                            c.setPosition(s->aiReplyStartPos);
+                            c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                            c.removeSelectedText();
+                            s->aiReplyStartPos=-1;
+                        }
+
+
                         addMessage2(s->accumulatedContent,MessageType::AI);
                     }
                     startStreamUI(s,"🔧 调用工具("+newFunc["name"].toString()+")");
@@ -2312,10 +2333,14 @@ void AppWindow::onStreamFinished()
 
 
     if(!s->accumulatedContent.isEmpty()){
-        QTextCursor c(chatTextEdit->document());
-        c.setPosition(s->aiReplyStartPos);
-        c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-        c.removeSelectedText();
+        if(s->aiReplyStartPos!=-1){
+            QTextCursor c(chatTextEdit->document());
+            c.setPosition(s->aiReplyStartPos);
+            c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+            c.removeSelectedText();
+            s->aiReplyStartPos=-1;
+        }
+
         addMessage2(QString("%1\n输入:%2  补全:%3  缓存:%4").arg(s->accumulatedContent, formatTokens(m_prompt_tokens3), formatTokens(m_completion_tokens3),
                                                                  formatTokens(m_prompt_tokens_details3)),MessageType::AI);
         m_prompt_tokens3 = 0;
@@ -2422,11 +2447,13 @@ void AppWindow::onStreamFinished()
                     toolMsg["name"] = name;
                     msgs.append(toolMsg);
                 }
-
-                QTextCursor c(chatTextEdit->document());
-                c.setPosition(s->aiReplyStartPos);
-                c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-                c.removeSelectedText();
+                if(s->aiReplyStartPos!=-1){
+                    QTextCursor c(chatTextEdit->document());
+                    c.setPosition(s->aiReplyStartPos);
+                    c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+                    c.removeSelectedText();
+                    s->aiReplyStartPos=-1;
+                }
                 addMessage2(res, MessageType::Tool,tool_name);
                 sxw["messages"] = msgs;
             }

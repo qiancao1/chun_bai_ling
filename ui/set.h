@@ -26,9 +26,10 @@ class set : public QWidget
 public:
     explicit set(QWidget *parent = nullptr);
     ~set();
-    void incrementTokenUsage(const QString &token);
+
     bool 远程服务器=false;
-    QString 远程链接,远程token;
+
+    QString 远程端口=0;
     void set_webui(bool value);
 
 private slots:
@@ -36,36 +37,16 @@ private slots:
 
 
 
-    void onAddTokenRow();
-    void onDeleteTokenRow();
-    void onWhitelistChanged();   // 保存按钮槽
-    void onTokenItemChanged(QTableWidgetItem *item); // 监听 Token 列编辑完成
-
-
 private:
     void setupUI();
     void loadConfig();
-    void saveModeConfig();
-    void saveRemoteConfig();
 
-
-
-
-    // UI 控件
-    QRadioButton *m_remoteRadio;
-    QRadioButton *m_localRadio;
-    QLineEdit    *m_urlEdit , *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook,*webhook_ssl;
-    QLineEdit    *m_token;
+    QLineEdit  *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook;
     QPushButton  *web_qr;
-    QPushButton  *m_confirmBtn,*webhook_but,*webhook_ssl_but;
-    QLineEdit    *m_addrEdit;
-    QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg;
+    QPushButton  *webhook_but,*m_loadbut;
+    QLineEdit    *m_addrEdit,*m_loadport;
+    QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg,*loadimg;
     QPushButton  *m_startStopBtn,*lts_but; //聊天室
-    QTableWidget *m_tokenTable;
-    QPushButton *m_addTokenBtn;
-    QPushButton *m_delTokenBtn;
-    QPushButton *m_saveTokenBtn;   // 保存按钮
-
 };
 
 #endif // SET_H

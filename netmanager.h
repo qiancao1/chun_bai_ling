@@ -1,6 +1,7 @@
 #include <future>
 #include <QNetworkAccessManager>
 #include <qmutex.h>
+#include <qnetworkreply.h>
 
 class NetManager : public QObject {
     Q_OBJECT
@@ -9,6 +10,7 @@ public:
         static NetManager manager;
         return &manager;
     }
+
 
     // 注意这里返回的是标准库的 std::future
     std::future<QString> post(const QString &url, const QByteArray &jsonData,
@@ -23,6 +25,15 @@ public:
                                 const QByteArray &data,
                                 const QHash<QString, QString> &headers = {},
                                 int timeoutMs = 30000);
+
+
+    using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
+    // 异步 POST，回调在 context 所在线程执行
+    void postAsync(const QString& url, const QByteArray& data,
+                   const QHash<QString, QString>& headers, int timeoutMs,
+                   QObject* context, Callback callback);
+
 private:
     NetManager() { init(); }
     ~NetManager() { cleanup(); }

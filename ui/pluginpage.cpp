@@ -701,12 +701,8 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
-                QString contactId = msg.groupId;
-                QString msgIdNormal = msg.msgId;
-
-                SendMessageTask *task = new SendMessageTask(client, msg.type, contactId, reply,
-                                                            msgIdNormal,"["+m_pluginList[i].name+"|%1ms]", false);
-                QThreadPool::globalInstance()->start(task);
+                QString pname ="["+m_pluginList[i].name+"|%1ms]";
+                client->send_messagesAsync(msg.type,msg.groupId,pname,reply,msg.msgId);
             }
             return ;
         }
@@ -755,9 +751,9 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
 
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
-    else if(msg.at_you || !msg.fullType)
+    else if(msg.at_you && msg.subType==0)
         botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
-
+    if(msg.at_you && msg.subType==0) botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
 }
 
 

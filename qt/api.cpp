@@ -121,7 +121,7 @@ QString formatDuration(qint64 seconds) {
 QString convertMdLinksKeepHttp(const QString &input)
 {
     // 正则匹配 [任意字符(非']')](任意字符(非')'))
-    QRegularExpression re(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))");
+    static QRegularExpression re(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))");
     QRegularExpressionMatchIterator it = re.globalMatch(input);
 
     QString output;
@@ -631,7 +631,11 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
 
         QString msgid = toQString(_4);
         bool is_wakeup = toBool(_5);
-        QString ret = client->send_messages(type, openid,pname, text,msgid, is_wakeup);
+        QString ret;
+        if(toBool(_6))
+            ret = client->send_messagesAsync(type, openid,pname, text,msgid, is_wakeup);
+        else
+            ret = client->send_messages(type, openid,pname, text,msgid, is_wakeup);
         result = ret.toStdString();
         break;
     }
@@ -841,15 +845,18 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
 }
 
 
-void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QString &text,qint64 now_us,int type,QString &msgid,const QString &openid)
+void QQBotClient::addmsglog(const QString &response,int index,const QString &pname,const QString &text,qint64 now_us, int type,const QString &openid)
 {
 
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
     QJsonObject obj = doc.object();
+
+    QString message = obj["message"].toString();
+
     QString deleteid = obj["id"].toString();
     QJsonObject obj2 =obj["ext_info"].toObject();
     QString ref = obj2["ref_idx"].toString();
-    QString message = obj["message"].toString();
+
     int tabIndex = mapTypeToTabIndex(type);
     m_info->message_sent++;
     m_info->sent++;
@@ -857,19 +864,14 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
     bool ok=false;
     if(index>0)
     {
-
         qint64 us = g_logdb[tabIndex]->setBuffer_255(index,ok);
-
-
         qint64 diff_us = now_us - us;
         diff_ms = diff_us / 1000.0;
     }
     if(openid == chatPage->currentContactId)
     {
-
         QMetaObject::invokeMethod(this, [=]() {
             Message m("","",true, QDateTime::currentDateTime().toString("hh:mm:ss"),"","[ref,msg_idx="+ref+"]","");
-
             if(pname.contains("%1"))
                 m.direction = pname.arg(diff_ms) + text;
             else
@@ -931,7 +933,7 @@ void QQBotClient::addmsglog(QString &response,int index,QString &pname,const QSt
     msg.seq = g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
     logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
     if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
-
+    return ;
 }
 
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
@@ -960,18 +962,8 @@ QString get_url(int type,const QString &openid,const QString &text = QString(),c
 }
 
 
-QString uploadImageToCdn(const QString &path);
 
-    /**
- * @brief 从参数文本（例如 "url=xxx, x=100, y=200"）中提取指定键的值。
- * @param params  参数文本视图（不含外层括号）
- * @param key     要查找的键，如 "url"
- * @param value   输出参数，存储找到的值（若找到）
- * @return true 如果找到该键
- *
- * 解析规则：key=value，key 前后允许空格，value 直到下一个逗号或结尾，
- * value 前后的空格会被去除。
- */
+
 static bool extractParamValue(QStringView params, const QString &key, QString &value) {
     int pos = 0;
     const int len = params.size();
@@ -1106,6 +1098,8 @@ void get_ref(QString &text,QString &message_reference)
     }
 
 }
+QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg);
+QString uploadToMhimg(const QString &filePath, QString *errorMsg = nullptr);
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
                                       QString &message_reference)
@@ -1343,14 +1337,21 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 } else {
                     QString uploadedUrl = upload(newUrl); // 优先自定义上传
                     if (uploadedUrl.isEmpty()) {
-                        qint64 time = 0;
-                        QString md5;
-                        bool ok = false;
-                        uploadRichMedia(targetType, openid, 1, newUrl, time, md5, ok, uploadedUrl);
-                        if (!ok)
-                            uploadedUrl = uploadImageToCdn(newUrl); // 备用 CDN
-                        else if (!uploadedUrl.isEmpty())
-                            uploadedUrl += "&response-content-type=image%2Fpng";
+                        if(setA->远程服务器)
+                        {
+                            QString err;
+                            uploadedUrl = uploadImageByPath("http://127.0.0.1:"+setA->远程端口+"/",newUrl,30000,&err);
+                        }
+                        if(uploadedUrl.isEmpty()){
+                            qint64 time = 0;
+                            QString md5;
+                            bool ok = false;
+                            uploadRichMedia(targetType, openid, 1, newUrl, time, md5, ok, uploadedUrl);
+                            if (!ok)
+                                uploadedUrl = uploadToMhimg(newUrl); // 备用 CDN
+                            else if (!uploadedUrl.isEmpty())
+                                uploadedUrl += "&response-content-type=image%2Fpng";
+                        }
                     }
                     if (!uploadedUrl.isEmpty()) {
                         newUrl = uploadedUrl;
@@ -1543,6 +1544,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QString upload_id = respObj["upload_id"].toString();
     if (upload_id.isEmpty()) return response; // 错误信息
     QJsonArray parts = respObj["parts"].toArray();
+    respObj.remove("parts");
     QJsonObject partFinishBase;
     partFinishBase["upload_id"] = upload_id;
     const int MAX_RETRIES = 3;
@@ -1722,10 +1724,11 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 
 
 
-QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname,QString &text,qint64 now_us, const QString &msgid,bool is_wakeup)
+QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname,QString &text,qint64 now_us,
+                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext ctx)
 {
     // 匹配短标签或全名标签：f/file, a/audio, v/video, flie(笔误)
-    QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
+    static QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
                           QRegularExpression::CaseInsensitiveOption);
 
     QRegularExpressionMatchIterator it = re.globalMatch(text);
@@ -1757,8 +1760,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
         else if (rawType == "v" || rawType == "video") mediaType = "video";
         else if (rawType == "flie") mediaType = "file";   // 常见拼写错误
         else continue;
-        QRegularExpression pathRe(R"(path\s*=\s*([^,\]]+))");
-        QRegularExpression urlRe(R"(url\s*=\s*([^,\]]+))");
+        static QRegularExpression pathRe(R"(path\s*=\s*([^,\]]+))");
+        static QRegularExpression urlRe(R"(url\s*=\s*([^,\]]+))");
 
         QString filePath = pathRe.match(info.params).captured(1).trimmed();
         QString fileUrl  = urlRe.match(info.params).captured(1).trimmed();
@@ -1820,14 +1823,18 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
 
             if(!ok)
             {
-                send_messages(type,openid,pname,fileInfo,msgid,is_wakeup);
+                if(ctx.openid.isEmpty())
+                    send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
+                else
+                    send_messagesAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
             }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty()) { //发的链接是没有md5的
                 cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
             }
         }
 
         if (ok && !fileInfo.isEmpty()) {
-            response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup); // 增加 fileType 参数
+
+            response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,ctx); // 增加 fileType 参数
         }
         text.remove(info.start, info.length);
     }
@@ -1835,7 +1842,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
     return response;
 }
 
-QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,const QString &info,qint64 now_us,const QString &msgid,bool is_wakeup)
+QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,const QString &info,qint64 now_us,
+                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx)
 {
     QJsonObject json;
     json["msg_type"] = 7;
@@ -1845,17 +1853,39 @@ QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,co
     QJsonObject refObj;
     refObj["file_info"] = info2;
     json["media"] = refObj;
+    json["noref"] = noref;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    initjgt(json, QJsonArray(),"",realMsgId,is_wakeup);
-    QString url= get_url(type,openid,"messages");
-    QString response= PostSync(url, json,QString(), 5000);
+    ctx.index=index;
+    int seq_index=0;
+    bool ok=false;
+    if(index>=0){
 
-    addmsglog(response,index,pname,info,now_us,type,realMsgId,openid);
-    return response;
+        g_logdb[type+1]->setBuffer_255(index,ok);
+    }
+    if(ok)
+        seq_index = 1;
+    else if(noref) return "{}";
+    else seq_index = 2;
+    initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index);
+    QString url= get_url(type,openid,"messages");
+    if(ctx.openid.isEmpty()){
+        QString response= PostSync(url, json,QString(), 5000);
+
+        addmsglog(response,index,pname,info,now_us,type,openid);
+
+        return response;
+
+    }
+    PostAsync(url, json, "", 5000,
+              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
+                            ctx.now_us, ctx.type, ctx.openid);
+              });
+    return "{}";
 }
 
 
-void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup)
+void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup,int logindex)
 {
     if (!message_reference.isEmpty()) {
         QJsonObject refObj;
@@ -1863,7 +1893,10 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
         refObj["ignore_get_message_error"] = false;
         json["message_reference"] = refObj;
     }
-    json["msg_seq"] = m_info->message_sent;
+    if(logindex!=1)
+         json["msg_seq"] = m_info->message_sent;
+
+
     if (!is_wakeup) {
         if (msgid.contains("INTERACTION") || msgid.contains("FRIEND_ADD") || msgid.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
             json["event_id"] = msgid;
@@ -2095,10 +2128,16 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
             if(ok) continue;
             for(int i2=0;i2<w.thck.size();++i2)
             {
-                text = subTextReplace(text,w.thck[i2],w.thcv[i2]); //原位修改
+                text.replace(w.thck[i2],w.thcv[i2]);
+
             }
-            if(!w.data.isEmpty())
-            text = subTextReplace(w.data,"【*】",text);
+
+            if(!w.data.isEmpty())  
+            {
+                QString data = w.data;
+                data.replace("【*】",text);
+                text = data;
+            }
             isok=true;
             break;
         }
@@ -2107,29 +2146,96 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
         if(isok) break;
     }
 
-    if(text.contains("{{appid}}"))
-        text=subTextReplace(text,"{{appid}}",m_info->appid);
-    if(text.contains("{{botname}}"))
-        text=subTextReplace(text,"{{botname}}",m_info->nickname);
+
     if(text.contains("{{name}}"))
     {
         auto *db = g_botdb [m_info->appid_int];
         QString username;
         db->getOrUpdateUser(openid,username);
-        text=subTextReplace(text,"{{name}}",username);
-    }
-    if(text.contains("{{group}}"))
-        text=subTextReplace(text,"{{group}}",openid);
-    if(text.contains("{{user}}"))
-        text=subTextReplace(text,"{{user}}",log2.user);
-    if(text.contains("{{msg}}"))
-        text=subTextReplace(text,"{{msg}}",log2.msg);
-    if(text.contains("{{msgid}}"))
-        text=subTextReplace(text,"{{msgid}}",log2.ch);
+        text.replace("{{name}}", username);
 
+    }
+
+
+    text.replace("{{appid}}", m_info->appid);
+    text.replace("{{botname}}", m_info->nickname);
+
+    text.replace("{{group}}", openid);
+    text.replace("{{user}}", log2.user);
+    text.replace("{{msg}}", log2.msg);
+    text.replace("{{msgid}}", log2.ch);
+
+    static QRegularExpression re("\\{\\{([^}]+)\\}\\}");
+    QRegularExpressionMatchIterator it = re.globalMatch(text);
+
+    // 存储匹配项（从后往前替换保证偏移正确）
+    QList<QPair<int, int>> ranges;      // <起始位置, 长度>
+    QStringList replacements;
+
+    while (it.hasNext()) {
+        auto match = it.next();
+        QString inner = match.captured(1).trimmed();
+
+        // 只处理含有逗号的关键字（参数化）
+        if (!inner.contains(','))
+            continue;
+
+        QStringList parts = inner.split(',');
+        if (parts.isEmpty())
+            continue;
+
+        QString keyword = parts[0].trimmed();
+        QString replacement;
+
+        if (keyword == "随机数") {
+            int minVal = 0, maxVal = 100;   // 默认范围
+            if (parts.size() >= 3) {
+                minVal = parts[1].trimmed().toInt();
+                maxVal = parts[2].trimmed().toInt();
+            } else if (parts.size() == 2) {
+                maxVal = parts[1].trimmed().toInt();
+            }
+            if (minVal > maxVal) qSwap(minVal, maxVal);
+            int random = QRandomGenerator::global()->bounded(minVal, maxVal + 1);
+            replacement = QString::number(random);
+        }
+        else if (keyword == "选择") {
+            // 从第2个参数开始均为选项
+            if (parts.size() < 2) {
+                replacement = match.captured(0);  // 参数不足则保留原样
+            } else {
+                QStringList options;
+                for (int i = 1; i < parts.size(); ++i) {
+                    options << parts[i].trimmed();
+                }
+                int idx = QRandomGenerator::global()->bounded(options.size());
+                replacement = options[idx];
+            }
+        }
+        else if (keyword == "日期") {
+            QString format = "yyyy-MM-dd hh:mm:ss";   // 默认格式
+            if (parts.size() >= 2) {
+                format = parts[1].trimmed();
+            }
+            replacement = QDateTime::currentDateTime().toString(format);
+        }
+        else {
+            // 未知关键字：原样保留
+            replacement = match.captured(0);
+        }
+
+        ranges.append(qMakePair(match.capturedStart(0), match.capturedLength(0)));
+        replacements.append(replacement);
+    }
+
+    // 从后往前替换
+    for (int i = ranges.size() - 1; i >= 0; --i) {
+        text.replace(ranges[i].first, ranges[i].second, replacements[i]);
+    }
 }
 
-QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, const QString &content, const QString &imagePath,const QString &message_reference)
+QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, const QString &content, const QString &imagePath,
+                                      const QString &message_reference, int seq_index,const MessageLogContext ctx,bool noref)
 {
     QByteArray postData;
     QString headers;
@@ -2143,6 +2249,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
         if (!content.isEmpty()) {
             obj["content"] = content;
         }
+        obj["noref"] = noref;
         if (msgId.contains("INTERACTION") || msgId.contains("FRIEND_ADD") || msgId.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
             obj["event_id"] = msgId;
         else
@@ -2196,10 +2303,26 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
         headers = QString("multipart/form-data; boundary=%1").arg(boundary);
         postData = body;
     }
-    return PostSync(url, postData,headers,10000);
+
+    if (ctx.openid.isEmpty()) {
+        return PostSync(url, postData, headers, 10000);
+    } else {
+        QHash<QString, QString> headers2;
+        headers2.insert("X-Union-Appid", m_info->appid);
+        headers2.insert("Authorization", "QQBot " + m_accessToken);
+        headers2.insert("Content-Type", headers);
+
+        postRawAsync(url, postData, headers2, 20000,
+                     [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+                         addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
+                                   ctx.now_us, ctx.type, ctx.openid);
+                     });
+        return QString();
+    }
 }
+
 QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
-                                    const QString &msgid,bool is_wakeup,bool mode,int 发送类型)
+                                    const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
 {
     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
     QString newtext = text;
@@ -2210,155 +2333,188 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
         ev.groupId = openid;
         ev.msgId=msgid;
         ev.type = type;
-
        newtext =python_code(text,ev);
     }
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup);//检查也没有要发送 的语言视频 文件 原位修改text
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,发送类型,noref,MessageLogContext());//检查也没有要发送 的语言视频 文件 原位修改text
+    if (newtext.isEmpty()) return newtext2;
+    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    QJsonObject keyboard;
+    QJsonArray prompt_keyboard;
+    QString message_reference,mb;
 
-    if (!newtext.isEmpty())
+    QString textB=normalizeNewlinesToCR(newtext); //处理换行
+
+    bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    bool mbise= mb.isEmpty();
+    if(textB.isEmpty() && mbise)
     {
-
-        auto [index, realMsgId] = splitWrappedMsgId(msgid);
-        QJsonObject keyboard;
-        QJsonArray prompt_keyboard;
-        QString message_reference,mb;
-
-        QString textB=normalizeNewlinesToCR(newtext); //处理换行
-
-        bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
-        bool mbise= mb.isEmpty();
-        if(textB.isEmpty() && mbise)
-        {
-            QString response = R"({"message":"发送内容不能为空"})";
-            addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
-            return response;
-        }
-        QString response,fileinfo;
-        if(type==1 || type ==3)
-        {
-            if(!mbise)
-            {
-                textB = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-                QString textA = forbidden->filterText(textB);
-                response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                if(response.contains("token not exist or expire")) //token过期
-                {
-                    m_accessToken.clear();
-                    refreshAccessToken();
-                    response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                }else if(response.isEmpty())
-                {
-                    textB="#mb:#"+ mb+"#mb:#" ;
-                }else{
-                    addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
-                    return response;
-                }
-            }
-            if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
-            {
-                textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-                QString textA = forbidden->filterText(textB);
-
-                //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                response = R"("message":"暂时不支持模板方式")";
-                if(response.contains("token not exist or expire")) //token过期
-                {
-                    m_accessToken.clear();
-                    refreshAccessToken();
-                    response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                }
-
-
-            }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
-            {
-                textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-                QString textA = forbidden->filterText(textB);//违禁词过滤
-                response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                if(response.contains("token not exist or expire")) //token过期
-                {
-                    m_accessToken.clear();
-                    refreshAccessToken();
-                    response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-                }
-            }else {
-
-                textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
-                QString textA = forbidden->filterText(textB);//违禁词过滤
-                QString url = get_url(type, openid, "messages");
-
-                response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference);
-                if(response.contains("token not exist or expire"))
-                {
-                    m_accessToken.clear();
-                    refreshAccessToken();
-                    response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference);
-                }
-            }
-            addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
-            return response;
-        }
-        if(!mbise)
-        {
-
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-            QString textA = forbidden->filterText(textB);
-            response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            if(response.contains("token not exist or expire")) //token过期
-            {
-                m_accessToken.clear();
-                refreshAccessToken();
-                response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            }else if(response.isEmpty())
-            {
-                textB="#mb:#"+ mb+"#mb:#" ;
-            }else{
-                addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
-                return response;
-            }
-        }
-        if(!mode && m_info->markdown || mode && 发送类型==1)
-        {
-
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-            QString textA = forbidden->filterText(textB);
-            response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            if(response.contains("token not exist or expire")) //token过期
-            {
-                m_accessToken.clear();
-                refreshAccessToken();
-                response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            }
-
-
-        }else{
-
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
-            QString textA = forbidden->filterText(textB);
-            response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup);
-            if(response.contains("token not exist or expire"))
-            {
-                m_accessToken.clear();
-                refreshAccessToken();
-                response = send_messages(type, openid, textA,fileinfo, prompt_keyboard, message_reference, realMsgId, is_wakeup);
-            }
-        }
-        addmsglog(response,index,pname,newtext,now_us,type,realMsgId,openid);
+        QString response = R"({"message":"发送内容不能为空"})";
+        addmsglog(response,index,pname,newtext,now_us,type,openid);
         return response;
     }
-    return newtext2;
+    int seq_index=0;
+    if(index>=0){
+        seq_index=g_logdb[type+1]->incrementBufferStatus(index);
+    }
+    if(noref) seq_index =1;
+    QString response,fileinfo;
+    if(type==1 || type ==3)
+    {
+        if(!mbise)
+        {
+            textB = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);
+            response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+            addmsglog(response,index,pname,newtext,now_us,type,openid);
+            return response;
+        }
+        if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
+        {
+            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);
+            //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+            response = R"("message":"暂时不支持模板方式")";
+        }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+        {
+            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);//违禁词过滤
+            response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        }else {
+            textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);//违禁词过滤
+            QString url = get_url(type, openid, "messages");
+            response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,MessageLogContext(),noref);
+        }
+        addmsglog(response,index,pname,newtext,now_us,type,openid);
+        return response;
+    }
+    if(!mbise)
+    {
+        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        addmsglog(response,index,pname,newtext,now_us,type,openid);
+        return response;
+    }
+    if(!mode && m_info->markdown || mode && 发送类型==1)
+    {
+        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+    }else{
+
+        textB = processImageTags(textB,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+    }
+    addmsglog(response,index,pname,newtext,now_us,type,openid);
+    return response;
+
+
 }
 
-QString QQBotClient::send_messages(int type, const QString &openid, const QString &text,const QString &info,
-                                   const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid,
-                                   bool is_wakeup)
+QString QQBotClient::send_messagesAsync(int type, const QString &openid,QString &pname, QString &text,
+                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
+{
+    if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
+    QString newtext = text;
+    if(text.contains("#python"))
+    {
+        MessageEvent ev;
+        ev.appid = m_info->appid_int;
+        ev.groupId = openid;
+        ev.msgId=msgid;
+        ev.type = type;
+        newtext =python_code(text,ev);
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    MessageLogContext ctx;
+    ctx.index = 0;
+    ctx.pname = pname;                     // 拷贝
+    ctx.jsonString = text;
+    ctx.now_us = now_us;
+    ctx.type = type;
+    ctx.openid = openid;
+
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,发送类型,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
+    if (newtext.isEmpty()) return newtext2;
+    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+     ctx.index = index;
+    QJsonObject keyboard;
+    QJsonArray prompt_keyboard;
+    QString message_reference,mb;
+    QString textB = normalizeNewlinesToCR(newtext); //处理换行
+    bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    bool mbise= mb.isEmpty();
+    if(textB.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
+    int seq_index=0;
+    bool ok=false;
+    if(index>=0){
+
+          g_logdb[type+1]->setBuffer_250(index,ok);
+    }
+    if(ok)
+        seq_index = 1;
+    else if(noref) return "{}";
+    else seq_index = 2;
+
+    QString response="{}",fileinfo;
+    if(type==1 || type ==3)
+    {
+        if(!mbise)
+        {
+            textB = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);
+            send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx,noref);
+            return response;
+        }
+        if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
+        {
+            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);
+            //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+            response = R"("message":"暂时不支持模板方式")";
+        }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+        {
+            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);//违禁词过滤
+             send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        }else {
+            textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(textB);//违禁词过滤
+            QString url = get_url(type, openid, "messages");
+            send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,ctx,noref);
+        }
+        return response;
+    }
+
+    if(!mbise) //模板 一般用不到
+    {
+        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }
+    if(!mode && m_info->markdown || mode && 发送类型==1)
+    {
+        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }else{
+        textB = processImageTags(textB,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(textB);
+        send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }
+    return response;
+}
+
+
+QString QQBotClient::send_messages(int type, const QString &openid, const QString &text, const QString &info,
+                                   const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid,
+                                   bool is_wakeup, int seq_index, const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     if(info.isEmpty())
@@ -2368,45 +2524,72 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
         json["msg_type"] = 7;
         json["media"] =QJsonObject{{"file_info",info}};
     }
-
-
+    json["noref"] = noref;
     json["content"] = text;
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url = get_url(type, openid, "messages");
-    return PostSync(url, json,QString(), 10000);
+    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    PostAsync(url, json, "", 5000,
+              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
+                            ctx.now_us, ctx.type, ctx.openid);
+              });
+    return QString();
 }
 
-QString QQBotClient::send_messages_ark(int type,const QString &openid,QString &pname,const QJsonObject &ark,const QString &msgid,bool is_wakeup)
+
+QString QQBotClient::send_messages_ark(int type, const QString &openid, QString &pname,
+                                       const QJsonObject &ark, const QString &msgid,
+                                       bool is_wakeup, int seq_index,const MessageLogContext ctx)
 {
     QJsonArray prompt_keyboard;
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    QString response =  send_messages_ark(type, openid, ark,prompt_keyboard,realMsgId,is_wakeup);
-    QJsonDocument doc(ark);
-    QString jsonString = doc.toJson(QJsonDocument::Compact); // 紧凑格式
-    addmsglog(response,index,pname,jsonString,now_us,type,realMsgId,openid);
-    return response;
-}
-QString QQBotClient::send_messages_ark(int type,const QString &openid,const QJsonObject &ark,const QJsonArray prompt_keyboard,
-                                       const QString &msgid,bool is_wakeup)
-{
+
     QJsonObject json;
     json["msg_type"] = 3;
     json["ark"] = ark;
 
-    initjgt(json,prompt_keyboard,"",msgid,is_wakeup);
-    QString url= get_url(type,openid,"messages");
-    return PostSync(url, json,QString(), 5000);
+    initjgt(json, prompt_keyboard, "", realMsgId, is_wakeup, seq_index);
+    QString url = get_url(type, openid, "messages");
+
+    if (!ctx.openid.isEmpty())
+    {
+        QString pnameCopy = pname;                     // 引用转为拷贝
+        QString jsonString = QJsonDocument(ark).toJson(QJsonDocument::Compact);
+        int indexCopy = index;
+        qint64 now_us_copy = now_us;
+        int typeCopy = type;
+        QString openidCopy = openid;
+        PostAsync(url, json, "", 5000,
+                  [this, pnameCopy, jsonString, indexCopy, now_us_copy,
+                   typeCopy, openidCopy]
+                  (const QString &resp, QNetworkReply::NetworkError err) {
+                      // 如果担心 this 被销毁，可以用 QPointer 检查（可选）
+                      addmsglog(resp, indexCopy, pnameCopy, jsonString,
+                                now_us_copy, typeCopy, openidCopy);
+                  });
+        return QString();   // 立即返回，结果通过回调处理
+    }
+    else
+    {
+        QString response = PostSync(url, json, QString(), 5000);
+        QJsonDocument doc(ark);
+        QString jsonString = doc.toJson(QJsonDocument::Compact);
+        addmsglog(response, index, pname, jsonString, now_us, type, openid);
+        return response;
+    }
 }
+
 QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                             const QJsonObject keyboard,const QString &message_reference,
-                                            const QString &msgid,bool is_wakeup)
+                                            const QString &msgid,bool is_wakeup,int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     json["msg_type"] = 2;
     json["markdown"] = QJsonObject{{"content", markdown}};
-
+    json["noref"] = noref;
     if (keyboard.contains("keyboard")){
         json["keyboard"] = keyboard["keyboard"];
     }else if(keyboard.contains("content")){
@@ -2415,13 +2598,20 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
         json["keyboard"] = QJsonObject{{"content",keyboard}};
     }
 
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url= get_url(type,openid,"messages");
-    return PostSync(url, json,QString(), 5000);
+
+    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    PostAsync(url, json, "", 5000,
+              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
+                            ctx.now_us, ctx.type, ctx.openid);
+              });
+    return QString();
 }
 QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
                                             const QJsonObject keyboard,const QString &message_reference,
-                                            const QString &msgid,bool is_wakeup)
+                                            const QString &msgid,bool is_wakeup, int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     json["msg_type"] = 2;
@@ -2433,7 +2623,7 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
     }
 
     json["markdown"] = dom.object();
-
+    json["noref"] = noref;
     if (keyboard.contains("keyboard")){
         json["keyboard"] = keyboard["keyboard"];
     }else if(keyboard.contains("content")){
@@ -2442,9 +2632,15 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
         json["keyboard"] = QJsonObject{{"content",keyboard}};
     }
 
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url= get_url(type,openid,"messages");
-    return PostSync(url, json,QString(), 5000);
+    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    PostAsync(url, json, "", 5000,
+              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
+                            ctx.now_us, ctx.type, ctx.openid);
+              });
+    return QString();
 }
 //撤回信息
 QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid)

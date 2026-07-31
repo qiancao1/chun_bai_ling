@@ -60,7 +60,7 @@ class QQApi:
     async def send_message_async(self, appid: int, type_: int, openid: str, text: str, 
                                  msgid: str = "", is_wakeup: bool = False) -> Dict:
         """
-        异步发送普通消息（新版插件请使用此方法）。
+        伪异步发送普通消息（新版插件请使用此方法）。
         """
         return await asyncio.to_thread(
             self.send_message,
@@ -69,12 +69,32 @@ class QQApi:
 
     async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
         """
-        异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
+        伪异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
         """
         return await asyncio.to_thread(
             self.send_messageEx,
             msg, text, is_wakeup
         )
+        
+    def send_msgEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+        return self._callback(self.API_SEND_MESSAGES,msg.appid,
+                              msg.type, msg.groupid, text,msg.msgid,
+                              "true" if is_wakeup else "false", "true", None)
+                              
+    def send_msg(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """
+        发送普通消息。不返回结果 
+        :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
+        :param openid: 接收者的 openid
+        :param text: 消息内容
+        :param message_reference: 引用消息ID（可选）
+        :param msgid: 消息ID，空字符串表示主动模式
+        :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
+        """
+        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _7=None, _8=None
+        return self._callback(self.API_SEND_MESSAGES,appid,
+                              type_, openid, text, msgid,
+                              "true" if is_wakeup else "false", "true", None) 
                               
     def send_ark(self, appid: int,type_: int, openid: str, ark: Union[Dict, str],
                  msgid: str = "", is_wakeup: bool = False) -> Dict:

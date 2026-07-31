@@ -249,26 +249,7 @@ static bool isPathInAllowedDir(const QString &requestedPath)
     return absoluteRequest.startsWith(absoluteAllowed);
 
 }
-// 从请求中提取 Token：优先从 Authorization 头，其次从查询参数 token=
-static QString extractToken(const QByteArray &headers, const QByteArray &pathQuery)
-{
-    // 1. 检查 Authorization: Bearer <token>
-    QRegularExpression authRe("Authorization: Bearer (.+)", QRegularExpression::CaseInsensitiveOption);
-    auto match = authRe.match(QString::fromUtf8(headers));
-    if (match.hasMatch()) {
-        return match.captured(1).trimmed();
-    }
 
-    // 2. 检查查询参数 ?token=xxx
-    QUrl url(QString::fromUtf8(pathQuery));
-    QUrlQuery query(url);
-    QString tokenFromQuery = query.queryItemValue("token");
-    if (!tokenFromQuery.isEmpty()) {
-        return tokenFromQuery;
-    }
-
-    return QString();
-}
 
 static bool isTokenValid(const QString &token)
 {
@@ -430,33 +411,55 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
     }
     sendResponse(socket, 200, mimeType.toUtf8(), data);
 }
+bool isImagePath(const QString &filePath)
+{
+    QFileInfo info(filePath);
+    QString suffix = info.suffix();  // 得到 "jpg", "png" 等（不含点）
+    if (suffix.isEmpty())
+        return false;
 
+    static const QStringList imageSuffixes = {
+        "jpg", "jpeg", "png", "gif", "bmp",
+        "tiff", "tif", "webp", "ico", "svg"
+    };
+    return imageSuffixes.contains(suffix, Qt::CaseInsensitive);
+}
 static void handleGet(QTcpSocket *socket, const QByteArray &pathQuery)
 {
     QUrl url(QString::fromUtf8(pathQuery));
     QUrlQuery query(url);
     QString filePath = query.queryItemValue("path");
+    filePath.replace("%3A",":");
+    Message msg;
 
+    QDateTime currentDateTime = QDateTime::currentDateTime();
+    msg.timestamp = currentDateTime.toString("yyyy-MM-dd HH:mm:ss");
     if (filePath.isEmpty()) {
         sendErrorResponse(socket, 400, "Missing 'path' parameter");
+        msg.msg = "http图床 请求路径为空";
+        logPage->onNewLogAdded(0,0,0,"",msg);
         return;
     }
-
-    // 安全检查：只能访问 uploads 目录下的文件
-    if (!isPathInAllowedDir(filePath)) {
-        sendErrorResponse(socket, 403, "Access denied: only files under uploads/ are allowed");
+    if (!isImagePath(filePath)) {
+        msg.msg = "http图床 尝试请求非图片文件 路径："+filePath;
+        logPage->onNewLogAdded(0,0,0,"",msg);
+        sendErrorResponse(socket, 404, "File not found");
         return;
     }
 
     QFileInfo fi(filePath);
     if (!fi.exists() || !fi.isFile()) {
         sendErrorResponse(socket, 404, "File not found");
+        msg.msg = "http图床(404) path:"+filePath;
+        logPage->onNewLogAdded(0,0,0,"",msg);
         return;
     }
 
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
         sendErrorResponse(socket, 500, "Failed to open file");
+        msg.msg = "http图床(500)打开文件失败 path:"+filePath;
+        logPage->onNewLogAdded(0,0,0,"",msg);
         return;
     }
     QByteArray data = file.readAll();
@@ -467,6 +470,8 @@ static void handleGet(QTcpSocket *socket, const QByteArray &pathQuery)
     if (mimeType.isEmpty())
         mimeType = "application/octet-stream";
 
+    msg.msg = "http(200)图床 请求："+filePath;
+    logPage->onNewLogAdded(0,0,0,"",msg);
     sendResponse(socket, 200, mimeType.toUtf8(), data);
 }
 // 计算 MD5 哈希（十六进制小写）
@@ -478,12 +483,7 @@ static QString calculateMd5(const QByteArray &data)
 // 核心上传逻辑：保存文件并返回 JSON 响应
 static void processUpload(QTcpSocket *socket, const QByteArray &headers, const QByteArray &body, const QByteArray &pathQuery)
 {
-    // 1. 验证 Token
-    QString token = extractToken(headers, pathQuery);
-    if (!isTokenValid(token)) {
-        sendErrorResponse(socket, 401, "Unauthorized: valid token required");
-        return;
-    }
+
 
 
     QDir dir;
@@ -547,7 +547,7 @@ static void processUpload(QTcpSocket *socket, const QByteArray &headers, const Q
     respObj["url"] = accessUrl;
     respObj["hash"] = hashHex;
     QByteArray respBody = QJsonDocument(respObj).toJson(QJsonDocument::Compact);
-    setA->incrementTokenUsage(token);
+
     sendResponse(socket, 200, "application/json", respBody);
 }
 

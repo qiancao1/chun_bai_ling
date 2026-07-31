@@ -1616,6 +1616,7 @@ void ChatPage::onSendClicked()
     const QStringList list = takeAllTextMiddle(text,"<img src=\"","\" alt=\"本地图片\" width=\"64\" />",false);
     for(const auto &t : list)
     {
+
         t2 = subTextReplace(t2,"￼","![img]("+t+")",1);
     }
     onSendmsg(t2);
