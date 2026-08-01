@@ -536,14 +536,85 @@ void LogPage::setupUi()
             QAction *copySenderId = menu.addAction("复制发送人id");
             QAction *copyRow = menu.addAction("复制整行内容");
             menu.addSeparator();
+            QAction *setbotadmin = menu.addAction("添加为机器人管理");
+            QAction *delbotadmin = menu.addAction("从管理员列表删除");
             QAction *ch = menu.addAction("撤回本条");
             QAction *chbr = menu.addAction("撤回别人");
             QAction *viewContent = menu.addAction("查看消息内容");
 
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
             if (!selected) return;
+            if (selected == delbotadmin) {
+                QModelIndex idx = m_model->index(index.row(), 0);
+
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+                QStringList list = key.split(":");
+                int appid = list[1].toInt();
+                int index = accinfo(appid);
+                if(index!=-1)
+                {
+                    if(currentTabIndex==0)
+                    {
+                        QMessageBox::warning(this,"删除失败","事件日志不能删除 管理员");
+                        return;
+                    }
+                    Message msg;
+                    g_logdb[currentTabIndex]->readLog(key,msg);
+
+
+                    QString &admin = m_accounts[index]->admin;
+                    if(admin.contains(msg.user))
+                    {
+                        admin.remove(msg.user);
+                        admin.replace("  "," ");
+                        admin.replace("  "," ");
+                        admin.replace("  "," ");
+                        accountPage->saveAccounts(m_accounts[index].get());
+                        QMessageBox::warning(this,"删除成功",QString("删除成功 %1 于 %2 的管理员").arg(msg.user,m_accounts[index]->nickname));
+                        return;
+                    }
+                    QMessageBox::warning(this,"删除失败","不存在管理员 无法删除");
+                    return ;
+                }
+            }
+            if (selected == setbotadmin) {
+                QModelIndex idx = m_model->index(index.row(), 0);
+
+                QString key = m_model->data(idx, Qt::UserRole).toString();
+                QStringList list = key.split(":");
+                int appid = list[1].toInt();
+                int index = accinfo(appid);
+                if(index!=-1)
+                {
+                    if(currentTabIndex==0)
+                    {
+                        QMessageBox::warning(this,"添加失败","事件日志不能添加 管理员");
+                        return;
+                    }
+                    Message msg;
+                    g_logdb[currentTabIndex]->readLog(key,msg);
+
+
+                    QString &admin = m_accounts[index]->admin;
+                    if(admin.contains(msg.user))
+                    {
+                        QMessageBox::warning(this,"已经存在","已经存在 不需要重复添加");
+                        return;
+                    }
+                    admin.append(" ");
+                    admin.append(msg.user);
+                    admin.replace("  "," ");
+                    admin.replace("  "," ");
+                    admin.replace("  "," ");
+                    accountPage->saveAccounts(m_accounts[index].get());
+                    QMessageBox::warning(this,"添加成功",QString("已经添加 %1 为 %2 管理员").arg(msg.user,m_accounts[index]->nickname));
+                    return ;
+                }
+            }
             if (selected == copyContent) {
                 QString content = getFieldText(index.row(), Field_Content);
+                content+="\n-----------------------\n"+getFieldText(index.row(), Field_Direction);
+
                 QApplication::clipboard()->setText(content);
             } else if (selected == copyTargetId) {
                 QModelIndex idx = m_model->index(index.row(), 0);

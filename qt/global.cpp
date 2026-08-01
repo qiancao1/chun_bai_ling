@@ -417,11 +417,6 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
     return "添加成功 注意 重复appid,是覆盖请确定appid 正确";
 }
 
-#include <QString>
-#include <QStringList>
-#include <QList>
-#include <QUrl>
-#include <QDebug>
 
 
 // ---------- 辅助函数（从之前的回答中已有） ----------
@@ -655,84 +650,12 @@ bool extractLoadParams(const QString &cmd, int &type, QString &path) {
     path = parts[2];
     return true;
 }
-
-QString admin_zl(AccountInfo *info,MessageEvent &ev)
+QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
-    if(info->admin.isEmpty()) return QString();
-    if(!info->admin.contains(ev.user)) return QString();
-    if(ev.msg=="#纯白铃铛")
-    {
-        int js=0,dll=0,dll32=0,python=0;
-        for(const auto & p :std::as_const(m_pluginList))
-        {
-            if(p.type==0) python++;
-            else if(p.type ==1) dll++;
-            else if(p.type ==2) dll32++;
-            else if(p.type ==3) js++;
-        }
-        return
-            QString("**基础**\n"
-            ">[取]() 获取某条信息原始数据\n"
-            "[md]() 复读指令\n"
-            "[重启框架]() 字面意思\n"
-            "[接口测试]() 字面意思\n\n"
-            "**webui**\n"
-            ">[webui]() 网页ui\n"
-            "[关闭webui]() | [开启webui]()\n\n"
-            "**机器人管理**\n"
-            ">[login]() <appid> 登录某个机器人\n"
-            ">[logout]() <appid> 下线某个bot\n"
-            ">[delbot]() <appid> 删除某个bit\n"
-            ">[boterr]() <appid> 查看最后登录错误\n"
-            ">[botlist]() 查看框架机器人列表\n"
-            ">[addbot]() <appid> <secret> {登录类型0 ws|1 webhook} {启用md} {事件订阅}\n\n"
-            "**插件相关**\n"
-            ">JS:%1 | Python:%4\nDLL:%2 | DLL32:%3\n[#插件列表]() 查看完整指令\n\n"
 
-            "**其他**\n"
-            ">[开启拟人]() | [关闭拟人]()\n"
-            "[%5]() 启用或取消白名单系统\n"
-            "[%6]() {群id|好友id} 设置白名单\n"
-            "[%7]() {群id|好友id} 取消白名单\n"
-
-            "\n\n---\n\n**以上指令机器管理员专属**\n>'<>'为必填 '{}'可选")
-                        .arg(js).arg(dll).arg(dll32).arg(python)
-
-                        .arg(info->bai_qy.isEmpty() ? "未设置" : info->bai_qy,
-                 info->bai_sr.isEmpty() ? "未设置" : info->bai_sr,
-                 info->bai_sc.isEmpty() ? "未设置" : info->bai_sc);
-    }
-    if (ev.msg == "#插件列表") {
-        // 你已有的代码，保持不变
-        QString res;
-        res.reserve(1024);
-        res.append("**插件列表**\n>");
-        for (int i = 0; i < m_pluginList.size(); ++i) {
-            auto &p = m_pluginList[i];
-            res.append(QString::number(i));
-            res.append(".");
-            if (p.type == 0)  res.append("[Py] ");
-            else if (p.type == 1) res.append("[x64] ");
-            else if (p.type == 2) res.append("[x32] ");
-            else if (p.type == 3) res.append("[JS] ");
-            res.append(p.name);
-            if (p.enabled)
-                res.append(" [禁用](#禁用插件");
-            else
-                res.append(" [启用](#启用插件");
-            res.append(QString::number(i));
-            res.append(") ");
-            res.append("[卸载](#卸载插件");
-            res.append(QString::number(i));
-            res.append(")\n");
-        }
-        res.append("可用指令：\n[#插件列表]()\n[#重载插件]() <序号>\n[#启用插件]() <序号>\n[#禁用插件]() <序号>\n[#卸载插件]() <序号>\n[#加载插件]() <路径>\n[#扫描插件]() 查看现有插件");
-        return res;
-    }
-
+    if(!g_admin.contains(ev.user)) return QString();
     // ---------- 启用插件 ----------
     if (ev.msg.startsWith("#启用插件")) {
-
         QString index_ser;
         int cnt = extractParams(ev.msg, "#启用插件", 0, index_ser);
         if (cnt == -1) return "[启用插件] 缺少序号";
@@ -746,7 +669,6 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         }, Qt::BlockingQueuedConnection); // 注意：使用 BlockingQueuedConnection 会阻塞当前线程直到 lambda 执行完毕
         return QString("已启用插件 %1").arg(m_pluginList[index].name);
     }
-
     // ---------- 禁用插件 ----------
     if (ev.msg.startsWith("#禁用插件")) {
         QString index_ser;
@@ -778,12 +700,11 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             pluginPage->Reload_Plugin(index); // 注意参数可能是序号
         } else {
             QMetaObject::invokeMethod(qApp, [index]() {
-            pluginPage->Reload_Plugin(index);
+                pluginPage->Reload_Plugin(index);
             }, Qt::BlockingQueuedConnection);
         }
         return QString("已重载插件 %1").arg(m_pluginList[index].name);
     }
-
     // ---------- 卸载插件 ----------
     if (ev.msg.startsWith("#卸载插件")) {
         QString index_ser;
@@ -861,7 +782,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
         }
     }
-    if (ev.msg == "#扫描插件" || ev.msg == "#插件文件列表") {
+    if (ev.msg == "#扫描插件") {
         QString result;
         result.reserve(4096);
         result.append("**📂 可用插件文件（点击加载）**\n");
@@ -926,7 +847,6 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
     }
     if(ev.msg=="重启框架")
     {
-
         return "发送[#确认重启框架]() 来重启";
     }
     if(ev.msg=="#确认重启框架")
@@ -977,90 +897,199 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         setA->set_webui(true);
         return "已开启webui";
     }
-    if(ev.at_you){
-        if(ev.msg=="botlist")
-        {
-            QString res;
-            res.append("#机器人列表🌴:\n");
-            for (const auto& bot : std::as_const(m_accounts)) {
-                QString status = bot->online ? "[在线](logout %1)" : "[离线](login %1)";
-                QString log;
-                if(bot->unid.isEmpty())
-                {
-                    log = QString(">![#24px #24px](%1) %2(%3) %4\n").arg(bot->avatarPath,bot->nickname,bot->appid,status.arg(bot->appid));
-                }else
-                    log = QString(">![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) %3(%4) %5\n").arg(bot->appid,bot->unid,bot->nickname,bot->appid,status.arg(bot->appid));
-                res.append(log);
-            }
-            res.append("#可用指令：\n[login](login {appid}) 登录指定机器人\n[logout](logout {appid}) 下线指定机器人\n"
-                       "[delbot](delbot {appid}) 删除一个机器人\n[addbot](addbot {appid,secret,type,markdown,wsIntents}) 添加一个机器人\n[boterr](boterr {appid}) 查看最后错误日志");
-            return  res;
-        }else if(ev.msg.startsWith("login"))
-        {
-            QString appid_str;
-            int cnt = extractParams(ev.msg, "login", 0, appid_str);
-            if (cnt == -1) return "login 缺少appid参数";
-            int appid = appid_str.toInt();
-
-            if (g_CW.contains(appid))
+    if(ev.msg=="botlist")
+    {
+        QString res;
+        res.append("#机器人列表🌴:\n");
+        for (const auto& bot : std::as_const(m_accounts)) {
+            QString status = bot->online ? "[在线](logout %1)" : "[离线](login %1)";
+            QString log;
+            if(bot->unid.isEmpty())
             {
-                auto *cw = g_CW[appid];
-                if(cw->m_info->online) return "机器人已经在线 无须重复登录";
-                QMetaObject::invokeMethod(qApp, [=]() {
-                    cw->onLoginButton();
-                });
-                doWork(1000);
-                if(cw->m_info->err.isEmpty())
-                    return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误").arg(appid);
-                return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误\n疑似登录错误：\n>%2").arg(appid).arg(cw->m_info->err);
+                log = QString(">![#24px #24px](%1) %2(%3) %4\n").arg(bot->avatarPath,bot->nickname,bot->appid,status.arg(bot->appid));
             }else
-            {
-                return "要登录的 appid 在框架账号列表不存在";
-            }
-        }else if(ev.msg.startsWith("logout"))
-        {
-            QString appid_str;
-            int cnt = extractParams(ev.msg,"logout", 0, appid_str);
-            if (cnt == -1) return "login 缺少appid参数";
-            int appid = appid_str.toInt();
-            if (g_CW.contains(appid))
-            {
-                auto *cw = g_CW[appid];
-                if(!cw->m_info->online) return "机器人未在线 无须下线";
-                QMetaObject::invokeMethod(qApp, [=]() {
-                    cw->onLoginButton();
-                });
-                return "下线成功 请发送 [botlist]() 获取登录状态";
-            }else return "要下线的 appid 在框架账号列表不存在";
-
-        }else if(ev.msg.startsWith("addbot"))
-        {
-            QString appid_str,secret,type,markdown,wsIntents;
-            int cnt = extractParams(ev.msg, "addbot", 0, appid_str,secret,type,markdown,wsIntents);
-            if (cnt == -1) return "addbot 缺少appid secret参数";
-            return addbot(appid_str.toInt(),secret,QString(),type.toInt(),markdown,wsIntents.toInt());
-        }else if(ev.msg.startsWith("delbot"))
-        {
-            QString appid_str;
-            int cnt = extractParams(ev.msg, "delbot", 0, appid_str);
-            if (cnt == -1) return "delbot 缺少appid参数";
-            int appid = appid_str.toInt();
-            QMetaObject::invokeMethod(qApp, [=]() {
-                accountPage->onDeleteAccount(appid);
-            });
-            return "删除成功 不检查appid 必定成功";
-        }else if(ev.msg.startsWith("boterr"))
-        {
-            QString appid_str;
-            int cnt = extractParams(ev.msg, "boterr", 0, appid_str);
-            if (cnt == -1) return "boterr 缺少appid参数";
-            int appid = appid_str.toInt();
-            if (g_CW.contains(appid))
-            {
-                auto *cw = g_CW[appid];
-                return "以下是机器人最后错误:\n> "+ cw->m_info->err+"\n\n如果是空代表无错误";
-            }else return "查看最后错误的appid 未添加在 账号列表";
+                log = QString(">![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) %3(%4) %5\n").arg(bot->appid,bot->unid,bot->nickname,bot->appid,status.arg(bot->appid));
+            res.append(log);
         }
+        res.append("#可用指令：\n[login](login {appid}) 登录指定机器人\n[logout](logout {appid}) 下线指定机器人\n"
+                   "[delbot](delbot {appid}) 删除一个机器人\n[addbot](addbot {appid,secret,type,markdown,wsIntents}) 添加一个机器人\n[boterr](boterr {appid}) 查看最后错误日志");
+        return  res;
+    }else if(ev.msg.startsWith("boterr"))
+    {
+        QString appid_str;
+        int cnt = extractParams(ev.msg, "boterr", 0, appid_str);
+        if (cnt == -1) return "boterr 缺少appid参数";
+        int appid = appid_str.toInt();
+        if (g_CW.contains(appid))
+        {
+            auto *cw = g_CW[appid];
+            return "以下是机器人最后错误:\n> "+ cw->m_info->err+"\n\n如果是空代表无错误";
+        }else return "查看最后错误的appid 未添加在 账号列表";
+    }else if(ev.msg.startsWith("addadmin")){
+        QString appid_str,user;
+        int cnt = extractParams(ev.msg, "boterr", 0, appid_str,user);
+        if (cnt <= 1) return "addadmin 缺少appid参数 或 ID 参数";
+        int appid = appid_str.toInt();
+        int index = accinfo(appid);
+        if(index==-1) return "appid对应机器人不存在";
+        QString &admin = m_accounts[index]->admin;
+        if(admin.contains(user)) return "对应id已经添加到 管理列表";
+        admin.append(" ");
+        admin.append(user);
+        admin.replace("  "," ");
+        accountPage->saveAccounts( m_accounts[index].get());
+        return QString("添加 %1 为 %2 管理员").arg(user,m_accounts[index]->nickname);
+
+
+    }else if(ev.msg.startsWith("deladmin")){
+        QString appid_str,user;
+        int cnt = extractParams(ev.msg, "boterr", 0, appid_str,user);
+        if (cnt <= 1) return "addadmin 缺少appid参数 或 ID 参数";
+        int appid = appid_str.toInt();
+        int index = accinfo(appid);
+        if(index==-1) return "appid对应机器人不存在";
+        QString &admin = m_accounts[index]->admin;
+        if(!admin.contains(user)) return "对应id不存在 管理列表";
+
+        admin.remove(user);
+        admin.replace("  "," ");
+        admin.replace("  "," ");
+        accountPage->saveAccounts( m_accounts[index].get());
+        return QString("从 %1 删除 %2 管理员").arg(m_accounts[index]->nickname,user);
+
+    }
+    return QString();
+}
+QString admin_zl(AccountInfo *info,MessageEvent &ev)
+{
+    bool upad = false;
+    if(!g_admin.isEmpty()  ){
+        upad = g_admin.contains(ev.user);
+    }
+    if(!upad){
+        if(info->admin.isEmpty()) return QString();
+        if(!info->admin.contains(ev.user)) return QString();
+    }
+    if(ev.msg=="#纯白铃铛")
+    {
+        int js=0,dll=0,dll32=0,python=0;
+        for(const auto & p :std::as_const(m_pluginList))
+        {
+            if(p.type==0) python++;
+            else if(p.type ==1) dll++;
+            else if(p.type ==2) dll32++;
+            else if(p.type ==3) js++;
+        }
+        return
+            QString("**基础**\n"
+            ">[取]() 获取某条信息原始数据\n"
+            ">[md]() 复读指令\n"
+            ">[重启框架]() 字面意思\n"
+            ">[接口测试]() 字面意思\n\n"
+
+            "**插件相关**\n"
+            ">JS:%1 | Python:%4\nDLL:%2 | DLL32:%3\n>"
+            "[#插件列表]()\n>[#插件启用]() | [#插件禁用]()\n\n"
+            "**其他**\n"
+            ">[开启拟人]() | [关闭拟人]()\n"
+            ">[%5]() 启用或取消白名单系统\n"
+            ">[%6]() {群id|好友id} 设置白名单\n"
+            ">[%7]() {群id|好友id} 取消白名单\n\n"
+            "**机器人设置**\n"
+            ">[login]() <appid> 登录某个机器人\n"
+            ">[logout]() <appid> 下线某个bot\n"
+            ">[delbot]() <appid> 删除某个bit\n"
+            "\n\n---\n\n"
+            "**下面为超级管理员可用**\n"
+            ">[webui]() 网页ui\n"
+            "[关闭webui]() | [开启webui]()\n\n"
+            "**插件管理**\n>"
+            "[#启用插件]() <序号>\n>"
+            "[#禁用插件]() <序号>\n>"
+            "[#重载插件]() <序号>\n>"
+            "[#卸载插件]() <序号>\n>"
+            "[#加载插件]() <路径>\n>"
+            "[#扫描插件]()\n\n"
+
+            "**机器人管理**\n"
+
+            ">[boterr]() <appid> 查看最后登录错误\n"
+            ">[botlist]() 查看框架机器人列表\n"
+            ">[addbot]() <appid> <secret> {登录类型0 ws|1 webhook} {启用md} {事件订阅}\n\n"
+            ">[addadmin]() <appid> <ID> 为某个bot添加一个管理员\n"
+            ">[deladmin]() <appid> <ID> 删除某个bot一个管理员\n\n"
+            "**框架相关**\n"
+            ">[#重启框架]()\n"
+
+                       ">'<>'为必填 '{}'可选\n>以上指令需要艾特 机器人才能触发")
+                        .arg(js).arg(dll).arg(dll32).arg(python)
+
+                        .arg(info->bai_qy.isEmpty() ? "未设置" : info->bai_qy,
+                 info->bai_sr.isEmpty() ? "未设置" : info->bai_sr,
+                 info->bai_sc.isEmpty() ? "未设置" : info->bai_sc);
+    }
+    if(!ev.at_you) return QString();
+    if (ev.msg == "#插件列表") {
+        // 你已有的代码，保持不变
+        QString res;
+        res.reserve(1024);
+        res.append("**插件列表**\n");
+        for (int i = 0; i < m_pluginList.size(); ++i) {
+            auto &p = m_pluginList[i];
+            res.append(">");
+            res.append(QString::number(i));
+            res.append(".");
+            if (p.type == 0)  res.append("[Py] ");
+            else if (p.type == 1) res.append("[x64] ");
+            else if (p.type == 2) res.append("[x32] ");
+            else if (p.type == 3) res.append("[JS] ");
+            res.append(p.name);
+
+            if (!p.appid.contains(ev.appid))
+                res.append(" [禁用](#插件禁用");
+            else
+                res.append(" [启用](#插件启用");
+            res.append(QString::number(i));
+            res.append(") ");
+            res.append("[卸载](#卸载插件");
+            res.append(QString::number(i));
+            res.append(")\n");
+        }
+        res.append("可用指令：\n[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]()\n\n**需超管权限**\n>[#重载插件]() <序号>\n>[#启用插件]() <序号>\n>[#禁用插件]() <序号>\n>[#卸载插件]() <序号>\n>[#加载插件]() <路径>\n[#插件市场]()\n[#扫描插件]() 查看现有插件");
+        return res;
+    }
+    if (ev.msg.startsWith("#插件启用")) {
+
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#插件启用", 0, index_ser);
+        if (cnt == -1) return "[插件启用] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        if(!m_pluginList[index].appid.contains(ev.appid)) return "当前插件已经对当前机器人是 启用状态";
+        m_pluginList[index].appid.removeAll(ev.appid);
+        pluginPage->savePlugins();
+        /*
+        QMetaObject::invokeMethod(qApp, [index]() {
+            pluginPage->Enabled_Plugin(m_pluginList[index]); // 假设返回 bool
+
+        }, Qt::BlockingQueuedConnection); // 注意：使用 BlockingQueuedConnection 会阻塞当前线程直到 lambda 执行完毕
+        */
+        return QString("已启用插件 %1").arg(m_pluginList[index].name);
+    }
+    if (ev.msg.startsWith("#插件禁用")) {
+        QString index_ser;
+        int cnt = extractParams(ev.msg, "#插件禁用", 0, index_ser);
+        if (cnt == -1) return "[插件禁用] 缺少序号";
+        int index = index_ser.toInt();
+        if (index < 0 || index >= m_pluginList.size()) {
+            return QString("错误：无效的插件序号，当前共 %1 个插件").arg(m_pluginList.size());
+        }
+        if(m_pluginList[index].appid.contains(ev.appid)) return "当前插件已经对当前机器人是 禁用状态";
+        m_pluginList[index].appid.append(ev.appid);
+        pluginPage->savePlugins();
+        return  QString("已禁用插件 %1").arg(m_pluginList[index].name);
     }
     if(ev.msg=="接口测试")
     {
@@ -1096,7 +1125,6 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         }
         return "```json\n"+ ev.raw+"\n```\n";  // 若 ev.raw 是 QString，需要转为 QByteArray
     }
-
     if(ev.msg.startsWith("md"))
     {
         QString text = ev.msg.mid(2).trimmed(); // 删除"md"并去除前导空白
@@ -1131,13 +1159,79 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             return "拟人已关闭";
         }
     }
+    if(ev.msg.startsWith("login"))
+    {
+        QString appid_str;
+        int cnt = extractParams(ev.msg, "login", 0, appid_str);
+        if (cnt == -1) return "login 缺少appid参数";
+        int appid = appid_str.toInt();
+
+        if (g_CW.contains(appid))
+        {
+            auto *cw = g_CW[appid];
+            if(cw->m_info->online) return "机器人已经在线 无须重复登录";
+            if(!cw->m_info->admin.contains(ev.user) ){
+                if(!upad) return "你非该机器人管理员 或者超管 不能执行上线";
+            }
+            QMetaObject::invokeMethod(qApp, [=]() {
+                cw->onLoginButton();
+            });
+            doWork(1000);
+            if(cw->m_info->err.isEmpty())
+                return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误").arg(appid);
+            return QString("#提交登录\n请发送 [botlist]() 获取登录状态\n[boterr](boterr %1) 查看最后错误\n疑似登录错误：\n>%2").arg(appid).arg(cw->m_info->err);
+        }else
+        {
+            return "要登录的 appid 在框架账号列表不存在";
+        }
+    }else if(ev.msg.startsWith("logout"))
+    {
+        QString appid_str;
+        int cnt = extractParams(ev.msg,"logout", 0, appid_str);
+        if (cnt == -1) return "login 缺少appid参数";
+        int appid = appid_str.toInt();
+        if (g_CW.contains(appid))
+        {
+            auto *cw = g_CW[appid];
+            if(!cw->m_info->online) return "机器人未在线 无须下线";
+            if(!cw->m_info->admin.contains(ev.user) ){
+                if(!upad) return "你非该机器人管理员 或者超管 不能执行下线";
+            }
+            QMetaObject::invokeMethod(qApp, [=]() {
+                cw->onLoginButton();
+            });
+            return "下线成功 请发送 [botlist]() 获取登录状态";
+        }else return "要下线的 appid 在框架账号列表不存在";
+
+    }else if(ev.msg.startsWith("delbot"))
+    {
+        QString appid_str;
+        int cnt = extractParams(ev.msg, "delbot", 0, appid_str);
+        if (cnt == -1) return "delbot 缺少appid参数";
+        int appid = appid_str.toInt();
+
+        if (g_CW.contains(appid))
+        {
+            auto *cw = g_CW[appid];
+            if(!cw->m_info->admin.contains(ev.user) ){
+                if(!upad) return "你非该机器人管理员 或者超管 不能执行删除";
+            }
+
+            QMetaObject::invokeMethod(qApp, [=]() {
+                accountPage->onDeleteAccount(appid);
+            });
+            return "删除成功";
+        }
+        return "删除失败 appid 不存在";
+    }
     QString res = handleMessage(ev,info);
     if(!res.isEmpty()){
         return res;
     }
 
-    return QString();
+    return upadmin(info,ev);
 }
+
 //===========================================================================================================================================我猜你在找这个
 void Messages(AccountInfo *info,MessageEvent &ev) {
 

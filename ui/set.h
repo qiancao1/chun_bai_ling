@@ -45,6 +45,8 @@ private:
     QPushButton  *web_qr;
     QPushButton  *webhook_but,*m_loadbut;
     QLineEdit    *m_addrEdit,*m_loadport;
+    QTextEdit    *m_admid_deit;
+    QPushButton  *m_admin_qr;
     QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg,*loadimg;
     QPushButton  *m_startStopBtn,*lts_but; //聊天室
 };

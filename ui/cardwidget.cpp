@@ -205,6 +205,14 @@ void CardWidget::onLoginButtonA() {
             QMessageBox::warning(this,"","请在高级设置 运行webhook服务器后再次尝试 登录webhook账号");
         }
     }
+    QTimer::singleShot(1500, this, [=]() {
+
+
+        if(!m_info->err.isEmpty())
+        {
+            QMessageBox::warning(this,"疑似登录失败","错误内容："+m_info->err);
+        }
+    });
     accountPage->saveAccounts(m_info);
 }
 void CardWidget::onLoginButton() {

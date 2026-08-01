@@ -18,7 +18,7 @@ class AppWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    explicit AppWindow(QWidget *parent = nullptr);
+    explicit AppWindow(const QString &path=QString(),QWidget *parent = nullptr);
     ~AppWindow();
     QString Ai_post(const QString &url, const QString &key, QString &err);
     QString Ai_posts(const QString &model) ;

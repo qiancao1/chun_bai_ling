@@ -192,9 +192,15 @@ void PluginPage::setupUi()
     rightCheckList->setStyleSheet("border: 1px solid #cccccc; border-radius: 4px;");
     rightCheckList->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     middleLayout->addWidget(rightCheckList);
-    plugin_sc = new QPushButton("插件市场");
-    middleLayout->addWidget(plugin_sc);
 
+    QHBoxLayout *iconNameLayout3 = new QHBoxLayout;
+    plugin_sc = new QPushButton("插件市场");
+    pypip = new QPushButton("安装py插件库");
+    pypip->setFixedWidth(120);
+    iconNameLayout3->addWidget(pypip);
+    iconNameLayout3->addWidget(plugin_sc);
+
+    middleLayout->addLayout(iconNameLayout3);
     //middleLayout->addStretch(); // 让列表顶部分布，下方留白
 
     // ========== 右侧：插件详情（不含账号列表） ==========
@@ -222,12 +228,12 @@ void PluginPage::setupUi()
     formLayout2->addWidget(detailNameLabel);
     QHBoxLayout *iconNameLayout2 = new QHBoxLayout;
     iconNameLayout2->setSpacing(3);
-    pypip = new QPushButton("安装py插件库");
-    pypip->setFixedWidth(120);
+    ai_b_j = new QPushButton("编辑当前插件");
+    ai_b_j->setFixedWidth(120);
     ai_c_j= new QPushButton("Ai生成插件");
     ai_c_j->setFixedWidth(100);
 
-    iconNameLayout2->addWidget(pypip);
+    iconNameLayout2->addWidget(ai_b_j);
     iconNameLayout2->addWidget(ai_c_j);
     formLayout2->addItem(iconNameLayout2);
     iconNameLayout->addLayout(formLayout2);
@@ -385,6 +391,24 @@ void PluginPage::setupUi()
 
     connect(ai_c_j, &QPushButton::clicked,this, [this]() {
         auto *w = new AppWindow();
+        w->setAttribute(Qt::WA_DeleteOnClose);
+        w->show();
+    });
+
+    connect(ai_b_j, &QPushButton::clicked,this, [this]() {
+
+        if(currentSelected_index<0 && currentSelected_index>=m_pluginList.size())
+        {
+            QMessageBox::warning(this,"","请选择一个插件");
+            return;
+        }
+        int type =m_pluginList[currentSelected_index].type;
+        if(type!=0 && type!=3)
+        {
+            QMessageBox::warning(this,"","仅限Python JS类型插件可以直接编辑");
+            return;
+        }
+        auto *w = new AppWindow(m_pluginList[currentSelected_index].path);
         w->setAttribute(Qt::WA_DeleteOnClose);
         w->show();
     });
@@ -754,6 +778,7 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
     else if(msg.at_you && msg.subType==0)
         botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
     if(msg.at_you && msg.subType==0) botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
+
 }
 
 

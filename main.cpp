@@ -53,6 +53,7 @@ LmdbKV *aidb=nullptr;
 LmdbKV *dsdb=nullptr;
 LmdbKV *accdb=nullptr;
 MessageEvent *g_cqev=nullptr;
+QString g_admin;
 int g_appid;
 void loadconfig()
 {
@@ -71,6 +72,7 @@ void loadconfig()
         file.close();
     }
     if (!ok) g_config = QJsonObject();   // 文件打开失败或解析失败，都主动清空
+    g_admin = g_config["admin"].toString();
     QJsonObject obj = g_config["zdcq"].toObject();
     if (!obj.isEmpty()) {
 

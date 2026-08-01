@@ -46,7 +46,7 @@ QString AccountInfo::toJson() const {
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
-
+    obj["autoht"] = autoht;
     obj["g_add"]=今日加群数量;
     obj["g_sub"]=今日退群数量;
     obj["f_add"]=今日好友数量;
@@ -113,7 +113,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     }
     info.secret = MachineKey::decrypt(obj["secret"].toString(), key);
     info.ark = obj["ark"].toBool();
-    info.markdown = obj["markdown"].toBool();
+    info.markdown = obj["markdown"].toBool(true);
     info.markdown_pd = obj["markdown_pd"].toBool();
     info.markdown_pd_mb = obj["markdown_pd"].toBool();
     info.botqq = obj["botqq"].toString();
@@ -124,7 +124,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.admin = obj["admin"].toString();
     info.type = obj["type"].toInt();
     info.juece =obj["juece"].toBool();
-
+    info.autoht =obj["autoht"].toBool(true);//自动回调
     info.fasjg = obj["fasjg"].toInt();
     info.rqhy = obj["rqhy"].toString();
 

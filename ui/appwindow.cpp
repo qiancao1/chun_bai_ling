@@ -562,11 +562,12 @@ bool confirmCommandExecution(const QString &model, const QString &cmd, QWidget *
     return true;
 }
 
-AppWindow::AppWindow(QWidget *parent) : QMainWindow(parent)
+AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWindow(parent)
 {
     setWindowTitle("AI生成插件 请先打开一个文件夹，如果没有你就创建一个 打开 仅限 框架目录plugin/ 或 plugins/里面 然后就可以让ai写代码了 可以编辑代码 ctrl+s 保存");
     resize(1200, 700);
-    m_dir = g_config["aicode_dir"].toString();
+    if(m_dir.isEmpty())
+        m_dir = g_config["aicode_dir"].toString();
     QWidget *central = new QWidget(this);
     setCentralWidget(central);
     QVBoxLayout *mainLayout = new QVBoxLayout(central);
@@ -1974,7 +1975,7 @@ void AppWindow::startStreamRequest(StreamSession *s, const QString &url, const Q
     obj["prompt_tokens_details"] =m_prompt_tokens_details;
     sxw["usage"]=obj;
     W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
-
+    sxw.remove("usage");
     init_system(addmsg);  // 确保 sxw 正确
     addmsg.clear();
     QJsonObject requestObj = sxw;

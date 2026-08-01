@@ -105,11 +105,12 @@ struct AccountInfo {
     int tq_lq=0;
 
     int rq_ychf=0;
+    bool autoht=true;
     bool pbbot=true;
     bool autoConnect = false;
     bool online = false;
     bool ark=false;
-    bool markdown=false;
+    bool markdown=true;
     bool markdown_pd=false;
     bool markdown_pd_mb=false;
     bool e_bai=true;

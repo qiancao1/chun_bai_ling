@@ -72,6 +72,7 @@ struct dblog
 
 
 QString python_code4(const QString &py_code,QList<QString> user_list);
+extern QString g_admin;
 extern QString g_ip;
 extern QListWidget *robotListWidget;
 extern AiWidget *ai_ui;

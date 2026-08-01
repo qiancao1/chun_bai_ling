@@ -28,6 +28,7 @@ void qunguan::on_pushButton_clicked()
         info->tiaoshu=ui->tiao_Edit->text().toInt();
         info->shuap=ui->checkBox->isChecked();
         info->pbbot=ui->checkBox_2->isChecked();
+        info->autoht=ui->zdht->isChecked();
         accountPage->saveAccounts(info.get());
     }
 }
@@ -43,6 +44,7 @@ void qunguan::列表行被单击()
         ui->checkBox->setChecked(info->shuap);
         ui->checkBox_2->setChecked(info->pbbot);
         ui->textEdit->setText(info->admin);
+        ui->zdht->setChecked(info->autoht);
     }
 }
 

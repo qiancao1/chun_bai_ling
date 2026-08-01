@@ -208,8 +208,20 @@ void set::setupUI()
     mainVLayout->addLayout(remoteLayout2);
     mainVLayout->addLayout(localLayout);
 
+    m_admid_deit = new QTextEdit;
+    m_admid_deit->setPlainText("空格分割 允许触发 webui 全局禁用启用插件 启用ws");
+    m_admid_deit->setText(g_admin);
+    m_admin_qr = new QPushButton("保存全局管理");
+    mainVLayout->addWidget(new QLabel("超级管理员：空格分割"));
+    mainVLayout->addWidget(m_admid_deit);
+    mainVLayout->addWidget(m_admin_qr);
 
 
+    connect(m_admin_qr, &QPushButton::clicked, [this](){
+        g_admin = m_admid_deit->toPlainText();
+        g_config["admin"]= g_admin;
+        saveConfig();
+    });
     // 信号槽连接（新增）
     connect(bt, &QPushButton::clicked, [this](){
         ffmpegdiv = m_ffmpegpath->text();

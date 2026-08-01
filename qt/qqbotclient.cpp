@@ -906,6 +906,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
     //qDebug() << ev.groupId <<ev.user << ev.msg;
     Messages(m_info, ev);
+    if(ev.subType== 1 && ev.type<=3)
+    {
+        if(m_info->autoht) respond_interaction(ev.callbackId,0);
+    }
     return ;
 }
 

@@ -70,15 +70,19 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.1.5.20"
-#define APP_BUILD_NUMBER 20
+#define APP_VERSION_STR "v1.1.9.30"
+#define APP_BUILD_NUMBER 30
 
 QString Homev=R"(
 # 更新日志🌸
+## v1.1.9.30 (2026-07-29)
+- 增加 自动回应回调
+
 ## v1.1.7.25 (2026-07-29)
 - 增加了一个托盘 为了避免和当前版本冲突 只能通过托盘隐藏窗口
 - 修复 无指令回复 允许跨框架只回复一个
 - 修复 内置ai的一些bug 增加决策ai 需要一定的token
+- 修复 本地图床不可用问题，共享图床改为本地
 - 增加 异步方法 增加强制 异步 可以提高框架并发能力
 
 

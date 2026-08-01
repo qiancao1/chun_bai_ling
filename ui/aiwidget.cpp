@@ -2667,7 +2667,13 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 
     if(!juecejg) //决策没提到 直接返回
     {
-        AppendEventLog(QString("%1(%2) ai决策 不返回内容：%3").arg(openid,info->Ai_nickname,fh));
+
+        Message msg;
+        QDateTime currentDateTime = QDateTime::currentDateTime();
+        msg.timestamp = currentDateTime.toString("yyyy-MM-dd HH:mm:ss");
+        msg.msg = QString("%1(%2) ai决策 不返回内容：%3").arg(info->Ai_nickname,openid,fh);
+        logPage->onNewLogAdded(0,0,0,"",msg);
+
         baseContext.remove("tools");
         aidb->put(openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
         return;
