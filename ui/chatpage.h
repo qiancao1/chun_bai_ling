@@ -14,7 +14,8 @@
 #include <qlabel.h>
 #include "QQBotClient.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
-
+#include <QCache>
+#include <qstandarditemmodel.h>
 
 // 消息结构
 struct Message {
@@ -57,6 +58,8 @@ struct UnifiedContact {
     QString name;
     int type;        // 1群聊 2频道 3私聊 4频道私聊
 };
+
+
 // 消息列表模型
 class MessageListModel : public QAbstractListModel
 {
@@ -81,7 +84,11 @@ public:
     void clear();
 private:
     QList<Message> m_messages;
+
 };
+
+
+
 
 // 气泡绘制委托
 class BubbleDelegate : public QStyledItemDelegate
@@ -91,6 +98,31 @@ public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
+    struct CachedData {
+        QStringList wrappedLines;  // 换行后的文本行
+        int textWidth;             // 文本最大宽度
+        int textHeight;            // 文本总高度（不含名字和时间）
+        bool hasImage;             // 是否包含图片标签
+        QString imagePath;         // 图片路径（如果有）
+        bool imageIsLocal;         // 是否本地图片
+        QString displayText;       // 纯文本（去除标签后）
+        int totalHeight;           // 整条消息的总高度（用于 sizeHint）
+    };
+    CachedData prepareMessageData(const QString &rawContent, bool isSelf, const QString &timestamp) const;
+
+private:
+    mutable QCache<QString, CachedData> m_cache; // 用消息内容作为 key
+    mutable QCache<QString, QPixmap> m_avatarCache;  // 头像缓存
+    mutable QCache<QString, QPixmap> m_imageCache;   // 图片缓存
+    mutable QFont m_textFont;
+    mutable QFont m_nameFont;
+    mutable QFont m_timeFont;
+    mutable QFontMetrics* m_textFm = nullptr;
+    mutable QFontMetrics* m_nameFm = nullptr;
+    mutable QFontMetrics* m_timeFm = nullptr;
+
+    // 辅助：绘制占位头像
+    void drawDefaultAvatar(QPainter* painter, const QRect& rect, const QString& text, bool isSelf) const;
 };
 
 class ChatPage : public QWidget
@@ -130,7 +162,7 @@ protected:
 private slots:
 
     void onChatClicked();
-    void onContactItemClicked(QListWidgetItem *item);
+    void onContactItemClicked(const QModelIndex &index);
     void onSendClicked();
     void onSendImage();
     void onSendAudio();
@@ -143,8 +175,8 @@ private slots:
 private:
     void initUI();
     void loadChatHistory(int appid, const QString &contactId, int type);
+    void addDataToModel(int appid, const Contact& c, int type);
 
-    void appendContactCard(int appid, Contact c,int type);
     int getmsgtype();
     void onSendmsg(QString &text);
     QPushButton *btnGroupChat, *btnPrivateChat , *btnChat,*btnChannelChat,*btnChannelPrivate,*btnRecentChat;
@@ -155,14 +187,16 @@ private:
     QPushButton *btnSendImage, *btnSendAudio, *btnSendVideo, *btnSendFile;
     QComboBox *comboSendType;
     QPushButton *btnSend;
-
+    QHash<QString, QPixmap> m_avatarCache; // 用于缓存绘制好的 32x32 头像
 
     QLabel *titleLabel;
     QString m_msgid;
 
     QList<RecentContact> recentContacts; //最近
-    QListWidget *contactList;//往里面添加新的成员
+    QListView *contactList;//往里面添加新的成员
     QSet<QPair<int, QString>> seen;
+
+
 };
 
 #endif

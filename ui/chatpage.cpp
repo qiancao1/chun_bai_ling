@@ -162,10 +162,12 @@ static QSet<QString> &downloadingSet() {
 }
 
 // 异步下载头像（如果本地不存在）
-static void downloadAvatarIfNeeded(int appid,const QString &openid) {
+static void downloadAvatarIfNeeded(int appid, const QString &openid) {
     if (openid.isEmpty()) return;
     QString avatarPath = QString("./avatars/%1.png").arg(openid);
-    if (QFile::exists(avatarPath)) return; // 已存在，无需下载
+
+    // 如果本地已经存在裁剪好的 32x32 圆形图片，直接跳过
+    if (QFile::exists(avatarPath)) return;
 
     QString url = QString("https://thirdqq.qlogo.cn/qqapp/%1/%2/640")
                       .arg(appid)
@@ -177,11 +179,38 @@ static void downloadAvatarIfNeeded(int appid,const QString &openid) {
     QObject::connect(reply, &QNetworkReply::finished, [reply, avatarPath, url]() {
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray data = reply->readAll();
-            QFile file(avatarPath);
-            if (file.open(QIODevice::WriteOnly)) {
-                file.write(data);
-                file.close();
-                qDebug() << "Avatar saved:" << avatarPath;
+            QPixmap original;
+            if (original.loadFromData(data)) {
+                // 1. 将原图缩放（按比例，可能超出 32x32 的框）
+                QPixmap scaled = original.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+
+                // 2. 创建 32x32 透明画布
+                QPixmap rounded(32, 32);
+                rounded.fill(Qt::transparent);
+
+                // 3. 在画布上画圆并裁剪
+                QPainter p(&rounded);
+                p.setRenderHint(QPainter::Antialiasing);
+                QPainterPath path;
+                path.addEllipse(0, 0, 32, 32);
+                p.setClipPath(path);
+
+                // 将缩放后的图片居中画进去（因为 KeepAspectRatioByExpanding 可能会拉伸）
+                int x = (scaled.width() - 32) / 2;
+                int y = (scaled.height() - 32) / 2;
+                QPixmap cropped = scaled.copy(x, y, 32, 32);
+                p.drawPixmap(0, 0, cropped);
+                p.end();
+
+                // 4. 直接保存 32x32 的最终图片
+                QFile file(avatarPath);
+                if (file.open(QIODevice::WriteOnly)) {
+                    rounded.save(&file, "PNG");
+                    file.close();
+                    qDebug() << "Avatar saved and cropped (32x32):" << avatarPath;
+                }
+            } else {
+                qDebug() << "Failed to decode image data from:" << url;
             }
         } else {
             qDebug() << "Download failed:" << url << reply->errorString();
@@ -190,7 +219,6 @@ static void downloadAvatarIfNeeded(int appid,const QString &openid) {
         reply->deleteLater();
     });
 }
-
 // 图片缓存（用于消息中的图片，避免重复加载）
 static QCache<QString, QPixmap> &imageCache() {
     static QCache<QString, QPixmap> cache(50); // 最多50张图片
@@ -232,10 +260,36 @@ MessageListModel::MessageListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
 }
+
+// 放在全局工具类或 MessageListModel 中
+static QString sanitizeText(const QString &input, const QString &defaultValue = "?") {
+    if (input.isEmpty()) return defaultValue;
+
+    QString output;
+    output.reserve(input.size());
+    for (const QChar &ch : input) {
+        if (ch.isPrint() || ch.isSpace()) {
+            if (ch != QChar::ReplacementCharacter &&
+                (ch.category() != QChar::Other_Control || ch == '\n' || ch == '\r')) {
+                output.append(ch);
+            }
+        }
+    }
+    if (output.trimmed().isEmpty()) {
+        return defaultValue;
+    }
+    return output;
+}
 void MessageListModel::setMessages(QList<Message> &&msgs)
 {
     beginResetModel();
     m_messages = std::move(msgs);
+    for (Message &msg : m_messages) {
+
+        msg.name = sanitizeText(msg.name, "未命名");
+
+    }
+
     endResetModel();
 
     for (const Message &msg : std::as_const(m_messages)) {
@@ -248,17 +302,19 @@ void MessageListModel::setMessages(QList<Message> &&msgs)
 
 void MessageListModel::addMessage(const Message &msg)
 {
+    Message cleaned = msg;
+    cleaned.name = sanitizeText(cleaned.name, "未命名");
     if (m_messages.size() >= 200) {
         beginRemoveRows(QModelIndex(), 0, 0);
         m_messages.removeFirst();
         endRemoveRows();
     }
     beginInsertRows(QModelIndex(), m_messages.size(), m_messages.size());
-    m_messages.append(msg);
+    m_messages.append(cleaned);
     endInsertRows();
-    if (!msg.isSelf && !msg.user.isEmpty()) {
-        if(msg.user.length()!=32) return;
-        downloadAvatarIfNeeded(chatPage->m_appid,msg.user);
+    if (!cleaned.isSelf && !cleaned.user.isEmpty()) {
+        if(cleaned.user.length()!=32) return;
+        downloadAvatarIfNeeded(chatPage->m_appid,cleaned.user);
     }
 }
 int MessageListModel::rowCount(const QModelIndex &parent) const
@@ -316,129 +372,204 @@ void MessageListModel::clear()
     endResetModel();
 }
 QString replaceFileTag();
+
+
+void BubbleDelegate::drawDefaultAvatar(QPainter* painter, const QRect& rect, const QString& text, bool isSelf) const
+{
+    QColor color = isSelf ? QColor(255,190,104) : QColor(228,238,214);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+    painter->drawEllipse(rect);
+    painter->setPen(Qt::white);
+    //painter->setFont(QFont("Microsoft YaHei", 14, QFont::Bold));
+    painter->drawText(rect, Qt::AlignCenter, text);
+}
+
+BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &rawContent, bool isSelf, const QString &timestamp) const
+{
+    CachedData data;
+    QString content = rawContent;
+
+    // 1. 提取图片信息（如果有）
+    bool isLocal = true;
+    QString imagePath;
+    bool hasImage = extractImageInfo(content, isLocal, imagePath);
+    data.hasImage = hasImage;
+    data.imagePath = imagePath;
+    data.imageIsLocal = isLocal;
+
+    // 2. 去除图片、视频、音频等标签，得到纯文本
+    // 这里复用您原来的 replaceBetweenAll 等逻辑
+    if (content.contains("[image,"))
+        content = replaceBetweenAll(content, "[image,", "]","");
+    else if (content.contains("[video,"))
+        content = replaceBetweenAll(content, "[video,", "]", "[视频]");
+    else if (content.contains("[audio,"))
+        content = replaceBetweenAll(content, "[audio,", "]", "[语音]");
+    else if (content.contains("[v,"))
+        content = replaceBetweenAll(content, "[v,", "]", "[视频]");
+    else if (content.contains("[a,"))
+        content = replaceBetweenAll(content, "[a,", "]", "[语音]");
+    else if (content.contains("[file,"))
+        content = replaceFileTag(content);  // 您已有的函数
+    data.displayText = content;
+
+    // 3. 文本换行计算（与原 paint 完全一致）
+    if (!m_textFm) {
+        // 初始化字体（在第一次调用时）
+        const_cast<BubbleDelegate*>(this)->m_textFont = QFont("Microsoft YaHei", 11);
+        const_cast<BubbleDelegate*>(this)->m_nameFont = QFont("Microsoft YaHei", 9);
+        const_cast<BubbleDelegate*>(this)->m_timeFont = QFont("Microsoft YaHei", 8);
+        const_cast<BubbleDelegate*>(this)->m_textFm = new QFontMetrics(m_textFont);
+        const_cast<BubbleDelegate*>(this)->m_nameFm = new QFontMetrics(m_nameFont);
+        const_cast<BubbleDelegate*>(this)->m_timeFm = new QFontMetrics(m_timeFont);
+    }
+
+    const int maxBubbleWidth = 460;
+    QStringList lines;
+    const QStringList paragraphs = content.split('\n');
+    for (const QString &para : paragraphs) {
+        QString remaining = para;
+        while (!remaining.isEmpty()) {
+            int lastGood = 0;
+            int totalWidth = 0;
+            for (int i = 0; i < remaining.length(); ++i) {
+                int charWidth = m_textFm->horizontalAdvance(remaining.at(i));
+                if (totalWidth + charWidth > maxBubbleWidth) break;
+                totalWidth += charWidth;
+                lastGood = i + 1;
+            }
+            if (lastGood == 0) lastGood = 1;
+            lines.append(remaining.left(lastGood));
+            remaining = remaining.mid(lastGood);
+        }
+    }
+    data.wrappedLines = lines;
+
+    // 4. 计算文本宽度和高度
+    int textWidth = 0;
+    for (const QString &line : lines) {
+        int w = m_textFm->horizontalAdvance(line);
+        if (w > textWidth) textWidth = w;
+    }
+    data.textWidth = qMin(qMax(textWidth, 48), maxBubbleWidth);
+    data.textHeight = lines.size() * m_textFm->height() + 4;
+
+    // 5. 计算总高度（用于 sizeHint）
+    int nameHeight = isSelf ? 0 : m_nameFm->height() + 4;
+    int timeHeight = m_timeFm->height();
+    int imageHeight = hasImage ? 128 + 8 : 0;  // 默认图片占位高度，实际绘制时会调整
+    int bubbleHeight = nameHeight + data.textHeight + imageHeight + timeHeight + 8;
+    data.totalHeight = qMax(bubbleHeight, 30);
+    if (isSelf) data.totalHeight += 16;
+
+    return data;
+}
+
+// ---------- paint 实现 ----------
 void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    painter->setRenderHint(QPainter::Antialiasing);
-    painter->setRenderHint(QPainter::TextAntialiasing);
 
-    // 获取消息数据
+    // 1. 确保字体度量已初始化
+    if (!m_textFm) {
+        m_textFont = QFont();
+        m_nameFont = QFont();
+        m_timeFont = QFont();
+        m_textFont.setPointSize(11); // 约等于 14px
+        m_nameFont.setPointSize(9); // 约等于 14px
+        m_timeFont.setPointSize(8); // 约等于 14px
+        m_textFm = new QFontMetrics(m_textFont);
+        m_nameFm = new QFontMetrics(m_nameFont);
+        m_timeFm = new QFontMetrics(m_timeFont);
+    }
+    QElapsedTimer timer;
+    timer.start();
+
     QString sender = index.data(MessageListModel::SenderRole).toString();
     QString name = index.data(MessageListModel::name).toString();
     QString content = index.data(MessageListModel::ContentRole).toString();
     bool isSelf = index.data(MessageListModel::IsSelfRole).toBool();
     QString timestamp = index.data(MessageListModel::TimestampRole).toString();
 
-    // ---------- 提取图片信息 ----------
-    bool isLocalPath = true;
-    QString imageSource;
-    bool hasImage = extractImageInfo(content, isLocalPath, imageSource);
-    QString nameA = extractBetween(content,"name=",",");
-    if (content.contains("[image,"))
-        content = replaceBetweenAll(content, "[image,", "]","");
+    // 3. 生成缓存 key，获取或创建缓存数据
+    QString cacheKey = content + (isSelf ? "_self" : "_other");
+    CachedData *cached = m_cache[cacheKey];
 
+    if (!cached) {
+        CachedData data = prepareMessageData(content, isSelf, timestamp);
+        m_cache.insert(cacheKey, new CachedData(data));
+        cached = m_cache[cacheKey];
+        if (!cached) {
 
-    if (content.contains("[video,"))
-        content = replaceBetweenAll(content, "[video,", "]", "[视频]"+nameA);
-    else if (content.contains("[audio,"))
-        content = replaceBetweenAll(content, "[audio,", "]", "[语音]"+nameA);
-    else if (content.contains("[v,"))
-        content = replaceBetweenAll(content, "[v,", "]", "[视频]"+nameA);
-    else if (content.contains("[a,"))
-        content = replaceBetweenAll(content, "[a,", "]", "[语音]"+nameA);
+            CachedData temp = prepareMessageData(content, isSelf, timestamp);
+            cached = &temp;  // 注意：不能保存指针，仅本次绘制使用
 
-    else if (content.contains("[file,"))
-        content = replaceFileTag(content);
-    // ---------- 文本换行计算 ----------
-    QFont textFont("Microsoft YaHei", 11);
-    QFontMetrics fm(textFont);
-    const int maxBubbleWidth = 460;
-    QStringList lines;
-    if (s_wrapCache.contains(content)) {
-        lines = *s_wrapCache[content];
-    } else {
-        const QStringList paragraphs = content.split('\n');
-        for (const QString &para : paragraphs) {
-            QString remaining = para;
-            while (!remaining.isEmpty()) {
-                int lastGood = 0;
-                int totalWidth = 0;
-                for (int i = 0; i < remaining.length(); ++i) {
-                    int charWidth = fm.horizontalAdvance(remaining.at(i));
-                    if (totalWidth + charWidth > maxBubbleWidth) break;
-                    totalWidth += charWidth;
-                    lastGood = i + 1;
-                }
-                if (lastGood == 0) lastGood = 1;
-                lines.append(remaining.left(lastGood));
-                remaining = remaining.mid(lastGood);
-            }
-        }
-        s_wrapCache.insert(content, new QStringList(lines), 1);
-    }
-
-    int textWidth = 0;
-    for (const QString &line : std::as_const(lines)) {
-        int w = fm.horizontalAdvance(line);
-        if (w > textWidth) textWidth = w;
-    }
-    textWidth = qMin(qMax(textWidth, 48), maxBubbleWidth);
-    int textHeight = lines.size() * fm.height() + 4; // 上下内边距
-
-    // ---------- 图片加载与尺寸计算 ----------
-    QPixmap imgPixmap;
-    int imageHeight = 0, imageWidth = 0;
-    if (hasImage) {
-        if (isLocalPath && QFile::exists(imageSource)) {
-            if (imageCache().contains(imageSource)) {
-                imgPixmap = *imageCache()[imageSource];
-            } else {
-                imgPixmap.load(imageSource);
-                if (!imgPixmap.isNull()) {
-                    // 限制最大128x128
-                    if (imgPixmap.width() > 128 || imgPixmap.height() > 128)
-                        imgPixmap = imgPixmap.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                    imageCache().insert(imageSource, new QPixmap(imgPixmap));
-                }
-            }
-        } else if (!isLocalPath) {
-            // 网络图片：尝试从缓存获取，否则发起异步下载
-            if (imageCache().contains(imageSource)) {
-                imgPixmap = *imageCache()[imageSource];
-            } else {
-                // 异步下载（传入持久索引以便刷新）
-                QPersistentModelIndex persistentIndex(index);
-                downloadImageIfNeeded(imageSource, persistentIndex);
-                // 下载完成前不显示图片
-            }
-        }
-        if (!imgPixmap.isNull()) {
-            imageWidth = imgPixmap.width();
-            imageHeight = imgPixmap.height() + 8; // 图片+下边距
-        } else if (!isLocalPath) {
-            // 占位高度（下载中）
-            imageHeight = 128 + 8;
         }
     }
 
-    // ---------- 整体尺寸计算 ----------
-    QFont nameFont("Microsoft YaHei", 9);
-    QFont timeFont("Microsoft YaHei", 8);
-    int nameHeight = isSelf ? 0 : QFontMetrics(nameFont).height() + 4;
-    int timeHeight = QFontMetrics(timeFont).height();
-    int contentHeight = textHeight + imageHeight;
-    int bubbleHeight = nameHeight + contentHeight + timeHeight;
+    // 为了安全，如果缓存获取失败（极少情况），我们使用本地数据
+    CachedData localData;
+    if (!cached) {
+        localData = prepareMessageData(content, isSelf, timestamp);
+        cached = &localData;
+    }
 
-    int totalHeight = qMax(bubbleHeight, 30) - (isSelf ? -8 : 16);
+    // 4. 从缓存数据中取出绘制所需字段
+    const QStringList &lines = cached->wrappedLines;
+    int textWidth = cached->textWidth;
+    bool hasImage = cached->hasImage;
+    QString imagePath = cached->imagePath;
+    bool imageIsLocal = cached->imageIsLocal;
 
 
-    QRect rect = option.rect;
+    //painter->setRenderHint(QPainter::TextAntialiasing);
+    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->setRenderHint(QPainter::TextAntialiasing, false);
     const int avatarSize = 40;
     const int margin = 20;
-    int bubbleWidth = textWidth + 28;
-    if (imageWidth > bubbleWidth - 24) // 让图片宽度不超过气泡内边距
-        bubbleWidth = imageWidth + 24;
-    bubbleWidth = qMin(bubbleWidth, maxBubbleWidth)+16;
-    bubbleWidth = qMax(bubbleWidth,130);
+    const int maxBubbleWidth = 460;
+
+    int textHeight = lines.size() * m_textFm->height() + 4;
+
+    // 图片高度处理
+    int imageHeight = 0;
+    QPixmap imgPixmap;
+    if (hasImage) {
+        // 从缓存获取图片（若已加载）
+        if (m_imageCache.contains(imagePath)) {
+            imgPixmap = *m_imageCache[imagePath];
+            if (!imgPixmap.isNull())
+                imageHeight = imgPixmap.height() + 8;
+        } else if (imageIsLocal && QFile::exists(imagePath)) {
+            QPixmap original(imagePath);
+            if (!original.isNull()) {
+                QPixmap scaled = original.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                m_imageCache.insert(imagePath, new QPixmap(scaled));
+                imgPixmap = scaled;
+                imageHeight = imgPixmap.height() + 8;
+            } else {
+                imageHeight = 128 + 8; // 占位
+            }
+        } else {
+            imageHeight = 128 + 8; // 网络图片占位
+        }
+    }
+
+    // 名字和时间高度
+    int nameHeight = isSelf ? 0 : m_nameFm->height() + 4;
+    int timeHeight = m_timeFm->height();
+
+    int bubbleHeight = nameHeight + textHeight + imageHeight + timeHeight + 8;
+    int totalHeight = qMax(bubbleHeight, 30);
+    totalHeight += -2;
+
+    QRect rect = option.rect;
+    int bubbleWidth = qMin(textWidth + 28, maxBubbleWidth);
+    if (hasImage && !imgPixmap.isNull()) {
+        bubbleWidth = qMax(bubbleWidth, imgPixmap.width() + 24);
+    }
+    bubbleWidth = qMax(bubbleWidth, 130)+24;
+
     QRect avatarRect;
     QRect bubbleRect;
     const int avatarTopMargin = 4;
@@ -450,11 +581,11 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
         bubbleRect = QRect(rect.left() + avatarSize + margin*2, rect.top(), bubbleWidth, totalHeight);
     }
 
-    // ---------- 绘制头像（复用原逻辑） ----------
+    // ---------- 绘制头像（使用缓存） ----------
     QString avatarPath = isSelf ? QString("./avatars/%1.png").arg(chatPage->m_appid) : QString("./avatars/%1.png").arg(sender);
     QPixmap avatarPixmap;
-    if (avatarCache.contains(avatarPath)) {
-        avatarPixmap = *avatarCache[avatarPath];
+    if (m_avatarCache.contains(avatarPath)) {
+        avatarPixmap = *m_avatarCache[avatarPath];
     } else if (QFile::exists(avatarPath)) {
         QPixmap original(avatarPath);
         if (!original.isNull()) {
@@ -471,230 +602,203 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
             p.drawPixmap(0, 0, cropped);
             p.end();
             avatarPixmap = rounded;
-            avatarCache.insert(avatarPath, new QPixmap(avatarPixmap), 1);
+            m_avatarCache.insert(avatarPath, new QPixmap(avatarPixmap));
         }
     }
+
     if (!avatarPixmap.isNull()) {
         painter->drawPixmap(avatarRect, avatarPixmap);
-        painter->setPen(QPen(QColor(200,200,200),1));
+        painter->setPen(QPen(QColor(200,200,200), 1));
         painter->setBrush(Qt::NoBrush);
         painter->drawEllipse(avatarRect);
     } else {
+        // 默认头像
         painter->setPen(Qt::NoPen);
         QColor avatarColor = isSelf ? QColor(255,190,104) : QColor(228,238,214);
         painter->setBrush(avatarColor);
         painter->drawEllipse(avatarRect);
         painter->setPen(Qt::white);
-        painter->setFont(QFont("Microsoft YaHei",14,QFont::Bold));
+        //painter->setFont(QFont("Microsoft YaHei", 14, QFont::Bold));
         painter->drawText(avatarRect, Qt::AlignCenter, isSelf ? "我" : name.left(1));
     }
 
-    // 绘制气泡背景
-    painter->setBrush(isSelf ? QColor(210,244,184) : QColor(255,255,255));
-    painter->setPen(QPen(isSelf ? QColor(210,244,184) : QColor(238,232,226), 1));
-    painter->drawRoundedRect(bubbleRect, 12, 12);
+    // ---------- 绘制气泡背景 ----------
 
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(isSelf ? QColor(210,244,184) : QColor(238,232,226));
+    painter->drawRect(bubbleRect); // 快速画直角
     // ---------- 绘制内容 ----------
     painter->save();
     painter->translate(bubbleRect.topLeft() + QPoint(12, 6));
-    //int yOffset = 0;
 
+    int yOffset = 0;
     if (!isSelf) {
-        painter->setFont(nameFont);
+        painter->setFont(m_nameFont);
         painter->setPen(QColor(136,136,136));
-        painter->drawText(0, 4, name);
-        //yOffset += nameHeight;
+        painter->drawText(0, yOffset + m_nameFm->ascent()-2, name);
+        yOffset += nameHeight;
     }
 
     // 绘制文本
-    painter->setFont(textFont);
+    painter->setFont(m_textFont);
     painter->setPen(Qt::black);
-    int y = 4;
-    for (const QString &line : std::as_const(lines)) {
-        painter->drawText(0, y + fm.ascent(), line);
-        y += fm.height();
+    int lineHeight = m_textFm->height();
+    for (const QString &line : lines) {
+        painter->drawText(0, yOffset + m_textFm->ascent(), line);
+        yOffset += lineHeight;
     }
-    y += 4;
+    yOffset += 4;
 
-    // 绘制图片（如果有）
-    if (!imgPixmap.isNull()) {
-        // 居中或左对齐？这里左对齐
-        painter->drawPixmap(0, y, imgPixmap);
-        y += imgPixmap.height() + 4;
-    } else if (hasImage && !isLocalPath && !imageCache().contains(imageSource)) {
-        // 占位符：显示“加载中...”
-        painter->setFont(QFont("Microsoft YaHei", 9));
-        painter->setPen(QColor(150,150,150));
-        painter->drawText(0, y + 20, "图片加载中...");
-        y += 128 + 4;
+    // 绘制图片
+    if (hasImage) {
+        if (!imgPixmap.isNull()) {
+            painter->drawPixmap(0, yOffset, imgPixmap);
+            yOffset += imgPixmap.height() + 4;
+        } else {
+            // 占位
+
+            painter->setPen(QColor(150,150,150));
+            painter->drawText(0, yOffset + 20, "图片加载中...");
+            yOffset += 128 + 4;
+        }
     }
 
-    // 绘制时间
-    painter->setFont(timeFont);
+    // 时间
+    painter->setFont(m_timeFont);
     painter->setPen(QColor(170,170,170));
-    int timeWidth = QFontMetrics(timeFont).horizontalAdvance(timestamp);
-    painter->drawText(bubbleWidth - 24 - timeWidth, y + 8, timestamp);
+    int timeWidth = m_timeFm->horizontalAdvance(timestamp);
+    painter->drawText(bubbleWidth - 4 - timeWidth, yOffset + m_timeFm->ascent()-2, timestamp);
 
     painter->restore();
+
 }
+
+// ---------- sizeHint 实现 ----------
 QSize BubbleDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
+
+    // 确保字体度量初始化
+    if (!m_textFm) {
+        m_textFont = QFont();
+        m_nameFont = QFont();
+        m_timeFont = QFont();
+        m_textFont.setPointSize(11); // 约等于 14px
+        m_nameFont.setPointSize(9); // 约等于 14px
+        m_timeFont.setPointSize(8); // 约等于 14px
+        m_textFm = new QFontMetrics(m_textFont);
+        m_nameFm = new QFontMetrics(m_nameFont);
+        m_timeFm = new QFontMetrics(m_timeFont);
+    }
+
     QString content = index.data(MessageListModel::ContentRole).toString();
     bool isSelf = index.data(MessageListModel::IsSelfRole).toBool();
+    QString timestamp = index.data(MessageListModel::TimestampRole).toString();
 
-    // 提取图片与文本
-    bool isLocalPath = true;
-    QString imageSource;
-    bool hasImage = extractImageInfo(content, isLocalPath, imageSource);
-    QString nameA = extractBetween(content,"name=",",");
-    if (content.contains("[image,"))
-        content = replaceBetweenAll(content, "[image,", "]","");
-    else if (content.contains("[video,"))
-        content = replaceBetweenAll(content, "[video,", "]", "[视频]"+nameA);
-    else if (content.contains("[audio,"))
-        content = replaceBetweenAll(content, "[audio,", "]", "[语音]"+nameA);
-    else if (content.contains("[v,"))
-        content = replaceBetweenAll(content, "[v,", "]", "[视频]"+nameA);
-    else if (content.contains("[a,"))
-        content = replaceBetweenAll(content, "[a,", "]", "[语音]"+nameA);
-
-    else if (content.contains("[file,"))
-        content = replaceFileTag(content);
-
-
-    // 文本换行（复用 paint 中的算法）
-    QFont textFont("Microsoft YaHei", 11);
-    QFontMetrics fm(textFont);
-    const int maxBubbleWidth = 460;
-    QStringList lines;
-    static QCache<QString, QStringList> wrapCache;
-    if (wrapCache.contains(content)) {
-        lines = *wrapCache[content];
-    } else {
-        const QStringList paragraphs = content.split('\n');
-        for (const QString &para : paragraphs) {
-            QString remaining = para;
-            while (!remaining.isEmpty()) {
-                int lastGood = 0;
-                int totalWidth = 0;
-                for (int i = 0; i < remaining.length(); ++i) {
-                    int charWidth = fm.horizontalAdvance(remaining.at(i));
-                    if (totalWidth + charWidth > maxBubbleWidth) break;
-                    totalWidth += charWidth;
-                    lastGood = i + 1;
-                }
-                if (lastGood == 0) lastGood = 1;
-                lines.append(remaining.left(lastGood));
-                remaining = remaining.mid(lastGood);
-            }
-        }
-        wrapCache.insert(content, new QStringList(lines));
+    QString cacheKey = content + (isSelf ? "_self" : "_other");
+    CachedData *cached = m_cache[cacheKey];
+    if (!cached) {
+        CachedData data = prepareMessageData(content, isSelf, timestamp);
+        m_cache.insert(cacheKey, new CachedData(data));
+        cached = m_cache[cacheKey];
     }
-    int textHeight = lines.size() * fm.height() + 4;
-
-    // 图片高度估算
-    int imageHeight = 0;
-    if (hasImage) {
-        if (isLocalPath && QFile::exists(imageSource)) {
-            QPixmap tmp(imageSource);
-            if (!tmp.isNull()) {
-                int w = qMin(tmp.width(), 128);
-                int h = tmp.height() * w / tmp.width();
-                imageHeight = h + 8;
-            } else {
-                imageHeight = 128 + 8;
-            }
-        } else if (!isLocalPath) {
-            imageHeight = 128 + 8; // 占位高度
-        }
-    }
-
-    QFont nameFont("Microsoft YaHei", 9);
-    QFont timeFont("Microsoft YaHei", 8);
-    int nameHeight = isSelf ? 0 : QFontMetrics(nameFont).height() + 4;
-    int timeHeight = QFontMetrics(timeFont).height();
-    int contentHeight = textHeight + imageHeight;
-    int bubbleHeight = nameHeight + contentHeight + timeHeight;
-    int totalHeight = qMax(bubbleHeight, 30);
-    if(isSelf) totalHeight+=16;
-    return QSize(option.rect.width(), totalHeight);
+    int height = cached ? cached->totalHeight : 80; // 保底高度
+    return QSize(option.rect.width(), height);
 }
 
-// ==================== 联系人项控件（轻量，无变化）====================
-class ContactItemWidget : public QWidget {
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QPainterPath>
+
+class ContactListDelegate : public QStyledItemDelegate {
 public:
-    ContactItemWidget(const Contact &contact, QWidget *parent = nullptr) : QWidget(parent) {
-        setAttribute(Qt::WA_TranslucentBackground);
-        setAutoFillBackground(false);
-        QHBoxLayout *layout = new QHBoxLayout(this);
-        layout->setContentsMargins(2, 2, 2, 2);
-        layout->setSpacing(4);
+    using QStyledItemDelegate::QStyledItemDelegate;
 
-        QLabel *avatar = new QLabel();
-        avatar->setFixedSize(36, 36);
-        avatar->setAlignment(Qt::AlignCenter);
-        avatar->setScaledContents(false);
+    // 每个列表项的高度（加上间距，头像32px + 两行文字，建议给 60px）
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        Q_UNUSED(option)
+        Q_UNUSED(index)
+        return QSize(-1, 40);
+    }
 
-        // 尝试加载本地头像（假设头像文件名为 contact.name 对应 openid）
-        QString avatarPath = QString("./avatars/%1.png").arg(contact.id);
-        QPixmap avatarPix;
-        if (QFile::exists(avatarPath)) {
-            QPixmap original(avatarPath);
-            if (!original.isNull()) {
-                // 生成圆形图片
-                QPixmap rounded(36, 36);
-                rounded.fill(Qt::transparent);
-                QPainter p(&rounded);
-                p.setRenderHint(QPainter::Antialiasing);
-                QPainterPath path;
-                path.addEllipse(0, 0, 36, 36);
-                p.setClipPath(path);
-                QPixmap scaled = original.scaled(36, 36, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-                int x = (scaled.width() - 36) / 2;
-                int y = (scaled.height() - 36) / 2;
-                QPixmap cropped = scaled.copy(x, y, 36, 36);
-                p.drawPixmap(0, 0, cropped);
-                p.end();
-                avatarPix = rounded;
-            }
+    void paint (QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+
+        if (!index.isValid()) return;
+
+        // 1. 提取数据
+        QString name = index.data(Qt::UserRole + 3).toString();
+        QString lastMsg = index.data(Qt::UserRole + 4).toString();
+        lastMsg.replace("\n", " "); // 原代码中的换行替换
+
+        // 提取存进去的 Painted PIXMAP（如果在数据里就已经处理好了）
+        QPixmap avatarPix = index.data(Qt::UserRole + 5).value<QPixmap>();
+        QColor avatarColor = index.data(Qt::UserRole + 6).value<QColor>();
+        QString avatarText = index.data(Qt::UserRole + 7).toString();
+
+        // 2. 绘制背景
+        painter->save();
+        if (option.state & QStyle::State_Selected) {
+            painter->fillRect(option.rect, QColor(230, 230, 230)); // 选中态颜色
+        } else {
+            painter->fillRect(option.rect, Qt::white); // 默认白底
         }
+
+        // 3. 计算坐标（模仿原来的 layout 边距）
+        int margin = 6;
+        int iconSize = 32;
+        int iconX = option.rect.x() + margin;
+        int iconY = option.rect.y() + (option.rect.height() - iconSize) / 2;
+        QRect iconRect(iconX, iconY, iconSize, iconSize);
+
+        int textX = iconX + iconSize + margin;
+        int textWidth = option.rect.width() - textX - margin;
+
+        // 4. 绘制头像
+        painter->setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.addEllipse(iconRect);
+        painter->setClipPath(path);
 
         if (!avatarPix.isNull()) {
-            avatar->setPixmap(avatarPix);
-            avatar->setStyleSheet("background: transparent;");
-            avatar->setText("");
+            painter->drawPixmap(iconRect, avatarPix);
         } else {
-            // 回退到彩色文字圆形
-            QString color = QString("#%1").arg(qHash(contact.name) % 0x1000000, 6, 16, QChar('0'));
-            avatar->setStyleSheet(QString("background-color: %1; border-radius: 18px; color: white; font-size: 20px; font-weight: bold;").arg(color));
-            avatar->setText(contact.name.isEmpty() ? "?" : contact.name.left(1));
+            // 回退：绘制圆形色块 + 文字
+            painter->fillRect(iconRect, avatarColor);
+            painter->setClipping(false); // 绘制文字时取消裁剪，以免字被切掉
+            painter->setPen(Qt::white);
+            QFont Font = QFont();
+            Font.setBold(true);
+            Font.setPointSize(16); // 约等于 14px
+            painter->setPen(QFont::Bold); // 灰色
+            painter->setFont(Font);
+
+            painter->drawText(iconRect, Qt::AlignCenter, avatarText);
         }
+        painter->setClipping(false);
 
-        // 右侧信息区域（保持不变）
-        QWidget *info = new QWidget();
-        info->setAttribute(Qt::WA_TranslucentBackground);
-        QVBoxLayout *infoLayout = new QVBoxLayout(info);
-        infoLayout->setContentsMargins(0,0,0,0);
-        infoLayout->setSpacing(2);
+        // 5. 绘制名字 (加粗 14px)
+        painter->setPen(Qt::black);
+        QFont nameFont = painter->font();
+        nameFont.setBold(true);
+        nameFont.setPointSize(10); // 约等于 14px
+        painter->setFont(nameFont);
+        QRect nameRect(textX, option.rect.y() + 2, textWidth, 20);
+        //painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, "绘制最新消息绘制最新消息");
+        painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, name.left(20));
 
-        QLabel *nameLabel = new QLabel(contact.name);
-        nameLabel->setStyleSheet("background: transparent; font-weight: bold; font-size: 14px;");
-        QLabel *timeLabel = new QLabel(contact.lastMsgTime.isEmpty() ? "暂无消息" : contact.lastMsgTime);
-        timeLabel->setStyleSheet("background: transparent; color: gray; font-size: 11px;");
+        // 6. 绘制最新消息 (灰色 11px)
+        painter->setPen(QColor(150, 150, 150)); // 灰色
 
-        infoLayout->addWidget(nameLabel);
-        infoLayout->addWidget(timeLabel);
-        infoLayout->addStretch();
+        nameFont.setBold(false);
+        nameFont.setPointSize(8); // 约等于 11px
+        painter->setFont(nameFont);
+        QRect msgRect(textX, option.rect.y() + 22, textWidth, 20);
+        //painter->drawText(msgRect, Qt::AlignLeft | Qt::AlignVCenter, "绘制最新消息绘制最新消息");
+        painter->drawText(msgRect, Qt::AlignLeft | Qt::AlignVCenter, lastMsg.left(20));
 
-        layout->addWidget(avatar);
-        layout->addWidget(info, 1);
-        layout->addStretch();
+        painter->restore();
 
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 };
-
-
 
 // ==================== ChatPage 实现 ====================
 ChatPage::ChatPage(QWidget *parent)
@@ -725,7 +829,7 @@ ChatPage::ChatPage(QWidget *parent)
 }
 
 ChatPage::~ChatPage() {}
-
+QStandardItemModel *m_model=nullptr;
 void ChatPage::initUI()
 {
     setObjectName("chatPage");
@@ -745,7 +849,7 @@ void ChatPage::initUI()
         }
         QLabel#chatTitle {
             color: #17202A;
-            font-size: 17px;
+            font-size: 20px;
             font-weight: 800;
             background: transparent;
         }
@@ -774,8 +878,8 @@ void ChatPage::initUI()
             background: #F6F7F9;
             border: none;
             border-radius: 8px;
-            min-width: 28px;
-            min-height: 28px;
+            min-width: 24px;
+            min-height: 24px;
             color: #8A94A6;
             font-weight: bold;
         }
@@ -853,40 +957,31 @@ void ChatPage::initUI()
     leftShadow->setBlurRadius(10);
     leftPanel->setGraphicsEffect(leftShadow);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(4, 4, 4, 4);
+    leftLayout->setContentsMargins(2, 2,2, 2);
     leftLayout->setSpacing(4);
-
-    // 会话标题
-    QHBoxLayout *sessionHeader = new QHBoxLayout;
-    QLabel *sessionTitle = new QLabel("会话列表");
-    sessionTitle->setObjectName("chatTitle");
-    QPushButton *addSessionBtn = new QPushButton("+");
-    addSessionBtn->setObjectName("roundToolButton");
-    addSessionBtn->setFixedSize(28, 28);
-    addSessionBtn->hide();
-    sessionHeader->addWidget(sessionTitle);
-    sessionHeader->addStretch();
-    sessionHeader->addWidget(addSessionBtn);
-    leftLayout->addLayout(sessionHeader);
 
     // ========== 模式按钮栏（两行，每行三个） ==========
     QVBoxLayout *btnVerticalLayout = new QVBoxLayout;
-    btnVerticalLayout->setSpacing(6);
-
+    btnVerticalLayout->setSpacing(2);
+    btnVerticalLayout->setContentsMargins(2,2,2,2);
     // 第一行：全量、群聊、私聊
     QHBoxLayout *row1 = new QHBoxLayout;
-    row1->setSpacing(8);
+    row1->setContentsMargins(2,2,2,2);
+    row1->setSpacing(3);
     btnChat = new QPushButton("全量");
     btnGroupChat = new QPushButton("群聊");
     btnPrivateChat = new QPushButton("私聊");
 
-    btnChat->setObjectName("modeButton");
-    btnGroupChat->setObjectName("modeButton");
-    btnPrivateChat->setObjectName("modeButton");
+
 
     btnChat->setCheckable(true);
     btnGroupChat->setCheckable(true);
     btnPrivateChat->setCheckable(true);
+
+    btnChat->setFixedHeight(28);
+    btnGroupChat->setFixedHeight(28);
+    btnPrivateChat->setFixedHeight(28);
+
 
     row1->addWidget(btnChat);
     row1->addWidget(btnGroupChat);
@@ -898,15 +993,14 @@ void ChatPage::initUI()
     btnChannelChat = new QPushButton("频道");
     btnChannelPrivate = new QPushButton("频道私聊");
     btnRecentChat = new QPushButton("最近");
-    btnChannelChat->setObjectName("modeButton");
-    btnChannelPrivate->setObjectName("modeButton");
-    btnRecentChat->setObjectName("modeButton");
+
     btnChannelChat->setCheckable(true);
     btnChannelPrivate->setCheckable(true);
     btnRecentChat->setCheckable(true);
 
-
-
+    btnChannelChat->setFixedHeight(28);
+    btnChannelPrivate->setFixedHeight(28);
+    btnRecentChat->setFixedHeight(28);
 
     row2->addWidget(btnChannelChat);
     row2->addWidget(btnChannelPrivate);
@@ -920,10 +1014,17 @@ void ChatPage::initUI()
 
 
     // 联系人列表（重要：这里初始化 contactList）
-    contactList = new QListWidget;
-    contactList->setObjectName("contactList");
-    contactList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    contactList->setContextMenuPolicy(Qt::CustomContextMenu);
+    // 原来的：contactList = new QListWidget(this);
+    // 改成：
+    m_model  = new QStandardItemModel(this);
+    contactList = new QListView(this);
+    contactList->setModel(m_model); // 现在可以调用了！
+    contactList->setItemDelegate(new ContactListDelegate(this));
+    contactList->setSelectionMode(QAbstractItemView::SingleSelection); // 确保支持选择
+    contactList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel); // 滚动丝滑
+    contactList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); // 隐藏横向滚动条
+
+
 
     leftLayout->addWidget(contactList, 1);
 
@@ -942,35 +1043,41 @@ void ChatPage::initUI()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(0);
 
-    // 聊天头部
-    QWidget *chatHeader = new QWidget;
-    QHBoxLayout *chatHeaderLayout = new QHBoxLayout(chatHeader);
-    chatHeaderLayout->setContentsMargins(4, 4, 4, 4);
-    chatHeaderLayout->setSpacing(4);
-    QLabel *avatar = new QLabel("-");
-    avatar->setObjectName("chatAvatar");
-    avatar->setFixedSize(36, 36);
-    avatar->setAlignment(Qt::AlignCenter);
-    QVBoxLayout *titleLayout = new QVBoxLayout;
-    titleLayout->setSpacing(3);
+
+
     titleLabel = new QLabel("未选择会话");
     titleLabel->setObjectName("chatTitle");
 
-    titleLayout->addWidget(titleLabel);
 
-    chatHeaderLayout->addWidget(avatar);
-    chatHeaderLayout->addLayout(titleLayout, 1);
-    rightLayout->addWidget(chatHeader);
+
+    rightLayout->addWidget(titleLabel);
 
     // 消息列表视图
     msgModel = new MessageListModel(this);
+
     msgListView = new QListView;
     msgListView->setObjectName("messageList");
     msgListView->setModel(msgModel);
     msgListView->setItemDelegate(new BubbleDelegate(this));
-    msgListView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    msgListView->verticalScrollBar()->setSingleStep(16);  // 数值越小滚动越慢
+
+    // ==================== 【核心优化：保证能编译】 ====================
+    // 1. 降级滚动模式，按“项”滚动！这是纯 CPU 下解决“一秒动一次”的终极底牌！
+    msgListView->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
+
+    // 2. 开启列表优化标志，强制关闭抗锯齿调整（比 setCacheSize 更轻量，且必定能编译）
+    //msgListView->setOptimizationFlags(QAbstractItemView::DontAdjustForAntialiasing);
+
+    // 3. 设置滚动步长
+    msgListView->verticalScrollBar()->setSingleStep(16);
+
+
+    // ================================================================
+
     msgListView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(msgListView, &QListView::customContextMenuRequested, this, &ChatPage::showMessageContextMenu);
+    connect(msgListView, &QListView::doubleClicked, this, &ChatPage::onMessageDoubleClicked);
+    rightLayout->addWidget(msgListView, 1);
+
     connect(msgListView, &QListView::customContextMenuRequested, this, &ChatPage::showMessageContextMenu);
     connect(msgListView, &QListView::doubleClicked, this, &ChatPage::onMessageDoubleClicked);
     rightLayout->addWidget(msgListView, 1);
@@ -984,7 +1091,7 @@ void ChatPage::initUI()
     inputContainer->setObjectName("inputContainer");
     inputContainer->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout *containerLayout = new QVBoxLayout(inputContainer);
-    containerLayout->setContentsMargins(6, 2, 6, 6);
+    containerLayout->setContentsMargins(2, 2, 2, 2);
     containerLayout->setSpacing(2);
 
     inputEdit = new QTextEdit;
@@ -1053,8 +1160,11 @@ void ChatPage::initUI()
         btnRecentChat->setChecked(true);
     });
 
-    connect(contactList, &QListWidget::itemClicked, this, &ChatPage::onContactItemClicked);
-    connect(contactList, &QListWidget::customContextMenuRequested, this, &ChatPage::showContactListContextMenu);
+    // 将原来的 &QListWidget::itemClicked 改为 QAbstractItemView::clicked
+    connect(contactList, &QAbstractItemView::clicked, this, &ChatPage::onContactItemClicked);
+
+    // customContextMenuRequested 是 QWidget 的信号，QListView 直接继承，不需要改类名
+    connect(contactList, &QWidget::customContextMenuRequested, this, &ChatPage::showContactListContextMenu);
     connect(btnSend, &QPushButton::clicked, this, &ChatPage::onSendClicked);
     connect(btnSendImage, &QPushButton::clicked, this, &ChatPage::onSendImage);
     connect(btnSendAudio, &QPushButton::clicked, this, &ChatPage::onSendAudio);
@@ -1123,21 +1233,74 @@ bool ChatPage::eventFilter(QObject *obj, QEvent *event) {
             }
         }
     }
+
     return QWidget::eventFilter(obj, event);
 }
 void ChatPage::showContactListContextMenu(const QPoint &pos)
 {
     QPoint globalPos = contactList->mapToGlobal(pos);
     QMenu menu;
-    QListWidgetItem *item = contactList->itemAt(pos);
-    if (item) {
+
+    // 1. 替换这里：QListWidgetItem *item = contactList->itemAt(pos);
+    // 改为使用 indexAt，返回的是 QModelIndex
+    QModelIndex index = contactList->indexAt(pos);
+
+    // 2. 替换这里：if (item) 改为 if (index.isValid())
+    if (index.isValid()) {
         QAction *editAction = menu.addAction("编辑群昵称");
-        connect(editAction, &QAction::triggered, this, [this, item]() {
-            QString id = item->data(Qt::UserRole + 1).toString();
+        QAction *sztx = menu.addAction("设置群头像");
+
+        // --- 设置群头像逻辑 ---
+        connect(sztx, &QAction::triggered, this, [this, index]() {
+            // 3. 替换这里：从 index 中获取数据
+            QString id = index.data(Qt::UserRole + 1).toString();
+
+            if (id.isEmpty()) {
+                QMessageBox::warning(this, "错误", "未获取到群ID");
+                return;
+            }
+
+            QString fileName = QFileDialog::getOpenFileName(
+                this, "选择群头像", "", "图片 (*.png *.jpg *.jpeg *.bmp *.gif)");
+            if (fileName.isEmpty()) return;
+
+            QPixmap pixmap(fileName);
+            if (pixmap.isNull()) {
+                QMessageBox::warning(this, "错误", "无法加载所选图片");
+                return;
+            }
+            QPixmap scaled = pixmap.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+            QDir dir("avatars");
+            if (!dir.exists()) {
+                if (!dir.mkpath(".")) {
+                    QMessageBox::warning(this, "错误", "无法创建 avatars 目录");
+                    return;
+                }
+            }
+
+            QString avatarPath = QString("avatars/%1.png").arg(id);
+            if (!scaled.save(avatarPath, "PNG")) {
+                QMessageBox::warning(this, "错误", "保存头像失败，请检查目录权限");
+                return;
+            }
+            QMessageBox::information(this, "成功", "群头像已更新");
+
+
+        });
+
+        // --- 编辑群昵称逻辑 ---
+        connect(editAction, &QAction::triggered, this, [this, index]() {
+            // 4. 替换这里：同样从 index 中获取数据
+            QString id = index.data(Qt::UserRole + 1).toString();
+
             bool ok;
-            QString newNickname = QInputDialog::getText(this, "编辑群昵称 设置后重新点按钮即可", "请输入新的群昵称:", QLineEdit::Normal, customGroupNames.value(id), &ok);
+            QString newNickname = QInputDialog::getText(
+                this, "编辑群昵称 设置后重新点按钮即可", "请输入新的群昵称:",
+                QLineEdit::Normal, customGroupNames.value(id), &ok);
+
             if (ok && !newNickname.isEmpty()) {
-                customGroupNames.insert(id, newNickname); // 假设 customGroupNames 是 QMap<QString, QString>
+                customGroupNames.insert(id, newNickname);
                 QFile file("data/customGroupNames.hash");
                 if (file.open(QIODevice::WriteOnly)) {
                     QDataStream out(&file);
@@ -1145,12 +1308,23 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                     out << customGroupNames;
                     file.close();
                 }
+
+                // 5. 建议加上：更新列表界面的名字显示
+                // 你之前用 index.data(Qt::UserRole + 3) 存名字，修改后需要同步更新 Model
+                QStandardItemModel *model = qobject_cast<QStandardItemModel*>(contactList->model());
+                if (model) {
+                    QStandardItem *item = model->itemFromIndex(index);
+                    if (item) {
+                        // 实际加载进去的时候，你好像在 c.name = getBotName(appid)+":"+c.id 时拼接过。
+                        // 这里建议直接把新的名字存在 UserRole+3 里，下次刷新列表就会显示这个新名字。
+                        item->setData(newNickname, Qt::UserRole + 3);
+                    }
+                }
             }
         });
     }
     menu.exec(globalPos);
 }
-
 
 
 void ChatPage::btnsetChecked()
@@ -1173,15 +1347,17 @@ QString getBotName(int appid);
 void ChatPage::updateAllContactLists(int index)
 {
     int bufferIdx=0;
-
-    contactList->clear();//列表
+    m_model->clear();
     seen.clear(); //过滤器
     s_wrapCache.clear(); //聊天记录缓存
     avatarCache.clear(); //头像缓存
     bool sw=false;
+
     switch (index) {
     case 0: // 全量群
         sw = g_logdb[1]->beginTransaction(true);
+        contactList->setUpdatesEnabled(false);
+
         for (auto it = 全量群.begin(); it != 全量群.end(); ++it) {
             Contact c;
             c.id = it.key();
@@ -1201,8 +1377,11 @@ void ChatPage::updateAllContactLists(int index)
                 c.lastMsgTime = "无信息";      // 忽略
             else
                 c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
-            appendContactCard(appid, c,0);
+            addDataToModel(appid, c,0);
+
         }
+
+        contactList->setUpdatesEnabled(true);
         if(sw) g_logdb[1]->commitTransaction();
         return;
     case 1: bufferIdx=1;break;// 普通群
@@ -1210,26 +1389,21 @@ void ChatPage::updateAllContactLists(int index)
     case 3: bufferIdx=3;break;// 频道
     case 4: bufferIdx=4;break;// 频道私聊
     case 5:
+        contactList->setUpdatesEnabled(false);
         for (auto it = 最近对话.begin(); it != 最近对话.end(); ++it) {
             int appid=0,type=0;
             parseFromId(it.value(),appid,type);
             Contact c;
             c.id = it.key();
-            c.name = getBotName(appid)+":"+customGroupNames.value(c.id);       // 没有 name，就用 key
-            Message msg;
-            if(sw)
-            {
-                g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), c.id, msg);
-            }else{
-                g_logdb[1]->getLatestLog(QString::number(appid),c.id,msg);
+            c.name = customGroupNames.value(c.id);       // 没有 name，就用 key
+            if(c.name.isEmpty()) c.name=it.key();
+            c.name =getBotName(appid)+":"+ c.name;
+            c.lastMsgTime = "无信息";      // 忽略
+            addDataToModel(appid, c,type);
 
-            }
-            if(msg.name.isEmpty())
-                c.lastMsgTime = "无信息";      // 忽略
-            else
-                c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
-            appendContactCard(appid, c,type);
         }
+
+        contactList->setUpdatesEnabled(true);
         return;
     default:
         return;
@@ -1240,7 +1414,9 @@ void ChatPage::updateAllContactLists(int index)
     QSet<QPair<int, QString>> seen;
     sw = g_logdb[bufferIdx]->beginTransaction(true);
     QMap<int, QSet<QString>> appidGroups;   // appid -> 去重后的群ID集合
+    contactList->setUpdatesEnabled(false);
     for (const QString &keyStr : list) {
+
         QStringList parts = keyStr.split(':');
         if (parts.size() != 3) continue;
 
@@ -1289,11 +1465,13 @@ void ChatPage::updateAllContactLists(int index)
             c.name = c.id;
         }
         c.name = getBotName(appid)+":"+c.name;
-        appendContactCard(appid, c, bufferIdx - 1);
-
+        addDataToModel(appid, c, bufferIdx - 1);
 
     }
 
+
+
+    contactList->setUpdatesEnabled(true);
     if(sw) g_logdb[bufferIdx]->commitTransaction();
     if(bufferIdx==1){
         uint32_t nowMin = BotDB::nowMinutes();   // 获取当前分钟数
@@ -1315,18 +1493,53 @@ void ChatPage::updateAllContactLists(int index)
     }
 }
 
-
-void ChatPage::appendContactCard(int appid,Contact c,int type)
+void ChatPage::addDataToModel(int appid, const Contact& c, int type)
 {
-    ContactItemWidget *widget = new ContactItemWidget(c);
-    QListWidgetItem *item = new QListWidgetItem();
-    item->setSizeHint(QSize(contactList->viewport()->width(), 64));
-    item->setData(Qt::UserRole,appid);
-    item->setData(Qt::UserRole+1,c.id);
-    item->setData(Qt::UserRole+2,type);
-    contactList->addItem(item);
-    contactList->setItemWidget(item, widget);
+    QStandardItem *item = new QStandardItem();
+
+    // 存储基础数据
+    item->setData(appid, Qt::UserRole);
+    item->setData(c.id, Qt::UserRole + 1);
+    item->setData(type, Qt::UserRole + 2);
+    item->setData(c.name, Qt::UserRole + 3);
+    item->setData(c.lastMsgTime, Qt::UserRole + 4);
+
+    // --- 预先生成并缓存头像（把原来 Widget 里的逻辑挪过来！） ---
+    QPixmap avatarPix;
+    QString avatarPath = QString("./avatars/%1.png").arg(c.id);
+    if (QFile::exists(avatarPath)) {
+        QPixmap original(avatarPath);
+        if (!original.isNull()) {
+            QPixmap rounded(32, 32);
+            rounded.fill(Qt::transparent);
+            QPainter p(&rounded);
+            p.setRenderHint(QPainter::Antialiasing);
+            QPainterPath path;
+            path.addEllipse(0, 0, 32, 32);
+            p.setClipPath(path);
+            QPixmap scaled = original.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            int x = (scaled.width() - 32) / 2;
+            int y = (scaled.height() - 32) / 2;
+            QPixmap cropped = scaled.copy(x, y, 32, 32);
+            p.drawPixmap(0, 0, cropped);
+            p.end();
+            avatarPix = rounded;
+        }
+    }
+
+    // 回退备用信息（如果头像图片不存在，在委托里直接画色块和首字母）
+    QColor fallbackColor = QColor::fromHsl(qHash(c.name) % 360, 200, 150);
+    QString fallbackText = c.name.isEmpty() ? "?" : c.name.left(1);
+
+    // 保存图片、颜色和备用文字到 Model
+    item->setData(avatarPix, Qt::UserRole + 5);
+    item->setData(fallbackColor, Qt::UserRole + 6);
+    item->setData(fallbackText, Qt::UserRole + 7);
+
+
+    m_model->appendRow(item);
 }
+
 void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
 {
     if (isGroupMode == type || type==0) {
@@ -1385,7 +1598,7 @@ void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
         }
         if(type!=0)type--;
         QMetaObject::invokeMethod(this, [=]() {
-           appendContactCard(ev.appid,c,type);
+            addDataToModel(ev.appid,c,type);
         });
 
 
@@ -1485,11 +1698,14 @@ void ChatPage::onChannelPrivateClicked()
 }
 
 
-void ChatPage::onContactItemClicked(QListWidgetItem *item)
+void ChatPage::onContactItemClicked(const QModelIndex &index)
 {
-    m_appid = item->data(Qt::UserRole).toInt();
-    QString id = item->data(Qt::UserRole+1).toString();
-    m_type = item->data(Qt::UserRole+2).toInt();
+    if (!index.isValid()) {
+        return;
+    }
+    m_appid = index.data(Qt::UserRole).toInt();
+    QString id = index.data(Qt::UserRole+1).toString();
+    m_type = index.data(Qt::UserRole+2).toInt();
     if (!id.isEmpty()) {
         currentContactId = id;
         loadChatHistory(m_appid,currentContactId,m_type);

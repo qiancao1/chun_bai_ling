@@ -484,11 +484,13 @@ void ButtonEditor::initUI() {
     QPushButton *genBtn_min = new QPushButton("📋 生成JSON(小按钮)", this);
     QPushButton *loadBtn = new QPushButton("📂 从JSON加载", this);
     QPushButton *copyBtn = new QPushButton("📄 复制", this);
+    QPushButton *copyBtn2 = new QPushButton("📄 复制(带#b:#标签)", this);
     QPushButton *saveBtn = new QPushButton("💾 保存", this);
     jsonBtnLayout->addWidget(genBtn);
     jsonBtnLayout->addWidget(genBtn_min);
     jsonBtnLayout->addWidget(loadBtn);
     jsonBtnLayout->addWidget(copyBtn);
+    jsonBtnLayout->addWidget(copyBtn2);
     jsonBtnLayout->addWidget(saveBtn);
     jsonBtnLayout->addStretch();
     m_jsonPreview = new QTextEdit(this);
@@ -506,6 +508,11 @@ void ButtonEditor::initUI() {
     connect(genBtn_min, &QPushButton::clicked, this, &ButtonEditor::generateJson2);
     connect(loadBtn, &QPushButton::clicked, this, &ButtonEditor::loadFromJson);
     connect(copyBtn, &QPushButton::clicked, this, &ButtonEditor::copyToClipboard);
+    connect(copyBtn2, &QPushButton::clicked, [this](){
+        if (m_jsonPreview->toPlainText().isEmpty()) generateJson();
+        QApplication::clipboard()->setText("#b:#"+m_jsonPreview->toPlainText()+"#b:#");
+
+    });
     connect(saveBtn, &QPushButton::clicked, this, &ButtonEditor::saveToFile);
     connect(m_propertyPanel, &ButtonPropertyPanel::buttonDataChanged, this, &ButtonEditor::onButtonDataChanged);
 }
@@ -842,7 +849,7 @@ void ButtonEditor::loadFromJson() {
 void ButtonEditor::copyToClipboard() {
     if (m_jsonPreview->toPlainText().isEmpty()) generateJson();
     QApplication::clipboard()->setText(m_jsonPreview->toPlainText());
-    QMessageBox::information(this, "提示", "JSON已复制到剪贴板");
+
 }
 
 void ButtonEditor::saveToFile() {

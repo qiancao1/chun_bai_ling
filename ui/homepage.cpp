@@ -129,17 +129,7 @@ void HomePage::setStyleSheetA()
             padding: 2px 7px;
             font-size: 11px;
         }
-        QPushButton#quickButton {
-            background: #FFF7EA;
-            color: #687589;
-            border-radius: 16px;
-            min-height: 62px;
-            font-weight: 700;
-        }
-        QPushButton#quickButton:hover {
-            background: #FFF0DE;
-            color: #FF7F32;
-        }
+
         QProgressBar {
             background: #F8EFE6;
             border: none;

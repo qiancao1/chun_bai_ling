@@ -86,7 +86,7 @@ private:
 
     QPushButton *btnHome, *btnAccount, *btnLog, *btnPlugin, *btnChat,*checkUpdateBtn;
     QButtonGroup *btnGroup;
-    QLabel *m_kantoumusume;
+    QLabel *m_kantoumusume=nullptr;
     // 标题栏
     QWidget *titleBar;
     QWidget *botStatusWidget;

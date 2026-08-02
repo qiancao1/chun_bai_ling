@@ -213,6 +213,7 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
 
     MDB_val key, value;
     rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最大 seq 开始
+    int i=0;
     while (rc == MDB_SUCCESS) {
         QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
         QStringList parts = keyStr.split(':');
@@ -226,6 +227,8 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
                     return true;
                 }
             }
+            i++;
+            if(i>5000) break;
         }
         rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
     }
