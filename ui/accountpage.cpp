@@ -348,7 +348,7 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         oldInfoPtr->wsAddress = newInfo->wsAddress;
         oldInfoPtr->botsettext = newInfo->botsettext;
         oldInfoPtr->type =newInfo->type;
-        oldInfoPtr->ark = newInfo->ark;
+
         oldInfoPtr->markdown = newInfo->markdown;
         oldInfoPtr->markdown_pd = newInfo->markdown_pd;
         oldInfoPtr->markdown_pd_mb = newInfo->markdown_pd_mb;

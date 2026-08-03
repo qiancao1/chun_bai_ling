@@ -1099,19 +1099,26 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             resu.reserve(1024);
             QQBotClient *client = m_botClients[info->appid_int];
-            resu.append("**/get_groups_info**\n>");
+            resu.append("**获取群消息**\n>");
             resu.append( client->get_groups_info(ev.groupId));
 
-            resu.append("\n\n**/get_groups_bot_state**\n>");
+            resu.append("\n\n**获取机器人消息**\n>");
             resu.append( client->get_groups_bot_state(ev.groupId));
 
-            resu.append("\n\n**/set_mute**\n>");
+            resu.append("\n\n**禁用某人**\n>");
             resu.append(client->set_mute(0,ev.groupId,ev.user,60));
 
-            resu.append("\n\n**/get_members_list**\n>");
-            resu.append(client->get_members_list(ev.groupId,5));
+            resu.append("\n\n**获取群列表**\n>");
+            resu.append(client->get_groups_list(5,0));
+            resu.append("\n\n**获取好友列表**\n>");
+            resu.append(client->get_groups_list(5,0));
 
-            resu.append("\n\n**/del_members**\n>");
+            resu.append("\n\n**获取群成员列表**\n>");
+            resu.append(client->get_members_list(ev.groupId,5,0));
+
+
+
+            resu.append("\n\n**移除群成员**\n>");
             resu.append(client->del_members(ev.type,ev.groupId,info->unid));
         }
         return resu;
@@ -1420,7 +1427,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         {
             QString sentText;
             if(info->rqhy.contains("#python"))
-                sentText = python_code4(info->rqhy,QStringList() << ev.user);
+                sentText = python_code4(info->rqhy,ev.appid,QStringList() << ev.user);
             else {
                 sentText =info->rqhy;
                 if(sentText.contains("{艾特}"))
@@ -1429,6 +1436,11 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 }
                 sentText.replace("{ID}",ev.user);
                 sentText.replace("{数量}","1");
+                if(sentText.contains("{头像}"))
+                {
+                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0)").arg(ev.appid).arg(ev.user);
+                    sentText.replace("{头像}",hh);
+                }
                 if(sentText.contains("{混合}"))
                 {
                     QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user, ev.user);
@@ -1921,7 +1933,7 @@ bool W_file(const QString &path, const QByteArray &data)
     file.close();
     return written == data.size();
 }
-QString python_code4(const QString &py_code,QList<QString> user_list)
+QString python_code4(const QString &py_code,int appid,QList<QString> user_list)
 {
     py::gil_scoped_acquire gil;
     try {
@@ -1931,6 +1943,7 @@ QString python_code4(const QString &py_code,QList<QString> user_list)
         py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["UserList"] = py::cast(user_list);
+        exec_globals["g_appid"] = py::cast(appid);
         exec_globals["api"] = api;               // 注入 api 对象
 
         // 4. 执行用户代码

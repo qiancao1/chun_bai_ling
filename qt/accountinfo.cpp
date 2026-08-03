@@ -31,7 +31,7 @@ QString AccountInfo::toJson() const {
     // 用机器特征 + appid 派生密钥，加密 secret
     QByteArray key = MachineKey::generateKey(appid);
     obj["secret"] = MachineKey::encrypt(secret, key);
-    obj["ark"] = ark;
+
     obj["markdown"] = markdown;
     obj["markdown_pd"]= markdown_pd;
     obj["markdown_pd"]= markdown_pd_mb;
@@ -112,7 +112,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
         key = MachineKey::generateKey(info.appid);
     }
     info.secret = MachineKey::decrypt(obj["secret"].toString(), key);
-    info.ark = obj["ark"].toBool();
+
     info.markdown = obj["markdown"].toBool(true);
     info.markdown_pd = obj["markdown_pd"].toBool();
     info.markdown_pd_mb = obj["markdown_pd"].toBool();

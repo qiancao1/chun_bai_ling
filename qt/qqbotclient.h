@@ -130,9 +130,12 @@ public:
     //撤回
     QString delete_messages(int type, const QString &openid, const QString &msgid);
     //获取邀请链接
-    QString get_members_list(const QString& group,int limit);
+    QString get_members_list(const QString& group, int limit, int index);
     QString get_groups_members(const QString& group,const QString& user);
     QString generate_share_link(const QString& callback_data);
+    QString get_groups_list(int limit, int index);
+
+    QString get_users_list(int limit,int index);
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
     QString get_groups_info(const QString& group);

@@ -576,7 +576,10 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         {
             if(m_pluginList[i].uuid!=uuid) continue;
             pluginindex=i;
-            pname = "["+m_pluginList[i].name+"|%1ms]";
+            if(apiId==OUTLOG)
+                pname = "["+m_pluginList[i].name+"]";
+            else if(apiId ==API_ID_SEND_MESSAGES || apiId == API_ID_SEND_MESSAGES_ARK)
+                pname = "["+m_pluginList[i].name+"|%1ms]";
             break;
         }
         if(apiId==API_ID_AI)
@@ -825,15 +828,17 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         break;
     }
     case API_ID_GET_MEMBER_LIST: {
+
         QString text = toQString(_1);
         if(text.isEmpty())
         {
-            result ="获取群信息 参数1 群id不能是空";
+            result ="获取群成员列表 参数1 群id不能是空";
             break;
         }
         int limit = toInt(_2);
+        int index = toInt(_3);
         if(limit<=0) limit =100;
-        result = client->get_members_list(text,limit).toStdString();
+        result = client->get_members_list(text,limit,index).toStdString();
         break;
     }
     default:
@@ -2666,17 +2671,22 @@ QString QQBotClient::generate_share_link(const QString& callback_data)
     }
     return PostSync("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000);
 }
-
-QString QQBotClient::get_members_list(const QString& group,int limit)
+//获取 群成员列表 频道成员列表
+QString QQBotClient::get_members_list(const QString& group,int limit,int index)
 {
-    QJsonObject json;
-    QJsonObject json2;
-    json2["limit"] = limit;
-    json["data"] =json2;
     QString url= get_url(0,group,"members");
-    return PostSync(url, json,"", 10000);
+    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
 }
-
+QString QQBotClient::get_groups_list(int limit,int index)
+{
+    QString url="https://api.bot.qq.com/users/@me/groups";
+    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
+}
+QString QQBotClient::get_users_list(int limit,int index)
+{
+    QString url="https://api.bot.qq.com/users/@me/users";
+    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
+}
 QString QQBotClient::get_groups_members(const QString& group,const QString &user)
 {
     return GetSync(get_url(0,group,"members",user),QString(), 10000);
@@ -2709,7 +2719,7 @@ QString QQBotClient::get_groups_bot_state(const QString& group)
 }
 QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days)
 {
-    QString url = get_url(type,group,"members",user);
+    QString url = QString("https://api.bot.qq.com/%1/members/%2").arg(type==0?"groups":"guilds",user);
     if(add_blacklist || delete_history_msg_days!=0){
         QJsonObject obj;
         obj["add_blacklist"] = add_blacklist;
@@ -2732,5 +2742,6 @@ QString QQBotClient::set_mute(int type,const QString& group,const QString &user,
         QStringList list = user.split(",");
         obj["user_ids"] = QJsonArray::fromStringList(list);
     }
+
     return PatchSync(url,obj,QString(),10000) ;
 }

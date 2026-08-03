@@ -597,7 +597,7 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
 
                 QFile::remove(zipPath);
                 QList<int> arr;
-                if(Installed_type ==0 || Installed_type==3){
+                if(Installed_type ==0 ){
                     QString err = pluginPage->LoadPlugin("plugins/" + info->name + "/", Installed_type, false, arr);
                     if (err.isEmpty()) {
                         progress->setValue(100);
@@ -629,7 +629,11 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
 
                         }
                     }
-                }else{
+                }else if(Installed_type==3){
+                    pluginPage->npmJSpk("plugins/" + info->name);
+                }
+
+                else{
                     QMessageBox::information(this, "下载完成", info->name + "\n此类插件 需要手动安装 因为他是dll的 不知道入口");
                 }
                 progress->close();
@@ -655,7 +659,7 @@ void PluginMarketWindow::fetchPluginsFromGitee()
     QUrl url("https://gitee.com/linglan2/pure-white-bell--plugin-sdk/raw/master/PluginList.json");
     QNetworkRequest request(url);
 
-    // 模拟浏览器请求头，绕过 Gitee 防盗链
+
     request.setHeader(QNetworkRequest::UserAgentHeader,
                       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
     request.setRawHeader("Referer", "https://gitee.com/");

@@ -26,14 +26,12 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
     m_botqqEdit->setText(info.botqq);
     m_wsAddressEdit->setText(info.wsAddress);
 
-    m_botsettextEdit->setText(info.botsettext);
 
     if (info.type == 0)
         m_wsRadio->setChecked(true);
     else
         m_webhookRadio->setChecked(true);
 
-    m_arkCheckBox->setChecked(info.ark);
     m_markdownCheckBox->setChecked(info.markdown);
     m_markdownCheckBox_pd->setChecked(info.markdown_pd);
     m_markdownCheckBox_pd_mb->setChecked(info.markdown_pd_mb);
@@ -231,11 +229,9 @@ void AddAccountDialog::setupUI() {
 
     // 后续单行使用 addSingleRow
     m_wsAddressEdit = new QLineEdit;
-    m_wsAddressEdit->setPlaceholderText("留空则使用腾讯官方地址");
+    m_wsAddressEdit->setPlaceholderText("留空则使用腾讯官方地址 可填沙箱地址");
     addSingleRow("WS 地址:", m_wsAddressEdit);
 
-    m_botsettextEdit = new QLineEdit;
-    addSingleRow("QQ 回调文本:", m_botsettextEdit);
 
     // 连接设置（单选按钮，需要单独处理）
     QWidget *typeWidget = new QWidget;
@@ -244,7 +240,7 @@ void AddAccountDialog::setupUI() {
     typeLayout->setHorizontalSpacing(16);
     m_wsRadio = new QRadioButton("WebSocket");
     m_webhookRadio = new QRadioButton("Webhook");
-    m_arkCheckBox = new QCheckBox("启用Ark");
+
     m_markdownCheckBox = new QCheckBox("启用群Markdown");
     m_markdownCheckBox_pd = new QCheckBox("启用频道原生Markdown");
     m_markdownCheckBox_pd_mb = new QCheckBox("启用频道模板");
@@ -252,7 +248,7 @@ void AddAccountDialog::setupUI() {
     m_wsRadio->setChecked(true);
     typeLayout->addWidget(m_wsRadio, 0, 0);
     typeLayout->addWidget(m_webhookRadio, 0, 1);
-    typeLayout->addWidget(m_arkCheckBox, 0, 2);
+
     typeLayout->addWidget(m_markdownCheckBox, 0, 3);
     typeLayout->addWidget(m_markdownCheckBox_pd, 0, 4);
     typeLayout->addWidget(m_markdownCheckBox_pd_mb, 0, 5);
@@ -396,10 +392,10 @@ void AddAccountDialog::getAccountInfo(AccountInfo *info) const {
     info->secret = m_secretEdit->text();
     info->botqq = m_botqqEdit->text();
     info->wsAddress = m_wsAddressEdit->text();
-    info->botsettext = m_botsettextEdit->text();
+
 
     info->type = m_wsRadio->isChecked() ? 0 : 1;
-    info->ark = m_arkCheckBox->isChecked();
+
     info->markdown = m_markdownCheckBox->isChecked();
     info->markdown_pd = m_markdownCheckBox_pd->isChecked();
     info->markdown_pd_mb = m_markdownCheckBox_pd_mb->isChecked();

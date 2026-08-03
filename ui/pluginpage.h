@@ -150,6 +150,7 @@ public:
     void addPluginItemToUI(int index, const PluginInfo &info);
     void insertPluginItemToUI(int index, const PluginInfo &info);
     void updatePluginItemInUI(int index);
+    void npmJSpk(const QString &dir);
     QString LoadPlugin_js(PluginInfo &info);
     int findPluginIndex(const QString &id) const;
     QString sendData32(int type,PluginInfo &info,const QString &appidlist = QString());
@@ -164,7 +165,17 @@ private slots:
     void onPluginRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
     void stopAsyncioThread();
 
+    void onNpmFinished(int exitCode, QProcess::ExitStatus status);
+    void onNpmOutputReady();
+    void onNpmErrorReady();
+
 private:
+    void doLoadPlugin(const QString &dir); // 从 LoadPlugin_JS 中提取加载逻辑
+
+    QProcess *m_npmProcess = nullptr;
+    QDialog *m_npmDialog = nullptr;
+    QTextEdit *m_npmLog = nullptr;
+
     void setupUi();
     void initPython();
     void updateInfo(const PluginInfo &info);

@@ -71,7 +71,7 @@ struct dblog
 
 
 
-QString python_code4(const QString &py_code,QList<QString> user_list);
+QString python_code4(const QString &py_code,int appid,QList<QString> user_list);
 extern QString g_admin;
 extern QString g_ip;
 extern QListWidget *robotListWidget;
@@ -184,7 +184,7 @@ public:
         if(!m_botClients.contains(m_appid)) return ;
         QString sentText;
         if(m_text.contains("#python"))
-            sentText = python_code4(m_text,m_user_list);
+            sentText = python_code4(m_text,m_appid,m_user_list);
         else {
             sentText =m_text;
             if(sentText.contains("{艾特}"))
@@ -213,6 +213,18 @@ public:
             if(sentText.contains("{数量}"))
             {
                 sentText.replace("{数量}",QString::number(m_user_list.size()));
+            }
+            if(sentText.contains("{头像}"))
+            {
+                QString nat;
+                int estimatedLen = m_user_list.size() * 32*4;
+                nat.reserve(estimatedLen);
+                for(const auto &id : std::as_const(m_user_list))
+                {
+                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0)\n").arg(m_appid).arg(id);
+                    nat.append(hh);
+                }
+                sentText.replace("{头像}",nat);
             }
             if(sentText.contains("{混合}"))
             {

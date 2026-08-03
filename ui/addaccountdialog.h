@@ -36,7 +36,7 @@ private:
     QLineEdit *m_botqqEdit;
     QLineEdit *m_wsAddressEdit;
 
-    QLineEdit *m_botsettextEdit;
+
     QRadioButton *m_wsRadio;
     QRadioButton *m_webhookRadio;
 
@@ -45,7 +45,7 @@ private:
     //QTextEdit *m_welcomeEdit;
     //QTextEdit *m_fallbackEdit;
 
-    QCheckBox* m_arkCheckBox;
+
     QCheckBox* m_markdownCheckBox;
     QCheckBox* m_markdownCheckBox_pd,*m_markdownCheckBox_pd_mb;
     // 动态配置区域

@@ -37,7 +37,7 @@ static void safeCall(const py::object &func) {
 PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     : QWidget(parent)
 {
-    setFixedHeight(66);
+    setFixedHeight(48);
     setStyleSheet("background: transparent;");
 
     QHBoxLayout *hLayout = new QHBoxLayout(this);
@@ -45,7 +45,7 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
 
     // 图标
     iconLabel = new QLabel;
-    iconLabel->setFixedSize(48, 48);
+    iconLabel->setFixedSize(36, 36);
     iconLabel->setScaledContents(true);
     iconLabel->setObjectName("icon_AAA");
     iconLabel->setStyleSheet("border: 1px solid #89b4fa; border-radius: 2px;");
@@ -531,10 +531,10 @@ void PluginPage::appendPlugin(const PluginInfo &info) {
         m_pluginList.append(info);
         int index = m_pluginList.size() - 1;  // 新插入元素的索引
         QMetaObject::invokeMethod(qApp, [this, index]() {
-            // 主线程执行，获取 GIL，然后通过索引访问列表中的元素
+
             py::gil_scoped_acquire gilMain;
             try {
-                // 通过索引获取引用，避免拷贝
+
                 const PluginInfo& infoRef = m_pluginList.at(index);
                 addPluginItemToUI(index, infoRef);
             } catch (const py::error_already_set& e) {
@@ -583,7 +583,7 @@ void PluginPage::addPluginItemToUI(int index, const PluginInfo &info) {
         item->setData(Qt::UserRole, info.path);  // 唯一标识
     else
         item->setData(Qt::UserRole, info.uuid);  // 唯一标识
-    item->setSizeHint(QSize(0, 66));
+    item->setSizeHint(QSize(0, 48));
     PluginItemWidget *widget = new PluginItemWidget(info);
     pluginListWidget->addItem(item);
     pluginListWidget->setItemWidget(item, widget);
@@ -1207,25 +1207,139 @@ void PluginPage::LoadPlugin_Python() //按钮
     savePlugins();
     AppendEventLog("[载入插件]"+dir);
 }
-void PluginPage::LoadPlugin_JS() { // 按钮点击槽
-    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
-    if (dir.isEmpty()) return;
-    if (!QFile::exists(dir + "/main.js")) {
-        QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
-        return;
-    }
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
+
+
+
+
+// 提取加载逻辑为独立函数
+void PluginPage::doLoadPlugin(const QString &dir) {
+    // 这里的代码是从原 LoadPlugin_JS 中拷贝出来的加载部分
+    QString pluginDir = dir;
+    // 调整路径（原有逻辑）
+    pluginDir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
+    pluginDir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
+
     QList<int> empty{};
-    QString err = LoadPlugin (dir,3,false, empty);
+    QString err = LoadPlugin(pluginDir, 3, false, empty);
     if (!err.isEmpty()) {
-        AppendEventLog("加载JS插件失败: " + err ,0xff);
+        AppendEventLog("加载JS插件失败: " + err, 0xff);
         QMessageBox::warning(this, "错误", err);
         return;
     }
     savePlugins();
-    AppendEventLog("加载JS插件: " + dir);
+    AppendEventLog("加载JS插件: " + pluginDir);
 }
+
+// npm 输出实时追加到日志文本框
+void PluginPage::onNpmOutputReady() {
+    if (!m_npmProcess || !m_npmLog) return;
+    QString output = QString::fromLocal8Bit(m_npmProcess->readAllStandardOutput());
+    m_npmLog->append(output);
+    // 自动滚动到底部
+    m_npmLog->moveCursor(QTextCursor::End);
+}
+
+void PluginPage::onNpmErrorReady() {
+    if (!m_npmProcess || !m_npmLog) return;
+    QString error = QString::fromLocal8Bit(m_npmProcess->readAllStandardError());
+    m_npmLog->append("<font color='red'>" + error + "</font>");
+    m_npmLog->moveCursor(QTextCursor::End);
+}
+
+
+// npm 进程结束槽
+void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
+    if (!m_npmDialog) return;
+
+    QString resultMsg;
+    bool success = false;
+    if (status == QProcess::NormalExit && exitCode == 0) {
+        resultMsg = "npm install 成功完成！";
+        success = true;
+    } else {
+        resultMsg = QString("npm install 失败 (退出码: %1)").arg(exitCode);
+        success = false;
+    }
+    m_npmLog->append("<font color='blue'>" + resultMsg + "</font>");
+
+    if (success) {
+        m_npmDialog->close();  // 或 accept()
+        QString absDir = m_npmProcess->workingDirectory();
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
+
+        doLoadPlugin(relDir);
+    } else {
+        QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
+    }
+}
+// 主函数
+void PluginPage::LoadPlugin_JS() {
+    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
+    if (dir.isEmpty()) return;
+
+
+    npmJSpk(dir);
+
+
+}
+void PluginPage::npmJSpk(const QString &dir){
+    if (!QFile::exists(dir + "/main.js")) {
+        QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
+        return;
+    }
+    // 检查 package.json
+    QFileInfo packageJson(dir + "/package.json");
+    if (!packageJson.exists()) {
+        // 没有依赖，直接加载
+        doLoadPlugin(dir);
+        return;
+    }
+    QString npmPath = QStandardPaths::findExecutable("npm");
+    if (npmPath.isEmpty()) {
+        // 如果找不到，尝试 npm.cmd (Windows)
+#ifdef Q_OS_WIN
+        npmPath = QStandardPaths::findExecutable("npm.cmd");
+#endif
+    }
+    if (npmPath.isEmpty()) {
+        QMessageBox::warning(this, "错误", "未找到 npm，请确保 Node.js 已安装并配置 PATH。");
+        m_npmDialog->close();
+        // 可选择直接加载插件（依赖可能已存在）
+        doLoadPlugin(dir);
+        return;
+    }
+
+    m_npmDialog = new QDialog(this);
+    m_npmDialog->setWindowTitle("正在安装依赖 (npm install)");
+    m_npmDialog->resize(600, 400);
+    m_npmDialog->setAttribute(Qt::WA_DeleteOnClose); // 关闭时自动删除
+
+    QVBoxLayout *layout = new QVBoxLayout(m_npmDialog);
+    m_npmLog = new QTextEdit(m_npmDialog);
+    m_npmLog->setReadOnly(true);
+    m_npmLog->setFontFamily("Consolas");
+    layout->addWidget(m_npmLog);
+
+    m_npmDialog->show();
+
+    // 创建进程
+    m_npmProcess = new QProcess(this);
+    m_npmProcess->setWorkingDirectory(dir);
+
+    connect(m_npmProcess, &QProcess::readyReadStandardOutput, this, &PluginPage::onNpmOutputReady);
+    connect(m_npmProcess, &QProcess::readyReadStandardError, this, &PluginPage::onNpmErrorReady);
+    connect(m_npmProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &PluginPage::onNpmFinished);
+    m_npmProcess->start(npmPath, QStringList() << "install" << "--production" << "--omit=dev");
+
+    if (!m_npmProcess->waitForStarted(3000)) {
+        m_npmDialog->close();
+        doLoadPlugin(dir);
+        return;
+    }
+}
+
+
 QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 {
     // 1. 确保临时目录存在

@@ -1292,8 +1292,8 @@ void MainWindow::applyStyleSheet()
         QWidget#titleBar {
             background: #FFF8EF;
             border: none;
-            border-top-left-radius: 10px;
-            border-top-right-radius: 10px;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
         }
         QWidget#botStatusWidget {
             background: transparent;
