@@ -312,7 +312,7 @@ AiWidget::AiWidget(QWidget *parent)
     : QWidget(parent)
 {
     setupUi();
-    内置函数();
+
 
     connect(btnSaveRobot, &QPushButton::clicked, this, &AiWidget::on_btnSaveRobot_clicked);
     connect(settingListWidget, &QListWidget::currentRowChanged, this, &AiWidget::on_settingListWidget_currentRowChanged);
@@ -327,6 +327,7 @@ AiWidget::AiWidget(QWidget *parent)
     refreshSettingList();
     refreshSettingCombo();
     startHourlyCleanupTimer();
+    内置函数();
 }
 
 AiWidget::~AiWidget()
@@ -1817,11 +1818,11 @@ QString browseWeb(const QString &urlString) {
 
 
 
-void AiWidget::内置函数(const QString &Nmae,const QString &remark,const QStringList &params)
+void AiWidget::内置函数(const QString &Name,const QString &remark,const QStringList &params)
 {
 
     QJsonObject functionObj;
-    functionObj["name"] = Nmae;
+    functionObj["name"] = Name;
     functionObj["description"] = remark;
 
     QJsonObject parameters;
@@ -1854,7 +1855,32 @@ void AiWidget::内置函数(const QString &Nmae,const QString &remark,const QStr
     QJsonObject toolObj;
     toolObj["type"] = "function";
     toolObj["function"] = functionObj;
-    m_fun.insert(Nmae,toolObj);
+    m_fun.insert(Name,toolObj);
+    bool ok=false;
+    for (const auto &fun : std::as_const(functionList))
+    {
+        if(fun.funcName==Name)
+        {
+            ok=true;
+            break;
+        }
+    }
+    if(ok) return;
+    FunctionData d;
+    d.code="#内置函数";
+    d.funcName = Name;
+    d.params = params;
+    d.remark = remark;
+    functionList.append(d);
+
+    // 在表格中添加行
+    int row = functionList.size() - 1;
+    funcListTable->insertRow(row);
+    QTableWidgetItem *item = new QTableWidgetItem(d.remark);
+    funcListTable->setItem(row, 0, item);
+
+
+
 }
 
 
@@ -1920,7 +1946,11 @@ void AiWidget::内置函数()
     内置函数("redings","删除一个定时",QStringList() << "定时id");
     内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
     内置函数("llwye","浏览网页 返回提取后的文本 当用户发送链接时 可以使用",QStringList() << "链接 如 https://www.baidu.com");
-    内置函数("html_to_img","截图某个网页 可传入html文本 为用户绘制样式 注意是png",QStringList() << "链接 或 html文本 如 https://www.baidu.com");
+
+    //内置函数("html_to_img","截图某个网页 可传入html文本 为用户绘制样式 注意是png",QStringList() << "链接 或 html文本 如 https://www.baidu.com");
+
+    funcListTable->selectRow(0);
+    onFuncListCurrentCellChanged(0, 0, -1, -1);
 }
 QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const QString &args,const QString &model)
 {
