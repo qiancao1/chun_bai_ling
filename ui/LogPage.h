@@ -47,8 +47,9 @@ public:
     void onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg);
     void findRowBySeq(int type,int appid,uint64_t targetSeq,const QString &direction);
     // 环形缓冲区（5个tab的数据源）
-    bool m_active = true;
+    int leiji=0;//累计计数
     int currentTabIndex = 0;
+    bool m_active = true;
     bool wanzjson=false;
 private slots:
 

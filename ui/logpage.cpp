@@ -45,7 +45,7 @@ LogPage::~LogPage() {}
 void LogPage::switchTab(int index)
 {
     currentTabIndex = index;
-
+    leiji=0;
     tabStack->setCurrentIndex(index);
 
     QList<QPushButton*> btns = {btnEventTab, btnGroupTab, btnPrivateTab, btnChannelTab, btnChannelPrivateTab};
@@ -82,6 +82,7 @@ void LogPage::setCurrentBot(int botId, const QString &botName)
 void LogPage::setActive(bool active)
 {
     m_active = active;
+    leiji=0;
     if (m_active) {
         resetAndLoad(BATCH_SIZE);
         QTableView* view = currentListView();

@@ -72,7 +72,7 @@
 
 #define APP_VERSION_STR "v1.1.9.30"
 #define APP_BUILD_NUMBER 30
-
+QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
 ## v1.1.9.30 (2026-08-03)
@@ -264,7 +264,16 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
         if(框架退出) return;
-        auto ss=stackedWidget->currentWidget();
+        if(logPage->m_active){
+            logPage->leiji++;
+            if(logPage->leiji>200)
+            {
+                stackedWidget->setCurrentIndex(3);
+                logPage->setActive(false);
+
+            }
+        }
+        auto ss = stackedWidget->currentWidget();
         if (ss == accountPage) {
             for (CardWidget* card : std::as_const(g_CW)) {
                 if (card) card->onTimeRefresh();
@@ -374,7 +383,7 @@ void showClickableLicenseInfo() {
 MainWindow::~MainWindow()
 {
 }
-QStackedWidget *stackedWidget=nullptr;
+
 
 void MainWindow::setupUi()
 {
@@ -507,7 +516,7 @@ void MainWindow::setupUi()
     QPushButton *Sandbox2 = createNavButton("沙盒", QIcon(":/icons/sandbox.png"));
 
     QPushButton *btnAdvancedConfig = createNavButton("高级配置", QIcon(":/icons/advanced.png"));
-    QPushButton *btn_newui = createNavButton("扩展页面", QIcon(":/icons/advanced.png"));
+    // *btn_newui = createNavButton("扩展页面", QIcon(":/icons/advanced.png"));
     btnGroup = new QButtonGroup(this);
     btnGroup->setExclusive(true);
     btnGroup->addButton(btnHome, 0);
@@ -527,7 +536,7 @@ void MainWindow::setupUi()
                 {
                     logPage->setActive(id == 2);
                 }
-                chatPage->存在= (id==4);
+                chatPage->存在 = (id==4);
             });
     connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
         QListWidgetItem *item = robotListWidget->currentItem();
