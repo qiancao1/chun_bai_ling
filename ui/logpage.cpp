@@ -116,7 +116,7 @@ QString getBotName(int appid){
 
 void LogPage::loadMore(int limit)
 {
-    if (m_loading || !m_hasMore) return;
+    if (m_loading || !m_hasMore || !m_model) return;
     m_loading = true;
 
     LogDB *db = g_logdb [currentTabIndex].get();
@@ -193,7 +193,7 @@ void LogPage::loadMore(int limit)
             //}
             QColor textColor = QColor(msg.Color_0); // 如果 Color_0 是文本颜色值
             if (textColor.isValid() && textColor.alpha() > 0) {
-                for (QStandardItem *item : rowItems) {
+                for (QStandardItem *item : std::as_const(rowItems)) {
                     if (item) {
                         item->setForeground(textColor);
                     }
@@ -230,8 +230,15 @@ void LogPage::loadMore(int limit)
         loadMore(limit);
     }
 }
+void LogPage::onNewLogAdded(const QString &text){
 
-void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg)
+    Message msg;
+    QDateTime currentDateTime = QDateTime::currentDateTime();
+    msg.timestamp = currentDateTime.toString("yyyy-MM-dd HH:mm:ss");
+    msg.msg = text;
+    logPage->onNewLogAdded(0,0,0,"",msg);
+}
+void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& groupId, const Message& msg)
 {
     // 1. 页面可见性 或 类型tab是否对得上
     if (!m_active || currentTabIndex != type) return;
@@ -278,9 +285,9 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
         }
         if(msg.Color_0!=0)
         {
-            QColor textColor = QColor(msg.Color_0); // 如果 Color_0 是文本颜色值
+            QColor textColor = QColor(msg.Color_0);
             if (textColor.isValid() && textColor.alpha() > 0) {
-                for (QStandardItem *item : rowItems) {
+                for (QStandardItem *item : std::as_const(rowItems)) {
                     if (item) {
                         item->setForeground(textColor);
                     }
@@ -292,21 +299,30 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
         {
             for (int i=0;i< 4;++i) {
                 rowItems[i]->setTextAlignment(Qt::AlignCenter);
-
             }
         }else{
             for (int i=0;i< 5;++i) {
                 rowItems[i]->setTextAlignment(Qt::AlignCenter);
-
             }
         }
 
         m_model->appendRow(rowItems);
-        int newRow = m_model->rowCount() - 1;   // 获取最新行号
+
+        // --- 新增：行数控制，超过10500条则删除最早的三分之一 ---
+        int rowCount = m_model->rowCount();
+        if (rowCount > 10500) {
+            int removeCount = rowCount / 3;          // 删除约三分之一
+            if (removeCount > 0) {
+                m_model->removeRows(0, removeCount); // 删除最旧的行
+            }
+        }
+        // -------------------------------------------------------
+
+        int newRow = m_model->rowCount() - 1;   // 获取最新行号（删除后新行索引会变化，但仍在末尾）
         QModelIndex idx = m_model->index(newRow, 0);
-        QString key = g_logdb[0]->makeKey(QString::number(appid),groupId,seq);
-        m_model->setData(idx,key,Qt::UserRole);
-        m_model->setData(idx,seq,Qt::UserRole+1);
+        QString key = g_logdb[0]->makeKey(QString::number(appid), groupId, seq);
+        m_model->setData(idx, key, Qt::UserRole);
+        m_model->setData(idx, seq, Qt::UserRole+1);
 
         m_offset++;
         QTableView* view = currentListView();
@@ -314,9 +330,7 @@ void LogPage::onNewLogAdded(int type,uint64_t seq, int appid, const QString& gro
             view->scrollToBottom();
         }
     });
-
 }
-
 
 QTableView* LogPage::currentListView()
 {
@@ -351,6 +365,7 @@ void LogPage::findRowBySeq(int type, int appid, uint64_t targetSeq, const QStrin
 
 void LogPage::setTableHeaders()
 {
+    if(!m_model) return;
     QStringList headers;
     switch (currentTabIndex) {
     case 0: headers << "时间" << "机器人" << "群/目标 ID" << "发送人 ID" << "消息内容"; break;
@@ -449,7 +464,7 @@ void LogPage::setupUi()
     btnChannelTab = makeTabBtn("私聊");
     btnChannelPrivateTab = makeTabBtn("频道私聊");
     qbload = makeTabBtn("加载这些数量");
-
+    chbox = new QCheckBox("显示完整json");
     btnEventTab->setChecked(true);
     logs = new QLineEdit();
     logs->setText("10000");
@@ -474,6 +489,7 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnChannelTab);
     tabLayout->addWidget(btnChannelPrivateTab);
     tabLayout->addStretch();
+    tabLayout->addWidget(chbox);
     tabLayout->addWidget(logs);
     tabLayout->addWidget(qbload);
     panelLayout->addLayout(tabLayout);
@@ -731,6 +747,10 @@ void LogPage::setupUi()
     mainLayout->addWidget(tablePanel, 1);
 
     // ---------- 按钮信号 ----------
+
+    connect(chbox, &QCheckBox::clicked, this, [this]{
+        wanzjson = chbox->isChecked();
+    });
     connect(btnEventTab, &QPushButton::clicked, this, [this]{ switchTab(0); });
     connect(btnGroupTab, &QPushButton::clicked, this, [this]{ switchTab(1); });
     connect(btnPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(2); });

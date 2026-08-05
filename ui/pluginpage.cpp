@@ -1302,9 +1302,9 @@ void PluginPage::npmJSpk(const QString &dir){
 #endif
     }
     if (npmPath.isEmpty()) {
-        QMessageBox::warning(this, "错误", "未找到 npm，请确保 Node.js 已安装并配置 PATH。");
+        QMessageBox::warning(this, "错误", "未找到 npm，请确保 Node.js 已安装并配置 PATH。 如果你从来没安装node.js 请打开下崽器安装");
         m_npmDialog->close();
-        // 可选择直接加载插件（依赖可能已存在）
+
         doLoadPlugin(dir);
         return;
     }

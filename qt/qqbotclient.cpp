@@ -904,6 +904,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);;
+
     //qDebug() << ev.groupId <<ev.user << ev.msg;
     Messages(m_info, ev);
     if(ev.subType== 1 && ev.type<=3)

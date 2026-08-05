@@ -36,7 +36,7 @@ void plts::extracted(QList<int> &pendingFriends) {
     }
 }
 void plts::extracted(QList<QString> &pendingGroups) {
-    for (const QString &gid : ts_m_groupStatus) {
+    for (const QString &gid : std::as_const(ts_m_groupStatus)) {
         if (!gid.isEmpty())
             pendingGroups.append(gid);
     }
@@ -215,17 +215,17 @@ void plts::on_ksts_clicked(bool checked)
     ts_m_stopPush = true;
     加载();
     ts_m_text = ui->textEdit->toPlainText();
-    int threadCount = (ts_m_friendStatus.size() + 49) / 50; // 向上取整
+    int threadCount = (ts_m_friendStatus.size() + 99) / 100; // 向上取整
     for(int i=0; i<threadCount; ++i)
     {
-        int start = i * 50;
+        int start = i * 100;
         auto *task = new ___tsnr_f(start);
         QThreadPool::globalInstance()->start(task);
     }
-    threadCount = (ts_m_groupStatus.size() + 49) / 50; // 向上取整
+    threadCount = (ts_m_groupStatus.size() + 99) / 100; // 向上取整
     for(int i=0;i<threadCount;++i)
     {
-        int start = i * 50;
+        int start = i * 100;
         auto *task = new ___tsnr_g(start);
         QThreadPool::globalInstance()->start(task);
     }

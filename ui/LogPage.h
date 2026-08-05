@@ -8,6 +8,7 @@
 #include <QLabel>
 #include <QTimer>
 #include <QPushButton>
+#include <qcheckbox.h>
 #include <qlineedit.h>
 #include <QStandardItemModel>
 
@@ -42,13 +43,13 @@ public:
     void switchTabEx(int index,int limit);
     void setCurrentBot(int botId, const QString &botName);
     void setActive(bool active);
-
+    void onNewLogAdded(const QString &text);
     void onNewLogAdded(int type,uint64_t seq, int appid, const QString& groupId, const Message& msg);
     void findRowBySeq(int type,int appid,uint64_t targetSeq,const QString &direction);
     // 环形缓冲区（5个tab的数据源）
     bool m_active = true;
     int currentTabIndex = 0;
-
+    bool wanzjson=false;
 private slots:
 
     void switchTab(int index);  // 切换标签页
@@ -76,6 +77,7 @@ private:
     QPushButton *btnChannelPrivateTab = nullptr;
     QLineEdit *logs;
     QPushButton *qbload = nullptr;
+    QCheckBox *chbox;
     // 五个Tab对应的View和Model
     QTableView *eventListView = nullptr;
     QTableView *groupListView = nullptr;

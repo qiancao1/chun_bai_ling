@@ -63,7 +63,6 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
     {
 
         QMetaObject::invokeMethod(qApp, [=]() {
-            // 以下代码在主线程运行
 
             if (m_openidTimers.contains(openid)) {
                 QTimer *oldTimer = m_openidTimers[openid];
@@ -1099,13 +1098,13 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             resu.reserve(1024);
             QQBotClient *client = m_botClients[info->appid_int];
-            resu.append("**获取群消息**\n>");
+            resu.append("**获取群信息**\n>");
             resu.append( client->get_groups_info(ev.groupId));
 
-            resu.append("\n\n**获取机器人消息**\n>");
+            resu.append("\n\n**获取机器人信息**\n>");
             resu.append( client->get_groups_bot_state(ev.groupId));
 
-            resu.append("\n\n**禁用某人**\n>");
+            resu.append("\n\n**禁言某人**\n>");
             resu.append(client->set_mute(0,ev.groupId,ev.user,60));
 
             resu.append("\n\n**获取群列表**\n>");
