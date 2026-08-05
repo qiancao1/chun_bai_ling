@@ -1183,32 +1183,153 @@ void PluginPage::LoadPlugin_DLL() //按钮
     AppendEventLog("[载入插件]"+path);
     savePlugins();
 }
-
-void PluginPage::LoadPlugin_Python() //按钮
+void PluginPage::doLoadPythonPlugin(const QString &dir)
 {
-    QString dir = QFileDialog::getExistingDirectory(this, "选择 Python 插件文件夹");
-    if (dir.isEmpty()) return;
-    if (!QFile::exists(dir + "/main.py")) {
+    QString pluginDir = dir;
+    pluginDir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "/");
+    pluginDir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath()) + "\\");
 
-        showAutoCloseMessageBox("错误","所选文件夹中缺少 main.py");
-        return;
-    }
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"/");
-    dir.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"\\");
+    if (!pluginDir.endsWith('/') && !pluginDir.endsWith('\\'))
+        pluginDir += "/";
+
     QList<int> empty{};
-    dir+="/";
-    QString err = LoadPlugin(dir,0,false,empty);
-    if(!err.isEmpty())
-    {
-        AppendEventLog("[载入插件]"+dir+" 错误信息："+err ,0xff);
-        QMessageBox::about(this,"错误",err);
+    QString err = LoadPlugin(pluginDir, 0, false, empty);
+    if (!err.isEmpty()) {
+        AppendEventLog("[载入插件] " + pluginDir + " 错误信息：" + err, 0xff);
+        QMessageBox::warning(this, "错误", err);
         return;
     }
     savePlugins();
-    AppendEventLog("[载入插件]"+dir);
+    AppendEventLog("[载入插件] " + pluginDir);
+}
+void PluginPage::onPipOutputReady()
+{
+    if (!m_pipProcess || !m_pipLog) return;
+    QString output = QString::fromLocal8Bit(m_pipProcess->readAllStandardOutput());
+    m_pipLog->append(output);
+    m_pipLog->moveCursor(QTextCursor::End);
 }
 
+void PluginPage::onPipErrorReady()
+{
+    if (!m_pipProcess || !m_pipLog) return;
+    QString error = QString::fromLocal8Bit(m_pipProcess->readAllStandardError());
+    m_pipLog->append("<font color='red'>" + error + "</font>");
+    m_pipLog->moveCursor(QTextCursor::End);
+}
+void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
+{
+    if (!m_pipDialog) return;
 
+    bool success = (status == QProcess::NormalExit && exitCode == 0);
+    QString resultMsg = success ? "pip install 成功完成！" :
+                            QString("pip install 失败 (退出码: %1)").arg(exitCode);
+    m_pipLog->append("<font color='blue'>" + resultMsg + "</font>");
+
+    if (success) {
+
+        //m_pipDialog->close();
+        QString absDir = m_pipProcess->workingDirectory();
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
+        doLoadPythonPlugin(relDir);
+
+    } else {
+        // 安装失败，提示用户，也可选择不加载
+        QMessageBox::warning(this, "安装依赖失败",
+                             "pip install 失败，请检查网络或手动安装依赖。\n"
+                             "您可以手动执行：pip install -r requirements.txt");
+        // 失败后若想继续加载（依赖可能已存在），可调用 doLoadPythonPlugin，但一般不推荐
+    }
+    m_pipLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
+}
+void PluginPage::LoadPlugin_Python_pip(const QString &dir)
+{
+
+    if (!QFile::exists(dir + "/main.py")) {
+        showAutoCloseMessageBox("错误", "所选文件夹中缺少 main.py");
+        return;
+    }
+
+    QFileInfo reqFile(dir + "/requirements.txt");
+    if (!reqFile.exists()) {
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
+        doLoadPythonPlugin(relDir);
+        return;
+    }
+
+
+
+    // 确定 Python 解释器路径
+    QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
+    if (!QFile::exists(pythonExe)) {
+        QMessageBox::warning(this, "错误", "未找到 Python 解释器：" + pythonExe);
+        // 仍然尝试加载（依赖可能已安装）
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
+        doLoadPythonPlugin(relDir);
+        return;
+    }
+
+    // ---------- 创建日志对话框 ----------
+    m_pipDialog = new QDialog(this);
+    m_pipDialog->setWindowTitle("正在安装 Python 依赖 (pip install)");
+    m_pipDialog->resize(600, 400);
+    m_pipDialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    QVBoxLayout *layout = new QVBoxLayout(m_pipDialog);
+    m_pipLog = new QTextEdit(m_pipDialog);
+    m_pipLog->setReadOnly(true);
+    m_pipLog->setFontFamily("Consolas");
+    layout->addWidget(m_pipLog);
+
+    QPushButton *closeBtn = new QPushButton("关闭", m_pipDialog);
+    connect(closeBtn, &QPushButton::clicked, m_pipDialog, &QDialog::close);
+    layout->addWidget(closeBtn);
+
+    // 可选：添加“最小化”等，但不需要了
+    m_pipDialog->show();
+
+    // ---------- 创建 pip 进程 ----------
+    m_pipProcess = new QProcess(this);
+    m_pipProcess->setWorkingDirectory(dir);
+
+    // 继承系统环境变量（确保 pip 能找到网络代理等）
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    m_pipProcess->setProcessEnvironment(env);
+
+    // 连接信号
+    connect(m_pipProcess, &QProcess::readyReadStandardOutput,
+            this, &PluginPage::onPipOutputReady);
+    connect(m_pipProcess, &QProcess::readyReadStandardError,
+            this, &PluginPage::onPipErrorReady);
+    connect(m_pipProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &PluginPage::onPipFinished);
+
+    // 启动 pip install -r requirements.txt（使用清华镜像）
+    QStringList args;
+    args << "-m" << "pip" << "install" << "-r" << "requirements.txt"
+         << "-i" << "https://pypi.tuna.tsinghua.edu.cn/simple"
+         << "--trusted-host" << "pypi.tuna.tsinghua.edu.cn";
+
+    m_pipProcess->start(pythonExe, args);
+
+    if (!m_pipProcess->waitForStarted(3000)) {
+        // 启动失败，关闭对话框，提示错误
+        m_pipDialog->close();
+        QMessageBox::warning(this, "错误", "无法启动 pip 进程，请检查 Python 环境。");
+        // 仍然尝试加载
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
+        doLoadPythonPlugin(relDir);
+    }
+    // 注意：不阻塞，等待 onPipFinished 信号
+}
+
+void PluginPage::LoadPlugin_Python()
+{
+    QString dir = QFileDialog::getExistingDirectory(this, "选择 Python 插件文件夹");
+    if (dir.isEmpty()) return;
+    LoadPlugin_Python_pip(dir);
+
+}
 
 
 // 提取加载逻辑为独立函数
@@ -1271,6 +1392,7 @@ void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
     } else {
         QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
     }
+    m_pipLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
 }
 // 主函数
 void PluginPage::LoadPlugin_JS() {

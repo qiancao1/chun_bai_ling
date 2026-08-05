@@ -595,40 +595,10 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
 
 
 
-                QFile::remove(zipPath);
-                QList<int> arr;
+
                 if(Installed_type ==0 ){
-                    QString err = pluginPage->LoadPlugin("plugins/" + info->name + "/", Installed_type, false, arr);
-                    if (err.isEmpty()) {
-                        progress->setValue(100);
-                        QMessageBox::information(this, "安装完成", info->name + " 已成功安装！");
-                        filterAndDisplay();
-                        pluginPage->savePlugins();
-                    }
-                    else{
-                        if (Installed_type == 0) {
-                            progress->setLabelText("正在安装依赖...");
-                            pluginPage->anzpip("plugins/" + info->name + "/requirements.txt");
 
-
-                            QTimer::singleShot(3000, this, [=]() {
-                                QList<int> arr2; // 如果 arr 需要保留，可以重用，但这里新建避免干扰
-                                QString err2 = pluginPage->LoadPlugin("plugins/" + info->name + "/", Installed_type, false, arr2);
-                                if (err2.isEmpty()) {
-                                    QMessageBox::information(this, "安装完成", info->name + " 已成功安装！");
-                                    filterAndDisplay();
-                                    pluginPage->savePlugins();
-                                } else {
-                                    QMessageBox::information(this, "安装失败", info->name + "\n" + err2+"\n\n请手动在插件 处添加插件");
-                                }
-
-                            });
-
-                        }else {
-                            QMessageBox::information(this, "安装失败", info->name + "\n" + err+"\n\n请手动在插件 处添加插件");
-
-                        }
-                    }
+                    pluginPage->LoadPlugin_Python_pip("plugins/" + info->name);
                 }else if(Installed_type==3){
                     pluginPage->npmJSpk("plugins/" + info->name);
                 }

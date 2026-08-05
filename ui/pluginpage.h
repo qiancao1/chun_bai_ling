@@ -158,6 +158,7 @@ public:
     void syncPluginsTo32();
     QString anzpip(const QString &reqPath);
     //void safeCall(const py::object &func);
+    void LoadPlugin_Python_pip(const QString &dir);
 
 private slots:
     void onPluginSelected(int row);
@@ -169,6 +170,10 @@ private slots:
     void onNpmOutputReady();
     void onNpmErrorReady();
 
+    void onPipFinished(int exitCode, QProcess::ExitStatus status);
+    void onPipOutputReady();
+    void onPipErrorReady();
+
 private:
     void doLoadPlugin(const QString &dir); // 从 LoadPlugin_JS 中提取加载逻辑
 
@@ -176,11 +181,19 @@ private:
     QDialog *m_npmDialog = nullptr;
     QTextEdit *m_npmLog = nullptr;
 
+    void doLoadPythonPlugin(const QString &dir);  // 加载插件核心逻辑
+
+    QProcess *m_pipProcess = nullptr;
+    QDialog *m_pipDialog = nullptr;
+    QTextEdit *m_pipLog = nullptr;
+
+
     void setupUi();
     void initPython();
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
     void LoadPlugin_Python();
+
     void LoadPlugin_JS();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
