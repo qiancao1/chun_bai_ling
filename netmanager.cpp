@@ -1,4 +1,7 @@
 #include "netmanager.h"
+#include "global.h"
+#include <qhostaddress.h>
+#include <qhostinfo.h>
 #include <qnetworkreply.h>
 #include <qthread.h>
 #include <qtimer.h>
@@ -9,8 +12,8 @@ void NetManager::init() {
     m_netThread = new QThread(this);
     m_netThread->start(); // 后台线程自带 QEventLoop
 
-    // 依然保持 100 个 QNAM 打破 6 并发限制
-    for(int i = 0; i < 100; i++) {
+    // 依然保持 50 个 QNAM 打破 6 并发限制
+    for(int i = 0; i < 50; i++) {
         QNetworkAccessManager *mgr = new QNetworkAccessManager();
         mgr->moveToThread(m_netThread);
         m_netManagers.append(mgr);
@@ -87,10 +90,8 @@ std::future<QString> NetManager::post(const QString &url, const QByteArray &json
 
     return future; // 毫秒级返回
 }
-
-std::future<QString> NetManager::put(const QString &url, const QByteArray &jsonData,
-                                      const QHash<QString, QString> &headers, int timeoutMs) {
-    // 1. 使用 shared_ptr 管理 promise，保证跨线程安全
+std::future<QString> NetManager::put(const QString &url, const QByteArray &data,
+                                     const QHash<QString, QString> &headers, int timeoutMs) {
     auto promise = std::make_shared<std::promise<QString>>();
     std::future<QString> future = promise->get_future();
 
@@ -102,19 +103,83 @@ std::future<QString> NetManager::put(const QString &url, const QByteArray &jsonD
 
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
-        request.setUrl(QUrl(url));
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+
+        QUrl originalUrl(url);
+        QString originalHost = originalUrl.host();
+        bool isCos = originalHost.contains(".cos.") || originalHost.contains(".myqcloud.com");
+
+        if (isCos) {
+            QHostAddress internalAddr;
+
+            QHostInfo info = QHostInfo::fromName(originalHost);
+            for (const QHostAddress &addr : info.addresses()) {
+                if (addr.isInSubnet(QHostAddress::parseSubnet("10.0.0.0/8")) ||
+                    addr.isInSubnet(QHostAddress::parseSubnet("100.0.0.0/8")) ||
+                    addr.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
+                    internalAddr = addr;
+                    break;
+                }
+            }
+
+            if (internalAddr.isNull()) {
+                QString guangzhouHost;
+                if (originalHost.contains(".accelerate.")) {
+                    guangzhouHost = originalHost;
+                    guangzhouHost.replace(".accelerate.", "."+g_neiw+".");
+                } else if (originalHost.contains(".cos.")) {
+                    QStringList parts = originalHost.split('.');
+                    int cosIdx = parts.indexOf("cos");
+                    if (cosIdx != -1 && cosIdx + 1 < parts.size()) {
+                        parts[cosIdx + 1] = g_neiw;
+                        guangzhouHost = parts.join('.');
+                    }
+                }
+                if (!guangzhouHost.isEmpty()) {
+                    QHostInfo gzInfo = QHostInfo::fromName(guangzhouHost);
+                    for (const QHostAddress &addr : gzInfo.addresses()) {
+                        if (addr.isInSubnet(QHostAddress::parseSubnet("10.0.0.0/8")) ||
+                            addr.isInSubnet(QHostAddress::parseSubnet("100.0.0.0/8")) ||
+                            addr.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
+                            internalAddr = addr;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!internalAddr.isNull()) {
+                QUrl newUrl = originalUrl;
+                newUrl.setHost(internalAddr.toString());
+                request.setUrl(newUrl);
+                request.setRawHeader("Host", originalHost.toUtf8());
+            } else {
+                request.setUrl(originalUrl);
+            }
+        } else {
+            request.setUrl(originalUrl);
         }
 
-        QNetworkReply *reply = mgr->put(request, jsonData);
+        // 继续设置其他 headers（注意跳过 Host）
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            if (it.key().toLower() != "host") {
+                request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+            }
+        }
+
+
+        QNetworkReply *reply = mgr->put(request, data);
+
         QTimer *timer = new QTimer(reply);
         timer->setSingleShot(true);
         QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        QObject::connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError> &) {
+            reply->ignoreSslErrors();
+        });
+
+
         timer->start(timeoutMs);
 
         QObject::connect(reply, &QNetworkReply::finished, [promise, reply]() {
-
             if (reply->error() != QNetworkReply::NoError) {
                 promise->set_exception(std::make_exception_ptr(
                     std::runtime_error(reply->errorString().toStdString())
@@ -129,13 +194,14 @@ std::future<QString> NetManager::put(const QString &url, const QByteArray &jsonD
                         ));
                 }
             }
-
             reply->deleteLater();
         });
     }, Qt::QueuedConnection);
 
-    return future; // 毫秒级返回
+    return future;
 }
+
+
 std::future<QString> NetManager::get(const QString &url,const QHash<QString, QString> &headers, int timeoutMs) {
 
     auto promise = std::make_shared<std::promise<QString>>();
@@ -206,7 +272,26 @@ std::future<QString> NetManager::Patch (const QString &url, const QByteArray &js
 
     return future; // 毫秒级返回
 }
-
+void NetManager::Delete2(const QString &url,const QByteArray &data,
+                                        const QHash<QString, QString> &headers) {
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+        QNetworkReply *reply = mgr->sendCustomRequest(request, "DELETE", data);
+        QObject::connect(reply, &QNetworkReply::finished, [reply]() {
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
+    return ;
+}
 // NetManager.cpp
 std::future<QString> NetManager::Delete(const QString &url,
                                         const QByteArray &data,

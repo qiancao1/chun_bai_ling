@@ -48,6 +48,12 @@ private:
     QTextEdit    *m_admid_deit;
     QPushButton  *m_admin_qr;
     QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg,*loadimg;
+    QCheckBox *m_cnb,*m_cos;
+    QLineEdit    *m_cnb_repo,*m_cnb_token;
+    QPushButton *m_cnb_qr,*m_cnb_cs;
+
+    QLineEdit    *m_cos_secretId,*m_cos_secretKey,*m_cos_host;
+    QPushButton *m_cos_qr,*m_cos_cs;
     QPushButton  *m_startStopBtn,*lts_but; //聊天室
 };
 

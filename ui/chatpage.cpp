@@ -169,7 +169,7 @@ static void downloadAvatarIfNeeded(int appid, const QString &openid) {
     // 如果本地已经存在裁剪好的 32x32 圆形图片，直接跳过
     if (QFile::exists(avatarPath)) return;
 
-    QString url = QString("https://thirdqq.qlogo.cn/qqapp/%1/%2/640")
+    QString url = QString("https://thirdqq.qlogo.cn/qqapp/%1/%2/100")
                       .arg(appid)
                       .arg(openid);
     if (downloadingSet().contains(url)) return; // 已经在下载中
@@ -219,21 +219,42 @@ static void downloadAvatarIfNeeded(int appid, const QString &openid) {
         reply->deleteLater();
     });
 }
-// 图片缓存（用于消息中的图片，避免重复加载）
-static QCache<QString, QPixmap> &imageCache() {
-    static QCache<QString, QPixmap> cache(50); // 最多50张图片
-    return cache;
-}
 
-// 异步下载网络图片（与头像下载类似）
-static void downloadImageIfNeeded(const QString &url, const QPersistentModelIndex &persistentIndex) {
-    if (url.isEmpty()) return;
-    if (imageCache().contains(url)) return;
-    if (downloadingSet().contains(url)) return;
 
+QString BubbleDelegate::downloadImageIfNeeded(const QString &url) const{
+    if (url.isEmpty()) return QString();
+
+
+    // 1. 计算 MD5 并构造本地文件路径
+    QString md5 = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex();
+    QString filePath = QString("tmp/聊天图片/%1.png").arg(md5);
+    if (m_imageCache.contains(url)) return filePath;
+    if (downloadingSet().contains(url)) return QString();
+    QFileInfo fileInfo(filePath);
+
+    // 2. 若本地文件存在，直接加载并缓存
+    if (fileInfo.exists()) {
+        QPixmap pix;
+        if (pix.load(filePath)) {
+            // 保持与下载后一致的缩放逻辑（若文件已缩放则不会改变）
+            if (pix.width() > 128 || pix.height() > 128) {
+                pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+            m_imageCache.insert(url, new QPixmap(pix));
+        }
+        return filePath;
+    }
+
+    // 3. 确保目录存在
+    QDir dir(fileInfo.absolutePath());
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+
+    // 4. 开始下载（原有逻辑，增加保存文件）
     downloadingSet().insert(url);
     QNetworkReply *reply = getNetworkManager()->get(QNetworkRequest(QUrl(url)));
-    QObject::connect(reply, &QNetworkReply::finished, [reply, url, persistentIndex]() {
+    QObject::connect(reply, &QNetworkReply::finished, [this,reply, url, filePath]() {
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray data = reply->readAll();
             QPixmap pix;
@@ -242,16 +263,17 @@ static void downloadImageIfNeeded(const QString &url, const QPersistentModelInde
                 if (pix.width() > 128 || pix.height() > 128) {
                     pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
                 }
-                imageCache().insert(url, new QPixmap(pix));
-                // 刷新视图
-                QAbstractItemModel *model = const_cast<QAbstractItemModel*>(persistentIndex.model());
-                if (model)
-                    emit const_cast<QAbstractItemModel*>(model)->dataChanged(persistentIndex, persistentIndex);
+                m_imageCache.insert(url, new QPixmap(pix));
+                // 保存到本地文件
+                if (!pix.save(filePath, "PNG")) {
+                    // 可选：记录保存失败日志
+                }
             }
         }
         downloadingSet().remove(url);
         reply->deleteLater();
     });
+    return QString();
 }
 
 
@@ -396,8 +418,11 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     bool hasImage = extractImageInfo(content, isLocal, imagePath);
     data.hasImage = hasImage;
     data.imagePath = imagePath;
-    data.imageIsLocal = isLocal;
+    data.imageIsLocal = true;
+    if(!isLocal){
+        data.imagePath = downloadImageIfNeeded(imagePath);
 
+    }
     // 2. 去除图片、视频、音频等标签，得到纯文本
     // 这里复用您原来的 replaceBetweenAll 等逻辑
     if (content.contains("[image,"))
@@ -416,10 +441,15 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
 
     // 3. 文本换行计算（与原 paint 完全一致）
     if (!m_textFm) {
-        // 初始化字体（在第一次调用时）
-        const_cast<BubbleDelegate*>(this)->m_textFont = QFont("Microsoft YaHei", 11);
-        const_cast<BubbleDelegate*>(this)->m_nameFont = QFont("Microsoft YaHei", 9);
-        const_cast<BubbleDelegate*>(this)->m_timeFont = QFont("Microsoft YaHei", 8);
+
+
+        m_textFont = QFont();
+        m_nameFont = QFont();
+        m_timeFont = QFont();
+        m_textFont.setPointSize(11); // 约等于 14px
+        m_nameFont.setPointSize(9); // 约等于 14px
+        m_timeFont.setPointSize(8); // 约等于 14px
+
         const_cast<BubbleDelegate*>(this)->m_textFm = new QFontMetrics(m_textFont);
         const_cast<BubbleDelegate*>(this)->m_nameFm = new QFontMetrics(m_nameFont);
         const_cast<BubbleDelegate*>(this)->m_timeFm = new QFontMetrics(m_timeFont);
@@ -448,7 +478,7 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
 
     // 4. 计算文本宽度和高度
     int textWidth = 0;
-    for (const QString &line : lines) {
+    for (const QString &line : std::as_const(lines)) {
         int w = m_textFm->horizontalAdvance(line);
         if (w > textWidth) textWidth = w;
     }
@@ -812,13 +842,7 @@ ChatPage::ChatPage(QWidget *parent)
         in >> 全量群;
         file.close();
     }
-    QFile file2("data/customGroupNames.hash");
-    if (file2.open(QIODevice::ReadOnly)) {
-        QDataStream in(&file2);
-        in.setVersion(QDataStream::Qt_5_15);
-        in >> customGroupNames;
-        file2.close();
-    }
+
     QFile file3("data/最近对话.hash");
     if (file3.open(QIODevice::ReadOnly)) {
         QDataStream in(&file3);
@@ -1011,11 +1035,6 @@ void ChatPage::initUI()
     leftLayout->addLayout(btnVerticalLayout);  // 替换原来的 leftLayout->addLayout(btnLayout)
 
 
-
-
-    // 联系人列表（重要：这里初始化 contactList）
-    // 原来的：contactList = new QListWidget(this);
-    // 改成：
     m_model  = new QStandardItemModel(this);
     contactList = new QListView(this);
     contactList->setModel(m_model); // 现在可以调用了！
@@ -1023,7 +1042,7 @@ void ChatPage::initUI()
     contactList->setSelectionMode(QAbstractItemView::SingleSelection); // 确保支持选择
     contactList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel); // 滚动丝滑
     contactList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); // 隐藏横向滚动条
-
+    contactList->setContextMenuPolicy(Qt::CustomContextMenu);
 
 
     leftLayout->addWidget(contactList, 1);
@@ -1059,17 +1078,8 @@ void ChatPage::initUI()
     msgListView->setObjectName("messageList");
     msgListView->setModel(msgModel);
     msgListView->setItemDelegate(new BubbleDelegate(this));
-
-    // ==================== 【核心优化：保证能编译】 ====================
-    // 1. 降级滚动模式，按“项”滚动！这是纯 CPU 下解决“一秒动一次”的终极底牌！
     msgListView->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
-
-    // 2. 开启列表优化标志，强制关闭抗锯齿调整（比 setCacheSize 更轻量，且必定能编译）
-    //msgListView->setOptimizationFlags(QAbstractItemView::DontAdjustForAntialiasing);
-
-    // 3. 设置滚动步长
-    msgListView->verticalScrollBar()->setSingleStep(16);
-
+    msgListView->verticalScrollBar()->setSingleStep(8);
 
     // ================================================================
 
@@ -1240,14 +1250,9 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
 {
     QPoint globalPos = contactList->mapToGlobal(pos);
     QMenu menu;
-
-    // 1. 替换这里：QListWidgetItem *item = contactList->itemAt(pos);
-    // 改为使用 indexAt，返回的是 QModelIndex
     QModelIndex index = contactList->indexAt(pos);
-
-    // 2. 替换这里：if (item) 改为 if (index.isValid())
     if (index.isValid()) {
-        QAction *editAction = menu.addAction("编辑群昵称");
+
         QAction *sztx = menu.addAction("设置群头像");
 
         // --- 设置群头像逻辑 ---
@@ -1289,39 +1294,7 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
 
         });
 
-        // --- 编辑群昵称逻辑 ---
-        connect(editAction, &QAction::triggered, this, [this, index]() {
-            // 4. 替换这里：同样从 index 中获取数据
-            QString id = index.data(Qt::UserRole + 1).toString();
 
-            bool ok;
-            QString newNickname = QInputDialog::getText(
-                this, "编辑群昵称 设置后重新点按钮即可", "请输入新的群昵称:",
-                QLineEdit::Normal, customGroupNames.value(id), &ok);
-
-            if (ok && !newNickname.isEmpty()) {
-                customGroupNames.insert(id, newNickname);
-                QFile file("data/customGroupNames.hash");
-                if (file.open(QIODevice::WriteOnly)) {
-                    QDataStream out(&file);
-                    out.setVersion(QDataStream::Qt_5_15);
-                    out << customGroupNames;
-                    file.close();
-                }
-
-                // 5. 建议加上：更新列表界面的名字显示
-                // 你之前用 index.data(Qt::UserRole + 3) 存名字，修改后需要同步更新 Model
-                QStandardItemModel *model = qobject_cast<QStandardItemModel*>(contactList->model());
-                if (model) {
-                    QStandardItem *item = model->itemFromIndex(index);
-                    if (item) {
-                        // 实际加载进去的时候，你好像在 c.name = getBotName(appid)+":"+c.id 时拼接过。
-                        // 这里建议直接把新的名字存在 UserRole+3 里，下次刷新列表就会显示这个新名字。
-                        item->setData(newNickname, Qt::UserRole + 3);
-                    }
-                }
-            }
-        });
     }
     menu.exec(globalPos);
 }
@@ -1361,10 +1334,10 @@ void ChatPage::updateAllContactLists(int index)
         for (auto it = 全量群.begin(); it != 全量群.end(); ++it) {
             Contact c;
             c.id = it.key();
-            c.name = customGroupNames.value(c.id);       // 没有 name，就用 key
-            if(c.name.isEmpty()) c.name=it.key();
+
+
             int appid =it.value();
-            c.name =getBotName(appid)+":"+ c.name;
+
             Message msg;
             if(sw)
             {
@@ -1373,6 +1346,13 @@ void ChatPage::updateAllContactLists(int index)
                 g_logdb[1]->getLatestLog(QString::number(appid),c.id,msg);
 
             }
+
+            if(msg.Gname.isEmpty()){
+                c.name =getBotName(appid)+":"+ it.key();
+            }else{
+                c.name = getBotName(appid)+":"+msg.Gname;
+            }
+
             if(msg.name.isEmpty())
                 c.lastMsgTime = "无信息";      // 忽略
             else
@@ -1395,7 +1375,7 @@ void ChatPage::updateAllContactLists(int index)
             parseFromId(it.value(),appid,type);
             Contact c;
             c.id = it.key();
-            c.name = customGroupNames.value(c.id);       // 没有 name，就用 key
+            c.name = "";       // 没有 name，就用 key
             if(c.name.isEmpty()) c.name=it.key();
             c.name =getBotName(appid)+":"+ c.name;
             c.lastMsgTime = "无信息";      // 忽略
@@ -1457,7 +1437,7 @@ void ChatPage::updateAllContactLists(int index)
             }
             c.lastMsgTime = msg.msg;     // 最新消息内容
         } else {
-            c.name = customGroupNames.value(groupId);
+            c.name = msg.Gname;
             c.lastMsgTime = msg.name + ": " + msg.msg;
         }
 
@@ -1590,7 +1570,7 @@ void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
             }
         }else
         {
-            c.name = customGroupNames.value(ev.groupId);
+            c.name = ev.groupname;
         }
         if(c.name.isEmpty())
         {
@@ -1742,7 +1722,7 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
     m_msgid.clear();  // 默认清空
 
 
-
+    QString name;
     if (msg.size()!=0) {
         for (int i = msg.size()-1; i > 0; --i) {
             if (!msg[i].isSelf) {
@@ -1750,13 +1730,15 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
                 break;
             }
         }
+        name= msg[0].Gname;
         msgModel->setMessages(std::move(msg));
+
 
     } else {
         msgModel->clear();
     }
     msgListView->scrollToBottom();
-    QString name=customGroupNames.value(contactId);
+
     titleLabel->setText(name.isEmpty() ? contactId:name);
 }
 

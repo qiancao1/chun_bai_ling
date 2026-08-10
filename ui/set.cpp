@@ -6,11 +6,14 @@
 #include <QColorDialog>
 #include <QTimer>
 #include <qclipboard.h>
+#include <qpainter.h>
 #include "websocketserver.h"
+#include "jjm.h"
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
-
-
+QString uploadFileSync_cos(const QString &localPath);
+QString uploadFileSync(const QString &filePath);
+void DelFileSync_Cnb();
 QString ffmpegdiv;
 extern QString g_ip;
 extern bool e_img;
@@ -27,6 +30,49 @@ set::~set()
 }
 
 
+#include <QImage>
+#include <QPainter>
+#include <QDir>
+#include <QRandomGenerator>
+#include <QDateTime>
+
+bool generateUniqueTestImage() {
+    // 用当前毫秒 + 随机数作为文件名
+    quint64 ts = QDateTime::currentMSecsSinceEpoch();
+
+    QString filename = "test_64_64.png";
+    QString savePath = QDir::currentPath() + "/" + filename;
+
+    QImage img(64, 64, QImage::Format_RGB32);
+    // 1. 随机背景色
+    QColor bgColor(QRandomGenerator::global()->bounded(256),
+                   QRandomGenerator::global()->bounded(256),
+                   QRandomGenerator::global()->bounded(256));
+    img.fill(bgColor);
+
+    QPainter painter(&img);
+    // 2. 绘制随机噪点或图案（增加差异化）
+    for (int i = 0; i < 20; ++i) {
+        int x = QRandomGenerator::global()->bounded(64);
+        int y = QRandomGenerator::global()->bounded(64);
+        QColor dotColor(QRandomGenerator::global()->bounded(256),
+                        QRandomGenerator::global()->bounded(256),
+                        QRandomGenerator::global()->bounded(256));
+        painter.setPen(dotColor);
+        painter.drawPoint(x, y);
+    }
+
+    // 3. 绘制当前时间戳文本（确保肉眼可见差异）
+    painter.setPen(Qt::white);
+    painter.drawText(img.rect(), Qt::AlignCenter, QString::number(ts % 100000));
+
+    if (!img.save(savePath)) {
+        qDebug() << "Failed to save image to" << savePath;
+        return false;
+    }
+    qDebug() << "Generated unique image:" << savePath;
+    return true;
+}
 void set::setupUI()
 {
     QVBoxLayout *mainVLayout = new QVBoxLayout(this);
@@ -208,13 +254,144 @@ void set::setupUI()
     mainVLayout->addLayout(remoteLayout2);
     mainVLayout->addLayout(localLayout);
 
+    m_cnb = new QCheckBox("启用cnb图床 组织/仓库:");
+    m_cnb_repo = new QLineEdit;
+    m_cnb_repo->setPlaceholderText("nya/image");
+    m_cnb_token= new QLineEdit;
+    m_cnb_qr = new QPushButton("保存");
+    m_cnb_cs = new QPushButton("测试接口");
+    g_cnb.repo=g_config["cnb_repo"].toString();
+    QByteArray key1 = MachineKey::generateKey(g_cnb.repo);
+    g_cnb.key=g_config["cnb_key"].toString();
+    g_cnb.key=MachineKey::decrypt(g_cnb.key, key1);
+    g_cnb.e=g_config["cnb_e"].toBool();
+    m_cnb_repo->setText(g_cnb.repo);
+    m_cnb_token->setText(g_cnb.key);
+    m_cnb->setChecked(g_cnb.e);
+    QHBoxLayout *localLayout1 = new QHBoxLayout;
+    localLayout1->setAlignment(Qt::AlignLeft);
+    localLayout1->setContentsMargins(0,0,0,0);
+    localLayout1->setSpacing(4);
+    localLayout1->addWidget(m_cnb);
+
+    localLayout1->addWidget(m_cnb_repo);
+    localLayout1->addWidget(new QLabel("访问令牌:"));
+    localLayout1->addWidget(m_cnb_token);
+    localLayout1->addWidget(m_cnb_qr);
+    localLayout1->addWidget(m_cnb_cs);
+    mainVLayout->addLayout(localLayout1);
+
+    connect(m_cnb_qr, &QPushButton::clicked, [this](){
+        g_cnb.repo = m_cnb_repo->text();
+        g_cnb.key = m_cnb_token->text();
+        g_cnb.e = m_cnb->isChecked();
+
+        QByteArray key = MachineKey::generateKey(g_cnb.repo);
+        g_config["cnb_repo"]= g_cnb.repo;
+        g_config["cnb_key"]= MachineKey::encrypt(g_cnb.key, key);
+        g_config["cnb_e"]= g_cnb.e;
+        saveConfig();
+    });
+    connect(m_cnb_cs, &QPushButton::clicked, [this](){
+        if (!generateUniqueTestImage()) {
+            QMessageBox::warning(this, "错误", "生成测试图片失败");
+            return;
+        }
+        QElapsedTimer t;
+        t.start();
+        QString url = uploadFileSync("test_64x64.png");
+        QMessageBox::warning(this,"测试结果","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
+
+    });
+
+    QHBoxLayout *localLayout2 = new QHBoxLayout;
+    localLayout2->setAlignment(Qt::AlignLeft);
+    localLayout2->setContentsMargins(0,0,0,0);
+    localLayout2->setSpacing(4);
+
+
+    m_cos = new QCheckBox("启用cos图床 secretID:");
+    m_cos_secretId = new QLineEdit;
+    m_cos_secretKey= new QLineEdit;
+    m_cos_host= new QLineEdit;
+    m_cos_secretId->setPlaceholderText("从腾讯云创建");
+    m_cos_secretKey->setPlaceholderText("从腾讯云创建");
+    m_cos_host->setPlaceholderText("bot-1250000000.cos.ap-guangzhou.myqcloud.com");
+    m_cos_qr = new QPushButton("保存");
+    m_cos_cs = new QPushButton("测试接口");
+    g_cos.secretId=g_config["cos_id"].toString();
+    QByteArray key = MachineKey::generateKey(g_cos.secretId);
+    g_cos.secretKey=g_config["cos_key"].toString();
+    g_cos.secretKey=MachineKey::decrypt(g_cos.secretKey, key);
+    g_cos.host=g_config["cos_host"].toString();
+    g_cos.host=MachineKey::decrypt(g_cos.host, key);
+    g_cos.e=g_config["cos_e"].toBool();
+    if(g_cos.host.startsWith("https://"))
+    {
+        g_cos.host.remove("https://");
+        g_cos.baseUrl = g_cos.host;
+    }else
+    {
+        g_cos.baseUrl = "https://" + g_cos.host;
+    }
+    m_cos->setChecked(g_cos.e);
+    m_cos_secretId->setText(g_cos.secretId);
+    m_cos_secretKey->setText(g_cos.secretKey);
+    m_cos_host->setText(g_cos.host);
+
+    localLayout2->addWidget(m_cos);
+
+    localLayout2->addWidget(m_cos_secretId);
+    localLayout2->addWidget(new QLabel("secretKey:"));
+    localLayout2->addWidget(m_cos_secretKey);
+    localLayout2->addWidget(new QLabel("host:"));
+    localLayout2->addWidget(m_cos_host);
+    localLayout2->addWidget(m_cos_qr);
+    localLayout2->addWidget(m_cos_cs);
+    connect(m_cos_qr, &QPushButton::clicked, [this](){
+        g_cos.secretId = m_cos_secretId->text();
+        g_cos.secretKey = m_cos_secretKey->text();
+        g_cos.host = m_cos_host->text();
+        g_cos.e = m_cos->isChecked();
+
+        if(g_cos.host.startsWith("https://"))
+        {
+            g_cos.host.remove("https://");
+            g_cos.baseUrl = g_cos.host;
+        }else
+        {
+            g_cos.baseUrl = "https://" + g_cos.host;
+        }
+        QByteArray key = MachineKey::generateKey(g_cos.secretId);
+        g_config["cos_id"]= g_cos.secretId;
+        g_config["cos_key"]= MachineKey::encrypt(g_cos.secretKey, key);
+        g_config["cos_host"]= MachineKey::encrypt(g_cos.host, key);
+        g_config["cos_e"]= g_cos.e;
+        saveConfig();
+    });
+    connect(m_cos_cs, &QPushButton::clicked, [this](){
+        if (!generateUniqueTestImage()) {
+            QMessageBox::warning(this, "错误", "生成测试图片失败");
+            return;
+        }
+        QElapsedTimer t;
+        t.start();
+
+        QString url = uploadFileSync_cos("test_64x64.png");
+        QMessageBox::warning(this,"测试结果COS","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
+
+    });
+    mainVLayout->addLayout(localLayout2);
+
     m_admid_deit = new QTextEdit;
     m_admid_deit->setPlainText("空格分割 允许触发 webui 全局禁用启用插件 启用ws");
     m_admid_deit->setText(g_admin);
     m_admin_qr = new QPushButton("保存全局管理");
+
     mainVLayout->addWidget(new QLabel("超级管理员：空格分割"));
     mainVLayout->addWidget(m_admid_deit);
     mainVLayout->addWidget(m_admin_qr);
+
 
 
     connect(m_admin_qr, &QPushButton::clicked, [this](){

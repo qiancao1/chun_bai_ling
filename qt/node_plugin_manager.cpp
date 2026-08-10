@@ -148,7 +148,14 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
     else if (method == "html_t_img1") api_id = 12;
     else if (method == "html_to_img2") api_id = 13;
     else if (method == "addScheduledTask") api_id = 14;
-
+    else if (method == "getMember") api_id = 16;
+    else if (method == "getMemberList") api_id = 17;
+    else if (method == "getGroupInfo") api_id = 18;
+    else if (method == "getBotGroupState") api_id = 19;
+    else if (method == "handleJoinRequest") api_id = 20;
+    else if (method == "getJoinRequestList") api_id = 21;
+    else if (method == "setGroupMute") api_id = 22;
+    else if (method == "getMuteList") api_id = 23;
 
     else if (method == "ok") api_id = 10002;
     else {

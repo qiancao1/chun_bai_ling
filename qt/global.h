@@ -32,6 +32,7 @@
 #include <QMessageBox>
 #include "cardwidget.h"
 #include "chatpage.h"
+#include "cosclient.h"
 #include "forbiddenwordpage.h"
 #include "htmltoimagewidget.h"
 #include "keywordmatchconfigwidget.h"
@@ -69,6 +70,21 @@ struct dblog
 
 };
 
+struct cos_data{
+    bool e=false;
+    QString secretId;
+    QString secretKey;
+    QString host;      // 完整域名
+    QString baseUrl;   // https://bucket.cos.ap-guangzhou.myqcloud.com
+};
+struct cnb_data{
+
+    QString repo;
+    QString key;
+    int qcjs=0;
+
+    bool e=false;
+};
 
 
 QString python_code4(const QString &py_code,int appid,QList<QString> user_list);
@@ -89,7 +105,7 @@ extern set *setA;
 extern QStackedWidget *stackedWidget;
 extern ForbiddenWordPage *forbidden;
 extern int m_currentBotIndex;
-
+extern QString g_neiw;
 extern int g_EventLogs_index;
 extern int g_channelLogs_index_index;
 extern int g_privateLogs_index;
@@ -107,7 +123,8 @@ extern LmdbKV *dsdb;
 extern LmdbKV *accdb;
 extern quint16 g_ws_port;
 extern QString ws_token;
-
+extern cos_data g_cos;
+extern cnb_data g_cnb;
 extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 extern WebSocketServer *ws_server;
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
@@ -221,7 +238,7 @@ public:
                 nat.reserve(estimatedLen);
                 for(const auto &id : std::as_const(m_user_list))
                 {
-                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0)\n").arg(m_appid).arg(id);
+                    QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)\n").arg(m_appid).arg(id);
                     nat.append(hh);
                 }
                 sentText.replace("{头像}",nat);
@@ -233,7 +250,7 @@ public:
                 nat.reserve(estimatedLen);
                 for(const auto &id : std::as_const(m_user_list))
                 {
-                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(m_appid).arg(id, id);
+                    QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100) <@%3>\n").arg(m_appid).arg(id, id);
                     nat.append(hh);
                 }
                 sentText.replace("{混合}",nat);

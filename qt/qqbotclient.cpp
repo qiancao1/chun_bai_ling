@@ -328,7 +328,15 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
         ev.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
                       .arg(ev.subType == 1 ? "成员加入" : "成员离开", ev.groupId, ev.user);
         break;
+    case 18: // 有人申请加群
 
+
+        ev.msg = QString("[申请加群] %1 群:%2 申请人:%3(%4)")
+                     .arg(ev.subType == 0 ? "申请加群" : "邀请加群", ev.groupname, ev.nickname,ev.user);
+
+
+
+        break;
     default:
         ev.msg = QString("[未处理事件] 类型:%1").arg(ev.msgType);
         break;
@@ -797,6 +805,17 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.groupId = d.value("group_openid").toString();
         ev.user = d.value("member_openid").toString();
     }
+    else if (ev.msgType == "GROUP_JOIN_REQUEST") {
+        ev.type = 18; ev.subType = 0;
+        ev.msgId=payload["id"].toString();
+        ev.groupId = d.value("group_openid").toString();
+        ev.user = d.value("member_openid").toString();
+        ev.callbackId = d.value("join_request_id").toString();
+        ev.nickname =d.value("username").toString();
+        QJsonObject o2=d["verify_info"].toObject();
+        ev.msg = o2["verify_message"].toString();
+
+    }
     // ========== 12. 未识别事件 ==========
     else {
         ev.type = 99;
@@ -809,7 +828,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
-        ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(ev.user,ev.nickname);//先获取id  并且更新或读取id
+        ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
+
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
     if (ev.msg.startsWith("/")) {
@@ -819,6 +839,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     Message mes{ev.user,ev.msg,false,tiems,"",ev.replyTo,ev.msgId};
+    mes.Gname =ev.groupname;
     if(ev.type<4)
     {
         const auto& msg_array = d["msg_elements"].toArray();
@@ -865,8 +886,18 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         {
             BotDB *db = g_botdb[ev.appid];
             if(ev.subType==4)
-                db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0);
+            {
+                QString name;
+                QString json =  get_groups_info(ev.groupId);
+                QJsonParseError err;
+                QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+                if (err.error == QJsonParseError::NoError) {
+                    QJsonObject obj = doc.object();
+                    name = obj["group_name"].toString();
+                }
 
+                db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0,name);
+            }
             else
                 db->deleteGroup(ev.groupId);
         }
@@ -903,6 +934,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["appid"]=ev.appid;
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
+    payload["GroupName"]=ev.groupname;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);;
 
@@ -1068,6 +1100,7 @@ QString QQBotClient::onTextMessage(const QString &message)
         break;
     }
     case 9: // Invalid Session
+        m_info->err  = "鉴权失败：可能订阅了不允许的事件或 token 无效";
         AppendEventLog("鉴权失败：可能订阅了不允许的事件或 token 无效" ,0xff);
         QMetaObject::invokeMethod(this, [=]() {
             stop();
@@ -1103,7 +1136,10 @@ void QQBotClient::sendIdentify()
     QJsonObject identify;
     identify["token"] = QString("QQBot %1").arg(m_accessToken);
 
-    identify["intents"] = m_info->wsIntents;//m_info->botqq.toInt()| (1 << ___aaa);//m_info->wsIntents | (1 << 0);
+    identify["intents"] = m_info->wsIntents;
+    //if(m_info->botqq.toInt()<=128)
+    //     m_info->botqq= QString::number(m_info->wsIntents);
+    //identify["intents"] =m_info->botqq.toInt() | (1 << ___aaa);
     //qDebug() <<  (m_info->botqq.toInt() | (1 << ___aaa)) << "|" <<___aaa;
     //___aaa++;
     identify["shard"] = QJsonArray{0, 1};
@@ -1299,8 +1335,8 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
 
                                         QString logResp = response;
                                         if (error != QNetworkReply::NoError) logResp += "\n[Network Error: " + QString::number(error) + "]";
-
-                                        finalCallback(logResp, error);
+                                        if(finalCallback)
+                                            finalCallback(logResp, error);
                                     });
 }
 
@@ -1366,6 +1402,53 @@ QString QQBotClient::put(const QString &url, const QByteArray &data, const QStri
 
     std::future<QString> future = NetManager::instance()->put(url,data ,headers, timeoutMs);
     return future.get();
+}
+std::future<QString> QQBotClient::put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+
+
+    return NetManager::instance()->put(url,data ,headers, timeoutMs);
+}
+
+
+void detectOptimalRegion() {
+
+    QStringList regions = {
+        "ap-beijing", "ap-nanjing", "ap-shanghai", "ap-guangzhou",
+        "ap-chengdu", "ap-chongqing", "ap-shenzhen-fsi", "ap-shanghai-fsi", "ap-beijing-fsi",
+        "ap-hongkong", "ap-singapore", "ap-jakarta", "ap-seoul", "ap-bangkok",
+        "ap-tokyo", "me-saudi-arabia", "na-siliconvalley", "na-ashburn",
+        "sa-saopaulo", "eu-frankfurt"
+    };
+
+    QString bucketPrefix = "qqbot-file-upload-1251316161.cos.";
+
+    for (const QString &region : regions) {
+        QString domain = bucketPrefix + region + ".myqcloud.com";
+        QHostInfo info = QHostInfo::fromName(domain);
+        if (info.error() != QHostInfo::NoError) continue;
+
+        for (const QHostAddress &addr : info.addresses()) {
+
+            if (addr.isInSubnet(QHostAddress::parseSubnet("10.0.0.0/8")) ||
+                addr.isInSubnet(QHostAddress::parseSubnet("100.0.0.0/8")) ||
+                addr.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
+                g_neiw = region;
+                AppendEventLog("检查到服务器支持直连腾讯内网 已经切换到 内网模式 上传 图片 视频 音频 文件将快速上传");
+                return;
+            }
+        }
+    }
+
+    AppendEventLog("坏！当前服务器不支持内网模式 你可能需要购买腾讯云服务器 才能内网加速",0xff0000);
 }
 
 QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {

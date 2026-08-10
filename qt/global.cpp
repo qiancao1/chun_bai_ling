@@ -27,6 +27,7 @@
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
+QString g_neiw;
 Global::Global() {}
 
 int mapTypeToTabIndex(int type)
@@ -106,6 +107,10 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
     }
 
 }
+
+#include <QHostInfo>
+
+
 void cancelTimer(const QString &openid)
 {
     QMetaObject::invokeMethod(qApp, [=]() {
@@ -907,7 +912,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             {
                 log = QString(">![#24px #24px](%1) %2(%3) %4\n").arg(bot->avatarPath,bot->nickname,bot->appid,status.arg(bot->appid));
             }else
-                log = QString(">![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) %3(%4) %5\n").arg(bot->appid,bot->unid,bot->nickname,bot->appid,status.arg(bot->appid));
+                log = QString(">![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100) %3(%4) %5\n").arg(bot->appid,bot->unid,bot->nickname,bot->appid,status.arg(bot->appid));
             res.append(log);
         }
         res.append("#可用指令：\n[login](login {appid}) 登录指定机器人\n[logout](logout {appid}) 下线指定机器人\n"
@@ -1103,22 +1108,32 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
             resu.append("\n\n**获取机器人信息**\n>");
             resu.append( client->get_groups_bot_state(ev.groupId));
+            resu.append("\n\n**获取用户信息**\n>");
+            resu.append( client->get_groups_members(ev.groupId,ev.user));
 
             resu.append("\n\n**禁言某人**\n>");
-            resu.append(client->set_mute(0,ev.groupId,ev.user,60));
+            resu.append(client->setGroupRestrictChatSetting(ev.groupId,ev.user,60));
+            resu.append("\n\n**获取禁言列表**\n>");
+
+            resu.append(client->getGroupRestrictChatSetting(ev.groupId));
 
             resu.append("\n\n**获取群列表**\n>");
             resu.append(client->get_groups_list(5,0));
+
             resu.append("\n\n**获取好友列表**\n>");
             resu.append(client->get_groups_list(5,0));
 
             resu.append("\n\n**获取群成员列表**\n>");
             resu.append(client->get_members_list(ev.groupId,5,0));
 
-
-
             resu.append("\n\n**移除群成员**\n>");
             resu.append(client->del_members(ev.type,ev.groupId,info->unid));
+
+            resu.append("\n\n**同意某人加群**\n>");
+            resu.append(client->approveGroupJoinRequest(ev.groupId,"8D011B7EB3DE24CE2FB2585A3C7091BC",true,"Aaka_C4KVIpHrBKwx3NUyp9-D8KtmQelPvuh5yPmlQ65Ll3aFlsqbJjlU0DUfw35mvK_HmVDr5o1luVyZ0W_QM8NVZWkPz3f-jk8M7c2C8Pef57qZZpevgM0lLU7HpnlFnxuNA-pPXeIv1Edc2AQN6z9W1Ly_SIb",QString(),false));
+            resu.append("\n\n**获取加群列表**\n>");
+
+            resu.append(client->getjoin_request_list(ev.groupId));
         }
         return resu;
     }
@@ -1144,24 +1159,33 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             return "除群和频道外，其他类型无需手动操作";
         }
 
-        auto *db = g_botdb[ev.appid];
-        GroupRecord gr;
-        db->getGroupInfo(ev.groupId, gr);
-        bool isEnabled = (gr.bitmap & 1) == 1;  // 当前拟人状态
+
+
+        bool isEnabled = (ev.bitmap & 1) == 1;  // 当前拟人状态
 
         if (ev.msg == "开启拟人") {
             if (isEnabled) {
                 return "本群已开启拟人，无需重复开启";
             }
-            gr.bitmap |= 1;   // 置位
-            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+
+            auto *db = g_botdb[ev.appid];
+            ev.bitmap |= 1;   // 置位
+
+            GroupRecord gr;
+            db->getGroupInfo(ev.groupId, gr);
+            gr.bitmap = ev.bitmap;
+            db->addGroup(ev.groupId, gr);
             return "拟人已开启";
         } else { // 关闭拟人
             if (!isEnabled) {
                 return "本群未开启拟人，无需关闭";
             }
-            gr.bitmap &= ~1;  // 清除位
-            db->addGroup(ev.groupId, gr.inviter_seq_id, gr.inviter_seq_id, gr.bitmap);
+            ev.bitmap &= ~1;  // 清除位
+            GroupRecord gr;
+            auto *db = g_botdb[ev.appid];
+            db->getGroupInfo(ev.groupId, gr);
+            gr.bitmap = ev.bitmap;
+            db->addGroup(ev.groupId, gr);
             return "拟人已关闭";
         }
     }
@@ -1409,16 +1433,18 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         if (info->rqhy.isEmpty()) return QString(); // 无回复内容则忽略
 
         auto *db = g_botdb[info->appid_int];
-        GroupRecord gid;
-        db->getGroupInfo(ev.groupId, gid);
-        if (gid.bitmap & 2) return QString(); // 已关闭入群提示
+
+        if (ev.bitmap & 2) return QString(); // 已关闭入群提示
         qint64 now = QDateTime::currentSecsSinceEpoch();
         if (info->fasjg > 0) {
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
             qint64 lastSend = gid.xychy_time;
             if (now - lastSend < info->fasjg) {
                 return QString();
 
             }
+
             gid.xychy_time = now;
             db->addGroup(ev.groupId, gid);
         }
@@ -1437,12 +1463,12 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 sentText.replace("{数量}","1");
                 if(sentText.contains("{头像}"))
                 {
-                    QString hh = QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0)").arg(ev.appid).arg(ev.user);
+                    QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user);
                     sentText.replace("{头像}",hh);
                 }
                 if(sentText.contains("{混合}"))
                 {
-                    QString hh=QString("![#24px #24px](https://q.qlogo.cn/qqapp/%1/%2/0) <@%3>\n").arg(ev.appid).arg(ev.user, ev.user);
+                    QString hh=QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100) <@%3>\n").arg(ev.appid).arg(ev.user, ev.user);
                     sentText.replace("{混合}",hh);
                 }
 
@@ -1461,14 +1487,15 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         return QString(); // 不立即回复
     }
     if (ev.subType == 3) {
-        if (!chatPage->customGroupNames.contains(ev.groupId)) return QString();
+        if (!chatPage->全量群.contains(ev.groupId)) return QString();
         if (info->tqhy.isEmpty()) return QString();
-        auto *db = g_botdb[info->appid_int];
-        GroupRecord gid;
-        db->getGroupInfo(ev.groupId, gid);
-        if (gid.bitmap & 4) return QString(); // 已关闭退群提示
+
+        if (ev.bitmap & 4) return QString(); // 已关闭退群提示
         qint64 now = QDateTime::currentSecsSinceEpoch();
         if (info->tq_lq > 0) {
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
             qint64 lastSend = gid.tq_CD;
             if (now - lastSend < info->tq_lq) {
                 return QString();

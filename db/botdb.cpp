@@ -339,6 +339,17 @@ bool BotDB::getOpenIdBySeq(MDB_txn *txn, uint32_t seqId, QByteArray &outOpenidBi
 
 // ---------- 公开 API 实现（全部使用 retryWrite）----------
 
+static QString fetchGroupNameFromApi(QQBotClient *qqbot, const QString &groupIdHex)
+{
+    QString json = qqbot->get_groups_info(groupIdHex);
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+    if (err.error == QJsonParseError::NoError) {
+        QJsonObject obj = doc.object();
+        return obj["group_name"].toString();
+    }
+    return QString();
+}
 uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 {
     uint32_t resultSeq = 0;
@@ -396,6 +407,170 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
         return rc;
     });
     return success ? resultSeq : 0;
+}
+uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
+{
+    // ========== 1. 只读事务：一次性读取群（如果是群消息）和用户 ==========
+    bool isGroup = (ev.type == 0);
+    bool groupExists = false, userExists = false;
+    GroupRecord oldGroup;
+    UserRecord oldUser;
+    uint32_t oldSeqId = 0;
+
+    {
+        MDB_txn *txn = nullptr;
+        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+            return 0;
+
+        // 仅当是群消息时才读取群记录
+        if (isGroup && !ev.groupId.isEmpty()) {
+            QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
+            if (!groupKey.isEmpty())
+                groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup));
+        }
+
+        // 用户记录总是读取
+        QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
+        if (!userKey.isEmpty()) {
+            userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser));
+            if (userExists) oldSeqId = oldUser.seq_id;
+        }
+        mdb_txn_abort(txn);
+    }
+
+    // ========== 2. 事务外决策 ==========
+    // 群决策（仅当群消息）
+    bool needUpdateGroup = false;
+    QString newGroupName;
+    if (isGroup) {
+        if (!groupExists) {
+            needUpdateGroup = true;  // 新群需要获取昵称
+        } else {
+            const qint64 ONE_MONTH = 30 * 24 * 3600;
+            qint64 now = time(nullptr);
+            if (oldGroup.ncgx == 0 || (now - oldGroup.ncgx > ONE_MONTH))
+                needUpdateGroup = true;
+        }
+        if (needUpdateGroup)
+            newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
+    }
+
+    // 用户决策（仅当用户存在且传入昵称非空且不同）
+    bool needUpdateUser = false;
+    if (userExists && !ev.nickname.isEmpty()) {
+        QByteArray newName = ev.nickname.toUtf8();
+        if (strcmp(oldUser.nickname, newName.constData()) != 0)
+            needUpdateUser = true;
+    }
+
+    // ========== 3. 写事务（仅写入需要变更的数据） ==========
+    uint32_t resultSeq = 0;
+    QString finalGroupName;   // 仅群消息有效
+    int finalBitmap = 0;
+    QString finalUserNickname;
+
+    bool success = retryWrite([&](MDB_txn *txn) -> int {
+        int finalRc = MDB_SUCCESS;
+
+        // 3a. 处理群记录（仅当群消息）
+        if (isGroup) {
+            QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
+            if (groupKey.isEmpty()) return -1;
+
+            GroupRecord currentGroup = oldGroup;  // 复制
+            if (!groupExists) {
+                // 新建群
+                memset(&currentGroup, 0, sizeof(currentGroup));
+                currentGroup.create_time = static_cast<uint32_t>(time(nullptr));
+                if (!newGroupName.isEmpty()) {
+                    size_t copyLen = std::min<size_t>(newGroupName.toUtf8().size(), sizeof(currentGroup.name)-1);
+                    memcpy(currentGroup.name, newGroupName.toUtf8().constData(), copyLen);
+                    currentGroup.name[copyLen] = '\0';
+                    currentGroup.ncgx = time(nullptr);
+                } else {
+                    currentGroup.name[0] = '\0';
+                    currentGroup.ncgx = 0;
+                }
+                int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
+                if (rc != MDB_SUCCESS) finalRc = rc;
+            } else if (needUpdateGroup && !newGroupName.isEmpty()) {
+                // 已存在且需要更新且获取到新昵称
+                size_t copyLen = std::min<size_t>(newGroupName.toUtf8().size(), sizeof(currentGroup.name)-1);
+                memcpy(currentGroup.name, newGroupName.toUtf8().constData(), copyLen);
+                currentGroup.name[copyLen] = '\0';
+                currentGroup.ncgx = time(nullptr);
+                int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
+                if (rc != MDB_SUCCESS) finalRc = rc;
+            }
+            // 其他情况（已存在且不需更新）保持原值
+
+            // 保存群信息供最终输出（即使 finalRc 可能非0，但事务失败后我们不会使用）
+            if (finalRc == MDB_SUCCESS) {
+                finalGroupName = QString::fromUtf8(currentGroup.name, strnlen(currentGroup.name, sizeof(currentGroup.name)));
+                finalBitmap = currentGroup.bitmap;
+            }
+        }
+
+        // 3b. 处理用户记录（总是处理）
+        QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
+        if (userKey.isEmpty()) return -1;
+
+        if (!userExists) {
+            // 新增用户
+            UserRecord newRec = {};
+            uint32_t newSeq = getNextSeqId(txn);
+            if (newSeq == 0) return -1;
+            newRec.seq_id = newSeq;
+            newRec.record_time = nowMinutes();
+            newRec.invited_group_count = 0;
+
+            QByteArray nameBytes = ev.nickname.toUtf8();
+            size_t copyLen = std::min<size_t>(nameBytes.size(), sizeof(newRec.nickname)-1);
+            memcpy(newRec.nickname, nameBytes.constData(), copyLen);
+            newRec.nickname[copyLen] = '\0';
+
+            int rc = putRecord(txn, m_dbi_users, userKey, &newRec, sizeof(newRec));
+            if (rc != MDB_SUCCESS) {
+                finalRc = rc;
+            } else if (!saveSeqToOpenId(txn, newSeq, userKey)) {
+                finalRc = -1;
+            } else {
+                resultSeq = newSeq;
+                finalUserNickname = ev.nickname;
+            }
+        } else {
+            // 已有用户
+            UserRecord updatedUser = oldUser;
+            if (needUpdateUser) {
+                QByteArray newNameBytes = ev.nickname.toUtf8();
+                size_t copyLen = std::min<size_t>(newNameBytes.size(), sizeof(updatedUser.nickname)-1);
+                memcpy(updatedUser.nickname, newNameBytes.constData(), copyLen);
+                updatedUser.nickname[copyLen] = '\0';
+                updatedUser.record_time = nowMinutes();
+                int rc = putRecord(txn, m_dbi_users, userKey, &updatedUser, sizeof(updatedUser));
+                if (rc != MDB_SUCCESS) finalRc = rc;
+            }
+            if (finalRc == MDB_SUCCESS) {
+                resultSeq = oldSeqId;
+                finalUserNickname = QString::fromUtf8(updatedUser.nickname);
+            }
+        }
+
+        return finalRc;
+    });
+
+    // ========== 4. 事务成功后填充 ev ==========
+    if (success && resultSeq != 0) {
+        if (isGroup) {
+            ev.groupname = finalGroupName;
+            ev.bitmap = finalBitmap;
+        }
+        if (ev.nickname.isEmpty()) {
+            ev.nickname = finalUserNickname;
+        }
+        return resultSeq;
+    }
+    return 0;
 }
 
 bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
@@ -502,12 +677,31 @@ bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
     }
     return false;
 }
-bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId,uint32_t bitmap)
+
+bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes,
+                     uint32_t inviterSeqId, uint32_t bitmap, const QString &name)
 {
     return retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
         if (keyData.isEmpty()) return -1;
-        GroupRecord record{ createTimeMinutes, inviterSeqId , bitmap};
+
+        // 直接构造记录，create_time 使用当前时间（秒）
+        GroupRecord record;
+        record.create_time = static_cast<uint32_t>(time(nullptr));
+        record.inviter_seq_id = inviterSeqId;
+        record.bitmap = bitmap;
+        // 其他时间字段保持默认 0（或根据需要初始化）
+        record.xychy_time = 0;
+        record.tq_CD = 0;
+        record.ncgx =  time(nullptr);
+
+
+        QByteArray nameData = name.toUtf8();
+        size_t copyLen = std::min<size_t>(nameData.size(), sizeof(record.name) - 1);
+        memcpy(record.name, nameData.constData(), copyLen);
+        record.name[copyLen] = '\0';
+
+        // 直接插入新记录（假设 key 不存在，若存在则覆盖，但您保证首次调用）
         return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
     });
 }

@@ -182,6 +182,8 @@ else()
             pluginmarketwindow.h pluginmarketwindow.cpp
             netmanager.h netmanager.cpp
             pluginmarket.h
+            qt/cosclient.cpp
+            qt/CnbUploader.h
 
 
 

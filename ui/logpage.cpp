@@ -150,7 +150,7 @@ void LogPage::loadMore(int limit)
 
         if(!groupId.isEmpty() && chatPage)
         {
-            QString &name = chatPage->customGroupNames[groupId];
+            QString name = msg.Gname;
             if(!name.isEmpty()) groupId = name;
         }
         QString botName = getBotName(appid);
@@ -168,7 +168,7 @@ void LogPage::loadMore(int limit)
         case 2: {
             rowItems << new QStandardItem(msg.timestamp)
                      << new QStandardItem(botName)
-                     << new QStandardItem(groupId)
+                     << new QStandardItem(msg.Gname.isEmpty() ? groupId : msg.Gname)
                      << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
                      << new QStandardItem(msg.msg)
                      << new QStandardItem(msg.direction);
@@ -253,7 +253,7 @@ void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& gr
         QString openid = groupId;
         if(!openid.isEmpty())
         {
-            QString name = chatPage->customGroupNames.value(openid);
+            QString name = msg.Gname;
             if(!name.isEmpty()) openid = name;
         }
         switch (currentTabIndex) {
@@ -552,6 +552,7 @@ void LogPage::setupUi()
             QAction *copyTargetId = menu.addAction("复制群id");
             QAction *copySenderId = menu.addAction("复制发送人id");
             QAction *copyRow = menu.addAction("复制整行内容");
+
             menu.addSeparator();
             QAction *setbotadmin = menu.addAction("添加为机器人管理");
             QAction *delbotadmin = menu.addAction("从管理员列表删除");
@@ -561,6 +562,7 @@ void LogPage::setupUi()
 
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
             if (!selected) return;
+
             if (selected == delbotadmin) {
                 QModelIndex idx = m_model->index(index.row(), 0);
 

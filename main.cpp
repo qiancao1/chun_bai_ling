@@ -24,8 +24,10 @@
 #include <pybind11/functional.h>
 
 #include <QApplication>
+#include "CnbUploader.h"
 #include "PluginMarketWindow.h"
 #include "cardwidget.h"
+
 #include "mainwindow.h"
 #include <QFile>
 #include <QJsonObject>
@@ -41,7 +43,8 @@
 
 
 namespace py = pybind11;
-
+cos_data g_cos = cos_data{};
+cnb_data g_cnb = cnb_data{};
 QJsonObject g_config;
 QList<PluginInfo> m_pluginList;
 LmdbKV *cache_db=nullptr;
@@ -122,6 +125,7 @@ void initdiv()
     QDir dir;
     dir.mkpath("tmp/video");
     dir.mkpath("tmp/audio");
+    dir.mkpath("tmp/聊天图片");
     dir.mkpath("tmp/image");
     dir.mkpath("tmp/file");
     dir.mkpath("data");
@@ -166,7 +170,7 @@ QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
 QString webhook_sig(const QJsonObject &obj, const QString &secret);
-
+void detectOptimalRegion();
 int main(int argc, char *argv[]) {
     SetDllDirectoryW(L".\\DLLs");
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
@@ -240,18 +244,6 @@ if os.path.exists(plugins_root):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
     MainWindow w;
 
     if (QSystemTrayIcon::isSystemTrayAvailable()) {
@@ -285,6 +277,8 @@ if os.path.exists(plugins_root):
 
 
     w.show();
+
+    detectOptimalRegion();
     int ret = a.exec();
     框架退出=true;
     for(auto &c :m_botClients)

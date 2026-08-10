@@ -32,7 +32,7 @@ void StatusChartWidget::setData(const QVector<int>& receiveData, const QVector<i
 void StatusChartWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-    qDebug() << "首页";
+
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 

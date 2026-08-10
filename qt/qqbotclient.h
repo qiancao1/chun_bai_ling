@@ -27,6 +27,7 @@
 #include <QTimer>
 #include "AccountInfo.h"
 #include <QColor>
+#include <future>
 #include <qnetworkreply.h>
 
 struct logdb
@@ -54,10 +55,12 @@ struct MessageEvent
     int subType=0;          //ai整的没啥用
     int callbackType = 0;   // 回调回应来源: 0群 1频道 2私聊 3频道私聊
     int member_role=-1;     //0群主 1管理 2群成员
+    int bitmap=0;//群相关配置
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
     bool bot=false;         //true时 为机器人
     QString nickname;       // 发送人昵称
+    QString groupname;       // 群昵称
     QString guildId;        // 频道id (仅频道消息有效)
     QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")
     QString extra;          // 附加信息 (图片等资源，可扩展)
@@ -140,8 +143,17 @@ public:
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
     QString get_groups_info(const QString& group);
     QString get_groups_bot_state(const QString& group);
-    QString set_mute(int type,const QString& group,const QString &user,qint64 mute_seconds);
+    QString set_mute(const QString& group,const QString &user,qint64 mute_seconds);
 
+    QString setGroupRestrictChatSetting(const QString& groupOpenId,
+                                                        const QString& memberOpenId,
+                                                        int muteSeconds = 60);
+    QString approveGroupJoinRequest(const QString& group,const QString& user,
+                                                 bool op,const QString& joinRequestId,
+                                    const QString& rejectReason,bool addToBlacklist);
+    QString setGroupRestrictChatSetting(const QString& group, const QJsonArray &membersJson);
+    QString getjoin_request_list(const QString& group);
+    QString getGroupRestrictChatSetting(const QString& group);
 
 
 
@@ -200,6 +212,7 @@ private:
     QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
 
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
+    std::future<QString> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 

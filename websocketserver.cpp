@@ -682,8 +682,7 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
         for (auto it = chatPage->全量群.begin(); it != chatPage->全量群.end(); ++it) {
             QString groupId = it.key();
             int appid = it.value();
-            QString name = chatPage->customGroupNames.value(groupId);
-            if (name.isEmpty()) name = groupId;
+
             Message msg;
             if(sw)
             {
@@ -695,7 +694,7 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
             }
             QJsonObject groupObj;
             groupObj["groupId"] = groupId;
-            groupObj["groupName"] = name;
+            groupObj["groupName"] = msg.Gname;
             groupObj["appid"] = appid;
             groupObj["type"] = 0;
             if(msg.name.isEmpty())
@@ -726,8 +725,7 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
             QPair<int, QString> key(appid, groupId);
             if (seen.contains(key)) continue;
             seen.insert(key);
-            QString name = chatPage->customGroupNames.value(groupId);
-            if (name.isEmpty()) name = groupId;
+
             uint64_t seq = parts[0].toULongLong(&ok);
             Message msg;
             if(sw)
@@ -740,7 +738,7 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
 
             QJsonObject groupObj;
             groupObj["groupId"] = groupId;
-            groupObj["groupName"] = name;
+            groupObj["groupName"] = msg.Gname;
             groupObj["appid"] = appid;
             groupObj["type"] = type;
             groupObj["msg"] = msg.name+":"+msg.msg;
@@ -756,11 +754,9 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
             qint64 value = it.value();
             int appid = 0, typeFromValue = 0;
             parseFromId(value, appid, typeFromValue);
-            QString name = chatPage->customGroupNames.value(key);
-            if (name.isEmpty()) name = key;
             QJsonObject groupObj;
             groupObj["groupId"] = key;
-            groupObj["groupName"] = name;
+            groupObj["groupName"] = key;
             groupObj["appid"] = appid;
             groupObj["type"] = 5;
             groupObj["subType"] = typeFromValue;

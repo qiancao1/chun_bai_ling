@@ -2,13 +2,24 @@
 #include <QNetworkAccessManager>
 #include <qmutex.h>
 #include <qnetworkreply.h>
+#include <qthread.h>
 
 class NetManager : public QObject {
     Q_OBJECT
 public:
     static NetManager* instance() {
-        static NetManager manager;
-        return &manager;
+        static QList<NetManager*> managers;
+        static int index = 0;
+        if (managers.isEmpty()) {
+            // 创建多个实例，比如根据 CPU 核心数
+            int count = qMax(4, QThread::idealThreadCount());
+            for (int i = 0; i < count; ++i) {
+                managers.append(new NetManager(i));
+            }
+        }
+        // 轮询返回（或随机）
+        int idx = index++ % managers.size();
+        return managers[idx];
     }
 
 
@@ -25,7 +36,8 @@ public:
                                 const QByteArray &data,
                                 const QHash<QString, QString> &headers = {},
                                 int timeoutMs = 30000);
-
+    void Delete2(const QString &url,const QByteArray &data,
+                 const QHash<QString, QString> &headers);
 
     using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 
@@ -35,11 +47,11 @@ public:
                    QObject* context, Callback callback);
 
 private:
-    NetManager() { init(); }
+    NetManager(int index) : m_index(index) { init(); }
     ~NetManager() { cleanup(); }
     void init();
     void cleanup();
-
+    int m_index;
     QThread *m_netThread = nullptr;
     QList<QNetworkAccessManager*> m_netManagers;
     int m_netManagerIndex = 0;

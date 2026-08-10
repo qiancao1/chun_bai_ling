@@ -19,6 +19,7 @@
  */
 // logdb.cpp
 #include "logdb.h"
+#include "botdb.h"
 #include <QDebug>
 #include <QDir>
 #include <QDataStream>
@@ -185,7 +186,7 @@ bool LogDB::serializeMessage(const Message &msg, QByteArray &data) const
     QDataStream stream(&data, QIODevice::WriteOnly);
     stream.setVersion(QDataStream::Qt_5_15);
     stream << msg.user << msg.msg << msg.isSelf << msg.timestamp
-           << msg.name << msg.hf << msg.ch<< msg.plugin_ch << msg.direction << msg.Color_0 <<msg.ref_name <<msg.ref_msg;
+           << msg.name << msg.hf << msg.ch<< msg.plugin_ch << msg.direction << msg.Color_0 <<msg.ref_name <<msg.ref_msg << msg.Gname;
     return stream.status() == QDataStream::Ok;
 }
 
@@ -194,7 +195,7 @@ bool LogDB::deserializeMessage(const QByteArray &data, Message &msg) const
     QDataStream stream(data);
     stream.setVersion(QDataStream::Qt_5_15);
     stream >> msg.user >> msg.msg >> msg.isSelf >> msg.timestamp
-        >> msg.name >> msg.hf >> msg.ch >> msg.plugin_ch >> msg.direction >> msg.Color_0 >> msg.ref_name >> msg.ref_msg;
+        >> msg.name >> msg.hf >> msg.ch >> msg.plugin_ch >> msg.direction >> msg.Color_0 >> msg.ref_name >> msg.ref_msg >> msg.Gname;
 
     return stream.status() == QDataStream::Ok;
 }
@@ -222,10 +223,10 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
             QString groupIdFromKey = parts[2];
             if (appidFromKey == appid && groupIdFromKey == groupId) {
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
-                if (deserializeMessage(blob, msg)) {
-                    mdb_cursor_close(cursor);
-                    return true;
-                }
+                deserializeMessage(blob, msg);
+                mdb_cursor_close(cursor);
+                return true;
+
             }
             i++;
             if(i>5000) break;
@@ -266,11 +267,11 @@ bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &
             QString groupIdFromKey = parts[2];
             if (appidFromKey == appid && groupIdFromKey == groupId) {
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
-                if (deserializeMessage(blob, msg)) {
-                    mdb_cursor_close(cursor);
-                    mdb_txn_abort(txn);
-                    return true;
-                }
+                deserializeMessage(blob, msg);
+                mdb_cursor_close(cursor);
+                mdb_txn_abort(txn);
+                return true;
+
             }
         }
         rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
@@ -327,19 +328,18 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
                     QByteArray blob((const char*)value.mv_data, value.mv_size);
                     Message msg;
                     msg.seq = seq2;
-                    if (deserializeMessage(blob, msg)) {
-                        // 你的原有处理（保留 isSelf、hf 等逻辑）
-                        if (!msg.direction.isEmpty() && !msg.msg.isEmpty()) {
-                            msg.isSelf = true;
-                            QString hf = msg.hf;
-                            msg.hf = QString();
-                            result.append(msg);
-                            msg.isSelf = false;
-                            msg.hf = hf;
-                        }
+                    deserializeMessage(blob, msg) ;
+
+                    if (!msg.direction.isEmpty() && !msg.msg.isEmpty()) {
+                        msg.isSelf = true;
+                        QString hf = msg.hf;
+                        msg.hf = QString();
                         result.append(msg);
-                        fetched++;
+                        msg.isSelf = false;
+                        msg.hf = hf;
                     }
+                    result.append(msg);
+
                 }
             }
         }
@@ -405,6 +405,8 @@ QList<QPair<QString, Message>> LogDB::getLatestMessagesWithOffset(int appid, int
     rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最后一条开始（最大 seq）
     int skipped = 0;
     int fetched = 0;
+    BotDB *db=nullptr;
+
     while (rc == MDB_SUCCESS && fetched < limit) {
         QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
         QStringList parts = keyStr.split(':');
@@ -412,15 +414,17 @@ QList<QPair<QString, Message>> LogDB::getLatestMessagesWithOffset(int appid, int
             // 新格式：parts[0]=seq, parts[1]=appid, parts[2]=groupId
             int appidFromKey = parts[1].toInt();
             if (appid == 0 || appidFromKey == appid) {
+
                 if (skipped < offset) {
                     skipped++;
                 } else {
                     QByteArray blob((const char*)value.mv_data, value.mv_size);
                     Message msg;
-                    if (deserializeMessage(blob, msg)) {
-                        result.append(qMakePair(keyStr, msg));
-                        fetched++;
-                    }
+                    deserializeMessage(blob, msg);
+
+                    result.append(qMakePair(keyStr, msg));
+                    fetched++;
+
                 }
             }
         }
@@ -430,6 +434,8 @@ QList<QPair<QString, Message>> LogDB::getLatestMessagesWithOffset(int appid, int
     mdb_cursor_close(cursor);
     mdb_txn_abort(txn);
     std::reverse(result.begin(), result.end());
+
+
     return result;
 }
 

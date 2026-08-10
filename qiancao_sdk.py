@@ -24,7 +24,13 @@ class QQApi:
     API_ID_AI=15;
     API_ID_GET_MEMBER=16;
     API_ID_GET_MEMBER_LIST=17;    
-     
+    API_ID_GET_GROUPS_INFO = 18          # 获取群信息
+    API_ID_GET_GROUPS_BOT_STATE = 19     # 获取机器人在群内的状态
+    API_ID_SET_JOIN_REQUEST = 20         # 处理加群请求
+    API_ID_GET_JOIN_REQUEST_LIST = 21    # 获取加群请求列表
+    API_ID_SET_MUTE_G = 22               # 设置群禁言（批量）
+    API_ID_GET_MUTE_LIST_G = 23          # 获取群禁言列表
+    
     def __init__(self, uuid: str):
         self.uuid = uuid
 
@@ -243,14 +249,79 @@ class QQApi:
         :param limit: 获取数量（参数2）
         """
         return self._callback(self.API_ID_GET_MEMBER_LIST, appid, openid, str(limit))    
-        
+    
+    def get_groups_info(self, appid: int, group_openid: str) -> Dict:
+        """
+        获取指定群的基本信息。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :return: 群信息（JSON 字符串或字典，由 C++ 返回）
+        """
+        return self._callback(self.API_ID_GET_GROUPS_INFO, appid, group_openid)
 
+    def get_groups_bot_state(self, appid: int, group_openid: str) -> Dict:
+        """
+        获取机器人在指定群内的状态（如是否被禁言等）。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :return: 状态信息（JSON 字符串）
+        """
+        return self._callback(self.API_ID_GET_GROUPS_BOT_STATE, appid, group_openid)
 
+    def set_join_request(self, appid: int, group_openid: str, user_openid: str,
+                         approve: bool, request_id: str = "",
+                         reject_reason: str = "", blacklist: bool = False) -> Dict:
+        """
+        处理加群请求（同意/拒绝）。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param user_openid: 申请用户的 openid
+        :param approve: True=同意，False=拒绝
+        :param request_id: 请求 ID（可选，从请求列表中获取）
+        :param reject_reason: 拒绝理由（可选）
+        :param blacklist: 是否拉黑该用户（可选，默认 False）
+        :return: 操作结果（JSON 字符串）
+        """
+        return self._callback(self.API_ID_SET_JOIN_REQUEST, appid,
+                              group_openid, user_openid,
+                              "true" if approve else "false",
+                              request_id, reject_reason,
+                              "true" if blacklist else "false")
 
-import json
-import random
-import string
+    def get_join_request_list(self, appid: int, group_openid: str) -> Dict:
+        """
+        获取指定群的加群请求列表。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :return: {"list":[{"join_request_id":"xxx","risk_tips":"","union_openid":"xxx","member_openid":"xxx","username":"๑҉环绕᭄ꦿ໌້ᮨ","apply_at":"2026-08-10T23:06:21+08:00","apply_source":"self_apply","invited_by":"","bot":false,"verify_info":{"method":"admin_review_qa","verify_message":"","review_qa_list":[{"question":"1","answer":"1"}]}}],"next_cursor":"1785949822131345"}#注意 union_openid 部分机器人可能是空 但是优先使用
+        """
+        return self._callback(self.API_ID_GET_JOIN_REQUEST_LIST, appid, group_openid)
 
+    def set_mute_g(self, appid: int, group_openid: str, members: Union[List[Dict], str]) -> Dict:
+        """
+        设置群内成员禁言（批量）。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param members: 禁言设置列表（JSON 数组字符串 或 列表对象），
+                        每个元素包含 user_openid 和 duration_seconds 等字段。
+        :return: 操作结果（JSON 字符串）
+        """
+        if isinstance(members, list):
+            members_json = json.dumps(members, ensure_ascii=False)
+        else:
+            members_json = members  # 直接当做字符串传入
+        return self._callback(self.API_ID_SET_MUTE_G, appid, group_openid, members_json)
+
+    def get_mute_list_g(self, appid: int, group_openid: str) -> Dict:
+        """
+        获取指定群的禁言成员列表。
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :return:  {"global_rule":{"mode":"none","schedule_rules":[],"recurring_rules":[]},"members":[{"member_openid":"486EFB457F0FF264FCB457418D962B83","mute_expire_at":"2026-08-11T11:02:12+08:00","username":"云猫猫💐","union_openid":"486EFB457F0FF264FCB457418D962B83"}]} #注意 union_openid 部分机器人可能是空 但是优先使用
+        """
+        return self._callback(self.API_ID_GET_MUTE_LIST_G, appid, group_openid)
+
+ 
 
 class ButtonGroup:
     def __init__(self):

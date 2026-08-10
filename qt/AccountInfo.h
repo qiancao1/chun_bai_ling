@@ -21,7 +21,6 @@
 #ifndef ACCOUNTINFO_H
 #define ACCOUNTINFO_H
 
-#include "botdb.h"
 #include <QString>
 #include <QJsonObject>
 
@@ -31,6 +30,7 @@
 #include <QHostInfo>
 #include <QSysInfo>
 #include <QDir>
+#include <qmutex.h>
 #include <qtimer.h>
 
 struct mdbtn {

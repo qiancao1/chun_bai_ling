@@ -29,6 +29,7 @@ struct Message {
     QString direction;
     QString ref_name;
     QString ref_msg;
+    QString Gname;
     int seq=0;
     int Color_0=0;
     bool isSelf=false;
@@ -120,7 +121,7 @@ private:
     mutable QFontMetrics* m_textFm = nullptr;
     mutable QFontMetrics* m_nameFm = nullptr;
     mutable QFontMetrics* m_timeFm = nullptr;
-
+    QString downloadImageIfNeeded(const QString &url) const;
     // 辅助：绘制占位头像
     void drawDefaultAvatar(QPainter* painter, const QRect& rect, const QString& text, bool isSelf) const;
 };
@@ -141,7 +142,7 @@ public:
     void addMessage(const Message &msg);
     PlaceholderTextEdit *inputEdit;
     QHash<QString,int> 全量群;
-    QHash<QString,QString> customGroupNames;
+
     QHash<QString,qint64> 最近对话;
     QString currentContactId;
     int isGroupMode=0;

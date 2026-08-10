@@ -70,11 +70,18 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.1.9.30"
-#define APP_BUILD_NUMBER 30
+#define APP_VERSION_STR "v1.2.0.32"
+#define APP_BUILD_NUMBER 32
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.0.32 (2026-08-07)
+- 优化 图片视频 文件类如果是腾讯 广州服务器 自动走内网
+- 增加 cos桶内网上传 (没自动删除)
+- 增加 cnb图床 一样走的内网 带自动删除
+- 增加 禁言 获取禁言列表 处理加群 获取加群列表 等api
+- 更新 日志对群昵称的显示
+
 ## v1.1.9.30 (2026-08-05)
 - 修复 处于日志界面 一直添加日志会导致内存一直叠加占用 并且会我操作时 自动切换到其他页面 防止无意义刷新ui
 - 修复 聊天室中 卡顿问题
@@ -265,6 +272,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
         if(框架退出) return;
+        g_cnb.qcjs++;
         if(logPage->m_active){
             logPage->leiji++;
             if(logPage->leiji>200)

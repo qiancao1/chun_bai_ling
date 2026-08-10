@@ -21,6 +21,7 @@
 #ifndef BOTDB_H
 #define BOTDB_H
 
+#include "QQBotClient.h"
 #include <QString>
 #include <QByteArray>
 #include <QMutex>
@@ -41,6 +42,8 @@ struct GroupRecord {
     uint32_t bitmap=0;
     qint64 xychy_time=0;
     qint64 tq_CD=0;
+    qint64 ncgx=0;   //昵称获取时间 一个月刷新一次
+    char name[64];
 };
 
 class BotDB {
@@ -62,12 +65,13 @@ public:
     QStringList listSubscriptions(const QString &mark);
     static uint32_t nowMinutes();
     QList<QString> getAllGroupIds();
+    uint32_t getOrUpdateUser(QQBotClient *qqbot,MessageEvent &ev);
     uint32_t getOrUpdateUser(const QString &openid, QString &name);
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
     bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
     bool updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord);
     bool updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater);
-    bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap);
+    bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap, const QString &name);
     bool addGroup(const QString &groupIdHex,const GroupRecord &record);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
     bool isGroupExist(const QString &groupIdHex);
