@@ -33,7 +33,7 @@ public:
     uint64_t appendLog(const QString &appid, const QString &groupId, const Message &msg);
     QString makeKey(const QString &appid, const QString &groupId, uint64_t seq) const;
     // 获取指定 appid:groupId 最近 N 条（按序号从大到小，即最新在前）
-    QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int seq, int N) const;
+    QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int seq, int N,bool daoxu=false) const;
 
     // 获取所有 key（格式 "appid:groupId:序号"）的列表
     QStringList getAllKeys() const;

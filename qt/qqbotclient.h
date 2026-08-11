@@ -80,7 +80,7 @@ struct MessageLogContext {
 
 
 };
-
+using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
 class QQBotClient : public QObject
@@ -132,6 +132,7 @@ public:
     QString del_members (int type,const QString& group,const QString &user,bool add_blacklist = false,int delete_history_msg_days=0);
     //撤回
     QString delete_messages(int type, const QString &openid, const QString &msgid);
+    void delete_messages_Async(int type, const QString &openid, const QString &msgid);
     //获取邀请链接
     QString get_members_list(const QString& group, int limit, int index);
     QString get_groups_members(const QString& group,const QString& user);
@@ -148,11 +149,17 @@ public:
     QString setGroupRestrictChatSetting(const QString& groupOpenId,
                                                         const QString& memberOpenId,
                                                         int muteSeconds = 60);
+    void setGroupRestrictChatSetting_Async(const QString& groupOpenId,
+                                              const QString& memberOpenId,
+                                              int muteSeconds, Callback callbacks);
     QString approveGroupJoinRequest(const QString& group,const QString& user,
                                                  bool op,const QString& joinRequestId,
-                                    const QString& rejectReason,bool addToBlacklist);
+                                                 const QString& rejectReason=QString(),bool addToBlacklist=false);
+    void approveGroupJoinRequest_Async(const QString& group, const QString& user,
+                                    bool op, const QString& joinRequestId,
+                                    const QString& rejectReason=QString(), bool addToBlacklist=false, Callback callbacks = Callback());
     QString setGroupRestrictChatSetting(const QString& group, const QJsonArray &membersJson);
-    QString getjoin_request_list(const QString& group);
+    QString getjoin_request_list(const QString& group, int limit=20, const QString &cursor=QString());
     QString getGroupRestrictChatSetting(const QString& group);
 
 
@@ -214,9 +221,10 @@ private:
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
     std::future<QString> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
+    void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType);
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 
-    using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
 
     // 异步 POST，自动处理 token 过期刷新和去重重试（递归实现）
     void PostAsync(const QString& url, const QJsonObject& json,

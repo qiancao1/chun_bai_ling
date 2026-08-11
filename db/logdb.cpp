@@ -282,7 +282,7 @@ bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &
     return false;
 }
 QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId,
-                                    int seq, int N) const {
+                                    int seq, int N,bool daoxu) const {
     QMutexLocker locker(&m_mutex);
     QList<Message> result;
     if (!m_env || N <= 0) return result;
@@ -349,6 +349,7 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
 
     mdb_cursor_close(cursor);
     mdb_txn_abort(txn);
+    if(!daoxu)
     std::reverse(result.begin(), result.end());
     return result;
 }

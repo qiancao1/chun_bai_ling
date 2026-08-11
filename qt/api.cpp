@@ -182,12 +182,25 @@ QString convertMarkdownLinksToXml(const QString &input)
 
         if (shouldConvert) {
             QString encodedUrl = QString::fromUtf8(QUrl::toPercentEncoding(url));
-            QString encodedShow = QString::fromUtf8(QUrl::toPercentEncoding(showText));
+
+            encodedUrl.replace("\\","\\\\");
+            encodedUrl.replace("\"","\\\"");
             if(encodedUrl.isEmpty())
-                encodedUrl=encodedShow;
-            QString xmlTag = QString("<qqbot-cmd-input text=\"%1\" show=\"%2\" reference=\"false\" />")
-                                 .arg(encodedUrl, encodedShow);
-            output.append(xmlTag);
+                encodedUrl=showText;
+            if(url.size()>90)
+            {
+                QString xmlTag = QString("[%1](qagent://aio/inlinecmd?command=%2)")
+                .arg(showText,encodedUrl);
+                qDebug() <<xmlTag;
+                output.append(xmlTag);
+            }else{
+
+
+                QString xmlTag = QString("<qqbot-cmd-input text=\"%1\" show=\"%2\" reference=\"false\" />")
+                                 .arg(encodedUrl, showText);
+                output.append(xmlTag);
+            }
+
         } else {
             output.append(match.captured(0));
         }
@@ -2014,7 +2027,7 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
 
 
     if (!is_wakeup) {
-        if (msgid.contains("INTERACTION") || msgid.contains("FRIEND_ADD") || msgid.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
+        if (msgid.contains("INTERACTION") || msgid.contains("FRIEND_ADD") || msgid.contains("GROUP_MEMBER") || msgid.startsWith("GROUP_JOIN_REQUEST")) //GROUP_MEMBER_ADD
             json["event_id"] = msgid;
         else
             json["msg_id"] = msgid;
@@ -2440,8 +2453,9 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
 QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
 {
-    if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
+    if(type<0 || type >3) return R"({"message":"发送类型错误 不在0-3之间"})";
     QString newtext = text;
+
     if(text.contains("#python"))
     {
         MessageEvent ev;
@@ -2768,7 +2782,12 @@ QString QQBotClient::delete_messages(int type, const QString &openid, const QStr
     return DeleteSync(url,QJsonObject(),QString(),10000);
 }
 
-
+void QQBotClient::delete_messages_Async(int type, const QString &openid, const QString &msgid)
+{
+    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    QString url = get_url(type, openid, "messages", realMsgId);
+    DeleteAsync(url,QJsonObject(),QString());
+}
 // 生成邀请链接
 QString QQBotClient::generate_share_link(const QString& callback_data)
 {
@@ -2868,31 +2887,69 @@ QString QQBotClient::approveGroupJoinRequest(const QString& group,const QString&
     // 3. 发送 POST 请求（假设无需额外 Token，超时 10000ms）
     return PostSync(url, requestBody, QString(), 10000);
 }
+void QQBotClient::approveGroupJoinRequest_Async(const QString& group,const QString& user,
+                                             bool op,const QString& joinRequestId,
+                                             const QString& rejectReason,bool addToBlacklist,Callback callbacks)
+{
+    // 1. 构造 URL（替换路径参数）
+    if(joinRequestId.isEmpty())
+    {
+        callbacks(R"({"message":"joinRequestId 为空"})",QNetworkReply::NetworkError());
+        return;
+    }
+    QString url =get_url(0,group,"approval_join_request",user);
 
+    // 2. 构建请求体 JSON
+    QJsonObject requestBody;
+    requestBody["op"] = op? "approve" : "decline";
+
+    // 可选字段：只在有值时添加
+    if (!joinRequestId.isEmpty()) {
+        requestBody["join_request_id"] = joinRequestId;
+    }
+    if(!op){
+        if (!rejectReason.isEmpty()) {
+            requestBody["reject_reason"] = rejectReason;
+        }
+        requestBody["add_to_member_blacklist"] = addToBlacklist;
+    }
+
+    PostAsync(url, requestBody, QString(), 10000,callbacks);
+}
 // 在您的 Client 类中新增重载
 QString QQBotClient::setGroupRestrictChatSetting(const QString& groupOpenId,
                                                const QString& memberOpenId,
-                                               int muteSeconds )
+                                               int muteSeconds)
 {
     // 1. 构造 URL
     QString url =get_url(0,groupOpenId,"restrict_chat_setting");;
-
-    // 2. 计算到期时间（RFC3339）
-    QDateTime expireTime = QDateTime::currentDateTime().addSecs(muteSeconds);
-    QString expireStr = expireTime.toString(Qt::ISODate);
-    int offsetSecs = expireTime.offsetFromUtc();
-    int offsetHours = offsetSecs / 3600;
-    int offsetMinutes = qAbs(offsetSecs % 3600) / 60;
-    QString timezoneStr = (offsetSecs >= 0) ?
-                              QString("+%1:%2").arg(offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0')) :
-                              QString("-%1:%2").arg(-offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0'));
-    QString rfc3339 = expireStr + timezoneStr;
-
-    // 3. 构建 members 数组
+    if(muteSeconds<0)
+        muteSeconds=30;
+    if(muteSeconds>=30*1440*60)
+    {
+        muteSeconds=30*1440*60-1;
+    }
     QJsonObject memberObj;
-    memberObj["op"] = "add";
+
     memberObj["member_openid"] = memberOpenId;
-    memberObj["mute_expire_at"] = rfc3339;
+
+    if(muteSeconds!=0)
+    {
+        memberObj["op"] = "add";
+        QDateTime expireTime = QDateTime::currentDateTime().addSecs(muteSeconds);
+        QString expireStr = expireTime.toString(Qt::ISODate);
+        int offsetSecs = expireTime.offsetFromUtc();
+        int offsetHours = offsetSecs / 3600;
+        int offsetMinutes = qAbs(offsetSecs % 3600) / 60;
+        QString timezoneStr = (offsetSecs >= 0) ?
+                                  QString("+%1:%2").arg(offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0')) :
+                                  QString("-%1:%2").arg(-offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0'));
+        QString rfc3339 = expireStr + timezoneStr;
+        memberObj["mute_expire_at"] = rfc3339;
+    }else{
+         memberObj["op"] = "del";
+    }
+
     QJsonArray membersArray;
     membersArray.append(memberObj);
     QJsonObject requestBody;
@@ -2902,6 +2959,47 @@ QString QQBotClient::setGroupRestrictChatSetting(const QString& groupOpenId,
     return PostSync(url, requestBody, QString(), 10000);
 }
 
+void QQBotClient::setGroupRestrictChatSetting_Async(const QString& groupOpenId,
+                                                 const QString& memberOpenId,
+                                                 int muteSeconds,Callback callbacks)
+{
+    // 1. 构造 URL
+    QString url =get_url(0,groupOpenId,"restrict_chat_setting");;
+    if(muteSeconds<0)
+        muteSeconds=30;
+    if(muteSeconds>=30*1440*60)
+    {
+        muteSeconds=30*1440*60-1;
+    }
+    QJsonObject memberObj;
+
+    memberObj["member_openid"] = memberOpenId;
+
+    if(muteSeconds!=0)
+    {
+        memberObj["op"] = "add";
+        QDateTime expireTime = QDateTime::currentDateTime().addSecs(muteSeconds);
+        QString expireStr = expireTime.toString(Qt::ISODate);
+        int offsetSecs = expireTime.offsetFromUtc();
+        int offsetHours = offsetSecs / 3600;
+        int offsetMinutes = qAbs(offsetSecs % 3600) / 60;
+        QString timezoneStr = (offsetSecs >= 0) ?
+                                  QString("+%1:%2").arg(offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0')) :
+                                  QString("-%1:%2").arg(-offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0'));
+        QString rfc3339 = expireStr + timezoneStr;
+        memberObj["mute_expire_at"] = rfc3339;
+    }else{
+        memberObj["op"] = "del";
+    }
+
+    QJsonArray membersArray;
+    membersArray.append(memberObj);
+    QJsonObject requestBody;
+    requestBody["members"] = membersArray;
+
+    // 4. 调用底层 PostSync
+    PostAsync(url, requestBody, QString(), 10000,callbacks);
+}
 //设置禁言
 QString QQBotClient::setGroupRestrictChatSetting(const QString& group, const QJsonArray& membersJson)
 {
@@ -2913,7 +3011,7 @@ QString QQBotClient::setGroupRestrictChatSetting(const QString& group, const QJs
     return PostSync(url, requestBody, QString(), 10000);
 }
 //获取加群列表
-QString QQBotClient::getjoin_request_list(const QString& group)
+QString QQBotClient::getjoin_request_list(const QString& group,int limit,const QString &cursor)
 {
     return GetSync(get_url(0,group,"join_request_list"), QString(), 10000);
 }

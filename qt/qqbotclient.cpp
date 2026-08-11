@@ -815,6 +815,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         QJsonObject o2=d["verify_info"].toObject();
         ev.msg = o2["verify_message"].toString();
 
+
     }
     // ========== 12. 未识别事件 ==========
     else {
@@ -914,18 +915,50 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }
 
-    if (ev.type == 0 && ev.fullType)
+    if (ev.type == 0 && (ev.bitmap & BIT_SHUA_P))
     {
         if(shuaping(m_info,ev))
         {
-            QString res = delete_messages(ev.type,ev.groupId,ev.msgId);
-            qDebug() << res;
-
-            return;
+            setGroupRestrictChatSetting_Async(ev.groupId,ev.user,60,
+                [this,ev](const QString &resp, QNetworkReply::NetworkError err) {
+                QString pname= "[刷屏检测]";
+                if(resp == "{}")
+                {
+                    QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
+                    delete_messages_Async(ev.type,ev.groupId,ev.msgId);
+                    send_messagesAsync(ev.type,ev.groupId,pname,text,ev.msgId);
+                }
+            });
+            return ;
+        }
+    }
+    if(m_info->pbbot && ev.bot) return;
+    if(ev.msg=="菜单")
+    {
+        if(!m_info->caidan.isEmpty())
+        {
+            QString pname= "[私有指令]";
+            send_messagesAsync(ev.type,ev.groupId,pname,m_info->caidan,ev.msgId);
+            return ;
+        }
+    }else if(ev.msg =="帮助" || ev.msg =="help")
+    {
+        if(!m_info->help.isEmpty())
+        {
+            QString pname= "[私有指令]";
+            send_messagesAsync(ev.type,ev.groupId,pname,m_info->help,ev.msgId);
+            return ;
+        }
+    }else if(ev.msg.isEmpty())
+    {
+        if(!m_info->at.isEmpty())
+        {
+            QString pname= "[私有指令]";
+            send_messagesAsync(ev.type,ev.groupId,pname,m_info->at,ev.msgId);
+            return ;
         }
     }
 
-    if(m_info->pbbot && ev.bot) return;
     ev.msgId= "|"+QString::number(ev.log)+"|"+ev.msgId;
     d["content"] = ev.msg;
     d["id"] = ev.msgId;
@@ -1464,6 +1497,20 @@ QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData,
     QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
     std::future<QString> future = NetManager::instance()->Delete(url, jsonbyte, headers, timeoutMs);
     return future.get();
+}
+void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
+    NetManager::instance()->Delete2(url, jsonbyte, headers);
+
 }
 //弃用
 QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)

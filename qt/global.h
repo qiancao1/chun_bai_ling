@@ -57,7 +57,13 @@ class Global
 public:
     Global();
 };
-
+enum BitMask {
+    BIT_Ainiren = 1 << 0,
+    BIT_ruqun = 1 << 1,
+    BIT_tuiqun = 1 << 2,
+    BIT_AI_BAI = 1 << 3,
+    BIT_SHUA_P = 1<<4,
+};
 
 struct dblog
 {
@@ -449,12 +455,15 @@ int extractParams(const QString &text, const QString &cmd, int filter, Args&... 
         for (int i = start; i < text.length(); ++i) {
             QChar ch = text[i];
             CharCategory cat = getCategory(ch);
-            if (cat != currentType) {
+            CharCategory mergedCat = cat;
+            if (mergedCat == CatLetter || mergedCat == CatDigit)
+                mergedCat = CatLetter;   // 统一视为 CatLetter（或定义 CatAlnum）
+            if (mergedCat != currentType) {
                 if (paramLen > 0)
                     params.append(text.mid(paramStart, paramLen));
                 paramStart = i;
                 paramLen = 0;
-                currentType = cat;
+                currentType = mergedCat;  // 存储合并后的类型
             }
             bool skip = false;
             switch (cat) {
@@ -484,10 +493,10 @@ int extractParams(const QString &text, const QString &cmd, int filter, Args&... 
             first = remaining.join(" ");
             return; // 没有后续变量了
         } else {
-            // 非最后一个变量：只取对应位置的一个参数
+
             if (idx < p.size())
                 first = p[idx];
-            // 继续处理下一个变量
+
             if constexpr (sizeof...(rest) > 0) {
                 self(self, idx + 1, varCnt, p, rest...);
             }

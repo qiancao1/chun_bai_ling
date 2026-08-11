@@ -1256,11 +1256,23 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
         doLoadPythonPlugin(relDir);
         return;
     }
-
-
-
-    // 确定 Python 解释器路径
     QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
+
+
+    QProcess checkPip;
+    checkPip.start(pythonExe, QStringList() << "-c" << "import pip");
+    if (!checkPip.waitForFinished(3000) || checkPip.exitCode() != 0) {
+        QMessageBox::information(this, "提示", "pip 未就绪，正在尝试修复...");
+        QProcess fixPip;
+        fixPip.start(pythonExe, QStringList() << "-m" << "ensurepip" << "--upgrade");
+        if (!fixPip.waitForFinished(10000) || fixPip.exitCode() != 0) {
+            QMessageBox::information(this, "提示",  "修复 pip 失败，请手动检查环境。");
+            return ;
+        }
+        QMessageBox::information(this, "提示", "pip 修复成功。");
+    }
+
+
     if (!QFile::exists(pythonExe)) {
         QMessageBox::warning(this, "错误", "未找到 Python 解释器：" + pythonExe);
         // 仍然尝试加载（依赖可能已安装）

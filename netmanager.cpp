@@ -330,6 +330,8 @@ std::future<QString> NetManager::Delete(const QString &url,
 
     return future;
 }
+
+
 void NetManager::cleanup() {
 
     if (!m_netThread) return;

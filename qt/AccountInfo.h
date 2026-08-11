@@ -126,7 +126,7 @@ struct AccountInfo {
     QString bai_sr,bai_sc,bai_qy;
     QString err; //最后错误
     QString tqhy;
-
+    QString help,caidan,at;
 
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）

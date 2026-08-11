@@ -709,6 +709,7 @@ void LogPage::setupUi()
                 if(m_botClients.contains(appid))
                 {
                     QString res = m_botClients[appid]->delete_messages(currentTabIndex-1,list[2],msg.ch);
+                    qDebug()<< res<< "||||" << msg.ch;
                     if(res.contains("message")) {
                         QMessageBox::warning(this,"撤回失败",res);
                         return;

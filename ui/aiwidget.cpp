@@ -2438,7 +2438,7 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         {
             UserRecord rec;
             db->getUserBySeqId(ev.user_int,rec);
-            if (!(rec.bitmap & 4)) return QString();
+            if (!(rec.bitmap & BIT_AI_BAI)) return QString();
         }else{
             return QString();
         }
