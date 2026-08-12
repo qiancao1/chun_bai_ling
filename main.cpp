@@ -158,7 +158,7 @@ void initDBs() {
         auto db = std::make_unique<LogDB>(QString("botdb/logdb_%1").arg(i));
         if (!db->open()) {
             qCritical() << "打开数据库" << i << "失败";
-            // 可以选择继续或退出
+
         } else {
             g_logdb[i] = std::move(db);
         }

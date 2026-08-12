@@ -1825,7 +1825,7 @@ void ChatPage::onSendClicked()
 void ChatPage::onSendImage()
 {
     if (currentContactId.isEmpty()) return;
-    QString path = QFileDialog::getOpenFileName(this, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.wepb *.ico *.gif *.jxr);;所有文件 (*.*)");
+    QString path = QFileDialog::getOpenFileName(this, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.webp *.ico *.gif *.jxr);;所有文件 (*.*)");
     if (!path.isEmpty()) {
 
         //<img src="C:/Users/Airuan/Pictures/AI绘画/下载.png" alt="本地图片" />
