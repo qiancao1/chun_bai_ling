@@ -26,7 +26,7 @@ void qunguan::on_pushButton_clicked()
         auto &info = m_accounts [index];
         info->times =ui->time_Edit->text().toInt();
         info->tiaoshu=ui->tiao_Edit->text().toInt();
-        info->shuap=ui->checkBox->isChecked();
+
         info->pbbot=ui->checkBox_2->isChecked();
         info->autoht=ui->zdht->isChecked();
         info->admin =ui->textEdit->toPlainText();
@@ -47,7 +47,7 @@ void qunguan::列表行被单击()
         auto &info = m_accounts [index];
         ui->time_Edit->setText(QString::number(info->times));
         ui->tiao_Edit->setText(QString::number(info->tiaoshu));
-        ui->checkBox->setChecked(info->shuap);
+
         ui->checkBox_2->setChecked(info->pbbot);
         ui->textEdit->setText(info->admin);
         ui->zdht->setChecked(info->autoht);

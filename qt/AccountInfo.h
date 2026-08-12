@@ -114,7 +114,7 @@ struct AccountInfo {
     bool markdown_pd=false;
     bool markdown_pd_mb=false;
     bool e_bai=true;
-    bool shuap=false;//刷屏检测
+
     bool xiangliang=false; //向量数据库
     bool juece;
     qint64 startup_time = 0;

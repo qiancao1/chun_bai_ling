@@ -550,8 +550,8 @@ const char* myCallbackA(const char* uuid, int apiId, int appid, const char* _1, 
 const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
                        const char* _6, const char* _7, const char* _8) {
-    static std::string result="{}";
-
+    static std::string result="{}"; //静态
+    result="{}"; //初始化
     //qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
     if (apiId == 10000) {
         miaomiao32 = 0;
@@ -590,6 +590,8 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
                 pname = "["+m_pluginList[i].name+"]";
             else if(apiId ==API_ID_SEND_MESSAGES || apiId == API_ID_SEND_MESSAGES_ARK)
                 pname = "["+m_pluginList[i].name+"|%1ms]";
+            else
+                pname = "[]";
             break;
         }
         if(apiId==API_ID_AI)
@@ -1853,7 +1855,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 
 
 
-QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname,QString &text,qint64 now_us,
+QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext ctx)
 {
     // 匹配短标签或全名标签：f/file, a/audio, v/video, flie(笔误)
@@ -1971,7 +1973,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,QString &pname
     return response;
 }
 
-QString QQBotClient::send_Media(int type,const QString &openid,QString &pname,const QString &info,qint64 now_us,
+QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
                                 const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx)
 {
     QJsonObject json;
@@ -2450,7 +2452,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
     }
 }
 
-QString QQBotClient::send_messages(int type, const QString &openid,QString &pname, QString &text,
+QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
 {
     if(type<0 || type >3) return R"({"message":"发送类型错误 不在0-3之间"})";
@@ -2547,7 +2549,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,QString &pnam
 
 }
 
-QString QQBotClient::send_messagesAsync(int type, const QString &openid,QString &pname, QString &text,
+QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                    const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
 {
     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
@@ -2670,7 +2672,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
 }
 
 
-QString QQBotClient::send_messages_ark(int type, const QString &openid, QString &pname,
+QString QQBotClient::send_messages_ark(int type, const QString &openid,const QString &pname,
                                        const QJsonObject &ark, const QString &msgid,
                                        bool is_wakeup, int seq_index,const MessageLogContext ctx)
 {
@@ -2774,22 +2776,16 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
               });
     return QString();
 }
-//撤回信息
-QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid)
-{
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    QString url = get_url(type, openid, "messages", realMsgId);
-    return DeleteSync(url,QJsonObject(),QString(),10000);
-}
 
-void QQBotClient::delete_messages_Async(int type, const QString &openid, const QString &msgid)
+
+QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid,Callback callbacks)
 {
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     QString url = get_url(type, openid, "messages", realMsgId);
-    DeleteAsync(url,QJsonObject(),QString());
+    return Delete(url,QJsonObject(),QString(),10000,callbacks);
 }
 // 生成邀请链接
-QString QQBotClient::generate_share_link(const QString& callback_data)
+QString QQBotClient::generate_share_link(const QString& callback_data,Callback callbacks)
 {
     QJsonObject json;
     if (!callback_data.isEmpty()) {
@@ -2801,28 +2797,30 @@ QString QQBotClient::generate_share_link(const QString& callback_data)
     }else{
         json["callback_data"] = m_info->appid;
     }
-    return PostSync("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000);
+    return Post("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000,callbacks);
 }
+
 //获取 群成员列表 频道成员列表
-QString QQBotClient::get_members_list(const QString& group,int limit,int index)
+QString QQBotClient::get_members_list(const QString& group,int limit,int index,Callback callbacks)
 {
     QString url= get_url(0,group,"members");
-    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
+    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
 }
-QString QQBotClient::get_groups_list(int limit,int index)
+QString QQBotClient::get_groups_list(int limit,int index,Callback callbacks)
 {
     QString url="https://api.bot.qq.com/users/@me/groups";
-    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
+    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
 }
-QString QQBotClient::get_users_list(int limit,int index)
+QString QQBotClient::get_users_list(int limit,int index,Callback callbacks)
 {
     QString url="https://api.bot.qq.com/users/@me/users";
-    return GetSync(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000);
+    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
 }
-QString QQBotClient::get_groups_members(const QString& group,const QString &user)
+QString QQBotClient::get_groups_members(const QString& group,const QString &user,Callback callbacks)
 {
-    return GetSync(get_url(0,group,"members",user),QString(), 10000);
+    return Get(get_url(0,group,"members",user),QString(), 10000,callbacks);
 }
+
 //回应回调
 QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data)
 {
@@ -2841,61 +2839,37 @@ QString QQBotClient::respond_interaction(const QString &interaction_id, int code
     }
 
 }
-QString QQBotClient::get_groups_info(const QString& group)
+QString QQBotClient::get_groups_info(const QString& group,Callback callbacks)
 {
-    return GetSync(get_url(0,group,"info"),QString(), 10000);
+    return Get(get_url(0,group,"info"),QString(), 10000,callbacks);
 }
-QString QQBotClient::get_groups_bot_state(const QString& group)
+QString QQBotClient::get_groups_bot_state(const QString& group,Callback callbacks)
 {
-    return GetSync(get_url(0,group,"bot_state"),QString(), 10000);
+    return Get(get_url(0,group,"bot_state"),QString(), 10000,callbacks);
 }
-QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days)
+QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days,Callback callbacks)
 {
     QString url = QString("https://api.bot.qq.com/%1/members/%2").arg(type==0?"v2/groups":"guilds",user);
     if(add_blacklist || delete_history_msg_days!=0){
         QJsonObject obj;
         obj["add_blacklist"] = add_blacklist;
         obj["delete_history_msg_days"]=delete_history_msg_days;
-        return DeleteSync(url,obj,QString(),10000);
+        return Delete(url,obj,QString(),10000,callbacks);
     }
-    return DeleteSync(url,QJsonObject(),QString(),10000);
+    return Delete(url,QJsonObject(),QString(),10000,callbacks);
 
 }
-//处理入群申请
-QString QQBotClient::approveGroupJoinRequest(const QString& group,const QString& user,
-                                   bool op,const QString& joinRequestId,
-                                   const QString& rejectReason,bool addToBlacklist)
-{
-    // 1. 构造 URL（替换路径参数）
-    if(joinRequestId.isEmpty()) return R"({"message":"joinRequestId 为空"})";
-    QString url =get_url(0,group,"approval_join_request",user);
 
-    // 2. 构建请求体 JSON
-    QJsonObject requestBody;
-    requestBody["op"] = op? "approve" : "decline";
-
-    // 可选字段：只在有值时添加
-    if (!joinRequestId.isEmpty()) {
-        requestBody["join_request_id"] = joinRequestId;
-    }
-    if(!op){
-        if (!rejectReason.isEmpty()) {
-            requestBody["reject_reason"] = rejectReason;
-        }
-        requestBody["add_to_member_blacklist"] = addToBlacklist;
-    }
-    // 3. 发送 POST 请求（假设无需额外 Token，超时 10000ms）
-    return PostSync(url, requestBody, QString(), 10000);
-}
-void QQBotClient::approveGroupJoinRequest_Async(const QString& group,const QString& user,
-                                             bool op,const QString& joinRequestId,
+QString QQBotClient::approveGroupJoinRequest(const QString& group,const QString& user, bool op,const QString& joinRequestId,
                                              const QString& rejectReason,bool addToBlacklist,Callback callbacks)
 {
     // 1. 构造 URL（替换路径参数）
     if(joinRequestId.isEmpty())
     {
-        callbacks(R"({"message":"joinRequestId 为空"})",QNetworkReply::NetworkError());
-        return;
+        QString result=R"({"message":"joinRequestId 为空"})";
+        if(callbacks)
+         callbacks(result,QNetworkReply::NetworkError());
+        return result;
     }
     QString url =get_url(0,group,"approval_join_request",user);
 
@@ -2914,53 +2888,11 @@ void QQBotClient::approveGroupJoinRequest_Async(const QString& group,const QStri
         requestBody["add_to_member_blacklist"] = addToBlacklist;
     }
 
-    PostAsync(url, requestBody, QString(), 10000,callbacks);
+    return Post(url, requestBody, QString(), 10000,callbacks);
 }
 // 在您的 Client 类中新增重载
-QString QQBotClient::setGroupRestrictChatSetting(const QString& groupOpenId,
-                                               const QString& memberOpenId,
-                                               int muteSeconds)
-{
-    // 1. 构造 URL
-    QString url =get_url(0,groupOpenId,"restrict_chat_setting");;
-    if(muteSeconds<0)
-        muteSeconds=30;
-    if(muteSeconds>=30*1440*60)
-    {
-        muteSeconds=30*1440*60-1;
-    }
-    QJsonObject memberObj;
 
-    memberObj["member_openid"] = memberOpenId;
-
-    if(muteSeconds!=0)
-    {
-        memberObj["op"] = "add";
-        QDateTime expireTime = QDateTime::currentDateTime().addSecs(muteSeconds);
-        QString expireStr = expireTime.toString(Qt::ISODate);
-        int offsetSecs = expireTime.offsetFromUtc();
-        int offsetHours = offsetSecs / 3600;
-        int offsetMinutes = qAbs(offsetSecs % 3600) / 60;
-        QString timezoneStr = (offsetSecs >= 0) ?
-                                  QString("+%1:%2").arg(offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0')) :
-                                  QString("-%1:%2").arg(-offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0'));
-        QString rfc3339 = expireStr + timezoneStr;
-        memberObj["mute_expire_at"] = rfc3339;
-    }else{
-         memberObj["op"] = "del";
-    }
-
-    QJsonArray membersArray;
-    membersArray.append(memberObj);
-    QJsonObject requestBody;
-    requestBody["members"] = membersArray;
-
-    // 4. 调用底层 PostSync
-    return PostSync(url, requestBody, QString(), 10000);
-}
-
-void QQBotClient::setGroupRestrictChatSetting_Async(const QString& groupOpenId,
-                                                 const QString& memberOpenId,
+QString QQBotClient::setGroupRestrictChatSetting(const QString& groupOpenId,const QString& memberOpenId,
                                                  int muteSeconds,Callback callbacks)
 {
     // 1. 构造 URL
@@ -2997,29 +2929,30 @@ void QQBotClient::setGroupRestrictChatSetting_Async(const QString& groupOpenId,
     QJsonObject requestBody;
     requestBody["members"] = membersArray;
 
-    // 4. 调用底层 PostSync
-    PostAsync(url, requestBody, QString(), 10000,callbacks);
+
+    return Post(url, requestBody, QString(), 10000,callbacks);
 }
 //设置禁言
-QString QQBotClient::setGroupRestrictChatSetting(const QString& group, const QJsonArray& membersJson)
+QString QQBotClient::setGroupRestrictChatSetting(const QString& group, const QJsonArray& membersJson,Callback callbacks)
 {
-
     QString url = get_url(0,group,"restrict_chat_setting");
-
     QJsonObject requestBody;
     requestBody["members"] = membersJson;
-    return PostSync(url, requestBody, QString(), 10000);
+    return Post (url, requestBody, QString(), 10000,callbacks);
 }
+
 //获取加群列表
-QString QQBotClient::getjoin_request_list(const QString& group,int limit,const QString &cursor)
+QString QQBotClient::getjoin_request_list(const QString& group,int limit,const QString &cursor,Callback callbacks)
 {
-    return GetSync(get_url(0,group,"join_request_list"), QString(), 10000);
+    return Get(get_url(0,group,"join_request_list"), QString(), 10000,callbacks);
 }
+
 //获取禁言列表
-QString QQBotClient::getGroupRestrictChatSetting(const QString& group)
+QString QQBotClient::getGroupRestrictChatSetting(const QString& group,Callback callbacks)
 {
-    return GetSync(get_url(0,group,"restrict_chat_setting"), QString(), 10000);
+    return Get(get_url(0,group,"restrict_chat_setting"), QString(), 10000,callbacks);
 }
+
 //设置禁言——频道
 QString QQBotClient::set_mute(const QString& group,const QString &user,qint64 mute_seconds)
 {

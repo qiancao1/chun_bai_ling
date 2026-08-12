@@ -3,7 +3,7 @@
 #include <qmutex.h>
 #include <qnetworkreply.h>
 #include <qthread.h>
-
+using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 class NetManager : public QObject {
     Q_OBJECT
 public:
@@ -36,15 +36,16 @@ public:
                                 const QByteArray &data,
                                 const QHash<QString, QString> &headers = {},
                                 int timeoutMs = 30000);
-    void Delete2(const QString &url,const QByteArray &data,
-                 const QHash<QString, QString> &headers);
+    void Delete2(const QString &url, const QByteArray &data,
+                 const QHash<QString, QString> &headers, int timeoutMs=30000, Callback callbacks=Callback());
 
-    using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
 
     // 异步 POST，回调在 context 所在线程执行
     void postAsync(const QString& url, const QByteArray& data,
                    const QHash<QString, QString>& headers, int timeoutMs,
-                   QObject* context, Callback callback);
+                   QObject* context, Callback callback=Callback());
+    void getAsync(const QString &url, const QHash<QString, QString> &headers, int timeoutMs, Callback callbacks=Callback());
 
 private:
     NetManager(int index) : m_index(index) { init(); }

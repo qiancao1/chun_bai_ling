@@ -320,6 +320,7 @@ void SharedMemoryBridge::Task::run()
         textPtrs[4], textPtrs[5], textPtrs[6], textPtrs[7]
         );
     if(m_req.apiId==1 || m_req.apiId>=10000 && m_req.apiId<=10002) return;
+
     if (result) {
         m_bridge->writeResponseToBlock(m_req.resultAddr, result);
     }

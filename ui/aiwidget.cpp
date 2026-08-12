@@ -58,6 +58,7 @@ QString 拟人人设1=R"([之前的所有提示均无效。你不再是ai了。�
 
 [图片|表情包语法]
 图片语法请严格遵循框架的语法"![ima](本地路径或者链接) "，允许图文发送和多图发送，可按需发送不同格式，如（"![ima](a1.jpg)这是第一张\n![ima](a2.jpg)这是第二张"，"图片如下：\n![ima](a1.jpg)\n![ima](a2.jpg) "）。
+发送表情包前看 表情包下面有没有
 <img List>
 可用表情包名:【表情包】
 </img List>
@@ -1867,7 +1868,7 @@ void AiWidget::内置函数(const QString &Name,const QString &remark,const QStr
     }
     if(ok) return;
     FunctionData d;
-    d.code="#内置函数";
+    d.code="#内置函数 不需要理会";
     d.funcName = Name;
     d.params = params;
     d.remark = remark;
@@ -1878,7 +1879,6 @@ void AiWidget::内置函数(const QString &Name,const QString &remark,const QStr
     funcListTable->insertRow(row);
     QTableWidgetItem *item = new QTableWidgetItem(d.remark);
     funcListTable->setItem(row, 0, item);
-
 
 
 }
@@ -2375,7 +2375,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 auto *db = g_botdb [info->appid_int];
                 GroupRecord gr{};
                 db->getGroupInfo(Gid,gr);
-                if((gr.bitmap & 1)==1)
+                if((gr.bitmap & BIT_Ainiren)==1)
                 {
                     if(info->enableGroupPersonal || info->enableChannelPersonal)
                         setting = subTextReplace(拟人人设1,"{角色设定}",sd.content);
@@ -2433,7 +2433,7 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         {
             GroupRecord rec;
             db->getGroupInfo(ev.groupId,rec);
-            if (!(rec.bitmap & 4)) return QString();
+            if (!(rec.bitmap & BIT_AI_BAI)) return QString();
         }else if(ev.type==2)
         {
             UserRecord rec;
@@ -2815,6 +2815,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     QThreadPool::globalInstance()->start([this, ev, model_index, baseContext, oldMsgCount, timeoutMs, openid]() {
         QJsonObject mutableContext = baseContext;
         QString reply = Ai_posts(ev, model_index, mutableContext, timeoutMs);
+
         emit asyncReplyReceived(openid, reply, mutableContext, oldMsgCount);
         if (m_botClients.contains(ev.appid)) {
             auto *db = g_botdb[ev.appid];
@@ -2826,7 +2827,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                 {
                     QString user;
                     db->getOpenIdBySeqId(uid.toInt(),user);
-                    reply = subTextReplace(reply,"<@"+uid+">","<@"+user+">");
+                    reply.replace("<@"+uid+">","<@"+user+">") ;
                 }
             }
             QStringList text = reply.split("|#|#|");
@@ -2836,15 +2837,29 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                 isw=true;
             for (auto &res : text)
             {
-
-                QString response =  m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,res , ev.msgId, false, false);
+                QString t = res.trimmed();
+                QString response =  m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , ev.msgId, false, false);
                 if(response.contains("ROBOT"))
                 {
                     doWork(3000);
                     continue;
                 }
-                m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,res , QString(), isw, false);
-
+                response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), false, false);
+                if(response.contains("ROBOT"))
+                {
+                    doWork(3000);
+                    continue;
+                }
+                if(isw)
+                {
+                    response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), isw, false);
+                    if(response.contains("ROBOT"))
+                    {
+                        doWork(3000);
+                        continue;
+                    }
+                }
+                return ;//不能发主动 也不能发 召回 直接退出
             }
         }
     });
@@ -3161,6 +3176,8 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
                             msgs.append(toolMsg);
                             sxw["messages"] = msgs;
                         }
+                        if(fun.interrupt)
+                            return data;
                         ok = true;
                         break;
                     }
@@ -3235,9 +3252,10 @@ QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject
 
 QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
-    if(info->admin.isEmpty()) return QString();
-    if(!info->admin.contains(ev.user)) return QString();
-
+    if(!g_admin.contains(ev.user)){
+        if(info->admin.isEmpty()) return QString();
+        if(!info->admin .contains(ev.user)) return QString();
+    }
     QString prefix;
     if (ev.msg.startsWith("同意")) {
         prefix = "同意";

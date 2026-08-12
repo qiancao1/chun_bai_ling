@@ -46,16 +46,9 @@
       </widget>
      </item>
      <item>
-      <widget class="QCheckBox" name="checkBox">
-       <property name="text">
-        <string>启用刷屏检测</string>
-       </property>
-      </widget>
-     </item>
-     <item>
       <widget class="QLabel" name="label_2">
        <property name="text">
-        <string>条数：</string>
+        <string>【刷屏检测】 条数：</string>
        </property>
       </widget>
      </item>

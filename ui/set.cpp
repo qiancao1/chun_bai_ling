@@ -13,6 +13,7 @@ void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 QString uploadFileSync_cos(const QString &localPath);
 QString uploadFileSync(const QString &filePath);
+QString uploadFileSync_test(const QString &filePath);
 void DelFileSync_Cnb();
 QString ffmpegdiv;
 extern QString g_ip;
@@ -35,7 +36,7 @@ set::~set()
 #include <QDir>
 #include <QRandomGenerator>
 #include <QDateTime>
-
+QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg);
 bool generateUniqueTestImage() {
     // 用当前毫秒 + 随机数作为文件名
     quint64 ts = QDateTime::currentMSecsSinceEpoch();
@@ -240,7 +241,7 @@ void set::setupUI()
     远程端口 = g_config["y_port"].toString();
     m_loadport->setText(远程端口);
     m_loadbut = new QPushButton("确认", this);
-
+    m_test_api = new QPushButton("测试接口");
     localLayout->addWidget(Ewebhook);
     localLayout->addWidget(Ews);
     localLayout->addWidget(ESSL);
@@ -248,11 +249,25 @@ void set::setupUI()
     localLayout->addWidget(loadimg);
     localLayout->addWidget(m_loadport);
     localLayout->addWidget(m_loadbut);
+    localLayout->addWidget(m_test_api);
     mainVLayout->addLayout(remoteLayout1);
 
 
     mainVLayout->addLayout(remoteLayout2);
     mainVLayout->addLayout(localLayout);
+    connect(m_test_api, &QPushButton::clicked, [this](){
+        if (!generateUniqueTestImage()) {
+            QMessageBox::warning(this, "错误", "生成测试图片失败");
+            return;
+        }
+        QElapsedTimer t;
+        t.start();
+        QString err;
+        QString url = uploadImageByPath("http://127.0.0.1:"+setA->远程端口+"/",QCoreApplication::applicationDirPath()+"/test_64_64.png",30000,&err);
+
+        QMessageBox::warning(this,"测试本地其他图床","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
+
+    });
 
     m_cnb = new QCheckBox("启用cnb图床 组织/仓库:");
     m_cnb_repo = new QLineEdit;
@@ -299,8 +314,8 @@ void set::setupUI()
         }
         QElapsedTimer t;
         t.start();
-        QString url = uploadFileSync("test_64x64.png");
-        QMessageBox::warning(this,"测试结果","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
+        QString url = uploadFileSync_test("test_64_64.png");
+        QMessageBox::warning(this,"测试结果CNB","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
 
     });
 
@@ -377,7 +392,7 @@ void set::setupUI()
         QElapsedTimer t;
         t.start();
 
-        QString url = uploadFileSync_cos("test_64x64.png");
+        QString url = uploadFileSync_cos("test_64_64.png");
         QMessageBox::warning(this,"测试结果COS","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
 
     });

@@ -37,6 +37,7 @@ QJsonObject getUploadUrlSync(const QString &fileName, qint64 size)
     auto future = NetManager::instance()->post(url, jsonData, headers, 30000);
     try {
         QString response = future.get();   // 阻塞等待
+
         QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
         QJsonObject obj = doc.object();
         if (obj.contains("upload_url")) {
@@ -47,6 +48,7 @@ QJsonObject getUploadUrlSync(const QString &fileName, qint64 size)
         }
     } catch (const std::exception &e) {
         qWarning() << "POST 请求异常:" << e.what();
+
         return QJsonObject();
     }
 }
@@ -155,14 +157,42 @@ QString uploadFileSync(const QString &filePath)
     }
 
     QString finalUrl = putFileSync(fileData, uploadInfo);
+
     if (finalUrl.isEmpty()) {
-        qWarning() << "PUT上传失败";
+
         return QString();
     }
 
     return finalUrl;
 }
+QString uploadFileSync_test(const QString &filePath)
+{
+    if(g_cnb.repo.isEmpty() || g_cnb.key.isEmpty()) return QString();
+    // 1. 读取文件
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(nullptr, "无法打开文件:" , "无法打开文件:" +filePath)  ;
+        return QString();
+    }
+    QByteArray fileData = file.readAll();
+    int idx = m_index.fetchAndAddOrdered(1) % 10000;  // 原子递增并返回旧值
+    QString fileName = QString("%1.png").arg(idx);
+    QJsonObject uploadInfo = getUploadUrlSync(fileName, fileData.size());
+    if (uploadInfo.isEmpty()) {
+        QMessageBox::warning(nullptr, "获取上传URL失败:" ,"获取上传URL失败")  ;
 
+        return QString();
+    }
+
+    QString finalUrl = putFileSync(fileData, uploadInfo);
+
+    if (finalUrl.isEmpty()) {
+         QMessageBox::warning(nullptr, "put失败:" ,"put失败")  ;
+        return QString();
+    }
+
+    return finalUrl;
+}
 
 
 #endif // CNBUPLOADER_H

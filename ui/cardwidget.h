@@ -22,7 +22,7 @@ public slots:
 signals:
     void settingClicked(int appid);
     void deleteClicked(int appid);
-    void loginClicked(int appid);   // 登录/登出后通知外部更新数据
+
 
 private slots:
 

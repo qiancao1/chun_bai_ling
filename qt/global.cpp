@@ -393,7 +393,7 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
         m_accounts.append(oldInfoPtr);
         QMetaObject::invokeMethod(qApp, [=]() {
             accountPage->refreshCards2(oldInfoPtr.get());
-            homePage->refreshRuntimeStats();
+
         });
 
     } else {
@@ -416,9 +416,7 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
         else
             oldInfoPtr->wsIntents = wsIntents;
         accountPage->saveAccounts(oldInfoPtr.get());
-        QMetaObject::invokeMethod(qApp, [=]() {
-            homePage->refreshRuntimeStats();
-        });
+
     }
 
 
@@ -976,13 +974,14 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
     if(!upad){
         if(info->admin.isEmpty()) return QString();
         if(!info->admin.contains(ev.user)){
-            if(ev.msg=="#纯白铃铛" || ev.msg=="纯白铃铛")
+            if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
             {
                 return             "**普通权限**\n>[我的ID]() 获取ID\n\n"
                        "**群管理**\n>"
                        "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
                        "[禁言]() <艾特> <秒> \n>"
                        "[解禁]() <艾特> 解除禁言某个人\n>"
+                       "[一键解禁]() 批量解除\n>"
                        "[禁言列表]() 获取禁言列表\n>"
                        "[本群状态]() 查看开启列表\n>"
                        "[获取加群列表]() 获取申请加群列表\n"
@@ -992,7 +991,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             return QString();
         }
     }
-    if(ev.msg=="#纯白铃铛" || ev.msg=="纯白铃铛")
+    if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃"))
     {
         int js=0,dll=0,dll32=0,python=0;
         for(const auto & p :std::as_const(m_pluginList))
@@ -1009,6 +1008,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
             "[禁言]() <艾特> <秒> \n>"
             "[解禁]() <艾特> 解除禁言某个人\n>"
+            "[一键解禁]() 批量解除\n>"
             "[禁言列表]() 获取禁言列表\n>"
             "[本群状态]() 查看开启列表\n>"
             "[获取加群列表]() 获取申请加群列表\n"
@@ -1524,7 +1524,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 QString joinRequestId = item["join_request_id"].toString();
                 QString memberOpenid = item["member_openid"].toString();
                 QString username = item["username"].toString();
-                c->approveGroupJoinRequest_Async(ev.groupId,memberOpenid,true,joinRequestId);
+                c->approveGroupJoinRequest(ev.groupId,memberOpenid,true,joinRequestId,QString(),false,[](auto, auto){ return; });
             }
 
             // 立即回复用户，表示开始处理
@@ -1581,7 +1581,9 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             int cnt = extractParams(ev.msg, "禁言", 0, QID,time);
             if (cnt == -1) return "[禁言] 缺少被禁言人";
             auto *c = m_botClients[ev.appid];
-            QString res = c->setGroupRestrictChatSetting(ev.groupId,QID,time.toInt());
+            int sj = time.toInt();
+            if(sj<=0) sj =30;
+            QString res = c->setGroupRestrictChatSetting(ev.groupId,QID,sj);
             if(res=="{}")
             {
                 return "禁言成功";
@@ -1601,6 +1603,58 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             return "解除失败可能无权限.."+res;
         }
+        if (ev.msg == "一键解禁")
+        {
+            auto *c = m_botClients[ev.appid];
+            QString immediateReply = "⏳ 正在执行一键解禁，请稍候...";
+            c->getGroupRestrictChatSetting(ev.groupId, [=](const QString& jsonStr, QNetworkReply::NetworkError err) {
+                if (err != QNetworkReply::NoError) {
+                    QString text = "❌ 获取禁言列表失败（网络错误）";
+                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    return;
+                }
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+                if (parseError.error != QJsonParseError::NoError) {
+                    QString text = "❌ 解析禁言列表失败";
+                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    return;
+                }
+                QJsonObject root = doc.object();
+                QJsonArray members = root["members"].toArray();
+                if (members.isEmpty()) {
+                    QString text = "✅ 当前没有需要解禁的成员";
+                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    return;
+                }
+                // 构造批量解禁的 JSON 数组
+                QJsonArray delMembers;
+                for (const QJsonValue &val : std::as_const(members)) {
+                    QJsonObject member = val.toObject();
+                    QString openid = member["member_openid"].toString();
+                    QJsonObject delItem;
+                    delItem["member_openid"] = openid;
+                    delItem["op"] = "del";
+                    delMembers.append(delItem);
+                }
+                // 异步调用批量解禁接口
+                c->setGroupRestrictChatSetting(ev.groupId, delMembers, [=](const QString& resJson, QNetworkReply::NetworkError err2) {
+                    QString text;
+                    if (err2 != QNetworkReply::NoError) {
+                        text = "❌ 一键解禁失败（网络错误）";
+                    } else if (resJson == "{}") {
+                        text = "✅ 一键解禁成功，已解除 " + QString::number(delMembers.size()) + " 名成员的禁言";
+
+                    } else {
+                        text = "❌ 一键解禁失败，可能无权限或接口错误: " + resJson;
+                    }
+                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                });
+            });
+
+            // 由于是异步处理，这里返回一个占位消息（或空字符串）
+            return immediateReply;   // 或 return "";
+        }
 
         if (ev.msg.startsWith("撤回"))
         {
@@ -1617,7 +1671,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 for (const auto &m : std::as_const(msg))
                 {
                     if(m.plugin_ch.isEmpty()) continue;
-                    c->delete_messages_Async(0,ev.groupId,m.plugin_ch);
+                    c->delete_messages(0,ev.groupId,m.plugin_ch,[](auto, auto){ return; });
                     ji++;
                     if(ji>=cs) return "*";
                 }
@@ -1643,7 +1697,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     }
                 }else
                 {
-                    c->delete_messages_Async(0,ev.groupId,m.ch);
+                    c->delete_messages(0,ev.groupId,m.ch,[](auto, auto){ return; });
                 }
 
                 ji++;

@@ -45,12 +45,15 @@ void NetManager::postAsync(const QString& url, const QByteArray& data,
         timer->start(timeoutMs);
 
         // 使用 context 作为 receiver，使得槽（lambda）在 context 的线程执行
-        QObject::connect(reply, &QNetworkReply::finished, context, [reply, callback]() {
-            QByteArray raw = reply->readAll();
-            QString response = QString::fromUtf8(raw);
-            QNetworkReply::NetworkError err = reply->error();
+        QObject::connect(reply, &QNetworkReply::finished, [callback, reply]() {
+            if(callback) {
+                QString response = QString::fromUtf8(reply->readAll());
+                QNetworkReply::NetworkError err = reply->error();
+                reply->deleteLater();
+                callback(response, err);
+                return ;
+            }
             reply->deleteLater();
-            callback(response, err);
         });
     }, Qt::QueuedConnection);
 }
@@ -237,6 +240,45 @@ std::future<QString> NetManager::get(const QString &url,const QHash<QString, QSt
     return future; // 毫秒级返回
 }
 
+void NetManager::getAsync(const QString &url,const QHash<QString, QString> &headers, int timeoutMs, Callback callbacks) {
+
+
+
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for(auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        QNetworkReply *reply = mgr->get(request);
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::finished, [callbacks, reply]() {
+            if(callbacks) {
+                QString response = QString::fromUtf8(reply->readAll());
+                QNetworkReply::NetworkError err = reply->error();
+                reply->deleteLater();
+                callbacks(response, err);
+                return ;
+            }
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
+
+
+}
+
+
 std::future<QString> NetManager::Patch (const QString &url, const QByteArray &jsonData,
                                       const QHash<QString, QString> &headers, int timeoutMs) {
     // 1. 使用 shared_ptr 管理 promise，保证跨线程安全
@@ -273,7 +315,7 @@ std::future<QString> NetManager::Patch (const QString &url, const QByteArray &js
     return future; // 毫秒级返回
 }
 void NetManager::Delete2(const QString &url,const QByteArray &data,
-                                        const QHash<QString, QString> &headers) {
+                                        const QHash<QString, QString> &headers,int timeoutMs,Callback callbacks) {
     QNetworkAccessManager *mgr = nullptr;
     {
         QMutexLocker locker(&m_managerMutex);
@@ -286,7 +328,18 @@ void NetManager::Delete2(const QString &url,const QByteArray &data,
             request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
         }
         QNetworkReply *reply = mgr->sendCustomRequest(request, "DELETE", data);
-        QObject::connect(reply, &QNetworkReply::finished, [reply]() {
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+        QObject::connect(reply, &QNetworkReply::finished, [callbacks, reply]() {
+            if(callbacks) {
+                QString response = QString::fromUtf8(reply->readAll());
+                QNetworkReply::NetworkError err = reply->error();
+                reply->deleteLater();
+                callbacks(response, err);
+                return ;
+            }
             reply->deleteLater();
         });
     }, Qt::QueuedConnection);

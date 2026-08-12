@@ -445,7 +445,7 @@ QString addbot(const QJsonObject &params)
         accountPage->saveAccounts(oldInfoPtr.get());
     }
 
-    if (homePage) homePage->refreshRuntimeStats();
+
     return "";
 }
 QString botlist();

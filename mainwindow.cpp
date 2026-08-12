@@ -70,13 +70,15 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.1.33"
-#define APP_BUILD_NUMBER 33
+#define APP_VERSION_STR "v1.2.2.35"
+#define APP_BUILD_NUMBER 35
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.1.33 (2026-08-07)
+## v1.2.2.35 (2026-08-12)
 - 内置一些快捷这里 方便查看内置属性
+- 修复 32位进程问题
+- 修复 cnb cos测试异常问题
 
 ## v1.2.0.32 (2026-08-07)
 - 优化 图片视频 文件类如果是腾讯 广州服务器 自动走内网

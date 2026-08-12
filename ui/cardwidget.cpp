@@ -228,7 +228,7 @@ void CardWidget::onLoginButton() {
     }
 
     refreshDisplay();
-    emit loginClicked(m_info->appid_int); //更新首页
+
 }
 
 void CardWidget::triggerLogin() {
@@ -242,7 +242,7 @@ void CardWidget::triggerLogin() {
 void CardWidget::onBotLoginSuccess()
 {
     refreshDisplay();
-    emit loginClicked(m_info->appid_int);
+
     accountPage->saveAccounts(m_info);
     AppendEventLog((m_info->nickname.isEmpty() ? m_info->appid : m_info->nickname) + "->登录成功", 0xF83834);
 }
@@ -251,10 +251,7 @@ void CardWidget::onBotLoginSuccess()
 void CardWidget::onBotDisconnected()
 {
     refreshDisplay();
-    emit loginClicked(m_info->appid_int);
 }
-
-
 
 void CardWidget::onSettingButton() {
     emit settingClicked(m_info->appid_int);

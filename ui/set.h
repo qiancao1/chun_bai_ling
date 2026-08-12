@@ -43,7 +43,7 @@ private:
 
     QLineEdit  *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook;
     QPushButton  *web_qr;
-    QPushButton  *webhook_but,*m_loadbut;
+    QPushButton  *webhook_but,*m_loadbut,*m_test_api;
     QLineEdit    *m_addrEdit,*m_loadport;
     QTextEdit    *m_admid_deit;
     QPushButton  *m_admin_qr;

@@ -628,7 +628,7 @@ static void handleUploadByPath(QTcpSocket *socket, const QByteArray &headers, co
 }// 使用 Qt 的 HTTP 客户端直接调用 /upload_by_path
 
 
-
+#include "netmanager.h"
 
 QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg)
 {
@@ -647,67 +647,12 @@ QString uploadImageByPath(const QString &serverUrl, const QString &localPath, in
         return QString();
     }
 
-    // 2. 构造上传 URL
-    QUrl url(serverUrl);
-    QString path = url.path();
-    if (!path.endsWith('/'))
-        path += '/';
-    path += "upload_by_path";
-    url.setPath(path);
-
-    // 3. 构造 JSON 请求体
-    QJsonObject reqObj;
-    reqObj["path"] = localPath;
-    QByteArray jsonData = QJsonDocument(reqObj).toJson(QJsonDocument::Compact);
-
-    // 4. 设置 Qt 请求
-    QNetworkRequest request;
-    request.setUrl(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    // 忽略证书错误（与原代码 setVerifyCertificate(false) 一致）
-    QSslConfiguration sslConfig = QSslConfiguration::defaultConfiguration();
-    sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
-    request.setSslConfiguration(sslConfig);
-
-    // 5. 发送请求（同步阻塞）
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, jsonData);
-
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();
-
-    // 6. 处理响应
-    QByteArray responseBody;
-    QString reqErrorString;
-    bool ok = false;
-
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        ok = true;
-        responseBody = reply->readAll();
-    } else {
-        if (!timer.isActive()) {
-            reqErrorString = "Request timeout";
-        } else {
-            reqErrorString = reply->errorString();
-        }
-        // 尝试读取可能的部分响应
-        responseBody = reply->readAll();
-    }
-    reply->deleteLater();
-
-    if (!ok) {
-        if (errorMsg) *errorMsg = reqErrorString;
-        return QString();
-    }
-
-    // 7. 解析 JSON 响应
+    QString url = serverUrl +"/upload_by_path";
+    QByteArray data = QString(R"({"path":"%1"})").arg(localPath).toUtf8();
+    std::future<QString> future = NetManager::instance()->post(url, data, QHash<QString,QString>(), timeoutMs);
+    QString responseBody = future.get();
     QJsonParseError parseErr;
-    QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
+    QJsonDocument doc = QJsonDocument::fromJson(responseBody.toUtf8(), &parseErr);
     if (parseErr.error != QJsonParseError::NoError) {
         if (errorMsg) *errorMsg = QString("JSON parse error: %1").arg(parseErr.errorString());
         return QString();

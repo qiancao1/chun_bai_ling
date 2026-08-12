@@ -25,7 +25,7 @@ private slots:
     void onAddAccount();
     void onEditAccount(int appid);
 
-    void onLoginStateChanged(int appid);
+
     void autoConnectBots();
 
 private:

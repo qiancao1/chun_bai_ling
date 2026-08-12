@@ -224,7 +224,7 @@ void AccountPage::refreshCards2(AccountInfo *info) {
     CardWidget *card = new CardWidget(info);
     connect(card, &CardWidget::settingClicked, this, &AccountPage::onEditAccount);
     connect(card, &CardWidget::deleteClicked, this, &AccountPage::onDeleteAccount);
-    connect(card, &CardWidget::loginClicked, this, &AccountPage::onLoginStateChanged);
+
     m_flowLayout->addWidget(card);
     g_CW.insert(info->appid_int, card);
     QListWidgetItem *item = new QListWidgetItem;
@@ -271,7 +271,7 @@ void AccountPage::refreshCards() {
         CardWidget *card = new CardWidget(infoPtr.get());
         connect(card, &CardWidget::settingClicked, this, &AccountPage::onEditAccount);
         connect(card, &CardWidget::deleteClicked, this, &AccountPage::onDeleteAccount);
-        connect(card, &CardWidget::loginClicked, this, &AccountPage::onLoginStateChanged);
+
 
         QListWidgetItem *item = new QListWidgetItem;
         item->setText(infoPtr->nickname);
@@ -357,7 +357,7 @@ void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
         saveAccounts(oldInfoPtr.get());
     }
 
-    if (homePage) homePage->refreshRuntimeStats();
+
 }
 
 void AccountPage::onAddAccount() {
@@ -399,13 +399,9 @@ void AccountPage::onDeleteAccount(int appid) {
         }
     }
 
-    if (homePage) homePage->refreshRuntimeStats();
+
 }
 
-void AccountPage::onLoginStateChanged(int appid) {
-
-    if (homePage) homePage->refreshRuntimeStats();
-}
 
 AccountInfo* AccountPage::findAccount(int appid) {
     for (const auto& infoPtr : std::as_const(m_accounts)) {

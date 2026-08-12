@@ -919,13 +919,13 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         if(shuaping(m_info,ev))
         {
-            setGroupRestrictChatSetting_Async(ev.groupId,ev.user,60,
+            setGroupRestrictChatSetting(ev.groupId,ev.user,60,
                 [this,ev](const QString &resp, QNetworkReply::NetworkError err) {
                 QString pname= "[刷屏检测]";
                 if(resp == "{}")
                 {
                     QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
-                    delete_messages_Async(ev.type,ev.groupId,ev.msgId);
+                    delete_messages(ev.type,ev.groupId,ev.msgId,[](auto, auto){ return; });
                     send_messagesAsync(ev.type,ev.groupId,pname,text,ev.msgId);
                 }
             });
@@ -1320,8 +1320,20 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
     return resp;
 }
 
+QString QQBotClient::Post(const QString &url, const QJsonObject &jsonData,
+                              const QString &contentType, int timeoutMs,Callback finalCallback) {
+    if(!finalCallback) PostSync(url,jsonData,contentType,timeoutMs);
+    doPost(url, jsonData, contentType, timeoutMs, finalCallback, 0);
+    return QString();
 
+}
 
+QString QQBotClient::Get(const QString &url,const QString &contentType, int timeoutMs,Callback finalCallback) {
+    if(!finalCallback) GetSync(url,contentType,timeoutMs);
+    GetAsync(url, contentType, timeoutMs, finalCallback);
+    return QString();
+
+}
 void QQBotClient::PostAsync(const QString& url, const QJsonObject& json,
                             const QString& contentType, int timeoutMs,
                             Callback finalCallback) {
@@ -1374,7 +1386,7 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
 }
 
 //    {"message":"token not exist or expire","code":11244,"err_code":11244,"trace_id":"5142e0238bc8314d8aa222dd3bee4949"}
-
+//频道用
 void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
                                const QHash<QString, QString> &headers, int timeoutMs,
                                Callback callback) {
@@ -1407,6 +1419,19 @@ QString QQBotClient::GetSync(const QString &url, const QString &contentType, int
     std::future<QString> future = NetManager::instance()->get(url, headers, timeoutMs);
     return future.get();
 }
+void QQBotClient::GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callback) {
+
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+    NetManager::instance()->getAsync(url, headers, timeoutMs,callback);
+}
+
 QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
 
     QHash<QString, QString> headers;
@@ -1484,6 +1509,12 @@ void detectOptimalRegion() {
     AppendEventLog("坏！当前服务器不支持内网模式 你可能需要购买腾讯云服务器 才能内网加速",0xff0000);
 }
 
+QString QQBotClient::Delete(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback callbacks) {
+
+    if(!callbacks) return DeleteSync(url,jsonData,contentType,timeoutMs);
+    DeleteAsync(url,jsonData,contentType,timeoutMs,callbacks);
+    return QString();
+}
 QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
 
     QHash<QString, QString> headers;
@@ -1498,7 +1529,7 @@ QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData,
     std::future<QString> future = NetManager::instance()->Delete(url, jsonbyte, headers, timeoutMs);
     return future.get();
 }
-void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType) {
+void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType ,int timeoutMs, Callback callbacks) {
 
     QHash<QString, QString> headers;
     headers.insert("X-Union-Appid", m_info->appid);
@@ -1509,71 +1540,10 @@ void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, c
         headers.insert("Content-Type", contentType);
     }
     QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
-    NetManager::instance()->Delete2(url, jsonbyte, headers);
+    NetManager::instance()->Delete2(url, jsonbyte, headers,timeoutMs,callbacks);
 
 }
-//弃用
-QString QQBotClient::_Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs)
-{
 
-
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
-    request.setHeader(QNetworkRequest::ContentTypeHeader,ContentTypeHeader);
-    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
-
-
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, jsonData);
-
-
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();   // 阻塞直到请求完成或超时
-
-    // 5. 处理结果
-    QString response= QString::fromUtf8(reply->readAll());
-
-    reply->deleteLater();
-    return response;
-}
-//弃用
-QString QQBotClient::_Post(const QString &url, const QJsonObject &json, int timeoutMs)
-{
-    // 1. 准备 JSON 数据
-    QByteArray jsonData = QJsonDocument(json).toJson(QJsonDocument::Compact);
-
-    // 2. 创建请求对象
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
-
-    // 3. 创建网络管理器（局部变量，在同步阻塞模式下安全）
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, jsonData);
-
-    // 4. 同步等待：事件循环 + 超时定时器
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();   // 阻塞直到请求完成或超时
-
-    // 5. 处理结果
-    QString response= QString::fromUtf8(reply->readAll());
-
-    reply->deleteLater();
-    return response;
-}
 //弃用
 QString QQBotClient::_Get(const QString &url, int timeoutMs)
 {

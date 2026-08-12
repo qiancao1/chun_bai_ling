@@ -100,16 +100,16 @@ public:
     int m_reconnectAttempts;
     QString onTextMessage(const QString &message);
     // 发送消息接口
-    QString send_messages(int type, const QString &openid, QString &pname, QString &text, const QString &msgid=QString(),
+    QString send_messages(int type, const QString &openid, const QString &pname, QString &text, const QString &msgid=QString(),
                           bool is_wakeup=false, bool mode=false, int = 0, bool noref=false);
-    QString send_messagesAsync(int type, const QString &openid,QString &pname, QString &text,
+    QString send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                             const QString &msgid,bool is_wakeup=false,bool mode=false,int 发送类型=0,bool noref=false);
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
                           const QString &message_reference, const QString &msgid,
                           bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
 
-    QString send_messages_ark(int type, const QString &openid, QString &pname, const QJsonObject &ark,
+    QString send_messages_ark(int type, const QString &openid,const QString &pname, const QJsonObject &ark,
                               const QString &msgid, bool is_wakeup=false, int seq_index=0,const MessageLogContext ctx = MessageLogContext());
 
 
@@ -129,40 +129,37 @@ public:
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
     QString uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok);
-    QString del_members (int type,const QString& group,const QString &user,bool add_blacklist = false,int delete_history_msg_days=0);
+    QString del_members (int type, const QString& group, const QString &user, bool add_blacklist = false, int delete_history_msg_days=0, Callback callbacks=Callback());
     //撤回
-    QString delete_messages(int type, const QString &openid, const QString &msgid);
-    void delete_messages_Async(int type, const QString &openid, const QString &msgid);
-    //获取邀请链接
-    QString get_members_list(const QString& group, int limit, int index);
-    QString get_groups_members(const QString& group,const QString& user);
-    QString generate_share_link(const QString& callback_data);
-    QString get_groups_list(int limit, int index);
 
-    QString get_users_list(int limit,int index);
+    QString delete_messages(int type, const QString &openid, const QString &msgid,Callback callbacks=Callback());
+    //获取邀请链接
+    QString get_members_list(const QString& group, int limit, int index,Callback callbacks=Callback());
+    QString get_groups_members(const QString& group,const QString& user,Callback callbacks=Callback());
+    QString generate_share_link(const QString& callback_data,Callback callbacks=Callback());
+    QString get_groups_list(int limit, int index,Callback callbacks=Callback());
+
+    QString get_users_list(int limit,int index,Callback callbacks=Callback());
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
-    QString get_groups_info(const QString& group);
-    QString get_groups_bot_state(const QString& group);
-    QString set_mute(const QString& group,const QString &user,qint64 mute_seconds);
+    QString get_groups_info(const QString& group,Callback callbacks=Callback());
+    QString get_groups_bot_state(const QString& group,Callback callbacks=Callback());
+    QString set_mute(const QString& group, const QString &user, qint64 mute_seconds);
 
-    QString setGroupRestrictChatSetting(const QString& groupOpenId,
-                                                        const QString& memberOpenId,
-                                                        int muteSeconds = 60);
-    void setGroupRestrictChatSetting_Async(const QString& groupOpenId,
-                                              const QString& memberOpenId,
-                                              int muteSeconds, Callback callbacks);
-    QString approveGroupJoinRequest(const QString& group,const QString& user,
-                                                 bool op,const QString& joinRequestId,
-                                                 const QString& rejectReason=QString(),bool addToBlacklist=false);
-    void approveGroupJoinRequest_Async(const QString& group, const QString& user,
-                                    bool op, const QString& joinRequestId,
+
+
+
+
+    QString getjoin_request_list(const QString& group, int limit=20, const QString &cursor=QString(),Callback callbacks=Callback());
+    QString getGroupRestrictChatSetting(const QString& group,Callback callbacks=Callback());
+
+    //支持异步api
+
+
+    QString setGroupRestrictChatSetting(const QString& groupOpenId,const QString& memberOpenId,int muteSeconds, Callback callbacks = Callback());
+    QString setGroupRestrictChatSetting(const QString& group, const QJsonArray &membersJson, Callback callbacks = Callback());
+    QString approveGroupJoinRequest(const QString& group, const QString& user,bool op, const QString& joinRequestId,
                                     const QString& rejectReason=QString(), bool addToBlacklist=false, Callback callbacks = Callback());
-    QString setGroupRestrictChatSetting(const QString& group, const QJsonArray &membersJson);
-    QString getjoin_request_list(const QString& group, int limit=20, const QString &cursor=QString());
-    QString getGroupRestrictChatSetting(const QString& group);
-
-
 
 public slots:
     void onTextMessageReceived(const QString &message);
@@ -189,9 +186,9 @@ private:
     QString fetchGatewayUrl();
     bool refreshAccessToken();
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
-    QString send_Media(int type, const QString &openid, QString &pname, const QString &info, qint64 now_us,
+    QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
                        const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
-    QString sendOneMedia(int type, const QString &openid, QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext ctx);
+    QString sendOneMedia(int type, const QString &openid,const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext ctx);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);
@@ -209,23 +206,30 @@ private:
     void resetReconnectAttempts();
     void fetchSelfInfo();   // 获取机器人自身信息
     void downloadAvatar(const QString &url, const QString &savePath);
-    QString _Post(const QString &url,const QJsonObject &json, int timeoutMs = 30000);
-    QString _Post(const QString &url, const QByteArray &jsonData, const QString &ContentTypeHeader,int timeoutMs = 30000);
+
     QString _Get(const QString &url, int timeoutMs);
 
-    QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);
-    QString PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
+
+
+    QString Post(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback finalCallback=Callback());
+    QString Get(const QString &url,const QString &contentType, int timeoutMs,Callback finalCallback=Callback());
+
+
+    void GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callback=Callback()) ;
     QString GetSync(const QString &url, const QString &contentType, int timeoutMs);
     QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
 
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
     std::future<QString> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
-    QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
-    void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType);
+
+    QString Delete(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback callbacks);
+    QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000);
+    void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000, Callback callback=Callback());
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 
 
-
+    QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);
+    QString PostSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs);
     // 异步 POST，自动处理 token 过期刷新和去重重试（递归实现）
     void PostAsync(const QString& url, const QJsonObject& json,
                    const QString& contentType, int timeoutMs,

@@ -86,7 +86,7 @@ QString AccountInfo::toJson() const {
     obj["bai_sc"]=bai_sc;
     obj["bai_qy"]=bai_qy;
     obj["times"] = times;
-    obj["shuap"]=shuap;
+
     obj["tiaoshu"]=tiaoshu;
     obj["pbbot"]=pbbot;
     obj["admin"]=admin;
@@ -163,7 +163,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.times = obj["times"].toInt(5);
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
 
-    info.shuap = obj["shuap"].toBool();
+
     info.pbbot =obj["pbbot"].toBool(true);
     info.tiaoshu = obj["tiaoshu"].toInt(5);
 
