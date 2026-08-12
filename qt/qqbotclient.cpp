@@ -969,7 +969,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["type"]=ev.type;
     payload["GroupName"]=ev.groupname;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);;
+    if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 
     //qDebug() << ev.groupId <<ev.user << ev.msg;
     Messages(m_info, ev);
@@ -1322,14 +1322,14 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
 
 QString QQBotClient::Post(const QString &url, const QJsonObject &jsonData,
                               const QString &contentType, int timeoutMs,Callback finalCallback) {
-    if(!finalCallback) PostSync(url,jsonData,contentType,timeoutMs);
+    if(!finalCallback) return PostSync(url,jsonData,contentType,timeoutMs);
     doPost(url, jsonData, contentType, timeoutMs, finalCallback, 0);
     return QString();
 
 }
 
 QString QQBotClient::Get(const QString &url,const QString &contentType, int timeoutMs,Callback finalCallback) {
-    if(!finalCallback) GetSync(url,contentType,timeoutMs);
+    if(!finalCallback) return GetSync(url,contentType,timeoutMs);
     GetAsync(url, contentType, timeoutMs, finalCallback);
     return QString();
 
@@ -1357,7 +1357,7 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
     QByteArray jsonData = QJsonDocument(json).toJson(QJsonDocument::Compact);
 
     // 发起异步请求（context = this，回调在 this 所在线程执行）
-    NetManager::instance()->postAsync(url, jsonData, headers, timeoutMs, this,
+    NetManager::instance()->postAsync(url, jsonData, headers, timeoutMs,
                                       [this, url, json, contentType, timeoutMs, finalCallback, retryCount]
                                       (const QString& response, QNetworkReply::NetworkError error) {
 
@@ -1390,7 +1390,7 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
 void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
                                const QHash<QString, QString> &headers, int timeoutMs,
                                Callback callback) {
-    NetManager::instance()->postAsync(url, data, headers, timeoutMs, this,
+    NetManager::instance()->postAsync(url, data, headers, timeoutMs,
                                       [this, url, data, headers, timeoutMs, callback]
                                       (const QString &response, QNetworkReply::NetworkError error) {
                                           if (response.contains("token not exist or expire")) {

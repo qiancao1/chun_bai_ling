@@ -165,6 +165,7 @@ QString uploadFileSync(const QString &filePath)
 
     return finalUrl;
 }
+
 QString uploadFileSync_test(const QString &filePath)
 {
     if(g_cnb.repo.isEmpty() || g_cnb.key.isEmpty()) return QString();
@@ -193,6 +194,98 @@ QString uploadFileSync_test(const QString &filePath)
 
     return finalUrl;
 }
+
+
+
+// 上传函数：回调方式，支持自动删除
+void uploadFileAsync(const QString& filePath,
+                     std::function<void(const QString& url, const QString& error)> callback)
+{
+
+    QHash<QString, QString> headers;
+    headers["Content-Type"] = "application/json";
+    headers["Authorization"] = "Bearer " + g_cnb.key;   // 全局 token
+
+    QString url = QString("https://api.cnb.cool/%1/-/upload/files").arg(g_cnb.repo);
+    QFileInfo info(filePath);
+
+    int idx = m_index.fetchAndAddOrdered(1) % 10000;  // 原子递增并返回旧值
+    QString fileName = QString("%1.png").arg(idx);
+
+
+    QJsonObject body;
+    body["name"] = fileName;
+    body["size"] = info.size();
+    QByteArray jsonData = QJsonDocument(body).toJson();
+
+    NetManager::instance()->postAsync(url, jsonData, headers, 30000,
+                                      [=](const QString& response, QNetworkReply::NetworkError err) {
+                                          if (err != QNetworkReply::NoError) {
+                                              if (callback) callback(QString(), "获取上传URL失败: " + response);
+                                              return;
+                                          }
+
+                                          QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+                                          if (doc.isNull()) {
+                                              if (callback) callback(QString(), "无效的 JSON 响应");
+                                              return;
+                                          }
+                                          QJsonObject obj = doc.object();
+                                          if (obj.isEmpty()) {
+                                              if (callback) callback(QString(), "响应为空");
+                                              return;
+                                          }
+
+                                          QString uploadUrl = obj["upload_url"].toString();
+                                          QString token = obj["token"].toString();
+                                          QJsonObject assets = obj["assets"].toObject();
+                                          QJsonObject form = obj["form"].toObject();
+
+                                          // 2. 读取本地文件
+                                          QFile file(filePath);
+                                          if (!file.open(QIODevice::ReadOnly)) {
+                                              if (callback) callback(QString(), "无法打开文件: " + filePath);
+                                              return;
+                                          }
+                                          QByteArray fileData = file.readAll();
+                                          file.close();
+
+                                          QHash<QString, QString> putHeaders;
+                                          putHeaders["Content-Type"] = "application/octet-stream";
+                                          putHeaders["Content-Length"] = QString::number(fileData.size());
+                                          if (!token.isEmpty())
+                                              putHeaders["Authorization"] = "Bearer " + token;
+
+                                          // 处理 form 参数（拼接到 URL query）
+                                          if (!form.isEmpty()) {
+                                              QUrl urlObj(uploadUrl);
+                                              QUrlQuery query(urlObj);
+                                              for (auto it = form.begin(); it != form.end(); ++it) {
+                                                  query.addQueryItem(it.key(), it.value().toString());
+                                              }
+                                              urlObj.setQuery(query);
+                                              uploadUrl = urlObj.toString();
+                                          }
+
+                                          // 4. 发起 PUT 异步上传
+                                          NetManager::instance()->putAsync(uploadUrl, fileData, putHeaders, 30000,
+                                                                           [=](const QString& putResp, QNetworkReply::NetworkError putErr) {
+                                                                               if (putErr != QNetworkReply::NoError) {
+                                                                                   if (callback) callback(QString(), "文件上传失败: " + putResp);
+                                                                                   return;
+                                                                               }
+
+                                                                               // 5. 构造最终访问 URL
+                                                                               QString path = assets["path"].toString();
+                                                                               QString finalUrl = path;
+                                                                               if (!finalUrl.startsWith("http"))
+                                                                                   finalUrl = "https://cnb.cool" + finalUrl;
+                                                                               // 7. 回调成功
+                                                                               if (callback) callback(finalUrl, QString());
+                                                                           });
+                                      });
+}
+
 
 
 #endif // CNBUPLOADER_H

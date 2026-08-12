@@ -70,15 +70,18 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.2.35"
-#define APP_BUILD_NUMBER 35
+#define APP_VERSION_STR "v1.2.5.37"
+#define APP_BUILD_NUMBER 37
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.2.35 (2026-08-12)
+## v1.2.5.37 (2026-08-12)
 - 内置一些快捷这里 方便查看内置属性
 - 修复 32位进程问题
 - 修复 cnb cos测试异常问题
+- 修复 机器人不能使用其他机器人缓存问题
+- 修复 Ai挖的坑 增加 查看框架发送的原始JSON
+- 优化 图片上传 然后你是内网 将执行并发上传 也就是上传10张和 上传1张耗时一样
 
 ## v1.2.0.32 (2026-08-07)
 - 优化 图片视频 文件类如果是腾讯 广州服务器 自动走内网

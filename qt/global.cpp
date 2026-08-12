@@ -1427,7 +1427,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
-    // ---------- 管理员命令（立即处理，与原逻辑相同） ----------
+
     if (ev.member_role < 2 || g_admin.contains(ev.user) || info->admin.contains(ev.user)) {
         if (ev.msg == "本群状态")
         {

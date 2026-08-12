@@ -31,7 +31,9 @@ public:
                                const QHash<QString, QString> &headers, int timeoutMs);
     std::future<QString> put(const QString &url, const QByteArray &jsonData,
                                          const QHash<QString, QString> &headers, int timeoutMs);
-
+    void putAsync(const QString& url, const QByteArray& data,
+                              const QHash<QString, QString>& headers, int timeoutMs,
+                              Callback callback);
     std::future<QString> Delete(const QString &url,
                                 const QByteArray &data,
                                 const QHash<QString, QString> &headers = {},
@@ -43,8 +45,7 @@ public:
 
     // 异步 POST，回调在 context 所在线程执行
     void postAsync(const QString& url, const QByteArray& data,
-                   const QHash<QString, QString>& headers, int timeoutMs,
-                   QObject* context, Callback callback=Callback());
+                   const QHash<QString, QString>& headers, int timeoutMs, Callback callback=Callback());
     void getAsync(const QString &url, const QHash<QString, QString> &headers, int timeoutMs, Callback callbacks=Callback());
 
 private:

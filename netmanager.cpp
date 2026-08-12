@@ -21,8 +21,7 @@ void NetManager::init() {
 }
 
 void NetManager::postAsync(const QString& url, const QByteArray& data,
-                           const QHash<QString, QString>& headers, int timeoutMs,
-                           QObject* context, Callback callback) {
+                           const QHash<QString, QString>& headers, int timeoutMs, Callback callback) {
     // 轮询选择一个 NAM
     QNetworkAccessManager *mgr = nullptr;
     {
@@ -44,7 +43,7 @@ void NetManager::postAsync(const QString& url, const QByteArray& data,
         QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
         timer->start(timeoutMs);
 
-        // 使用 context 作为 receiver，使得槽（lambda）在 context 的线程执行
+
         QObject::connect(reply, &QNetworkReply::finished, [callback, reply]() {
             if(callback) {
                 QString response = QString::fromUtf8(reply->readAll());
@@ -344,6 +343,47 @@ void NetManager::Delete2(const QString &url,const QByteArray &data,
         });
     }, Qt::QueuedConnection);
     return ;
+}
+
+void NetManager::putAsync(const QString& url, const QByteArray& data,
+                          const QHash<QString, QString>& headers, int timeoutMs,
+                          Callback callback)
+{
+    QNetworkAccessManager *mgr = nullptr;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        mgr = m_netManagers[m_netManagerIndex++ % m_netManagers.size()];
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+
+        QNetworkReply* reply = mgr->put(request, data);
+        QTimer* timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        // SSL 错误忽略（内网可能证书问题）
+        QObject::connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError>&) {
+            reply->ignoreSslErrors();
+        });
+
+        QObject::connect(reply, &QNetworkReply::finished, [callback, reply]() {
+            if (callback) {
+                QString response = QString::fromUtf8(reply->readAll());
+                QNetworkReply::NetworkError err = reply->error();
+                reply->deleteLater();
+                callback(response, err);
+                return;
+            }
+            reply->deleteLater();
+        });
+    }, Qt::QueuedConnection);
 }
 // NetManager.cpp
 std::future<QString> NetManager::Delete(const QString &url,

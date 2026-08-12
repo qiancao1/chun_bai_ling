@@ -697,7 +697,7 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     painter->setFont(m_timeFont);
     painter->setPen(QColor(170,170,170));
     int timeWidth = m_timeFm->horizontalAdvance(timestamp);
-    painter->drawText(bubbleWidth - 4 - timeWidth, yOffset + m_timeFm->ascent()-2, timestamp);
+    painter->drawText(bubbleWidth - 8 - timeWidth, yOffset + m_timeFm->ascent()-2, timestamp);
 
     painter->restore();
 
@@ -1337,7 +1337,9 @@ void ChatPage::updateAllContactLists(int index)
 
 
             int appid =it.value();
-
+            if (m_currentBotIndex != -1) {
+                if (appid != m_accounts[m_currentBotIndex]->appid_int) continue;
+            }
             Message msg;
             if(sw)
             {

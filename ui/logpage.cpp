@@ -309,17 +309,17 @@ void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& gr
 
         m_model->appendRow(rowItems);
 
-        // --- 新增：行数控制，超过10500条则删除最早的三分之一 ---
+        // --- 行数控制，超过10500条则删除最早的三分之一 ---
         int rowCount = m_model->rowCount();
         if (rowCount > 10500) {
-            int removeCount = rowCount / 3;          // 删除约三分之一
+            int removeCount = rowCount / 3;
             if (removeCount > 0) {
-                m_model->removeRows(0, removeCount); // 删除最旧的行
+                m_model->removeRows(0, removeCount);
             }
         }
         // -------------------------------------------------------
 
-        int newRow = m_model->rowCount() - 1;   // 获取最新行号（删除后新行索引会变化，但仍在末尾）
+        int newRow = m_model->rowCount() - 1;
         QModelIndex idx = m_model->index(newRow, 0);
         QString key = g_logdb[0]->makeKey(QString::number(appid), groupId, seq);
         m_model->setData(idx, key, Qt::UserRole);
@@ -328,7 +328,17 @@ void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& gr
         m_offset++;
         QTableView* view = currentListView();
         if (view) {
-            view->scrollToBottom();
+            QScrollBar* vScroll = view->verticalScrollBar();
+            if (vScroll) {
+                // 判断当前滚动条是否在底部（允许5像素的误差）
+                int maxVal = vScroll->maximum();
+                int curVal = vScroll->value();
+                // 若已滑到底部（或内容不够一页，最大值=0），则自动滚到底部
+                if (curVal >= maxVal - 5) {
+                    view->scrollToBottom();
+                }
+                // 否则不滚动，保持用户当前浏览位置
+            }
         }
     });
 }

@@ -339,7 +339,7 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
                         msg.hf = hf;
                     }
                     result.append(msg);
-
+                    fetched++;
                 }
             }
         }

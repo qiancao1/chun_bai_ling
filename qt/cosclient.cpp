@@ -85,3 +85,33 @@ QString uploadFileSync_cos(const QString &localPath)
     }
     return url;
 }
+// ---------- 异步回调版本 ----------
+void uploadFileAsync_cos(const QString& localPath,
+                         std::function<void(const QString& url, const QString& error)> callback)
+{
+    // 1. 读取文件
+    QFile file(localPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (callback) callback(QString(), "无法打开文件: " + localPath);
+        return;
+    }
+    QByteArray data = file.readAll();
+    file.close();
+
+    QString encodedKey = QUrl::toPercentEncoding(g_cos.secretKey, "/");
+    QString url = g_cos.baseUrl + "/" + encodedKey;
+    QString path = "/" + g_cos.secretKey;   // 注意：路径必须以 "/" 开头
+    QString auth = generateAuthorization(g_cos.secretId, g_cos.secretKey, "PUT", path, g_cos.host);
+    QHash<QString, QString> headers;
+    headers.insert("Content-Type", "application/octet-stream");
+    headers.insert("Host", g_cos.host);
+    headers.insert("Authorization", auth);
+    NetManager::instance()->putAsync(url, data, headers, 30000,
+                                     [callback, url](const QString& response, QNetworkReply::NetworkError err) {
+                                         if (err != QNetworkReply::NoError) {
+                                             if (callback) callback(QString(), "上传失败: " + response);
+                                         } else {
+                                             if (callback) callback(url, QString());
+                                         }
+                                     });
+}
