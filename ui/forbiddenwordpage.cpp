@@ -40,7 +40,7 @@ void ForbiddenWordPage::loadFromDefaultFile() {
     file.close();
     if (!words.isEmpty())
         m_forbiddenWords = words;
-
+    m_forbiddenWords.removeDuplicates();   // Qt 内置方法，原地去重
 
     refreshTable();
     buildAutomaton();
@@ -249,11 +249,13 @@ void ForbiddenWordPage::onBatchImport() {
     QString fileName = QFileDialog::getOpenFileName(this, "导入违禁词列表", "",
                                                     "文本文件 (*.txt)");
     if (fileName.isEmpty()) return;
+
     QFile file(fileName);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QMessageBox::critical(this, "错误", "无法打开文件");
         return;
     }
+
     QTextStream in(&file);
     QStringList newWords;
     while (!in.atEnd()) {
@@ -262,15 +264,50 @@ void ForbiddenWordPage::onBatchImport() {
             newWords << line;
     }
     file.close();
+
     if (newWords.isEmpty()) {
         QMessageBox::information(this, "提示", "文件中没有有效违禁词");
         return;
     }
-    m_forbiddenWords.append(newWords);
+
+    // ========== 第一步：清理已有列表中的重复项 ==========
+    m_forbiddenWords.removeDuplicates();   // Qt 内置方法，原地去重
+
+    // ========== 第二步：构建现有词的快速查找集合 ==========
+    QSet<QString> existingSet;
+    for (const QString &word : std::as_const(m_forbiddenWords)) {
+        existingSet.insert(word);
+    }
+
+    // ========== 第三步：过滤新词（同时处理文件内部重复） ==========
+    QStringList filteredWords;
+    int duplicateCount = 0;
+    for (const QString &word : newWords) {
+        if (!existingSet.contains(word)) {
+            filteredWords << word;
+            existingSet.insert(word);   // 防止本次导入内部重复
+        } else {
+            duplicateCount++;
+        }
+    }
+
+    if (filteredWords.isEmpty()) {
+        QMessageBox::information(this, "提示", "所有词都已存在，无新词导入");
+        return;
+    }
+
+    // ========== 第四步：追加过滤后的新词并更新 ==========
+    m_forbiddenWords.append(filteredWords);
     refreshTable();
     buildAutomaton();
     saveToDefaultFile();
-    QMessageBox::information(this, "成功", QString("已导入 %1 个违禁词").arg(newWords.size()));
+
+    // 反馈信息
+    QString msg = QString("已导入 %1 个违禁词").arg(filteredWords.size());
+    if (duplicateCount > 0) {
+        msg += QString("，跳过 %1 个重复词").arg(duplicateCount);
+    }
+    QMessageBox::information(this, "成功", msg);
 }
 
 void ForbiddenWordPage::onTestFilter() {

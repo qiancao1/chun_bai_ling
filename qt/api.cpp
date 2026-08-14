@@ -222,6 +222,7 @@ QString botlist()
     for(auto &info : m_accounts)
     {
         if (!info) continue;
+        if(info->appid_int==0) continue;
         QJsonObject obj;
         obj["appid"] = info->appid_int;
         obj["name"] = info->nickname;
@@ -236,6 +237,10 @@ QString botlist()
         obj["union_openid"]=info->unid;   //QQid
         obj["time"] = formatDuration(now-info->startup_time);
         obj["admin"] = info->admin;
+        auto *db = g_botdb[info->appid_int];
+        obj["dau"] = db->m_userDailyMsg.size();
+        obj["group_dau"] = db->m_groupDailyMsg.size();
+
         if(info->日计时变量!=day)
         {
             info->今日加群数量 = 0;
