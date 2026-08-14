@@ -20,7 +20,7 @@
 
 #include <pybind11/pybind11.h>
 #include "global.h"
-#include "aiwidget.h"
+#include "AiWidget.h"
 
 namespace pybind11 { namespace detail {
 template <> struct type_caster<QString> {
@@ -86,8 +86,9 @@ PYBIND11_EMBEDDED_MODULE(qq_api, m, py::mod_gil_not_used()) {
         .def_readwrite("raw", &MessageEvent::raw)
         .def_readwrite("callbackid", &MessageEvent::callbackId)
         .def_readwrite("member_role", &MessageEvent::member_role)
-        .def_readwrite("replyto", &MessageEvent::replyTo);
-
+        .def_readwrite("replyto", &MessageEvent::replyTo)
+        .def_readwrite("groupname", &MessageEvent::groupname)
+        .def_readwrite("user2", &MessageEvent::user2);
 
     py::class_<Ai_Fun>(m, "Aifun")
         .def(py::init<>())

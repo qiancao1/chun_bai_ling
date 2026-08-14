@@ -31,6 +31,7 @@ private slots:
 private:
     void openAccountEditor(const AccountInfo &info, bool editMode);
     void loadAccounts();
+    void onStatTick();
     AccountInfo* findAccount(int appid);
     FlowLayout *m_flowLayout;
     QWidget *m_containerWidget;
@@ -39,6 +40,7 @@ private:
     int m_lastTotalReceived = 0;
     int m_lastTotalSent = 0;
     QTimer *m_hourlyTimer = nullptr;
+    QTimer *m_statTimer;
     void startHourlyRecord();
     void extracted(int &curTotalReceived, int &curTotalSent);
     void recordHourlyStats();

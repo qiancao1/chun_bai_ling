@@ -277,7 +277,7 @@ if os.path.exists(plugins_root):
 
 
     w.show();
-
+    QThreadPool::globalInstance()->setMaxThreadCount(200); // 根据 CPU 核心和业务耗时调整，建议 50~100
     detectOptimalRegion();
     int ret = a.exec();
     框架退出=true;

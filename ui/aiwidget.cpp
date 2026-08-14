@@ -2393,6 +2393,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
             break;
         }
     }
+
     QJsonArray arr = get_tools(info);
     if (!arr.isEmpty())
         context["tools"] = arr;

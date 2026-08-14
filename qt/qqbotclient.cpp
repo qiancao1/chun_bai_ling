@@ -64,6 +64,8 @@ QQBotClient::~QQBotClient()
     stop();
 }
 
+
+
 void QQBotClient::start()
 {
     if (m_info->online || m_isConnecting)
@@ -83,6 +85,15 @@ void QQBotClient::start()
     QString wsUrl = m_info->wsAddress;
     if (wsUrl.isEmpty()) {
         wsUrl = fetchGatewayUrl();
+        if (wsUrl.isEmpty()) {
+
+            m_isConnecting = false;
+            scheduleReconnect(5);
+            return;
+        }else if(wsUrl=="*")
+        {
+             wsUrl =fetchGatewayUrl();
+        }
         if (wsUrl.isEmpty()) {
 
             m_isConnecting = false;
@@ -172,8 +183,17 @@ QString QQBotClient::fetchGatewayUrl()
     if (wsUrl.isEmpty()) {
 
         QString errMsg = obj.value("message").toString();
-        if(errMsg.startsWith("token"))
+        if(errMsg.contains("token") || errMsg.contains("Token")){
             m_accessToken.clear();
+            if (!refreshAccessToken()) {
+
+                m_isConnecting = false;
+                scheduleReconnect(10);
+                return wsUrl;
+            }
+
+            return "*";
+        }
         if (errMsg.isEmpty())
             errMsg = "未知错误，可能 token 无效或 appid 不正确";
         m_info->err+="获取ws地址失败: " + errMsg+"\n";
@@ -812,8 +832,12 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.user = d.value("member_openid").toString();
         ev.callbackId = d.value("join_request_id").toString();
         ev.nickname =d.value("username").toString();
+        ev.user2 =d.value("invited_by").toString();
+
         QJsonObject o2=d["verify_info"].toObject();
-        ev.msg = o2["verify_message"].toString();
+        QJsonArray arr=o2["review_qa_list"].toArray();
+        QJsonObject o3 = arr.at(0).toObject();
+        ev.msg ="问题："+ o3["question"].toString()+"\n答案："+o3["answer"].toString();
 
 
     }
@@ -825,9 +849,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     if(!ev.fullType) ev.at_you=true; //
     // 解析附件信息（图片、文件、语音、视频等）
+
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
+
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
 
@@ -866,6 +892,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     mes.seq = ev.log;
     logPage->onNewLogAdded(tabIndex,ev.log,m_info->appid_int,ev.groupId,mes);
     if(ws_server) ws_server->broadcastMessage(mes,ev.appid,ev.type,ev.groupId);
+
     if(ev.type<=3)
     {
         m_info->message_received++;
@@ -959,7 +986,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }
 
-    ev.msgId= "|"+QString::number(ev.log)+"|"+ev.msgId;
+    ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
     d["content"] = ev.msg;
     d["id"] = ev.msgId;
     payload["d"] = d;
@@ -969,6 +996,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["type"]=ev.type;
     payload["GroupName"]=ev.groupname;
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 
     //qDebug() << ev.groupId <<ev.user << ev.msg;
@@ -1083,8 +1111,13 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
 }
 QString QQBotClient::onTextMessage(const QString &message)
 {
+    return onTextMessage(message.toUtf8());
+}
+
+QString QQBotClient::onTextMessage(const QByteArray &message)
+{
     QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &err);
+    QJsonDocument doc = QJsonDocument::fromJson(message, &err);
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("收到非法 JSON: " + message.left(200),0xff);
         return QString();
@@ -1092,6 +1125,7 @@ QString QQBotClient::onTextMessage(const QString &message)
     QJsonObject obj = doc.object();
     int op = obj.value("op").toInt(-1);
     qint64 s = obj.value("s").toVariant().toLongLong();
+    //if(s==m_seq) return QString();
     if (s > 0) m_seq = s;
     QString res;
     switch (op) {
@@ -1270,7 +1304,7 @@ QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, co
     }
     std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
     QString resp = future.get();
-    if (resp.contains("token not exist or expire")) {
+    if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
         refreshAccessToken();
         headers.insert("Authorization", "QQBot " + m_accessToken);
         future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
@@ -1299,7 +1333,7 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
     std::future<QString> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
     QString resp = future.get();
 
-    if (resp.contains("token not exist or expire")) {
+    if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
         m_accessToken.clear();
         refreshAccessToken();
         suo =false;
@@ -1361,7 +1395,7 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
                                       [this, url, json, contentType, timeoutMs, finalCallback, retryCount]
                                       (const QString& response, QNetworkReply::NetworkError error) {
 
-                                        if (response.contains("token not exist or expire") && retryCount < 2) {
+                                        if (response.contains("token not exist or expire") || response.contains("AccessToken") && retryCount < 2) {
                                             m_accessToken.clear();
                                             refreshAccessToken();  // 刷新
                                             suo =false;
@@ -1389,18 +1423,18 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
 //频道用
 void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
                                const QHash<QString, QString> &headers, int timeoutMs,
-                               Callback callback) {
+                               Callback callbacks) {
     NetManager::instance()->postAsync(url, data, headers, timeoutMs,
-                                      [this, url, data, headers, timeoutMs, callback]
+                                      [this, url, data, headers, timeoutMs, callbacks]
                                       (const QString &response, QNetworkReply::NetworkError error) {
-                                          if (response.contains("token not exist or expire")) {
+                                          if (response.contains("token not exist or expire")  || response.contains("AccessToken") ) {
                                               refreshAccessToken();
                                               QHash<QString, QString> newHeaders = headers;
                                               newHeaders["Authorization"] = "QQBot " + m_accessToken;
-                                              postRawAsync(url, data, newHeaders, timeoutMs, callback);
+                                              postRawAsync(url, data, newHeaders, timeoutMs, callbacks);
                                               return;
                                           }
-                                          callback(response, error);
+                                          callbacks(response, error);
                                       });
 }
 
@@ -1419,7 +1453,7 @@ QString QQBotClient::GetSync(const QString &url, const QString &contentType, int
     std::future<QString> future = NetManager::instance()->get(url, headers, timeoutMs);
     return future.get();
 }
-void QQBotClient::GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callback) {
+void QQBotClient::GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callbacks) {
 
     QHash<QString, QString> headers;
     headers.insert("X-Union-Appid", m_info->appid);
@@ -1429,7 +1463,7 @@ void QQBotClient::GetAsync(const QString &url, const QString &contentType, int t
     } else {
         headers.insert("Content-Type", contentType);
     }
-    NetManager::instance()->getAsync(url, headers, timeoutMs,callback);
+    NetManager::instance()->getAsync(url, headers, timeoutMs,callbacks);
 }
 
 QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {
@@ -1446,7 +1480,22 @@ QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, 
     std::future<QString> future = NetManager::instance()->Patch(url,jsonbyte ,headers, timeoutMs);
     return future.get();
 }
+QString QQBotClient::put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs, Callback callbacks) {
+    if(!callbacks) return put(url,data,contentType,timeoutMs);
 
+    QHash<QString, QString> headers;
+    headers.insert("X-Union-Appid", m_info->appid);
+    headers.insert("Authorization", "QQBot " + m_accessToken);
+    if (contentType.isEmpty()) {
+        headers.insert("Content-Type", "application/json");
+    } else {
+        headers.insert("Content-Type", contentType);
+    }
+
+    NetManager::instance()->putAsync(url,data,headers,timeoutMs,callbacks);
+    return QString();
+
+}
 QString QQBotClient::put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs) {
 
     QHash<QString, QString> headers;

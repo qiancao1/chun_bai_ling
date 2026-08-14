@@ -48,6 +48,17 @@ struct MessageEvent
     QString user;       // 发送人id (用户openid或member_openid)
     QString msgId;          // 消息id
     QString msg;        // 消息内容 (已去除@前缀等)
+    QString user2;   //事件可能用到
+    QString nickname;       // 发送人昵称
+    QString groupname;       // 群昵称
+    QString guildId;        // 频道id (仅频道消息有效)
+    QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")
+    QString extra;          // 附加信息 (图片等资源，可扩展)
+    QString raw;        // 原始JSON (d对象)
+    QString callbackId;     // 回调事件id (用于INTERACTION_CREATE)
+    QString replyTo;        // 引用回复的消息id (message_scene字段)
+
+    uint64_t log=0;
     qint64 seq = 0;         // 消息序号 (用于去重/过滤)
     int appid = 0;
     int user_int=0;
@@ -59,15 +70,7 @@ struct MessageEvent
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
     bool bot=false;         //true时 为机器人
-    QString nickname;       // 发送人昵称
-    QString groupname;       // 群昵称
-    QString guildId;        // 频道id (仅频道消息有效)
-    QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")
-    QString extra;          // 附加信息 (图片等资源，可扩展)
-    QString raw;        // 原始JSON (d对象)
-    QString callbackId;     // 回调事件id (用于INTERACTION_CREATE)
-    QString replyTo;        // 引用回复的消息id (message_scene字段)
-    uint64_t log=0;
+
     QString toString() const;
 };
 struct MessageLogContext {
@@ -99,6 +102,7 @@ public:
     AccountInfo *m_info;                // 指向外部原始 AccountInfo
     int m_reconnectAttempts;
     QString onTextMessage(const QString &message);
+    QString onTextMessage(const QByteArray &message);
     // 发送消息接口
     QString send_messages(int type, const QString &openid, const QString &pname, QString &text, const QString &msgid=QString(),
                           bool is_wakeup=false, bool mode=false, int = 0, bool noref=false);
@@ -161,6 +165,19 @@ public:
     QString approveGroupJoinRequest(const QString& group, const QString& user,bool op, const QString& joinRequestId,
                                     const QString& rejectReason=QString(), bool addToBlacklist=false, Callback callbacks = Callback());
 
+    QString getMenu(Callback callbacks);
+    QString updateMenu(const QJsonObject& menuData, Callback callbacks);
+
+
+    // ==================== 指令面板接口 ====================
+    QString createPanel(const QJsonObject& panelData, Callback callbacks);
+    QString listPanels(const QString& scope, int limit, const QString& cursor, Callback callbacks);
+    QString getPanel(const QString& panelId, Callback callbacks);
+    QString updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks);
+    QString deletePanel(const QString& panelId, Callback callbacks);
+    QString updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks);
+void parseMessageEvent(QJsonObject &payload,const QString &text);
+
 public slots:
     void onTextMessageReceived(const QString &message);
 
@@ -182,7 +199,7 @@ private slots:
 
 private:
     // 网关和 token
-    void parseMessageEvent(QJsonObject &payload,const QString &text);
+
     QString fetchGatewayUrl();
     bool refreshAccessToken();
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
@@ -215,16 +232,16 @@ private:
     QString Get(const QString &url,const QString &contentType, int timeoutMs,Callback finalCallback=Callback());
 
 
-    void GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callback=Callback()) ;
+    void GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callbacks=Callback()) ;
     QString GetSync(const QString &url, const QString &contentType, int timeoutMs);
     QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
-
+    QString put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs, Callback callbacks) ;
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
     std::future<QString> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
 
     QString Delete(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback callbacks);
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000);
-    void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000, Callback callback=Callback());
+    void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000, Callback callbacks=Callback());
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
 
 

@@ -83,6 +83,9 @@ msg.at_you       : 布尔值，是否 @ 了当前机器人 (bool)
 msg.raw          : 原始数据（JSON 字符串） (字符串)
 msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
 msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_msgEx(msg,msg.replyto+回复内容) (字符串)
+msg.groupname    : 群昵称
+msg.user2        : 目前已知 用于群聊申请加群时 邀请人
+
 ========================
 事件类型 可订阅 可以不用
 频道事件：
@@ -121,7 +124,7 @@ PUBLIC_MESSAGE_DELETE // 当频道的消息被删除时
 群聊事件：
 GROUP_MEMBER_ADD  //用户添加群聊 可以msgid回复
 GROUP_MEMBER_REMOVE //有用户退出群 被踢出没事件 仅限本事件 不能回复信息 但是可以用主动 也就是msgid传空 调api.send_msgEx(msg,"xxx") 发送前将msg.msgid 清空即可
-GROUP_JOIN_REQUEST //有人申请加群  msg.callbackid
+GROUP_JOIN_REQUEST //有人申请加群  msg.callbackid 本事件的msgid不能回复信息 可用主动发送消息
 C2C_MESSAGE_CREATE  // 用户单聊发消息给机器人时候
 FRIEND_ADD  // 用户添加使用机器人
 FRIEND_DEL  // 用户删除机器人

@@ -105,6 +105,12 @@ void AccountPage::pruneOldStats(QJsonObject &config)
 
 AccountPage::AccountPage(QWidget *parent)
     : QWidget(parent) {
+    m_statTimer = new QTimer(this);
+    connect(m_statTimer, &QTimer::timeout, this, &AccountPage::onStatTick);
+    m_statTimer->start(60000);  // 60秒
+
+
+    QTimer::singleShot(1000, this, &AccountPage::onStatTick);
     setObjectName("accountPage");
     setStyleSheet(R"(
         QWidget#accountPage {
@@ -162,8 +168,134 @@ AccountPage::AccountPage(QWidget *parent)
 AccountPage::~AccountPage() {
 
 }
+void AccountPage::onStatTick()
+{
+    uint32_t nowMinute = QDateTime::currentSecsSinceEpoch() / 60;
 
+    for (auto &acc : m_accounts) {
+        if (!acc->online) continue;
 
+        auto *db = g_botdb[acc->appid_int];
+        if (!db) continue;
+
+        // 构造统计快照
+        AccountStats stats;
+        memset(&stats, 0, sizeof(stats));
+        stats.minute_index = nowMinute;
+        stats.appid = acc->appid_int;
+
+        // 账号自身统计
+        stats.message_received = acc->message_received;
+        stats.message_sent = acc->message_sent;
+        stats.今日加群数量 = acc->今日加群数量;
+        stats.今日退群数量 = acc->今日退群数量;
+        stats.今日好友数量 = acc->今日好友数量;
+        stats.今日删除好友数量 = acc->今日删除好友数量;
+        stats.今日频道数量 = acc->今日频道数量;
+        stats.今日退出频道数量 = acc->今日退出频道数量;
+
+        // 全系统统计（加锁读取）
+        {
+            QMutexLocker locker(&db->m_msgMutex);  // 假设 m_statMutex 是公开的或提供接口
+            stats.active_users = db->m_userDailyMsg.size();
+            stats.active_groups = db->m_groupDailyMsg.size();
+        }
+
+        db->saveAccountStats(acc->appid_int, nowMinute, stats);
+        AccountStats diff;
+
+        if (db->getTodayDiff(acc->appid_int, stats, diff)) {
+            // 计算净增/净减
+            int netGroup = diff.今日加群数量 - diff.今日退群数量;
+            int netFriend = diff.今日好友数量 - diff.今日删除好友数量;
+            int netChannel = diff.今日频道数量 - diff.今日退出频道数量;
+
+            QString statText;
+            statText += "📊 状态统计\n\n";
+
+            // 消息统计
+            statText += QString("📨 接收消息：%1（%2%3）\n")
+                            .arg(stats.message_received)
+                            .arg(diff.message_received >= 0 ? "+" : "")
+                            .arg(diff.message_received);
+
+            statText += QString("📤 发送消息：%1（%2%3）\n")
+                            .arg(stats.message_sent)
+                            .arg(diff.message_sent >= 0 ? "+" : "")
+                            .arg(diff.message_sent);
+
+            // 活跃用户/群（来自 BotDB 全局缓存）
+            statText += QString("👤 活跃用户：%1（%2%3）\n")
+                            .arg(stats.active_users)
+                            .arg(diff.active_users >= 0 ? "+" : "")
+                            .arg(diff.active_users);
+
+            statText += QString("💬 活跃群聊：%1（%2%3）\n")
+                            .arg(stats.active_groups)
+                            .arg(diff.active_groups >= 0 ? "+" : "")
+                            .arg(diff.active_groups);
+
+            // 群组变动
+            statText += QString("\n🏠 群组变动（净增：%1%2）\n")
+                            .arg(netGroup >= 0 ? "+" : "")
+                            .arg(netGroup);
+            statText += QString("  新增加群：%1（%2%3）\n")
+                            .arg(stats.今日加群数量)
+                            .arg(diff.今日加群数量 >= 0 ? "+" : "")
+                            .arg(diff.今日加群数量);
+            statText += QString("  退出群聊：%1（%2%3）\n")
+                            .arg(stats.今日退群数量)
+                            .arg(diff.今日退群数量 >= 0 ? "+" : "")
+                            .arg(diff.今日退群数量);
+
+            // 好友变动
+            statText += QString("\n👥 好友变动（净增：%1%2）\n")
+                            .arg(netFriend >= 0 ? "+" : "")
+                            .arg(netFriend);
+            statText += QString("  新加好友：%1（%2%3）\n")
+                            .arg(stats.今日好友数量)
+                            .arg(diff.今日好友数量 >= 0 ? "+" : "")
+                            .arg(diff.今日好友数量);
+            statText += QString("  删除好友：%1（%2%3）\n")
+                            .arg(stats.今日删除好友数量)
+                            .arg(diff.今日删除好友数量 >= 0 ? "+" : "")
+                            .arg(diff.今日删除好友数量);
+
+            // 频道变动
+            statText += QString("\n📡 频道变动（净增：%1%2）\n")
+                            .arg(netChannel >= 0 ? "+" : "")
+                            .arg(netChannel);
+            statText += QString("  新加频道：%1（%2%3）\n")
+                            .arg(stats.今日频道数量)
+                            .arg(diff.今日频道数量 >= 0 ? "+" : "")
+                            .arg(diff.今日频道数量);
+            statText += QString("  退出频道：%1（%2%3）\n")
+                            .arg(stats.今日退出频道数量)
+                            .arg(diff.今日退出频道数量 >= 0 ? "+" : "")
+                            .arg(diff.今日退出频道数量);
+
+            // 更新时间
+            statText += QString("\n⏰ 更新时间：%1")
+                            .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss"));
+
+            acc->StatT = statText;
+        } else {
+            // 如果获取差异失败（比如昨天同一分钟没有数据），显示当前累计值
+            QString statText;
+            statText += "📊 状态统计（仅今日累计）\n\n";
+            statText += QString("📨 接收消息：%1\n").arg(stats.message_received);
+            statText += QString("📤 发送消息：%1\n").arg(stats.message_sent);
+            statText += QString("👤 活跃用户：%1\n").arg(stats.active_users);
+            statText += QString("💬 活跃群：%1\n").arg(stats.active_groups);
+            statText += QString("🏠 加群：%1  退群：%2\n").arg(stats.今日加群数量).arg(stats.今日退群数量);
+            statText += QString("👥 好友：%1  删除好友：%2\n").arg(stats.今日好友数量).arg(stats.今日删除好友数量);
+            statText += QString("📡 频道：%1  退出频道：%2\n").arg(stats.今日频道数量).arg(stats.今日退出频道数量);
+            statText += QString("\n⏰ 更新时间：%1")
+                            .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss"));
+            acc->StatT = statText;
+        }
+    }
+}
 
 void AccountPage::loadAccounts() {
     // 1. 迁移旧文件（如果存在）

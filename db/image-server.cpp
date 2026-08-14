@@ -706,6 +706,9 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
         AppendEventLog("webhook 验证op:13 res:"+text);
         return text;
     }
+
+
+
     client->onTextMessageReceived(QString::fromUtf8(body));
     return "{}";
 }

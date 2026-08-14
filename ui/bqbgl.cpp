@@ -26,7 +26,7 @@ QString bqbgl::meiju(const QString &appid)
 {
     QDir dir("image/"+appid+"/");   // 这里使用 "image/" 目录，你可根据实际修改
     if (!dir.exists()) {
-        // 目录不存在，可以尝试创建或者提示
+
         dir.mkpath(".");
         return QString();
     }

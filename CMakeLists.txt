@@ -184,6 +184,8 @@ else()
             pluginmarket.h
             qt/cosclient.cpp
             qt/CnbUploader.h
+            ui/menupanelwidget.h ui/menupanelwidget.cpp
+            ui/ui_menupanelwidget.ui
 
 
 

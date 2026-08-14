@@ -24,6 +24,7 @@
 #include <QDebug>
 #include <cstring>
 #include <ctime>
+#include <QTimer>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -34,13 +35,52 @@ BotDB::BotDB(const QString& path, size_t initialMapSizeMB)
 {
     if (m_initialMapSize < 1ULL * 1024 * 1024)   // 最小 1MB
         m_initialMapSize = 1ULL * 1024 * 1024;
+    // 在 open() 成功后
+    m_cacheTimer = new QTimer ;
+    connect(m_cacheTimer, &QTimer::timeout, this, &BotDB::checkCleanup);
+    m_cacheTimer->start(5 * 60 * 1000);  // 5分钟检查一次
+
+    // 计数保存定时器：每10分钟保存一次
+    m_saveTimer = new QTimer ;
+    connect(m_saveTimer, &QTimer::timeout, this, &BotDB::saveDailyStats);
+    m_saveTimer->start(10 * 60 * 1000); // 10分钟
+    loadDailyStats();            // 加载当日统计
 }
 
 BotDB::~BotDB()
 {
     close();
 }
+void BotDB::checkCleanup()
+{
+    static qint64 lastUserClean = 0;
+    static qint64 lastGroupClean = 0;
+    qint64 now = QDateTime::currentSecsSinceEpoch();
 
+    // 每4小时清理用户缓存
+    if (now - lastUserClean >= 4 * 3600) {
+        cleanUserCache();
+        lastUserClean = now;
+    }
+    // 每24小时清理群缓存
+    if (now - lastGroupClean >= 24 * 3600) {
+        cleanGroupCache();
+        lastGroupClean = now;
+    }
+}
+
+void BotDB::cleanUserCache()
+{
+    QMutexLocker locker(&m_cacheMutex);
+    m_userCache.clear();     // 直接清空，下次访问会从LMDB重新加载
+
+}
+
+void BotDB::cleanGroupCache()
+{
+    QMutexLocker locker(&m_cacheMutex);
+    m_groupCache.clear();
+}
 // 在 Windows 上尝试将 data.mdb 设为稀疏文件
 bool BotDB::ensureSparseFile()
 {
@@ -114,6 +154,10 @@ bool BotDB::open()
     if (rc != MDB_SUCCESS) goto fail;
     rc = mdb_dbi_open(txn, "subscriptions", MDB_CREATE, &m_dbi_subscriptions);
     if (rc != MDB_SUCCESS) goto fail;
+
+
+    rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
+    if (rc != MDB_SUCCESS) goto fail;
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "提交事务失败:" << mdb_strerror(rc);
@@ -145,6 +189,12 @@ void BotDB::close()
         m_env = nullptr;
     }
     m_dbi_users = m_dbi_seq_idx = m_dbi_groups = m_dbi_friends = 0;
+    if (m_saveTimer) {
+        m_saveTimer->stop();
+        saveDailyStats();
+    }
+
+    if (m_dbi_account_stats) mdb_dbi_close(m_env, m_dbi_account_stats);
 }
 
 // 重新打开环境（扩容后调用），保持原有的 m_currentMapSize
@@ -214,6 +264,7 @@ bool BotDB::increaseMapSize()
 }
 
 // 泛型写入重试器
+
 template<typename Func>
 bool BotDB::retryWrite(Func writeFunc, int maxRetries)
 {
@@ -223,35 +274,54 @@ bool BotDB::retryWrite(Func writeFunc, int maxRetries)
     int retry = 0;
     while (retry <= maxRetries) {
         MDB_txn *txn = nullptr;
+
         int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-        if (rc != MDB_SUCCESS) return false;
 
-        // 执行写入操作，它应该返回 0 表示成功，非 0 表示错误（可能是 MDB_MAP_FULL）
-        int opResult = writeFunc(txn);
+        if (rc != MDB_SUCCESS) return false;  // begin失败，无事务需释放
 
-        if (opResult == MDB_SUCCESS) {
-            rc = mdb_txn_commit(txn);
-            if (rc == MDB_SUCCESS)
-                return true;
-            else if (rc == MDB_MAP_FULL) {
-                // 提交时也可能 MAP_FULL，需要回滚并扩容
+        bool needAbort = true;   // 标记是否需要手动abort
+        try {
+            int opResult = writeFunc(txn);
+
+            if (opResult == MDB_SUCCESS) {
+                rc = mdb_txn_commit(txn);
+                if (rc == MDB_SUCCESS) {
+                    needAbort = false;   // 提交成功，不再abort
+                    return true;
+                }
+                // commit失败，根据LMDB文档事务已自动回滚，不应再调用abort
+                // 但为了释放事务资源，我们仍需要将txn置为无效（无需调用abort）
+                // 所以这里保持 needAbort = true，但不调用abort？不行，因为事务已回滚，调用abort是未定义行为。
+                // 正确做法：对于commit失败，我们既不能abort，但资源已由LMDB释放，所以直接将needAbort设为false。
+                needAbort = false;   // 关键：commit失败后事务已终止，不应再abort
+                if (rc == MDB_MAP_FULL) {
+                    if (!increaseMapSize()) return false;
+                    retry++;
+                    continue;
+                }
+                return false;
+            } else if (opResult == MDB_MAP_FULL) {
+                // writeFunc返回MAP_FULL，事务仍活跃，需要abort
                 mdb_txn_abort(txn);
-                // 尝试扩容
+                needAbort = false;   // 已abort，不再重复
                 if (!increaseMapSize()) return false;
                 retry++;
                 continue;
             } else {
+                // 其他错误，手动abort
                 mdb_txn_abort(txn);
+                needAbort = false;
                 return false;
             }
-        } else if (opResult == MDB_MAP_FULL) {
+        } catch (...) {
+            // 异常发生，事务仍活跃，必须abort
             mdb_txn_abort(txn);
-            if (!increaseMapSize()) return false;
-            retry++;
-            continue;
-        } else {
+            throw;   // 或 return false，取决于您的错误处理策略
+        }
+
+        // 如果needAbort为true（理论上不会到达这里，但以防万一）
+        if (needAbort) {
             mdb_txn_abort(txn);
-            return false;
         }
     }
     return false;
@@ -410,74 +480,184 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 }
 uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
 {
-    // ========== 1. 只读事务：一次性读取群（如果是群消息）和用户 ==========
+    // ======================== 1. 变量声明（全部提前） ========================
     bool isGroup = (ev.type == 0);
-    bool groupExists = false, userExists = false;
-    GroupRecord oldGroup;
-    UserRecord oldUser;
+
+    // 键（二进制16字节）
+    QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
+    BinKey userKey;
+    memcpy(userKey.data, userKeyBytes.constData(), 16);
+
+    BinKey groupKey;
+    if (isGroup) {
+        QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
+        memcpy(groupKey.data, groupKeyBytes.constData(), 16);
+    }
+    {
+        QMutexLocker locker(&m_msgMutex);
+        checkDayChange();   // 检查是否跨天
+        // 用户计数
+        m_userDailyMsg[userKey] = m_userDailyMsg.value(userKey, 0) + 1;
+        if (isGroup) {
+            m_groupDailyMsg[groupKey] = m_groupDailyMsg.value(groupKey, 0) + 1;
+        }
+    }
+    // 缓存相关
+    bool userCacheHit = false;
+    bool groupCacheHit = false;
+    UserRecord cachedUser{};
+    GroupRecord cachedGroup{};
+
+    // LMDB 读取结果
+    bool userExists = false;
+    bool groupExists = false;
+    UserRecord oldUser{};
+    GroupRecord oldGroup{};
     uint32_t oldSeqId = 0;
 
-    {
-        MDB_txn *txn = nullptr;
-        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
-            return 0;
-
-        // 仅当是群消息时才读取群记录
-        if (isGroup && !ev.groupId.isEmpty()) {
-            QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
-            if (!groupKey.isEmpty())
-                groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup));
-        }
-
-        // 用户记录总是读取
-        QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
-        if (!userKey.isEmpty()) {
-            userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser));
-            if (userExists) oldSeqId = oldUser.seq_id;
-        }
-        mdb_txn_abort(txn);
-    }
-
-    // ========== 2. 事务外决策 ==========
-    // 群决策（仅当群消息）
+    // 决策变量
     bool needUpdateGroup = false;
-    QString newGroupName;
-    if (isGroup) {
-        if (!groupExists) {
-            needUpdateGroup = true;  // 新群需要获取昵称
-        } else {
-            const qint64 ONE_MONTH = 30 * 24 * 3600;
-            qint64 now = time(nullptr);
-            if (oldGroup.ncgx == 0 || (now - oldGroup.ncgx > ONE_MONTH))
-                needUpdateGroup = true;
-        }
-        if (needUpdateGroup)
-            newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
-    }
-
-    // 用户决策（仅当用户存在且传入昵称非空且不同）
     bool needUpdateUser = false;
-    if (userExists && !ev.nickname.isEmpty()) {
-        QByteArray newName = ev.nickname.toUtf8();
-        if (strcmp(oldUser.nickname, newName.constData()) != 0)
-            needUpdateUser = true;
-    }
+    QString newGroupName;
 
-    // ========== 3. 写事务（仅写入需要变更的数据） ==========
+    // 写事务结果
     uint32_t resultSeq = 0;
-    QString finalGroupName;   // 仅群消息有效
+    QString finalGroupName;
     int finalBitmap = 0;
     QString finalUserNickname;
+    UserRecord finalUser{};
+    GroupRecord finalGroup{};
+
+    // ======================== 2. 尝试从缓存读取 ========================
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        auto itUser = m_userCache.find(userKey);
+        if (itUser != m_userCache.end()) {
+            cachedUser = itUser.value();
+            userCacheHit = true;
+        }
+        if (isGroup) {
+            auto itGroup = m_groupCache.find(groupKey);
+            if (itGroup != m_groupCache.end()) {
+                cachedGroup = itGroup.value();
+                groupCacheHit = true;
+            }
+        }
+    }
+
+    // ======================== 3. 如果缓存命中，基于缓存数据做决策 ========================
+    if (userCacheHit) {
+        // 准备 old 数据（直接使用缓存）
+        oldUser = cachedUser;
+        userExists = true;
+        oldSeqId = cachedUser.seq_id;
+
+        if (isGroup) {
+            if (groupCacheHit) {
+                oldGroup = cachedGroup;
+                groupExists = true;
+            } else {
+                // 缓存中没有群记录，视为群不存在
+                groupExists = false;
+                memset(&oldGroup, 0, sizeof(oldGroup));
+            }
+        }
+
+        // ----- 决策（群） -----
+        if (isGroup) {
+            if (!groupExists) {
+                needUpdateGroup = true;
+                newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
+            } else {
+                const qint64 ONE_MONTH = 30 * 24 * 3600;
+                qint64 now = time(nullptr);
+                if (oldGroup.ncgx == 0 || (now - oldGroup.ncgx > ONE_MONTH)) {
+                    needUpdateGroup = true;
+                    newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
+                }
+            }
+        }
+
+        // ----- 决策（用户） -----
+        if (!ev.nickname.isEmpty()) {
+            QByteArray newName = ev.nickname.toUtf8();
+            if (strcmp(oldUser.nickname, newName.constData()) != 0)
+                needUpdateUser = true;
+        }
+
+        // 如果两者都不需要更新，直接返回缓存数据（纯内存，无需写事务）
+        if (!needUpdateGroup && !needUpdateUser) {
+            ev.groupname = isGroup ? QString::fromUtf8(oldGroup.name) : QString();
+            ev.nickname = QString::fromUtf8(oldUser.nickname);
+            ev.bitmap = isGroup ? oldGroup.bitmap : 0;
+            return oldSeqId;
+        }
+
+        // 否则，需要更新，走下文的写事务（此时 oldUser/oldGroup 已设置好）
+    }
+    else {
+        // ======================== 4. 缓存未命中：执行 LMDB 只读事务 ========================
+        MDB_txn *txn = nullptr;
+        try {
+            if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+                return 0;
+            if (isGroup && !ev.groupId.isEmpty()) {
+                QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
+                if (!groupKey.isEmpty())
+                    groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup));
+            }
+
+            QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
+            if (!userKey.isEmpty()) {
+                userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser));
+                if (userExists) oldSeqId = oldUser.seq_id;
+            }
+            mdb_txn_abort(txn);
+        } catch (const std::exception &e) {
+            qWarning() << "BotDB: 只读事务异常" << e.what();
+            if (txn) mdb_txn_abort(txn);
+            return 0;
+        } catch (...) {
+            if (txn) mdb_txn_abort(txn);
+            return 0;
+        }
+
+        // ----- 决策（群） -----
+        if (isGroup) {
+            if (!groupExists) {
+                needUpdateGroup = true;
+                newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
+            } else {
+                const qint64 ONE_MONTH = 30 * 24 * 3600;
+                qint64 now = time(nullptr);
+                if (oldGroup.ncgx == 0 || (now - oldGroup.ncgx > ONE_MONTH)) {
+                    needUpdateGroup = true;
+                    newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
+                }
+            }
+        }
+
+        // ----- 决策（用户） -----
+        if (userExists && !ev.nickname.isEmpty()) {
+            QByteArray newName = ev.nickname.toUtf8();
+            if (strcmp(oldUser.nickname, newName.constData()) != 0)
+                needUpdateUser = true;
+        }
+    }
+
+    // ======================== 5. 写事务（仅在需要更新或用户/群不存在时执行） ========================
+    // 注意：如果既不需要更新且缓存命中已经直接返回了，走到这里说明至少需要写入（新用户/新群/更新昵称/群名）
+    // 这里统一处理写事务，oldUser / oldGroup / userExists / groupExists 已在上面分支中正确赋值
 
     bool success = retryWrite([&](MDB_txn *txn) -> int {
         int finalRc = MDB_SUCCESS;
 
-        // 3a. 处理群记录（仅当群消息）
+        // 5a. 处理群记录
         if (isGroup) {
             QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
             if (groupKey.isEmpty()) return -1;
 
-            GroupRecord currentGroup = oldGroup;  // 复制
+            GroupRecord currentGroup = oldGroup;  // 复制旧数据
             if (!groupExists) {
                 // 新建群
                 memset(&currentGroup, 0, sizeof(currentGroup));
@@ -494,7 +674,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
                 int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
                 if (rc != MDB_SUCCESS) finalRc = rc;
             } else if (needUpdateGroup && !newGroupName.isEmpty()) {
-                // 已存在且需要更新且获取到新昵称
+                // 已存在且需要更新
                 size_t copyLen = std::min<size_t>(newGroupName.toUtf8().size(), sizeof(currentGroup.name)-1);
                 memcpy(currentGroup.name, newGroupName.toUtf8().constData(), copyLen);
                 currentGroup.name[copyLen] = '\0';
@@ -502,16 +682,13 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
                 int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
                 if (rc != MDB_SUCCESS) finalRc = rc;
             }
-            // 其他情况（已存在且不需更新）保持原值
-
-            // 保存群信息供最终输出（即使 finalRc 可能非0，但事务失败后我们不会使用）
-            if (finalRc == MDB_SUCCESS) {
-                finalGroupName = QString::fromUtf8(currentGroup.name, strnlen(currentGroup.name, sizeof(currentGroup.name)));
-                finalBitmap = currentGroup.bitmap;
-            }
+            // 保存最终写入的群记录（用于更新缓存）
+            finalGroup = currentGroup;
+            finalGroupName = QString::fromUtf8(currentGroup.name, strnlen(currentGroup.name, sizeof(currentGroup.name)));
+            finalBitmap = currentGroup.bitmap;
         }
 
-        // 3b. 处理用户记录（总是处理）
+        // 5b. 处理用户记录
         QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
         if (userKey.isEmpty()) return -1;
 
@@ -536,6 +713,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
                 finalRc = -1;
             } else {
                 resultSeq = newSeq;
+                finalUser = newRec;
                 finalUserNickname = ev.nickname;
             }
         } else {
@@ -552,6 +730,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
             }
             if (finalRc == MDB_SUCCESS) {
                 resultSeq = oldSeqId;
+                finalUser = updatedUser;
                 finalUserNickname = QString::fromUtf8(updatedUser.nickname);
             }
         }
@@ -559,8 +738,18 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
         return finalRc;
     });
 
-    // ========== 4. 事务成功后填充 ev ==========
+    // ======================== 6. 事务成功后，更新内存缓存并填充 ev ========================
     if (success && resultSeq != 0) {
+        // 更新用户缓存
+        {
+            QMutexLocker locker(&m_cacheMutex);
+            m_userCache[userKey] = finalUser;
+        }
+        if (isGroup) {
+            QMutexLocker locker(&m_cacheMutex);
+            m_groupCache[groupKey] = finalGroup;
+        }
+
         if (isGroup) {
             ev.groupname = finalGroupName;
             ev.bitmap = finalBitmap;
@@ -570,6 +759,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
         }
         return resultSeq;
     }
+
     return 0;
 }
 
@@ -577,6 +767,9 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
 {
     // 只读操作无需扩容，不加锁也可以（但为了安全可以使用读事务）
     if (!m_env) return false;
+
+
+
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) return false;
@@ -585,6 +778,8 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
         mdb_txn_abort(txn);
         return false;
     }
+
+
     MDB_val key, value;
     key.mv_data = openidBin.data();
     key.mv_size = openidBin.size();
@@ -597,6 +792,24 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
     mdb_txn_abort(txn);
     return false;
 }
+// 更新用户缓存（传入 openid 二进制和 UserRecord）
+void BotDB::updateUserCache(const QByteArray &openidBin, const UserRecord &record) {
+    BinKey key;
+    memcpy(key.data, openidBin.constData(), 16);
+    QMutexLocker locker(&m_cacheMutex);
+    m_userCache[key] = record;
+
+}
+
+// 更新群缓存（传入 groupId 二进制和 GroupRecord）
+void BotDB::updateGroupCache(const QByteArray &groupIdBin, const GroupRecord &record) {
+    BinKey key;
+    memcpy(key.data, groupIdBin.constData(), 16);
+    QMutexLocker locker(&m_cacheMutex);
+    m_groupCache[key] = record;
+}
+
+
 bool BotDB::updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord)
 {
     // 拷贝一份，确保 record_time 被刷新
@@ -604,65 +817,50 @@ bool BotDB::updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord)
     toWrite.record_time = nowMinutes();   // 强制更新时间
     return updateUserBySeqId(seq_id, [&](UserRecord &r) {
         r = toWrite;
+
     });
 }
 bool BotDB::updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater)
 {
     if (!m_env) return false;
 
+    UserRecord finalRecord;
+    QByteArray finalOpenidBin;
+    bool recordChanged = false;
+
     bool success = retryWrite([&](MDB_txn *txn) -> int {
-        // 1. 通过 seq_id 获取对应的 openid 二进制
-        QByteArray openidBin;
-        if (!getOpenIdBySeq(txn, seq_id, openidBin)) {
-            return MDB_NOTFOUND;   // 没有该 seq_id
-        }
-
-        // 2. 用 openid 作为 key 读取原始记录
-        MDB_val key, value;
-        key.mv_data = openidBin.data();
-        key.mv_size = openidBin.size();
-
-        int rc = mdb_get(txn, m_dbi_users, &key, &value);
-        if (rc != MDB_SUCCESS) {
-            return rc;
-        }
-        if (value.mv_size != sizeof(UserRecord)) {
-            return -1;   // 数据损坏
-        }
-
-        // 3. 拷贝出记录并调用用户提供的修改函数
-        UserRecord record;
-        memcpy(&record, value.mv_data, sizeof(UserRecord));
-
-        updater(record);   // 外部修改字段
-
-        // 4. 更新修改时间（强制记录最后修改时间）
-        record.record_time = nowMinutes();
-
-        // 5. 写回数据库
-        rc = putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
-        return rc;
-    });
-
-    return success;
-}
-bool BotDB::incrementInvitedGroupCount(uint32_t seq_id, int delta)
-{
-    return retryWrite([&](MDB_txn *txn) -> int {
         QByteArray openidBin;
         if (!getOpenIdBySeq(txn, seq_id, openidBin))
-            return -1;
+            return MDB_NOTFOUND;
+
         MDB_val key, value;
         key.mv_data = openidBin.data();
         key.mv_size = openidBin.size();
         int rc = mdb_get(txn, m_dbi_users, &key, &value);
         if (rc != MDB_SUCCESS) return rc;
+        if (value.mv_size != sizeof(UserRecord)) return -1;
+
         UserRecord record;
-        memcpy(&record, value.mv_data, sizeof(record));
-        record.invited_group_count += delta;
-        return putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
+        memcpy(&record, value.mv_data, sizeof(UserRecord));
+        updater(record);
+        record.record_time = nowMinutes();
+
+        rc = putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
+        if (rc == MDB_SUCCESS) {
+            finalRecord = record;
+            finalOpenidBin = openidBin;
+            recordChanged = true;
+        }
+        return rc;
     });
+
+    // 事务成功后，更新缓存
+    if (success && recordChanged) {
+        updateUserCache(finalOpenidBin, finalRecord);
+    }
+    return success;
 }
+
 bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
     if (!m_env) return false;
     MDB_txn *txn = nullptr;
@@ -677,41 +875,186 @@ bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
     }
     return false;
 }
+void BotDB::loadDailyStats()
+{
+    QString dateStr = QDate::currentDate().toString("yyyy-MM-dd");
+    if (m_todayDate == dateStr) return;  // 日期未变，保留当前数据
+    m_todayDate = dateStr;
 
+    // 清空旧数据
+    QMutexLocker locker(&m_msgMutex);
+    m_userDailyMsg.clear();
+    m_groupDailyMsg.clear();
+
+    // 加载用户统计
+    QFile userFile(  m_path+ "/msgstat_user_" + dateStr + ".dat");
+    if (userFile.open(QIODevice::ReadOnly)) {
+        QDataStream in(&userFile);
+        in >> m_userDailyMsg;
+    }
+
+    // 加载群统计
+    QFile groupFile(m_path+"/msgstat_group_" + dateStr + ".dat");
+    if (groupFile.open(QIODevice::ReadOnly)) {
+        QDataStream in(&groupFile);
+        in >> m_groupDailyMsg;
+    }
+}
+bool BotDB::saveAccountStats(uint32_t appid, uint32_t minuteIndex, const AccountStats &stats)
+{
+    // 构造 key: appid + minute_index
+    QByteArray keyData;
+    keyData.append((char*)&appid, sizeof(appid));
+    keyData.append((char*)&minuteIndex, sizeof(minuteIndex));
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        return putRecord(txn, m_dbi_account_stats, keyData, &stats, sizeof(stats));
+    });
+}
+bool BotDB::getAccountStats(uint32_t appid, uint32_t minuteIndex, AccountStats &outStats)
+{
+    QByteArray keyData;
+    keyData.append((char*)&appid, sizeof(appid));
+    keyData.append((char*)&minuteIndex, sizeof(minuteIndex));
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return false;
+
+    bool ok = getRecord(txn, m_dbi_account_stats, keyData, &outStats, sizeof(outStats));
+    mdb_txn_abort(txn);
+    return ok;
+}
+bool BotDB::getTodayDiff(uint32_t appid, const AccountStats &currentStats, AccountStats &diff)
+{
+    uint32_t nowMinute = QDateTime::currentSecsSinceEpoch() / 60;
+    uint32_t yesterdayMinute = nowMinute - 1440;
+
+    AccountStats yesterdayStats;
+    if (!getAccountStats(appid, yesterdayMinute, yesterdayStats)) {
+        // 如果昨天同一分钟没有数据，说明昨天这个时间还没有记录，无法对比
+        return false;
+    }
+
+    // 今日数据使用传入的 currentStats（来自内存）
+    diff.minute_index = nowMinute;
+    diff.appid = appid;
+
+    diff.message_received = currentStats.message_received - yesterdayStats.message_received;
+    diff.message_sent = currentStats.message_sent - yesterdayStats.message_sent;
+    diff.今日加群数量 = currentStats.今日加群数量 - yesterdayStats.今日加群数量;
+    diff.今日退群数量 = currentStats.今日退群数量 - yesterdayStats.今日退群数量;
+    diff.今日好友数量 = currentStats.今日好友数量 - yesterdayStats.今日好友数量;
+    diff.今日删除好友数量 = currentStats.今日删除好友数量 - yesterdayStats.今日删除好友数量;
+    diff.今日频道数量 = currentStats.今日频道数量 - yesterdayStats.今日频道数量;
+    diff.今日退出频道数量 = currentStats.今日退出频道数量 - yesterdayStats.今日退出频道数量;
+    diff.active_users = currentStats.active_users - yesterdayStats.active_users;
+    diff.active_groups = currentStats.active_groups - yesterdayStats.active_groups;
+
+    return true;
+}
+
+void BotDB::saveDailyStats()
+{
+    QMutexLocker locker(&m_msgMutex);
+    QString dateStr = QDate::currentDate().toString("yyyy-MM-dd");
+
+    QFile userFile(m_path+"/msgstat_user_" + dateStr + ".dat");
+    if (userFile.open(QIODevice::WriteOnly)) {
+        QDataStream out(&userFile);
+        out << m_userDailyMsg;
+    }
+    QFile groupFile(m_path+ "/msgstat_group_" + dateStr + ".dat");
+    if (groupFile.open(QIODevice::WriteOnly)) {
+        QDataStream out(&groupFile);
+        out << m_groupDailyMsg;
+    }
+}
+
+void BotDB::checkDayChange()
+{
+    QString now = QDate::currentDate().toString("yyyy-MM-dd");
+    if (m_todayDate != now) {
+        m_userDailyMsg.clear();
+        m_groupDailyMsg.clear();
+        m_todayDate = now;
+    }
+}
+
+quint64 BotDB::getUserTodayMsgCount(const QByteArray &openidBin) {
+    BinKey key;
+    memcpy(key.data, openidBin.constData(), 16);
+    QMutexLocker locker(&m_msgMutex);
+    return m_userDailyMsg.value(key, 0);
+}
+
+quint64 BotDB::getGroupTodayMsgCount(const QByteArray &groupIdBin) {
+    BinKey key;
+    memcpy(key.data, groupIdBin.constData(), 16);
+    QMutexLocker locker(&m_msgMutex);
+    return m_groupDailyMsg.value(key, 0);
+}
 bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes,
                      uint32_t inviterSeqId, uint32_t bitmap, const QString &name)
 {
-    return retryWrite([&](MDB_txn *txn) -> int {
+    GroupRecord finalRecord;
+    QByteArray finalKeyBin;
+    bool recordChanged = false;
+
+    bool success = retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
         if (keyData.isEmpty()) return -1;
 
-        // 直接构造记录，create_time 使用当前时间（秒）
         GroupRecord record;
+        // create_time 使用当前时间（秒），与原来保持一致（createTimeMinutes 参数未使用）
         record.create_time = static_cast<uint32_t>(time(nullptr));
         record.inviter_seq_id = inviterSeqId;
         record.bitmap = bitmap;
-        // 其他时间字段保持默认 0（或根据需要初始化）
         record.xychy_time = 0;
         record.tq_CD = 0;
-        record.ncgx =  time(nullptr);
-
+        record.ncgx = time(nullptr);
 
         QByteArray nameData = name.toUtf8();
         size_t copyLen = std::min<size_t>(nameData.size(), sizeof(record.name) - 1);
         memcpy(record.name, nameData.constData(), copyLen);
         record.name[copyLen] = '\0';
 
-        // 直接插入新记录（假设 key 不存在，若存在则覆盖，但您保证首次调用）
-        return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+        int rc = putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+        if (rc == MDB_SUCCESS) {
+            finalRecord = record;
+            finalKeyBin = keyData;
+            recordChanged = true;
+        }
+        return rc;
     });
+
+    if (success && recordChanged) {
+        updateGroupCache(finalKeyBin, finalRecord);
+    }
+    return success;
 }
-bool BotDB::addGroup(const QString &groupIdHex,const GroupRecord &record)
+bool BotDB::addGroup(const QString &groupIdHex, const GroupRecord &record)
 {
-    return retryWrite([&](MDB_txn *txn) -> int {
+    GroupRecord finalRecord = record;   // 复制一份
+    QByteArray finalKeyBin;
+    bool recordChanged = false;
+
+    bool success = retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
         if (keyData.isEmpty()) return -1;
-        return putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+
+        int rc = putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+        if (rc == MDB_SUCCESS) {
+            finalKeyBin = keyData;
+            recordChanged = true;
+        }
+        return rc;
     });
+
+    if (success && recordChanged) {
+        updateGroupCache(finalKeyBin, finalRecord);
+    }
+    return success;
 }
 QList<QString> BotDB::getAllGroupIds()
 {
@@ -756,11 +1099,6 @@ bool BotDB::getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord)
     return ok;
 }
 
-bool BotDB::isGroupExist(const QString &groupIdHex)
-{
-    GroupRecord dummy;
-    return getGroupInfo(groupIdHex, dummy);
-}
 
 bool BotDB::deleteGroup(const QString &groupIdHex)
 {
@@ -857,17 +1195,7 @@ QList<int> BotDB::getFriendList()
     return result;
 }
 
-bool BotDB::getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes)
-{
-    if (!m_env) return false;
-    QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
-    bool ok = getRecord(txn, m_dbi_friends, keyData, &outAddTimeMinutes, sizeof(outAddTimeMinutes));
-    mdb_txn_abort(txn);
-    return ok;
-}
+
 // 构造 Key
 static QByteArray makeSubKey(const QString &mark, uint8_t param, const QString &groupId)
 {

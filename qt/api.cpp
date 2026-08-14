@@ -740,7 +740,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         }
         BotDB *db = g_botdb[appid];
         QString name;
-        uint32_t id=db->getOrUpdateUser(toQString(_1),name);
+        uint32_t id = db->getOrUpdateUser(toQString(_1),name);
         result = id;
         break;
     }
@@ -3114,13 +3114,63 @@ QString QQBotClient::set_mute(const QString& group,const QString &user,qint64 mu
 }
 
 
+// ==================== 自定义菜单接口 ====================
 
+// 1. 查询菜单 (GET)
+QString QQBotClient::getMenu(Callback callbacks)
+{
+    return Get("https://api.bot.qq.com/v2/menu", QString(), 10000, callbacks);
+}
 
+// 2. 创建/更新菜单 (POST)
+QString QQBotClient::updateMenu(const QJsonObject& menuData, Callback callbacks)
+{
 
+    return put2("https://api.bot.qq.com/v2/menu", QJsonDocument(menuData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
+}
 
+// ==================== 指令面板接口 ====================
 
+// 4. 创建面板 (POST)
+QString QQBotClient::createPanel(const QJsonObject& panelData, Callback callbacks)
+{
+    qDebug() << panelData;
+    return Post("https://api.bot.qq.com/v2/panels", panelData, QString(), 10000, callbacks);
+}
 
+// 5. 查询面板列表 (GET)
+QString QQBotClient::listPanels(const QString& scope, int limit, const QString& cursor, Callback callbacks)
+{
+    QString url = "https://api.bot.qq.com/v2/panels?scope=" + scope;
+    if (limit > 0) url += "&limit=" + QString::number(limit);
+    if (!cursor.isEmpty()) url += "&cursor=" + cursor;
+    return Get(url, QString(), 10000, callbacks);
+}
 
+// 6. 查询面板详情 (GET)
+QString QQBotClient::getPanel(const QString& panelId, Callback callbacks)
+{
+    return Get("https://api.bot.qq.com/v2/panels/" + panelId, QString(), 10000, callbacks);
+}
+
+// 7. 修改面板 (PATCH)
+QString QQBotClient::updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks)
+{
+    qDebug() << panelData;
+    return put2("https://api.bot.qq.com/v2/panels/" + panelId, QJsonDocument(panelData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
+}
+
+// 8. 删除面板 (DELETE)
+QString QQBotClient::deletePanel(const QString& panelId, Callback callbacks)
+{
+    return Delete("https://api.bot.qq.com/v2/panels/" + panelId,QJsonObject() ,QString(), 10000, callbacks);
+}
+
+// 9. 修改面板关联对象 (PATCH)
+QString QQBotClient::updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks)
+{
+    return put2("https://api.bot.qq.com/v2/panels/" + panelId + "/target", QJsonDocument(targetData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
+}
 
 
 

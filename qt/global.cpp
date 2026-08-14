@@ -355,7 +355,16 @@ QString 内置指令(MessageEvent &ev)
     QString text;
     if(ev.msg=="我的id" || ev.msg=="我的ID")
     {
-        text = QString("**我的ID**\n>user_id:%1\n个人ID:%2\n群ID：%3").arg(ev.user_int).arg(ev.user, ev.groupId);
+        if(g_botdb.contains(ev.appid ))
+        {
+            QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
+             QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
+            auto *db =  g_botdb[ev.appid];
+            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%6").arg(ev.user_int).arg(ev.user, ev.groupId)
+                       .arg(db->getUserTodayMsgCount(userKeyBytes)).arg(db->getGroupTodayMsgCount(groupKeyBytes));
+
+        }
+        text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%6").arg(ev.user_int).arg(ev.user, ev.groupId);
     }
 
     return text;
@@ -1020,7 +1029,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             ">[md]() 复读指令\n"
             ">[重启框架]() 字面意思\n"
             ">[接口测试]() 字面意思\n\n"
-
+            ">[数据统计]() 查看机器人收发统计\n\n"
             "**插件相关**\n"
             ">JS:%1 | Python:%4\nDLL:%2 | DLL32:%3\n>"
             "[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]() <序号>\n\n"
@@ -1124,6 +1133,9 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         m_pluginList[index].appid.append(ev.appid);
         pluginPage->savePlugins();
         return  QString("已禁用插件 %1").arg(m_pluginList[index].name);
+    }
+    if (ev.msg== "数据统计") {
+        return  info->StatT;
     }
     if(ev.msg=="接口测试")
     {
@@ -1328,7 +1340,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
     ret =ruqunhy(info,ev);
 
-    if(!ret.isEmpty())
+    if(!ret.isEmpty() && ret!="*")
     {
         QQBotClient *client = m_botClients[info->appid_int];
         if(text.isEmpty()) text = "[入群提示|%1ms]";

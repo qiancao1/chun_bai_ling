@@ -60,10 +60,27 @@ struct PendingGroupEvent {
     QString msgid;
     QList<QString> user;  // 收集的用户名
 };
+struct AccountStats {
+    uint32_t minute_index;
+    uint32_t appid;
 
+    // 账号自身统计（来自 AccountInfo）
+    uint32_t message_received;
+    uint32_t message_sent;
+    uint32_t 今日加群数量;
+    uint32_t 今日退群数量;
+    uint32_t 今日好友数量;
+    uint32_t 今日删除好友数量;
+    uint32_t 今日频道数量;
+    uint32_t 今日退出频道数量;
+
+    // 全系统统计（来自 BotDB 缓存）
+    uint32_t active_users;      // m_userDailyMsg.size()
+    uint32_t active_groups;     // m_groupDailyMsg.size()
+};
 struct AccountInfo {
     QString appid;
-
+    QString StatT;
     QString pduid;
     QString unid;
     QString secret;

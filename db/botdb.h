@@ -46,7 +46,41 @@ struct GroupRecord {
     char name[64];
 };
 
-class BotDB {
+#include <QHash>
+#include <cstring>
+#include <QDataStream>
+// 1. 定义 BinKey 结构体
+struct BinKey {
+    unsigned char data[16];
+
+    // 必须实现 operator==，QHash 需要用它来比较键
+    inline bool operator==(const BinKey& other) const {
+        return memcmp(data, other.data, 16) == 0;
+    }
+};
+
+// 2. 为 BinKey 提供 qHash 重载（放在全局命名空间，与 BinKey 同一作用域）
+inline uint qHash(const BinKey& key, uint seed = 0) {
+    // 直接使用 Qt 提供的 qHashBits 来哈希 16 字节内存
+    return qHashBits(key.data, sizeof(key.data), seed);
+}
+
+
+// 为 QDataStream 提供序列化支持
+inline QDataStream &operator<<(QDataStream &out, const BinKey &key) {
+    out.writeRawData(reinterpret_cast<const char*>(key.data), sizeof(key.data));
+    return out;
+}
+
+inline QDataStream &operator>>(QDataStream &in, BinKey &key) {
+    in.readRawData(reinterpret_cast<char*>(key.data), sizeof(key.data));
+    return in;
+}
+
+
+
+class BotDB : public QObject {
+    Q_OBJECT
 public:
     // 增加 initialMapSizeMB 参数，默认 64MB，用户可自行调整
     explicit BotDB(const QString& path, size_t initialMapSizeMB = 8);
@@ -54,6 +88,8 @@ public:
 
     bool open();
     void close();
+    void updateUserCache(const QByteArray &openidBin, const UserRecord &record);
+    void updateGroupCache(const QByteArray &groupIdBin, const GroupRecord &record);
     // 订阅（添加）：标记 + 群ID
     bool addSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &data);
     //获取单个配置信息
@@ -66,31 +102,36 @@ public:
     static uint32_t nowMinutes();
     QList<QString> getAllGroupIds();
     uint32_t getOrUpdateUser(QQBotClient *qqbot,MessageEvent &ev);
-    uint32_t getOrUpdateUser(const QString &openid, QString &name);
+    uint32_t getOrUpdateUser(const QString &openid, QString &name);//不能删
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
-    bool incrementInvitedGroupCount(uint32_t seq_id, int delta = 1);
+
     bool updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord);
     bool updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater);
     bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap, const QString &name);
     bool addGroup(const QString &groupIdHex,const GroupRecord &record);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
-    bool isGroupExist(const QString &groupIdHex);
+
+    bool getTodayDiff(uint32_t appid, const AccountStats &currentStats, AccountStats &diff);
+    bool saveAccountStats(uint32_t appid, uint32_t minuteIndex, const AccountStats &stats);
+    bool getAccountStats(uint32_t appid, uint32_t minuteIndex, AccountStats &outStats);
     bool deleteGroup(const QString &groupIdHex);
     bool getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex);
     bool addFriend(uint32_t userSeqId, uint32_t addTimeMinutes);
     bool removeFriend(uint32_t userSeqId);
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
-    bool getFriendAddTime(uint32_t userSeqId, uint32_t &outAddTimeMinutes);
 
-
+    quint64 getUserTodayMsgCount(const QByteArray &openidBin);
+    quint64 getGroupTodayMsgCount(const QByteArray &groupIdBin);
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
 
     bool batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes);
 
-
-
-
+    QHash<BinKey, UserRecord> m_userCache;
+    QHash<BinKey, GroupRecord> m_groupCache;
+    QHash<BinKey, quint64> m_userDailyMsg;   // 用户今日消息数
+    QHash<BinKey, quint64> m_groupDailyMsg;  // 群今日消息数
+    QMutex m_msgMutex;
 private:
     // 内部辅助函数（原有）
     uint32_t getNextSeqId(MDB_txn *txn);
@@ -121,6 +162,23 @@ private:
     MDB_dbi m_dbi_subscriptions;  // 订阅数据库
 
     QMutex   m_mutex;
+    QMutex m_cacheMutex;  // 如果多线程调用，需要加锁
+
+    MDB_dbi m_dbi_account_stats;
+
+    QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
+    QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
+    QTimer *m_cacheTimer;
+
+    void loadDailyStats();                   // 加载当日统计文件
+    void saveDailyStats();                   // 保存当日统计文件
+    void checkDayChange();                   // 检查是否跨天，跨天则重置并加载新一天;
+
+
+    void cleanUserCache();
+    void cleanGroupCache();
+
+    void checkCleanup();
 };
 
 #endif // BOTDB_H

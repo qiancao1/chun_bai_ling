@@ -56,6 +56,7 @@
 #include <QtCore>
 #include <qgroupbox.h>
 #include "htmltoimagewidget.h"
+#include "menupanelwidget.h"
 #include "plts.h"
 #include "qunguan.h"
 #include "sandboxwindow.h"
@@ -70,14 +71,17 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.5.37"
-#define APP_BUILD_NUMBER 37
+#define APP_VERSION_STR "v1.2.6.39"
+#define APP_BUILD_NUMBER 39
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
 ## v1.2.6.39 (2026-08-12)
 - 修复 内置AI决策模型的一些问题
 - 增加 AI每个 角色专属表情包库
+- 修复 Token过期 问题
+- 增加 指令面板设置 疑似只有自己能看见
+- 增加 数据库缓存 增加 数据统计 可以实时查看机器人 数据（缓存的附属品）
 
 ## v1.2.5.37 (2026-08-12)
 - 内置一些快捷这里 方便查看内置属性
@@ -235,9 +239,10 @@ HtmlToImageWidget *htmltoimg =nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
 AiWidget *ai_ui = nullptr;
 qunguan *ui_qunguan=nullptr;
-
+MenuPanelWidget *ui_MenuPanel=nullptr;
 
 QListWidget *robotListWidget=nullptr;
+QTabWidget *configTabWidget2=nullptr;
 botset *refset=nullptr;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
@@ -405,7 +410,7 @@ MainWindow::~MainWindow()
 {
 }
 
-
+bool _g_qieh=false;
 void MainWindow::setupUi()
 {
     robotListWidget = new QListWidget;
@@ -429,6 +434,7 @@ void MainWindow::setupUi()
     htmltoimg = new HtmlToImageWidget(this);
     ai_ui = new AiWidget;
     ui_qunguan = new qunguan;
+    ui_MenuPanel = new MenuPanelWidget;
     //aiContainer = new QWidget(this);          // 容器
     //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
 
@@ -452,7 +458,9 @@ void MainWindow::setupUi()
     robotListWidget->setMinimumWidth(100);
     robotListWidget->setMaximumWidth(220);
     hxzsy->addWidget(robotListWidget);
-    QTabWidget *configTabWidget2 = new QTabWidget;           // 选择夹
+    configTabWidget2 = new QTabWidget;           // 选择夹
+
+    configTabWidget2->addTab(ui_MenuPanel,"面板");
     configTabWidget2->addTab(ui_qunguan,"基础");
     configTabWidget2->addTab(myPlts, "批量推送");
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
@@ -461,7 +469,18 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(schedule, "订阅|定时");
     configTabWidget2->addTab(ai_ui, "Ai");
     configTabWidget2->addTab(refset,"回复设置");
+    connect(configTabWidget2, &QTabWidget::currentChanged,
+            [this](){
+                if(!ui_MenuPanel->m_botClient)
+                {
+                    _g_qieh=true;
+                }
+                if(configTabWidget2->currentIndex()==0 && _g_qieh){
+                    _g_qieh=false;
+                    ui_MenuPanel->switchBot();
 
+                }
+    });
     hxzsy->addWidget(configTabWidget2);
 
 
@@ -574,6 +593,24 @@ void MainWindow::setupUi()
         ai_ui->list_c();
         refset->列表行被单击();
         ui_qunguan->列表行被单击();
+
+
+
+
+
+
+
+
+
+
+
+
+        if(configTabWidget2->currentIndex()==0){
+                ui_MenuPanel->switchBot();
+                _g_qieh=false;
+                return;
+        }
+        _g_qieh=true;
     });
     sideLayout->addWidget(btnHome);
     sideLayout->addWidget(btnAccount);

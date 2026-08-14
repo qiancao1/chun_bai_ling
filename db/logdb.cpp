@@ -521,7 +521,12 @@ void LogDB::flushCacheToDBUnlocked() {
     QList<QString> dirtyKeys;
     for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
         if (it->dirty) dirtyKeys.append(it.key());
-    if (dirtyKeys.isEmpty()) return;
+    if (dirtyKeys.isEmpty()) {
+        if (m_cache.size() > 1000) { // 比如，超过500条只读缓存就直接清理，防止内存疯长
+            m_cache.clear();
+        }
+        return;
+    }
 
     const int MAX_RETRY = 3;
     for (int retry = 0; retry < MAX_RETRY; ++retry) {
