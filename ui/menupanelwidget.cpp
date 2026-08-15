@@ -14,6 +14,7 @@
 #include <QHeaderView>
 #include <QComboBox>
 #include <QCheckBox>
+#include <qbuttongroup.h>
 
 
 
@@ -25,14 +26,18 @@ MenuPanelWidget::MenuPanelWidget(QWidget *parent)
 
 void MenuPanelWidget::setupUI()
 {
-    QVBoxLayout *totalLayout = new QVBoxLayout(this);
+    // 主布局：顶部是 TabWidget，底部是状态栏
+    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
 
-    // ============ 菜单区域 ============
+    QTabWidget *tabWidget = new QTabWidget(this);
 
-    QHBoxLayout *menuLayout = new QHBoxLayout( );
+    // ==================== 第一个 Tab：菜单（保留原样） ====================
+    QWidget *menuTab = new QWidget;
+    QHBoxLayout *menuLayout = new QHBoxLayout(menuTab);
 
-    // 左：树
-    QVBoxLayout *treeLayout = new QVBoxLayout();
+    // ---- 左侧树形菜单 ----
+    QVBoxLayout *treeLayout = new QVBoxLayout;
     m_menuTree = new QTreeWidget(this);
     m_menuTree->setHeaderLabel("菜单结构");
     m_menuTree->setStyleSheet("QTreeWidget { border: 2px solid #555; }");
@@ -44,25 +49,21 @@ void MenuPanelWidget::setupUI()
     m_addTopBtn = new QPushButton("添加一级", this);
     m_addChildBtn = new QPushButton("添加二级", this);
     m_deleteBtn = new QPushButton("删除选中", this);
-
     m_updateMenuBtn = new QPushButton("更新菜单到机器人", this);
-
-
-
     treeBtnLayout->addWidget(m_addTopBtn);
     treeBtnLayout->addWidget(m_addChildBtn);
     treeBtnLayout->addWidget(m_deleteBtn);
-     treeBtnLayout->addWidget(m_updateMenuBtn);
+    treeBtnLayout->addWidget(m_updateMenuBtn);
     treeBtnLayout->addStretch();
     treeLayout->addLayout(treeBtnLayout);
+
     connect(m_addTopBtn, &QPushButton::clicked, this, &MenuPanelWidget::onAddTopLevel);
     connect(m_addChildBtn, &QPushButton::clicked, this, &MenuPanelWidget::onAddChild);
     connect(m_deleteBtn, &QPushButton::clicked, this, &MenuPanelWidget::onDeleteSelected);
     connect(m_updateMenuBtn, &QPushButton::clicked, this, &MenuPanelWidget::onUpdateMenu);
 
-    // 右：属性编辑
-
-    QVBoxLayout *editLayout = new QVBoxLayout();
+    // ---- 右侧属性编辑 ----
+    QVBoxLayout *editLayout = new QVBoxLayout;
     QFormLayout *form = new QFormLayout();
     m_menuTitleEdit = new QLineEdit(this);
     form->addRow("标题:", m_menuTitleEdit);
@@ -84,107 +85,355 @@ void MenuPanelWidget::setupUI()
     m_saveMenuBtn = new QPushButton("保存当前项", this);
     connect(m_saveMenuBtn, &QPushButton::clicked, this, &MenuPanelWidget::onSaveMenuNode);
     editLayout->addWidget(m_saveMenuBtn);
+    editLayout->addStretch();
 
     menuLayout->addLayout(treeLayout, 1);
     menuLayout->addLayout(editLayout, 1);
-    totalLayout->addLayout(menuLayout);
+    menuTab->setLayout(menuLayout);
 
+    // ==================== 第二个 Tab：指令（完全重构） ====================
+    QWidget *commandTab = new QWidget;
+    QVBoxLayout *commandTabLayout = new QVBoxLayout(commandTab);
+    commandTabLayout->setContentsMargins(0, 0, 0, 0);
 
+    // ---------- 顶部控制行（作用范围 + 场景单选框 + 编辑按钮） ----------
+    QHBoxLayout *topControlLayout = new QHBoxLayout;
 
-    // ============ 指令面板区域 ============
+    // 作用范围
+    QLabel *targetLabel = new QLabel("作用范围：");
+    m_targetTypeCombo = new QComboBox(this);
+    m_targetTypeCombo->addItems({"all", "specific"});
+    topControlLayout->addWidget(targetLabel);
+    topControlLayout->addWidget(m_targetTypeCombo);
 
-    QVBoxLayout *panelLayout = new QVBoxLayout( );
+    // 场景单选框
+    QLabel *scopeLabel = new QLabel("场景：");
+    m_scopeC2C = new QRadioButton("私聊", this);
+    m_scopeGroupChat = new QRadioButton("群聊", this);
+    m_scopeChannel = new QRadioButton("频道", this);
+    m_scopeDM = new QRadioButton("频道私聊", this);
+    m_scopeGroupChat->setChecked(true);   // 默认群聊
 
+    m_scopeGroup = new QButtonGroup(this);
+    m_scopeGroup->addButton(m_scopeC2C, 0);
+    m_scopeGroup->addButton(m_scopeGroupChat, 1);
+    m_scopeGroup->addButton(m_scopeChannel, 2);
+    m_scopeGroup->addButton(m_scopeDM, 3);
 
-    // 表格
+    topControlLayout->addWidget(scopeLabel);
+    topControlLayout->addWidget(m_scopeC2C);
+    topControlLayout->addWidget(m_scopeGroupChat);
+    topControlLayout->addWidget(m_scopeChannel);
+    topControlLayout->addWidget(m_scopeDM);
+
+    // 编辑群ID / 好友ID 按钮
+    m_editGroupsBtn = new QPushButton("编辑群ID", this);
+    m_editFriendsBtn = new QPushButton("编辑好友ID", this);
+    topControlLayout->addWidget(m_editGroupsBtn);
+    topControlLayout->addWidget(m_editFriendsBtn);
+    topControlLayout->addStretch();
+
+    // ---------- 主区域（左右分割） ----------
+    QSplitter *mainSplitter = new QSplitter(Qt::Horizontal);
+
+    // 左侧：面板列表（只显示备注）
+    QWidget *leftWidget = new QWidget;
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_panelListTable = new QTableWidget(this);
+    m_panelListTable->setColumnCount(1);
+    m_panelListTable->setHorizontalHeaderLabels({"面板备注"});
+    m_panelListTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_panelListTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    connect(m_panelListTable, &QTableWidget::itemClicked, this, &MenuPanelWidget::onPanelListItemClicked);
+
+    // 面板管理按钮（创建 / 删除）
+    QHBoxLayout *panelBtnLayout = new QHBoxLayout;
+    m_createPanelBtn = new QPushButton("创建新面板", this);
+    m_deletePanelBtn = new QPushButton("删除选中面板", this);
+    panelBtnLayout->addWidget(m_createPanelBtn);
+    panelBtnLayout->addWidget(m_deletePanelBtn);
+    panelBtnLayout->addStretch();
+
+    leftLayout->addWidget(m_panelListTable, 1);
+    leftLayout->addLayout(panelBtnLayout);
+
+    // 右侧：面板内容表格 + 操作按钮
+    QWidget *rightWidget = new QWidget;
+    QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+
     m_panelTable = new QTableWidget(this);
     m_panelTable->setColumnCount(5);
     m_panelTable->setHorizontalHeaderLabels({"标题 7字", "声明(desc 15字)", "类型", "链接", "仅管理员"});
     m_panelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    panelLayout->addWidget(m_panelTable);
+    rightLayout->addWidget(m_panelTable);
 
-    QHBoxLayout *tableBtnLayout = new QHBoxLayout();
-    m_addRowBtn = new QPushButton("添加", this);
-    m_removeRowBtn = new QPushButton("删除", this);
+    QHBoxLayout *tableBtnLayout = new QHBoxLayout;
+    m_addRowBtn = new QPushButton("添加行", this);
+    m_removeRowBtn = new QPushButton("删除行", this);
     m_updatePanelBtn = new QPushButton("更新面板到机器人", this);
-
-    // 场景 + 作用范围
-
-
-    m_scopeCombo = new QComboBox(this);
-    m_scopeCombo->addItems({"私聊", "群聊", "频道", "频道私聊"});
-    m_targetTypeCombo = new QComboBox(this);
-    m_targetTypeCombo->addItems({"all", "specific"});
-
-
-    connect(m_scopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MenuPanelWidget::onScopeChanged);
-    tableBtnLayout->addWidget(new QLabel("场景:"));
-    tableBtnLayout->addWidget(m_scopeCombo);
-    tableBtnLayout->addWidget(new QLabel("作用范围:"));
-    tableBtnLayout->addWidget(m_targetTypeCombo);
-
     tableBtnLayout->addWidget(m_addRowBtn);
     tableBtnLayout->addWidget(m_removeRowBtn);
     tableBtnLayout->addWidget(m_updatePanelBtn);
     tableBtnLayout->addStretch();
-    panelLayout->addLayout(tableBtnLayout);
+    rightLayout->addLayout(tableBtnLayout);
+
+    // 左右组合
+    mainSplitter->addWidget(leftWidget);
+    mainSplitter->addWidget(rightWidget);
+    mainSplitter->setStretchFactor(0, 1);
+    mainSplitter->setStretchFactor(1, 2);
+
+    commandTabLayout->addLayout(topControlLayout);
+    commandTabLayout->addWidget(mainSplitter, 1);
+    commandTab->setLayout(commandTabLayout);
+
+    // ==================== 将两个 Tab 加入 TabWidget ====================
+    tabWidget->addTab(menuTab, "菜单");
+    tabWidget->addTab(commandTab, "指令");
+
+    mainLayout->addWidget(tabWidget);
+
+    // 状态栏（全局）
+    m_statusBar = new QStatusBar(this);
+    m_statusBar->showMessage("就绪");
+    mainLayout->addWidget(m_statusBar);
+
+    setLayout(mainLayout);
+
+
+    connect(m_scopeGroup, QOverload<int>::of(&QButtonGroup::idClicked),
+            this, &MenuPanelWidget::onScopeRadioClicked);
+    connect(m_createPanelBtn, &QPushButton::clicked, this, &MenuPanelWidget::onCreatePanel);
+    connect(m_deletePanelBtn, &QPushButton::clicked, this, &MenuPanelWidget::onDeleteSelectedPanel);
+    connect(m_editGroupsBtn, &QPushButton::clicked, this, &MenuPanelWidget::onEditGroups);
+    connect(m_editFriendsBtn, &QPushButton::clicked, this, &MenuPanelWidget::onEditFriends);
     connect(m_addRowBtn, &QPushButton::clicked, this, &MenuPanelWidget::onAddTableRow);
     connect(m_removeRowBtn, &QPushButton::clicked, this, &MenuPanelWidget::onRemoveTableRow);
     connect(m_updatePanelBtn, &QPushButton::clicked, this, &MenuPanelWidget::onUpdatePanel);
-    totalLayout->addLayout(panelLayout);
-
-    // 状态栏
-    m_statusBar = new QStatusBar(this);
-    m_statusBar->showMessage("就绪");
-    totalLayout->addWidget(m_statusBar);
-
-    setLayout(totalLayout);
-
-
+    connect(m_panelListTable, &QTableWidget::itemChanged, this, &MenuPanelWidget::onPanelRemarkChanged);
     onMenuTypeChanged("send_message");
+
+
 }
-void MenuPanelWidget::onScopeChanged()
+void MenuPanelWidget::onScopeRadioClicked(int id)
 {
-    // 切换场景时自动加载该场景下的面板
+    Q_UNUSED(id);  // id 参数可以不直接使用，因为 currentScope() 会从按钮组获取状态
+
+    // 1. 获取当前选中的场景字符串
+    QString scope = currentScope();
+
+    // 2. 根据场景启用/禁用编辑按钮（可选）
+    // 群聊场景允许编辑群ID，私聊/频道私聊允许编辑好友ID
+    m_editGroupsBtn->setEnabled(scope == "group");
+    m_editFriendsBtn->setEnabled(scope == "c2c" || scope == "dm");
+
+    // 3. 加载该场景下的面板列表（刷新左侧列表和缓存）
+    loadPanelsForCurrentScope();
+
+    // 4. 状态栏提示
+    updateStatus(QString("已切换到场景: %1").arg(scope));
+}
+#include <QInputDialog>
+void MenuPanelWidget::onEditGroups()
+{
+    bool ok;
+    QString text = QInputDialog::getMultiLineText(this, "编辑绑定群列表",
+                                                  "请输入群ID，每行一个或用逗号分隔：",
+                                                  m_bindGroups.join(","), &ok);
+    if (ok) {
+        // 解析为字符串列表
+        QStringList ids = text.split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
+        m_bindGroups = ids;
+        updateStatus(QString("已设置 %1 个群ID").arg(ids.size()));
+    }
+}
+
+void MenuPanelWidget::onEditFriends()
+{
+    bool ok;
+    QString text = QInputDialog::getMultiLineText(this, "编辑绑定好友列表",
+                                                  "请输入用户ID，每行一个或用逗号分隔：",
+                                                  m_bindFriends.join(","), &ok);
+    if (ok) {
+        QStringList ids = text.split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
+        m_bindFriends = ids;
+        updateStatus(QString("已设置 %1 个好友ID").arg(ids.size()));
+    }
+}
+void MenuPanelWidget::onPanelListItemClicked(QTableWidgetItem *item)
+{
+    if (!item) return;
+    QString panelId = item->data(Qt::UserRole).toString();
+    if (panelId.isEmpty()) return;
+
+    if (panelId == "__new__") {
+        // 临时项：清空表格，设置当前ID为空
+        m_panelTable->setRowCount(0);
+        m_currentPanelId.clear();
+        updateStatus("正在编辑新面板");
+        return;
+    }
+
+    if (!m_panelCache.contains(panelId)) {
+        updateStatus("错误：面板数据未缓存");
+        return;
+    }
+    loadPanelData(m_panelCache[panelId]);  // 传入单个 PanelRecord
+    updateStatus("已加载面板: " + panelId);
+}
+
+void MenuPanelWidget::onPanelRemarkChanged(QTableWidgetItem *item)
+{
+    if (item->column() != 0) return;  // 只处理备注列
+    QString panelId = item->data(Qt::UserRole).toString();
+    if (panelId.isEmpty() || panelId == "__new__") return;  // 临时项不保存
+
+    if (m_panelCache.contains(panelId)) {
+        QJsonObject record = m_panelCache[panelId];
+        QJsonObject panel = record["panel"].toObject();
+        panel["remark"] = item->text();
+        record["panel"] = panel;
+        m_panelCache[panelId] = record;
+    }
+}
+void MenuPanelWidget::onCreatePanel()
+{
+    // 清空右侧表格
+    m_panelTable->setRowCount(0);
+    m_currentPanelId.clear();  // 标记为新建
+
+    // 在左侧列表添加一个临时项（panel_id 为 "__new__"）
+    int row = m_panelListTable->rowCount();
+    m_panelListTable->insertRow(row);
+    QTableWidgetItem *item = new QTableWidgetItem("新面板");
+    item->setData(Qt::UserRole, "__new__");   // 特殊标记
+    m_panelListTable->setItem(row, 0, item);
+    m_panelListTable->selectRow(row);
+
+    updateStatus("已创建新面板，编辑内容后点击「更新面板到机器人」提交");
+}
+void MenuPanelWidget::onDeleteSelectedPanel()
+{
+    int row = m_panelListTable->currentRow();
+    if (row < 0) {
+        updateStatus("请先选择一个面板");
+        return;
+    }
+    QString panelId = m_panelListTable->item(row, 0)->data(Qt::UserRole).toString();
+    if (panelId.isEmpty()) return;
+
+    // 如果是临时项，直接删除行，不调用接口
+    if (panelId == "__new__") {
+        m_panelListTable->removeRow(row);
+        if (m_currentPanelId.isEmpty()) {
+            m_panelTable->setRowCount(0);
+        }
+        updateStatus("已取消新建面板");
+        return;
+    }
+
+    // 确认删除
+    if (QMessageBox::question(this, "确认删除", "确定要删除面板 " + panelId + " 吗？",
+                              QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    if (m_botClient) {
+        m_botClient->deletePanel(panelId, [this, panelId, row](const QString &resp, QNetworkReply::NetworkError err) {
+            QMetaObject::invokeMethod(this, [this, panelId, row, err,resp]() {
+                if (err == QNetworkReply::NoError) {
+                    m_panelCache.remove(panelId);
+                    m_panelListTable->removeRow(row);
+                    if (m_currentPanelId == panelId) {
+                        m_panelTable->setRowCount(0);
+                        m_currentPanelId.clear();
+                    }
+                    updateStatus("面板删除成功");
+                } else {
+                    updateStatus("删除失败: " + resp, true);
+                }
+            });
+        });
+    } else {
+        updateStatus("未选择Bot", true);
+    }
+}
+void MenuPanelWidget::loadPanelsForCurrentScope()
+{
     if (!m_botClient) {
         updateStatus("未选择Bot，无法加载面板", true);
         return;
     }
-    QString scope = m_scopeCombo->currentText();
+    QString scope = currentScope();
     updateStatus(QString("正在加载场景 [%1] 的面板...").arg(scope));
-    if(scope=="私聊")
-        scope="c2c";
-    if(scope=="群聊")
-        scope="group";
-    if(scope=="频道")
-        scope="channel";
-    if(scope=="频道私聊")
-        scope="dm";
 
-
-    m_botClient->listPanels(scope, 1, "", [this](const QString &resp, QNetworkReply::NetworkError err) {
+    m_botClient->listPanels(scope, 20, "", [this](const QString &resp, QNetworkReply::NetworkError err) {
         QMetaObject::invokeMethod(this, [this, resp, err]() {
+            qDebug()<<resp;
             if (err == QNetworkReply::NoError) {
                 QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
                 if (doc.isObject()) {
-                    QJsonObject panels = doc.object() ;
-                    if (!panels.isEmpty()) {
-                        loadPanelData(panels);
-                        updateStatus("面板已加载");
-                    } else {
-                        m_panelTable->setRowCount(0);
-                        m_currentPanelId.clear();
-                        updateStatus("无面板，可创建");
-                    }
+                    QJsonObject obj = doc.object();
+                    loadPanelList(obj);  // 填充左侧表格和缓存
                 }
             } else {
-                updateStatus("加载面板失败", true);
+                updateStatus("加载面板失败: " + resp, true);
             }
         });
     });
+
 }
-// ---------- 辅助 ----------
+void MenuPanelWidget::loadPanelList(const QJsonObject &responseObj)
+{
+    QJsonArray records = responseObj["records"].toArray();
+    m_panelListTable->setRowCount(0);
+    m_panelCache.clear();
+
+    if (records.isEmpty()) {
+        updateStatus("该场景下无面板");
+        m_panelTable->setRowCount(0);
+        m_currentPanelId.clear();
+        return;
+    }
+
+    for (const QJsonValue &val : records) {
+        QJsonObject record = val.toObject();
+        QString panelId = record["panel_id"].toString();
+        QString remark = record["panel"].toObject()["remark"].toString();
+        QString displayText = remark.isEmpty() ? panelId : remark;
+
+        int row = m_panelListTable->rowCount();
+        m_panelListTable->insertRow(row);
+        QTableWidgetItem *item = new QTableWidgetItem(displayText);
+        item->setData(Qt::UserRole, panelId);
+        m_panelListTable->setItem(row, 0, item);
+
+        m_panelCache[panelId] = record;   // 缓存完整记录
+    }
+
+    // 自动选中第一个
+    if (m_panelListTable->rowCount() > 0) {
+        m_panelListTable->selectRow(0);
+        onPanelListItemClicked(m_panelListTable->item(0, 0));
+    }
+
+    updateStatus(QString("已加载 %1 个面板").arg(records.size()));
+}
+
+QString MenuPanelWidget::currentScope() const
+{
+    int id = m_scopeGroup->checkedId();
+    switch (id) {
+    case 0: return "c2c";
+    case 1: return "group";
+    case 2: return "channel";
+    case 3: return "dm";
+    default: return "group";  // 默认
+    }
+}
+ // ---------- 辅助 ----------
 void MenuPanelWidget::updateStatus(const QString &msg, bool isError)
 {
     if (m_statusBar) {
@@ -414,10 +663,7 @@ void MenuPanelWidget::onUpdateMenu()
     }
     if (m_menuTree->currentItem()) onSaveMenuNode();
     QJsonArray items = buildMenuJson();
-    if (items.isEmpty()) {
-        QMessageBox::warning(this, "提示", "菜单不能为空");
-        return;
-    }
+
     QJsonObject menuData;
     menuData["menu"] = QJsonObject{{"items", items}};
 
@@ -426,48 +672,37 @@ void MenuPanelWidget::onUpdateMenu()
 
     updateStatus("正在更新菜单...");
     m_botClient->updateMenu(menuData, [this](const QString &resp, QNetworkReply::NetworkError err) {
-        qDebug ( ) << resp;
-        QMetaObject::invokeMethod(this, [this, err]() {
 
-            updateStatus(err == QNetworkReply::NoError ? "菜单更新成功" : "菜单更新失败", err != QNetworkReply::NoError);
+        QMetaObject::invokeMethod(this, [this,resp, err]() {
+
+            updateStatus(err == QNetworkReply::NoError ? "菜单更新成功" : "菜单更新失败"+resp, err != QNetworkReply::NoError);
         });
     });
 }
 
 // ---------- 指令面板 ----------
-void MenuPanelWidget::loadPanelData(const QJsonObject &responseObj)
+void MenuPanelWidget::loadPanelData(const QJsonObject &record)
 {
-    // 1. 解析 records 数组，取第一条记录（根据需求可调整）
-    QJsonArray records = responseObj["records"].toArray();
-    if (records.isEmpty()) {
-        m_panelTable->setRowCount(0);
-
-        return;
-    }
-    QJsonObject record = records[0].toObject();
-
-    // 2. 提取面板基础信息
+    // 1. 提取面板基础信息（单个记录）
     m_currentPanelId = record["panel_id"].toString();
     m_targetTypeCombo->setCurrentText(record["target_type"].toString("all"));
 
-    // 3. 清空表格，准备填充
+    // 2. 清空表格
     m_panelTable->setRowCount(0);
 
-    // 4. 提取面板内的 items 数组
+    // 3. 提取面板内的 items 数组
     QJsonObject panel = record["panel"].toObject();
     QJsonArray items = panel["items"].toArray();
 
-    // 5. 遍历填充表格（与原逻辑完全相同，只是 items 来源变了）
+    // 4. 遍历填充表格
     for (const QJsonValue &val : std::as_const(items)) {
         QJsonObject item = val.toObject();
         int row = m_panelTable->rowCount();
         m_panelTable->insertRow(row);
 
-        // 名称 & 描述
         m_panelTable->setItem(row, 0, new QTableWidgetItem(item["name"].toString()));
         m_panelTable->setItem(row, 1, new QTableWidgetItem(item["desc"].toString()));
 
-        // 类型下拉框
         QComboBox *typeCombo = new QComboBox();
         typeCombo->addItems({"command", "link"});
         QString type = item["type"].toString("command");
@@ -475,11 +710,9 @@ void MenuPanelWidget::loadPanelData(const QJsonObject &responseObj)
         if (idx >= 0) typeCombo->setCurrentIndex(idx);
         m_panelTable->setCellWidget(row, 2, typeCombo);
 
-        // 数据（command 或 link）
         QString data = (type == "command") ? item["command"].toString() : item["link"].toString();
         m_panelTable->setItem(row, 3, new QTableWidgetItem(data));
 
-        // 仅管理员复选框
         QCheckBox *adminCheck = new QCheckBox();
         adminCheck->setChecked(item["only_admin"].toBool(false));
         m_panelTable->setCellWidget(row, 4, adminCheck);
@@ -489,16 +722,7 @@ QJsonObject MenuPanelWidget::buildPanelJson()
 {
     QJsonObject obj;
 
-    QString scope= m_scopeCombo->currentText();
-    if(scope=="私聊")
-        scope="c2c";
-    if(scope=="群聊")
-        scope="group";
-    if(scope=="频道")
-        scope="channel";
-    if(scope=="频道私聊")
-        scope="dm";
-    obj["scope"] =scope;
+    obj["scope"] = currentScope();
     obj["target_type"] = m_targetTypeCombo->currentText();
 
     QJsonArray items;
@@ -520,15 +744,27 @@ QJsonObject MenuPanelWidget::buildPanelJson()
         itemObj["name"] = nameItem->text();
         if (descItem) itemObj["desc"] = descItem->text();
         itemObj["type"] = type;
-        if (type == "command")
-            itemObj["command"] = data;
-        else if (type == "link")
+        if (type == "link")
             itemObj["link"] = data;
         itemObj["only_admin"] = onlyAdmin;
         items.append(itemObj);
     }
+
+    QString remark;
+    if (!m_currentPanelId.isEmpty() && m_panelCache.contains(m_currentPanelId)) {
+        remark = m_panelCache[m_currentPanelId]["panel"].toObject()["remark"].toString();
+    } else {
+        // 新建面板：从左侧列表当前选中项获取备注（如果存在）
+        int row = m_panelListTable->currentRow();
+        if (row >= 0) {
+            QTableWidgetItem *item = m_panelListTable->item(row, 0);
+            if (item) remark = item->text();
+        }
+        if (remark.isEmpty()) remark = "新面板"; // 默认
+    }
     QJsonObject panel;
     panel["items"] = items;
+    panel["remark"] = remark;
     obj["panel"] = panel;
     return obj;
 }
@@ -569,34 +805,47 @@ void MenuPanelWidget::onUpdatePanel()
             updateStatus("未选择Bot", true);
             return;
         }
-
-
     }
+
+    QJsonObject panelData = buildPanelJson();
+
     if (m_currentPanelId.isEmpty()) {
-        QJsonObject panelData = buildPanelJson();
 
         updateStatus("正在创建面板...");
         m_botClient->createPanel(panelData, [this](const QString &resp, QNetworkReply::NetworkError err) {
-            qDebug() <<resp;
-            QMetaObject::invokeMethod(this, [this, err]() {
-                updateStatus(err == QNetworkReply::NoError ? "面板创建成功" : "面板创建失败", err != QNetworkReply::NoError);
+            QMetaObject::invokeMethod(this, [this, resp, err]() {
+                if (err == QNetworkReply::NoError) {
+                    QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
+                    if (doc.isObject()) {
+                        QString newId = doc.object()["panel_id"].toString();
+                        if (!newId.isEmpty()) {
+
+                            loadPanelsForCurrentScope();
+                            updateStatus("面板创建成功，ID: " + newId);
+                            return;
+                        }
+                    }
+                    updateStatus("面板创建成功，但未获取到ID", true);
+                } else {
+                    updateStatus("面板创建失败: " + resp, true);
+                }
             });
         });
-
-
-        return;
-    }
-    QJsonObject panelData = buildPanelJson();
-
-    updateStatus("正在更新面板...");
-    m_botClient->updatePanel(m_currentPanelId, panelData, [this](const QString &resp, QNetworkReply::NetworkError err) {
-        qDebug() <<resp;
-        QMetaObject::invokeMethod(this, [this, err]() {
-            updateStatus(err == QNetworkReply::NoError ? "面板更新成功" : "面板更新失败", err != QNetworkReply::NoError);
+    } else {
+        // 更新已有面板
+        updateStatus("正在更新面板...");
+        m_botClient->updatePanel(m_currentPanelId, panelData, [this](const QString &resp, QNetworkReply::NetworkError err) {
+            QMetaObject::invokeMethod(this, [this, err, resp]() {
+                if (err == QNetworkReply::NoError) {
+                    loadPanelsForCurrentScope();
+                    updateStatus("面板更新成功");
+                } else {
+                    updateStatus("面板更新失败: " + resp, true);
+                }
+            });
         });
-    });
+    }
 }
-
 // ---------- 切换Bot ----------
 void MenuPanelWidget::switchBot()
 {
@@ -625,41 +874,11 @@ void MenuPanelWidget::switchBot()
                 }
                 updateStatus("菜单已加载");
             } else {
-                updateStatus("加载菜单失败", true);
+                updateStatus("加载菜单失败.."+resp, true);
             }
         });
     });
 
-    // 加载面板（获取当前场景下的第一个面板）
-    QString scope = m_scopeCombo->currentText();
-    if(scope=="私聊")
-        scope="c2c";
-    if(scope=="群聊")
-        scope="group";
-    if(scope=="频道")
-        scope="channel";
-    if(scope=="频道私聊")
-        scope="dm";
+    loadPanelsForCurrentScope();
 
-    m_botClient->listPanels(scope, 20, "", [this](const QString &resp, QNetworkReply::NetworkError err) {
-        QMetaObject::invokeMethod(this, [this, resp, err]() {
-
-            if (err == QNetworkReply::NoError) {
-                QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
-                if (doc.isObject()) {
-                    QJsonObject panels = doc.object() ;
-                    if (!panels.isEmpty()) {
-                        loadPanelData(panels);
-                        updateStatus("面板已加载");
-                    } else {
-                        m_panelTable->setRowCount(0);
-                        m_currentPanelId.clear();
-                        updateStatus("无面板，可创建");
-                    }
-                }
-            } else {
-                updateStatus("加载面板失败", true);
-            }
-        });
-    });
 }

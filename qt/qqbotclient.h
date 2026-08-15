@@ -84,7 +84,7 @@ struct MessageLogContext {
 
 };
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
-
+using Callback2 = std::function<void()>;
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
 class QQBotClient : public QObject
 {
@@ -200,7 +200,7 @@ private slots:
 private:
     // 网关和 token
 
-    QString fetchGatewayUrl();
+    void fetchGatewayUrl(Callback calls);
     bool refreshAccessToken();
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,

@@ -408,6 +408,61 @@ void showClickableLicenseInfo() {
 
 MainWindow::~MainWindow()
 {
+    delete ScreenA;
+    ScreenA = nullptr;
+
+
+    delete keyword;
+    keyword = nullptr;
+    delete TextReplace;
+    TextReplace = nullptr;
+    delete RuleConfigWidget;
+    RuleConfigWidget = nullptr;
+    delete schedule;
+    schedule = nullptr;
+    delete forbidden;
+    forbidden = nullptr;
+    delete Black;
+    Black = nullptr;
+
+    delete htmltoimg;
+    htmltoimg = nullptr;
+
+    delete buttonEditorPage;
+    buttonEditorPage = nullptr;
+
+    delete Sandbox;
+    Sandbox = nullptr;
+
+    delete ui_qunguan;
+    ui_qunguan = nullptr;
+
+
+
+    // 这些可能是成员指针，由父窗口管理，但为了安全也清理
+    delete robotListWidget;
+    robotListWidget = nullptr;
+    delete configTabWidget2;
+    configTabWidget2 = nullptr;
+
+    // 核心页面（最后清理）
+    delete homePage;
+    homePage = nullptr;
+
+    delete setA;
+    setA = nullptr;
+
+    delete accountPage;
+    accountPage = nullptr;
+
+    delete logPage;
+    logPage = nullptr;
+
+    delete pluginPage;
+    pluginPage = nullptr;
+
+    delete chatPage;
+    chatPage = nullptr;
 }
 
 bool _g_qieh=false;

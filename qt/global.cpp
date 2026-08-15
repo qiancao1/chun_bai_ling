@@ -125,7 +125,7 @@ void cancelTimer(const QString &openid)
 
 void AppendEventLog(const QString &msg,int color)
 {
-
+    if(框架退出) return;
     Message m;
     m.msg= msg;
     m.Color_0=color;

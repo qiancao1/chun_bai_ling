@@ -113,7 +113,6 @@ void BotRuleConfigWidget::setupUI()
     mainSplitter = new QSplitter(Qt::Horizontal, this);
 
 
-
     // 右侧规则表格
     QWidget *rightWidget = new QWidget;
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
@@ -305,6 +304,11 @@ void BotRuleConfigWidget::addRowFromRuleItem(const BotRuleItem &item)
 
 void BotRuleConfigWidget::onAddRow()
 {
+    if(g_appid==0)
+    {
+        QMessageBox::warning(this,"请选中一个机器人","请选中一个机器人后再试试");
+        return ;
+    }
     BotRuleItem newItem;
     newItem.enabled = true;
     newItem.remark = "菜单";
@@ -318,6 +322,11 @@ void BotRuleConfigWidget::onAddRow()
 
 void BotRuleConfigWidget::onDeleteRow()
 {
+    if(g_appid==0)
+    {
+        QMessageBox::warning(this,"请选中一个机器人","请选中一个机器人后再试试");
+        return ;
+    }
     int row = ruleTable->currentRow();
     if (row < 0) {
         QMessageBox::information(this, "提示", "请先选中要删除的行");
@@ -405,7 +414,11 @@ void BotRuleConfigWidget::onMoveRowDown()
 
 void BotRuleConfigWidget::onRowsSwapped(int fromRow, int toRow)
 {
-    if (g_appid == 0) return;
+    if(g_appid==0)
+    {
+        QMessageBox::warning(this,"请选中一个机器人","请选中一个机器人后再试试");
+        return ;
+    }
     if (m_ruleMap.contains(g_appid)) {
         QList<BotRuleItem> &rules = m_ruleMap[g_appid];
         if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {

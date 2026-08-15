@@ -23,6 +23,11 @@
 #include <pybind11/embed.h>
 #include <pybind11/functional.h>
 
+
+#define _CRTDBG_MAP_ALLOC   // 映射 malloc/free 到调试版本，提供更详细信息
+#include <crtdbg.h>
+#include <stdlib.h>
+
 #include <QApplication>
 #include "CnbUploader.h"
 #include "PluginMarketWindow.h"
@@ -169,132 +174,152 @@ void initDBs() {
 QString browseWeb(const QString &urlString);
 double totalMemMB=0;
 qint64 g_totalRuntime=0;
-QString webhook_sig(const QJsonObject &obj, const QString &secret);
+
 void detectOptimalRegion();
+
+
+
+
 int main(int argc, char *argv[]) {
-    SetDllDirectoryW(L".\\DLLs");
-    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
-    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
-    QApplication::setHighDpiScaleFactorRoundingPolicy(
-        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough
-        );
-
-    //qputenv("QT_DEBUG_PLUGINS", "1");
-    SetUnhandledExceptionFilter(CrashHandler);
-    QApplication a(argc, argv);
-    qRegisterMetaType<MessageEvent>("MessageEvent");
-    g_totalRuntime = QDateTime::currentSecsSinceEpoch();
-    MEMORYSTATUSEX memStatus;
-    memStatus.dwLength = sizeof(memStatus);
-
-    if (GlobalMemoryStatusEx(&memStatus)) {
-        totalMemMB = memStatus.ullTotalPhys / (1024.0 * 1024.0);
-    } else {
-        totalMemMB = 8192.0;
-    }
-
-    QUuid uuid = QUuid::createUuid();
-    g_keyuuid = uuid.toString(QUuid::WithoutBraces).toStdString();
-    int len = g_keyuuid.length();
-
-    g_keyuuid2 = new char[len + 1];
-    strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
-    initdiv();
-    loadconfig();
-    clearPTmpFolder();
-
-    std::unique_ptr<py::scoped_interpreter> interpreter;
-    try {
-        interpreter = std::make_unique<py::scoped_interpreter>();
-        py::exec(R"(
-import sys
-import os
-
-base = os.path.abspath('.')  # 或你指定的根目录
-plugin_root = os.path.join(base, 'plugin')
-plugins_root = os.path.join(base, 'plugins')
-if os.path.exists(plugin_root):
-    sys.path.insert(0, base)  # 父目录，以便 import plugin.xxx
-if os.path.exists(plugins_root):
-    sys.path.insert(0, base)
-)");
-    } catch (const std::exception& e) {
-        QString text = QString("Python 解释器初始化失败(看看lib文件夹在不在):\n%1").arg(e.what());
-        QMessageBox::critical(nullptr, "错误", text);
-        return -1;
-    } catch (...) {
-        QMessageBox::critical(nullptr, "错误", "未知异常");
-        return -1;
-    }
-
-    py::gil_scoped_release release;
-    cache_db = new LmdbKV("botdb/file_db");
-    initDBs();
-    if (QFile::exists("miaomiao32.exe")) {
-        bridge = new SharedMemoryBridge;
-        bridge->setCallback(myCallback);
-        if (!bridge->startServer(false)) qCritical("Bridge start failed");
-    }
-
-    aidb= new LmdbKV("botdb/aidb");
-    dsdb = new LmdbKV("botdb/dsdb");
-    accdb = new LmdbKV("botdb/accountinfo");
 
 
+    int ret=0;
+    {
+        SetDllDirectoryW(L".\\DLLs");
+        QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+        QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+        QApplication::setHighDpiScaleFactorRoundingPolicy(
+            Qt::HighDpiScaleFactorRoundingPolicy::PassThrough
+            );
+
+        //qputenv("QT_DEBUG_PLUGINS", "1");
+        SetUnhandledExceptionFilter(CrashHandler);
+        QApplication a(argc, argv);
+        qRegisterMetaType<MessageEvent>("MessageEvent");
+        g_totalRuntime = QDateTime::currentSecsSinceEpoch();
+        MEMORYSTATUSEX memStatus;
+        memStatus.dwLength = sizeof(memStatus);
+
+        if (GlobalMemoryStatusEx(&memStatus)) {
+            totalMemMB = memStatus.ullTotalPhys / (1024.0 * 1024.0);
+        } else {
+            totalMemMB = 8192.0;
+        }
+
+        QUuid uuid = QUuid::createUuid();
+        g_keyuuid = uuid.toString(QUuid::WithoutBraces).toStdString();
+        int len = g_keyuuid.length();
+
+        g_keyuuid2 = new char[len + 1];
+        strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
+        initdiv();
+        loadconfig();
+        clearPTmpFolder();
+
+        std::unique_ptr<py::scoped_interpreter> interpreter;
+        try {
+            interpreter = std::make_unique<py::scoped_interpreter>();
+            py::exec(R"(
+    import sys
+    import os
+
+    base = os.path.abspath('.')  # 或你指定的根目录
+    plugin_root = os.path.join(base, 'plugin')
+    plugins_root = os.path.join(base, 'plugins')
+    if os.path.exists(plugin_root):
+        sys.path.insert(0, base)  # 父目录，以便 import plugin.xxx
+    if os.path.exists(plugins_root):
+        sys.path.insert(0, base)
+    )");
+        } catch (const std::exception& e) {
+            QString text = QString("Python 解释器初始化失败(看看lib文件夹在不在):\n%1").arg(e.what());
+            QMessageBox::critical(nullptr, "错误", text);
+            return -1;
+        } catch (...) {
+            QMessageBox::critical(nullptr, "错误", "未知异常");
+            return -1;
+        }
+
+        py::gil_scoped_release release;
+        cache_db = new LmdbKV("botdb/file_db");
+        initDBs();
+        if (QFile::exists("miaomiao32.exe")) {
+            bridge = new SharedMemoryBridge;
+            bridge->setCallback(myCallback);
+            if (!bridge->startServer(false)) qCritical("Bridge start failed");
+        }
+
+        aidb= new LmdbKV("botdb/aidb");
+        dsdb = new LmdbKV("botdb/dsdb");
+        accdb = new LmdbKV("botdb/accountinfo");
 
 
 
-    MainWindow w;
 
-    if (QSystemTrayIcon::isSystemTrayAvailable()) {
-        QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
-        trayIcon->setIcon(QIcon(":/icons/app_icon.ico")); // 从资源文件加载[reference:2][reference:3]
-        trayIcon->setToolTip("纯白铃铛");
-        QMenu *menu = new QMenu();
-        QAction *showAction = new QAction("显示主窗口", menu);
-        QAction *hideAction = new QAction("隐藏主窗口", menu);
-        menu->addSeparator(); // 添加分隔线
-        QAction *quitAction = new QAction("退出", menu);
-        menu->addAction(showAction);
-        menu->addAction(hideAction);
-        menu->addAction(quitAction);
-        trayIcon->setContextMenu(menu);
-        QObject::connect(showAction, &QAction::triggered, &w, &QMainWindow::show);
-        QObject::connect(hideAction, &QAction::triggered, &w, &QMainWindow::hide);
-        QObject::connect(quitAction, &QAction::triggered, &a, &QApplication::quit);
-        QObject::connect(trayIcon, &QSystemTrayIcon::activated,
-                         [&w](QSystemTrayIcon::ActivationReason reason) {
-                             if (reason == QSystemTrayIcon::Trigger) { // 单击[reference:9]
-                                 if (w.isHidden()) {
-                                     w.show();
-                                 } else {
-                                     w.hide();
+
+
+         MainWindow *w = new MainWindow();
+        if (QSystemTrayIcon::isSystemTrayAvailable()) {
+            QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
+            trayIcon->setIcon(QIcon(":/icons/app_icon.ico")); // 从资源文件加载[reference:2][reference:3]
+            trayIcon->setToolTip("纯白铃铛");
+            QMenu *menu = new QMenu();
+            QAction *showAction = new QAction("显示主窗口", menu);
+            QAction *hideAction = new QAction("隐藏主窗口", menu);
+            menu->addSeparator(); // 添加分隔线
+            QAction *quitAction = new QAction("退出", menu);
+            menu->addAction(showAction);
+            menu->addAction(hideAction);
+            menu->addAction(quitAction);
+            trayIcon->setContextMenu(menu);
+            QObject::connect(showAction, &QAction::triggered, w, &QMainWindow::show);
+            QObject::connect(hideAction, &QAction::triggered, w, &QMainWindow::hide);
+            QObject::connect(quitAction, &QAction::triggered, &a, &QApplication::quit);
+            QObject::connect(trayIcon, &QSystemTrayIcon::activated,
+                             [&w](QSystemTrayIcon::ActivationReason reason) {
+                                 if (reason == QSystemTrayIcon::Trigger) { // 单击[reference:9]
+                                     if (w->isHidden()) {
+                                         w->show();
+                                     } else {
+                                         w->hide();
+                                     }
                                  }
-                             }
-                         });
-        trayIcon->show();
+                             });
+            trayIcon->show();
+        }
+
+
+        w->show();
+        QThreadPool::globalInstance()->setMaxThreadCount(200); // 根据 CPU 核心和业务耗时调整，建议 50~100
+        detectOptimalRegion();
+        ret = a.exec();
+        框架退出=true;
+        for(auto &c :m_botClients)
+        {
+            c->stop();
+        }
+        if(bridge)
+        {
+            bridge->writeResponseToBlock(1,"{\"type\":6}");
+            bridge->stopServer();
+        }
+        pluginPage->foruninstall_Plugin();
+
+        py::gil_scoped_acquire acquire;
+        delete w;
+        w = nullptr;
+
+        delete cache_db;
+        cache_db = nullptr;
+        delete aidb;
+        aidb = nullptr;
+        delete dsdb;
+        dsdb = nullptr;
+        delete accdb;
+        accdb = nullptr;
+        a.sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+        //TerminateProcess(GetCurrentProcess(), 0);
     }
-
-
-    w.show();
-    QThreadPool::globalInstance()->setMaxThreadCount(200); // 根据 CPU 核心和业务耗时调整，建议 50~100
-    detectOptimalRegion();
-    int ret = a.exec();
-    框架退出=true;
-    for(auto &c :m_botClients)
-    {
-        c->stop();
-    }
-    if(bridge)
-    {
-        bridge->writeResponseToBlock(1,"{\"type\":6}");
-        bridge->stopServer();
-    }
-    pluginPage->foruninstall_Plugin();
-    QThreadPool::globalInstance()->waitForDone();
-
-
-    TerminateProcess(GetCurrentProcess(), 0);
-
     return ret;
 }

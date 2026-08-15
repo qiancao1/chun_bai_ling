@@ -227,7 +227,7 @@ void CardWidget::onLoginButton() {
         client->start();
     }
 
-    refreshDisplay();
+
 
 }
 

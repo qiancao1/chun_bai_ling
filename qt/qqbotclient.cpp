@@ -70,57 +70,92 @@ void QQBotClient::start()
 {
     if (m_info->online || m_isConnecting)
         return;
+
+    if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
+        AppendEventLog("缺少 appid 或 secret，无法获取 AccessToken",0xff);
+        m_info->err+="缺少 appid 或 secret，无法获取 AccessToken\n";
+        return ;
+    }
     m_isConnecting = true;
     m_info->err.clear();
     AppendEventLog(QString("尝试登录：%1(%2)").arg(m_info->nickname,m_info->appid), 0x0082FD);
+    Callback2 calls = [this](){
 
-    if (!refreshAccessToken()) {
+        fetchGatewayUrl([this](const QString &wsUrl,QNetworkReply::NetworkError Neterr){
 
-        m_isConnecting = false;
-        scheduleReconnect(10);
-        return;
-    }
+            QMetaObject::invokeMethod(this, [this,wsUrl]() {
+                if (wsUrl.isEmpty()) {
+                    m_isConnecting = false;
+                    scheduleReconnect(5);
 
+                    return;
+                }
+                if(m_info->type==0)
+                {
+                    QNetworkRequest request(wsUrl);
+                    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.2.6)");
+                    m_webSocket.open(request);
+                }else{
+                    if(is_server())
+                    {
+                        m_info->online=true;
+                        fetchSelfInfo();
+                    }else{
+                        m_info->err+="未启动webhook服务器 请允许后再试试\n";
+                        AppendEventLog("未启动webhook服务器 请允许后再试试");
+                    }
+                }
+                emit avatarDownloaded(); //信号
+                return  ;
+            }, Qt::QueuedConnection);
+        });
+    };
 
-    QString wsUrl = m_info->wsAddress;
-    if (wsUrl.isEmpty()) {
-        wsUrl = fetchGatewayUrl();
-        if (wsUrl.isEmpty()) {
-
-            m_isConnecting = false;
-            scheduleReconnect(5);
-            return;
-        }else if(wsUrl=="*")
-        {
-             wsUrl =fetchGatewayUrl();
-        }
-        if (wsUrl.isEmpty()) {
-
-            m_isConnecting = false;
-            scheduleReconnect(5);
-            return;
-        }
-    }else{
-        代理=1;
-    }
-
-    if(m_info->type==0)
+    qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
     {
-        QNetworkRequest request(wsUrl);
+        calls();
+        return ;
+    }
 
-        request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.0.19)");
-        m_webSocket.open(request);
-    }else{
-        if(is_server())
-        {
-            m_info->online=true;
-            fetchSelfInfo();
-        }else{
-            m_info->err+="未启动webhook服务器 请允许后再试试\n";
-            AppendEventLog("未启动webhook服务器 请允许后再试试");
+
+    QJsonObject payload;
+    payload["appId"] = m_info->appid;
+    payload["clientSecret"] = m_info->secret;
+    Post("https://api.bot.qq.com/app/getAppAccessToken",payload,QString(),10000,[this,calls](const QString &resp,QNetworkReply::NetworkError neterr){
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8(), &err);
+
+        if (err.error != QJsonParseError::NoError) {
+            m_isConnecting = false;
+            scheduleReconnect(10);
+            AppendEventLog("解析 token 响应失败(无法获取AccessToken): " + err.errorString()+"\n返回内容："+resp,0xff);
+            m_info->err+="解析 token 响应失败(无法获取AccessToken): " + err.errorString()+"\n返回内容："+resp;
+            return ;
         }
 
-    }
+        QJsonObject obj = doc.object();
+        QString newToken = obj.value("access_token").toString();
+        if (newToken.isEmpty()) {
+            QString errMsg = obj.value("message").toString();
+            if (errMsg.isEmpty())
+                errMsg = "appid 或 secret 错误（无具体返回信息）";
+            AppendEventLog("获取 token 失败: " + errMsg,0xff);
+            m_info->err+="获取 token 失败: " + errMsg;
+            m_isConnecting = false;
+            scheduleReconnect(10);
+            return ;
+        }
+
+        m_accessToken = newToken;
+        int expiresIn = obj.value("expires_in").toInt(7200);
+        qint64 now = QDateTime::currentSecsSinceEpoch();
+        m_tokenExpireTime = now + expiresIn - 60;
+        AppendEventLog(QString("Token 刷新成功，有效期至 %1")
+                           .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+        calls();
+    });
+
 
 
 }
@@ -146,60 +181,48 @@ void QQBotClient::stop()
 }
 
 // ---------- 网络请求 ----------
-QString QQBotClient::fetchGatewayUrl()
+void QQBotClient::fetchGatewayUrl(Callback calls)
 {
-    if (!m_info->wsAddress.isEmpty())
-        return m_info->wsAddress;
-
-    if (m_accessToken.isEmpty()) {
-        AppendEventLog("无法获取网关：access_token 为空",0xff);
-        m_info->err+="access_token 为空 请设置access_token 后再次登录\n";
-        return QString();
+    if (!m_info->wsAddress.isEmpty()){
+        代理=1;
+        calls(m_info->wsAddress,QNetworkReply::NetworkError());
+        return ;
     }
 
-    QUrl url("https://api.bot.qq.com/gateway");
-    QNetworkRequest request(url);
+    Get("https://api.bot.qq.com/gateway",QString(),10000,[this,calls](const QString &resp,QNetworkReply::NetworkError neterr){
 
-    request.setRawHeader("Authorization", QString("QQBot %1").arg(m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
+            QJsonParseError err;
+            QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8(), &err);
+            if (err.error != QJsonParseError::NoError) {
 
-    QNetworkReply *reply = m_nam.get(request);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-    if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("获取登录Ws错误: " + err.errorString(),0xff);
-        m_info->err+="获取登录Ws错误: " + err.errorString()+"\n";
-        return QString();
-    }
-
-    QJsonObject obj = doc.object();
-    QString wsUrl = obj.value("url").toString();
-    if (wsUrl.isEmpty()) {
-
-        QString errMsg = obj.value("message").toString();
-        if(errMsg.contains("token") || errMsg.contains("Token")){
-            m_accessToken.clear();
-            if (!refreshAccessToken()) {
-
-                m_isConnecting = false;
-                scheduleReconnect(10);
-                return wsUrl;
+                AppendEventLog("获取登录Ws错误: " + err.errorString(),0xff);
+                m_info->err+="获取登录Ws错误: " + err.errorString()+"\n";
+                calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));
+                return ;
             }
 
-            return "*";
-        }
-        if (errMsg.isEmpty())
-            errMsg = "未知错误，可能 token 无效或 appid 不正确";
-        m_info->err+="获取ws地址失败: " + errMsg+"\n";
-        AppendEventLog("获取ws地址失败: " + errMsg,0xff);
-    }
-    return wsUrl;
+            QJsonObject obj = doc.object();
+            QString wsUrl = obj.value("url").toString();
+            if (wsUrl.isEmpty()) {
+
+                QString errMsg = obj.value("message").toString();
+                if(errMsg.contains("token") || errMsg.contains("Token")){
+                    m_accessToken.clear();
+                    calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));
+                    AppendEventLog("accessToken 疑似过期 等下一次重连: " + resp,0xff);
+                    return ;
+                }
+                if (errMsg.isEmpty())
+                    errMsg = "未知错误，可能 token 无效或 appid 不正确";
+                m_info->err+="获取ws地址失败: " + errMsg+"\n";
+                AppendEventLog("获取ws地址失败: " + errMsg,0xff);
+                calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));
+                return;
+            }
+            calls(wsUrl,QNetworkReply::NetworkError());
+            return ;
+
+    });
 }
 
 bool QQBotClient::refreshAccessToken()
@@ -222,33 +245,13 @@ bool QQBotClient::refreshAccessToken()
         return false;
     }
 
-    QUrl url("https://api.bot.qq.com/app/getAppAccessToken");
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
     QJsonObject payload;
     payload["appId"] = m_info->appid;
     payload["clientSecret"] = m_info->secret;
-    QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    QString data=Post("https://api.bot.qq.com/app/getAppAccessToken",payload,QString(),10000);
 
-    QNetworkReply *reply = m_nam.post(request, body);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QByteArray data = reply->readAll();
-        AppendEventLog("刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data,0xff);
-        m_info->err+="刷新 token 网络错误: " + reply->errorString()+"\n错误信息"+data;
-        reply->deleteLater();
-         suo =false;
-        return false;
-    }
-
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
     QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8(), &err);
 
     if (err.error != QJsonParseError::NoError) {
         AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+data,0xff);

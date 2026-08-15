@@ -545,9 +545,7 @@ void LogPage::setupUi()
 
                     QString content = getFieldText(row, Field_Content);
                     QString direction = getFieldText(row, Field_Direction);
-                    if (direction.isEmpty()) {
-                        // 如果没有 direction 列，可能显示其他内容，或者从数据库读取
-                    }
+
                     QString text = content + "\n\n-----------------------------------\n\n" + direction;
                     QMessageBox::information(this, "消息内容", text);
                 });
