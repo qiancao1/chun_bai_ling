@@ -3,7 +3,9 @@
 #include <qmutex.h>
 #include <qnetworkreply.h>
 #include <qthread.h>
+#pragma once
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
 class NetManager : public QObject {
     Q_OBJECT
 public:
@@ -24,17 +26,17 @@ public:
 
 
     // 注意这里返回的是标准库的 std::future
-    std::future<QString> post(const QString &url, const QByteArray &jsonData,
+    std::future<QByteArray> post(const QString &url, const QByteArray &jsonData,
                               const QHash<QString, QString> &headers, int timeoutMs);
-    std::future<QString> get(const QString &url,const QHash<QString, QString> &headers, int timeoutMs) ;
-    std::future<QString> Patch (const QString &url, const QByteArray &jsonData,
+    std::future<QByteArray> get(const QString &url,const QHash<QString, QString> &headers=QHash<QString, QString>(), int timeoutMs=30000) ;
+    std::future<QByteArray> Patch (const QString &url, const QByteArray &jsonData,
                                const QHash<QString, QString> &headers, int timeoutMs);
-    std::future<QString> put(const QString &url, const QByteArray &jsonData,
+    std::future<QByteArray> put(const QString &url, const QByteArray &jsonData,
                                          const QHash<QString, QString> &headers, int timeoutMs);
     void putAsync(const QString& url, const QByteArray& data,
                               const QHash<QString, QString>& headers, int timeoutMs,
                               Callback callback);
-    std::future<QString> Delete(const QString &url,
+    std::future<QByteArray> Delete(const QString &url,
                                 const QByteArray &data,
                                 const QHash<QString, QString> &headers = {},
                                 int timeoutMs = 30000);

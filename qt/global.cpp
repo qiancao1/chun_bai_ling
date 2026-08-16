@@ -24,6 +24,7 @@
 #include <QNetworkReply>
 #include "chatpage.h"
 #include "pluginmarket.h"
+#include "netmanager.h"
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
@@ -1350,7 +1351,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     ret = ai_ui->Ai_qx(info,ev);
     if(ret.isEmpty() )
         ret = ai_ui->Ai_post(info,ev);
-    else if(ret=="*") ret =QString();
+    if(ret=="*") return;
 
     if(!ret.isEmpty())
     {
@@ -1992,7 +1993,6 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
         return QString();
     }
 
-    // 1. 计算文件内容的 MD5 作为文件名
     QByteArray hash = QCryptographicHash::hash(imageData, QCryptographicHash::Md5);
     QString hashHex = hash.toHex();
 
@@ -2003,14 +2003,10 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
         if (dot != -1)
             extension = originalFileName.mid(dot);
     }
-
     QString fileName = hashHex + extension;
-
-    // 3. 生成随机边界字符串
     QString boundary = "----WebKitFormBoundary" +
                        QUuid::createUuid().toString(QUuid::WithoutBraces).left(16);
 
-    // 4. 构造 multipart/form-data 请求体
     QByteArray body;
     body.append("--" + boundary.toUtf8() + "\r\n");
     body.append("Content-Disposition: form-data; name=\"Filedata\"; filename=\"" + fileName.toUtf8() + "\"\r\n");
@@ -2019,69 +2015,28 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
     body.append("\r\n");
     body.append("--" + boundary.toUtf8() + "--\r\n");
 
-    // 5. 设置请求头
+
     QString contentType = "multipart/form-data; boundary=" + boundary;
-    QNetworkRequest request;
-    request.setUrl(QUrl("https://upload.api.cli.im/upload.php?kid=cliim"));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
-    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    request.setRawHeader("Accept", "*/*");
-    request.setRawHeader("Origin", "https://cli.im");
-    request.setRawHeader("Referer", "https://cli.im/deqr/");
-    request.setRawHeader("Sec-Fetch-Site", "same-site");
-    request.setRawHeader("Sec-Fetch-Mode", "cors");
 
-    // 6. 发送请求（同步阻塞）
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, body);
+    QHash<QString,QString> h;
+    h["User-Agent"]= "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+    h["Accept"]= "*/*";
+    h["Origin"]= "https://cli.im";
+    h["Referer"]= "https://cli.im/deqr/";
+    h["Sec-Fetch-Site"]= "same-site";
+    h["Sec-Fetch-Mode"]= "cors";
+    h["Content-Type"]= contentType;
 
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(30000);  // 30秒超时
-    loop.exec();
+    auto future = NetManager::instance()->post("https://upload.api.cli.im/upload.php?kid=cliim",body,h,30000);
 
-    // 7. 处理响应
-    bool ok = false;
-    int statusCode = 0;
-    QByteArray responseBody;
-    QString reqErrorString;
+    QString responseBody = future.get();
 
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        ok = true;
-        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        responseBody = reply->readAll();
-    } else {
-        if (!timer.isActive()) {
-            reqErrorString = "Request timeout";
-        } else {
-            reqErrorString = reply->errorString();
-        }
-        statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        responseBody = reply->readAll();  // 可能包含部分响应
-    }
-    reply->deleteLater();
-
-    if (!ok || statusCode != 200) {
-        if (errorMsg) {
-            if (!responseBody.isEmpty())
-                *errorMsg = QString("HTTP %1: %2").arg(statusCode).arg(QString::fromUtf8(responseBody));
-            else
-                *errorMsg = reqErrorString;
-        }
-        return QString();
-    }
-
-    // 8. 解析 JSON 响应
     QJsonParseError parseErr;
-    QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
+    QJsonDocument doc = QJsonDocument::fromJson(responseBody.toUtf8(), &parseErr);
     if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
         if (errorMsg) *errorMsg = "Invalid JSON response: " + parseErr.errorString();
         return QString();
     }
-
     QJsonObject obj = doc.object();
     QString status = obj.value("status").toString();
     if (status != "1") {
@@ -2089,7 +2044,6 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
         if (errorMsg) *errorMsg = QString("Upload failed, status=%1, msg=%2").arg(status, msg);
         return QString();
     }
-
     QJsonObject dataObj = obj.value("data").toObject();
     QString url = dataObj.value("path").toString();
     if (url.isEmpty()) {
@@ -2098,7 +2052,7 @@ QString uploadToMhimg(const QByteArray &imageData, const QString &originalFileNa
     }
     return url;
 }
-// 便捷重载：直接根据本地文件路径上传
+
 QString uploadToMhimg(const QString &filePath, QString *errorMsg)
 {
     QFile file(filePath);
@@ -2257,24 +2211,9 @@ QString subTextReplace(const QString &source,const QString &find,const QString &
     return result;
 }
 bool downloadFile(const QString &url, const QString &savePath, QString &errorMsg) {
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(url)));
 
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    if (reply->error() != QNetworkReply::NoError) {
-        errorMsg = reply->errorString();
-        reply->deleteLater();
-        return false;
-    }
-
-    // 读取数据
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    // 写入文件
+    auto f = NetManager::instance()->get(url,QHash<QString,QString>(),30000);
+    QByteArray data = f.get();
     QFile file(savePath);
     if (!file.open(QIODevice::WriteOnly)) {
         errorMsg = "无法创建文件: " + savePath;

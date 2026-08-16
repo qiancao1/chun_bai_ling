@@ -147,8 +147,7 @@ private:
 
 
 
-    // ---------- 向量数据库操作（同步阻塞，线程安全） ----------
-    QByteArray syncHttpPost(const QUrl &url, const QJsonDocument &payload, int timeoutMs = 30000);
+
 
     // 1. 把文字变成向量（调用嵌入模型）
     QVector<double> getEmbedding(const QString &text, const QString &url2, const QString &model, const QString &key);

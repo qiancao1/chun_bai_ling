@@ -221,7 +221,7 @@ void CardWidget::onLoginButton() {
 
     if (m_info->online) {
         client->stop();
-
+        refreshDisplay();
     } else {
 
         client->start();

@@ -71,11 +71,17 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.6.39"
-#define APP_BUILD_NUMBER 39
+#define APP_VERSION_STR "v1.2.7.40"
+#define APP_BUILD_NUMBER 40
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.7.40 (2026-08-12)
+- 修复一处内存泄漏
+- 优化 指令修改面板
+- 优化 Ai艾特不转换问题
+- 修复 v1.2.5.37 修改的图片 产生的bug
+
 ## v1.2.6.39 (2026-08-12)
 - 修复 内置AI决策模型的一些问题
 - 增加 AI每个 角色专属表情包库

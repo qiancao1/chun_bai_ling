@@ -49,7 +49,7 @@ static QNetworkAccessManager *getNetworkManager() {
 
 #include <QTemporaryFile>
 #include <QDir>
-#include <QEventLoop>
+
 #include <QTimer>
 
 // 记录正在下载的媒体 URL 和对应的临时文件路径
@@ -1325,7 +1325,7 @@ void ChatPage::updateAllContactLists(int index)
     s_wrapCache.clear(); //聊天记录缓存
     avatarCache.clear(); //头像缓存
     bool sw=false;
-
+    QElapsedTimer t;
     switch (index) {
     case 0: // 全量群
         sw = g_logdb[1]->beginTransaction(true);
@@ -1350,9 +1350,15 @@ void ChatPage::updateAllContactLists(int index)
             }
 
             if(msg.Gname.isEmpty()){
-                c.name =getBotName(appid)+":"+ it.key();
+                if (m_currentBotIndex == -1)
+                    c.name =getBotName(appid)+":"+ it.key();
+                else
+                    c.name = it.key();
             }else{
-                c.name = getBotName(appid)+":"+msg.Gname;
+                if (m_currentBotIndex == -1)
+                    c.name =getBotName(appid)+":"+ msg.Gname;
+                else
+                    c.name = msg.Gname; //c 的和 msg无关
             }
 
             if(msg.name.isEmpty())
@@ -1371,21 +1377,46 @@ void ChatPage::updateAllContactLists(int index)
     case 3: bufferIdx=3;break;// 频道
     case 4: bufferIdx=4;break;// 频道私聊
     case 5:
+        t.start();
         contactList->setUpdatesEnabled(false);
         for (auto it = 最近对话.begin(); it != 最近对话.end(); ++it) {
             int appid=0,type=0;
             parseFromId(it.value(),appid,type);
+
+            if (m_currentBotIndex != -1) {
+                if (appid != m_accounts[m_currentBotIndex]->appid_int) continue;
+            }
             Contact c;
             c.id = it.key();
-            c.name = "";       // 没有 name，就用 key
-            if(c.name.isEmpty()) c.name=it.key();
-            c.name =getBotName(appid)+":"+ c.name;
+            if(type==2 || type==0){
+                if(m_botClients.contains(appid)){
+                    MessageEvent ev;
+                    ev.appid = appid;
+                    ev.type = type;
+
+                    ev.groupId =c.id;
+                    ev.user = c.id;
+                    qDebug() << "A" <<t.elapsed();
+                    g_botdb[appid]->getOrUpdateUser(m_botClients[appid],ev,true);
+
+                    if(type==0)
+                        c.name = ev.groupname;       // 没有 name，就用 key
+                    else
+                        c.name = ev.nickname;
+                    qDebug() << "B" <<t.elapsed()<< c.name;
+                }
+            }
+
+            if(c.name.isEmpty()) c.name=c.id;
+            if (m_currentBotIndex == -1)
+                c.name =getBotName(appid)+":"+ c.name;
+
             c.lastMsgTime = "无信息";      // 忽略
             addDataToModel(appid, c,type);
 
         }
-
         contactList->setUpdatesEnabled(true);
+
         return;
     default:
         return;
@@ -1446,7 +1477,9 @@ void ChatPage::updateAllContactLists(int index)
         if (c.name.isEmpty()) {
             c.name = c.id;
         }
-        c.name = getBotName(appid)+":"+c.name;
+        if (m_currentBotIndex == -1)
+            c.name = getBotName(appid)+":"+c.name;
+
         addDataToModel(appid, c, bufferIdx - 1);
 
     }

@@ -224,7 +224,7 @@ private:
     void fetchSelfInfo();   // 获取机器人自身信息
     void downloadAvatar(const QString &url, const QString &savePath);
 
-    QString _Get(const QString &url, int timeoutMs);
+
 
 
 
@@ -237,7 +237,7 @@ private:
     QString PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) ;
     QString put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs, Callback callbacks) ;
     QString put(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
-    std::future<QString> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
+    std::future<QByteArray> put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs);
 
     QString Delete(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback callbacks);
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000);

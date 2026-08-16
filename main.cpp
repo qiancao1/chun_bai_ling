@@ -292,6 +292,10 @@ int main(int argc, char *argv[]) {
         w->show();
         QThreadPool::globalInstance()->setMaxThreadCount(200); // 根据 CPU 核心和业务耗时调整，建议 50~100
         detectOptimalRegion();
+
+        //QString uploadToMhimg(const QString &filePath, QString *errorMsg);
+        //QString err;
+        //qDebug() << uploadToMhimg("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png",&err);
         ret = a.exec();
         框架退出=true;
         for(auto &c :m_botClients)

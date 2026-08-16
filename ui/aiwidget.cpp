@@ -1775,30 +1775,16 @@ QString _tools(const QString &code,const QString &args,const MessageEvent &ev,co
 #include <QNetworkReply>
 #include <QTextDocumentFragment>
 #include <QTextDocument>
-#include <QEventLoop>  // 如果想让函数"伪同步"返回
+
 
 // 你的槽函数或普通成员函数
 QString browseWeb(const QString &urlString) {
 
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(urlString)));
+
+    auto f = NetManager::instance()->get(urlString);
 
 
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QString err = reply->errorString();
-        reply->deleteLater();
-        return QString("网页获取失败: %1").arg(err);
-    }
-
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    QString html = QString::fromUtf8(data);
+    QString html = f.get();
 
     QTextDocumentFragment fragment = QTextDocumentFragment::fromHtml(html);
     QString plainText = fragment.toPlainText();
@@ -2057,30 +2043,8 @@ QString AiWidget::downloadImage(const QString &url, const QString &hash)
     if (QFile::exists(localPath))
         return localPath;
 
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(url)));
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(5000); // 5秒超时
-    loop.exec();
-
-    if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {
-        reply->deleteLater();
-        return QString();
-    }
-
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    QFile file(localPath);
-    if (!file.open(QIODevice::WriteOnly))
-        return QString();
-    file.write(data);
-    file.close();
-    return localPath;
+    QString err;
+    return downloadFile(url,localPath,err) ? localPath : QString();
 }
 
 PendingMessage AiWidget::parseImageTagsAndDownload(const QString &msg)
@@ -2837,6 +2801,10 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
             {
                 QString user;
                 db->getOpenIdBySeqId(uid.toInt(),user);
+                if(user.isEmpty())
+                {
+                    reply.remove("<@"+uid+">");
+                }else
                 reply.replace("<@"+uid+">","<@"+user+">") ;
             }
         }
@@ -3266,10 +3234,10 @@ QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject
     QHash<QString, QString> headers;
     headers.insert("Content-Type", "application/json");
     headers.insert("Authorization", "Bearer " + key);
-    std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
-    QString resp = future.get();
+    std::future<QByteArray> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
 
-    return resp.toUtf8();
+
+    return future.get();
 }
 
 
@@ -3330,108 +3298,39 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 
 }
 
-QByteArray AiWidget::syncHttpPost(const QUrl &url, const QJsonDocument &payload, int timeoutMs)
-{
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    QNetworkAccessManager nam;
-    QNetworkReply *reply = nam.post(request, payload.toJson());
-
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();
-
-    QByteArray response;
-    if (timer.isActive()) {
-        timer.stop();
-        if (reply->error() == QNetworkReply::NoError) {
-            response = reply->readAll();
-        } else {
-            qWarning() << "HTTP请求失败:" << reply->errorString();
-        }
-    } else {
-        reply->abort();
-        qWarning() << "HTTP请求超时";
-    }
-    reply->deleteLater();
-    return response;
-}
 QVector<double> AiWidget::getEmbedding(const QString &text, const QString &url2, const QString &model, const QString &key)
 {
     QVector<double> result;
-    QUrl url(url2);
 
-    // 1. 构造请求体（兼容 Ollama 格式，大部分本地服务都支持）
     QJsonObject body;
     body["model"] = model;
     QJsonArray inputs;
     inputs.append(text);
     body["input"] = inputs;  // Ollama 标准字段
 
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    if (!key.isEmpty()) {
-        request.setRawHeader("Authorization", QString("Bearer " + key).toUtf8());
-    }
 
-    QNetworkAccessManager nam;
-    QNetworkReply *reply = nam.post(request, QJsonDocument(body).toJson());
+    QHash<QString,QString> h;
+    h["Authorization"]="Bearer " + key;
+    h["Content-Type"]="application/json";
+    auto f = NetManager::instance()->post(url2,QJsonDocument(body).toJson(QJsonDocument::Compact),h,30000);
+    QByteArray response = f.get();
 
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(30000);
-    loop.exec();
-
-    QByteArray response;
-    if (timer.isActive()) {
-        timer.stop();
-        if (reply->error() == QNetworkReply::NoError) {
-            response = reply->readAll();
-        } else {
-            response = reply->readAll();
-            qDebug() << response;
-            qWarning() << "嵌入请求失败:" << reply->errorString();
-            reply->deleteLater();
-            return result;
-        }
-    } else {
-        reply->abort();
-        qWarning() << "嵌入请求超时";
-        reply->deleteLater();
-        return result;
-    }
-    reply->deleteLater();
-
-    // 3. 【关键修复】兼容多种返回格式
     QJsonDocument doc = QJsonDocument::fromJson(response);
     if (doc.isNull()) return result;
-
     QJsonObject obj = doc.object();
     QJsonArray vecArr;
-
-
     if (obj.contains("embeddings") && obj["embeddings"].isArray()) {
         QJsonArray embeddings = obj["embeddings"].toArray();
         if (!embeddings.isEmpty()) {
             vecArr = embeddings[0].toArray();
         }
     }
-
     else if (obj.contains("data") && obj["data"].isArray()) {
         QJsonArray data = obj["data"].toArray();
         if (!data.isEmpty()) {
             vecArr = data[0].toObject()["embedding"].toArray();
         }
     }
-
     if (vecArr.isEmpty()) {
         AppendEventLog("无法解析嵌入向量，响应内容:" + response.left(200),0xff);
         return result;

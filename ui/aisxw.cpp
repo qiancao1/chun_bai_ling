@@ -20,7 +20,24 @@ void aisxw::on_pushButton_2_clicked()
     ui->listWidget->clear();
     for(const auto &openid : std::as_const(list))
     {
-        ui->listWidget->addItem(openid);
+        QString name;
+        if(openid.size()==32){
+            if(m_botClients.contains(g_appid)){
+                MessageEvent ev;
+                ev.appid = g_appid;
+                ev.type = 2;
+
+
+                ev.user = openid;
+                g_botdb[g_appid]->getOrUpdateUser(m_botClients[g_appid],ev,true);
+                name = ev.nickname;
+                if(name.isEmpty())
+                    name=ev.groupId;
+                else
+                    name = openid;
+            }
+        }
+        ui->listWidget->addItem(name);
     }
 }
 
@@ -30,7 +47,24 @@ void aisxw::on_pushButton_3_clicked()
     ui->listWidget->clear();
     for(const auto &sess : std::as_const(ai_ui->m_sessions))
     {
-        ui->listWidget->addItem(sess.openid);
+        QString name;
+        if(sess.type == 0 || sess.type ==2){
+            if(m_botClients.contains(g_appid)){
+                MessageEvent ev;
+                ev.appid = g_appid;
+                ev.type = sess.type;
+
+                ev.groupId =sess.groupId;
+                ev.user = sess.openid;
+                g_botdb[g_appid]->getOrUpdateUser(m_botClients[g_appid],ev,true);
+                name = ev.nickname;
+                if(name.isEmpty())
+                    name=ev.groupId;
+                else
+                    name = sess.openid;
+            }
+        }else name = sess.openid;
+        ui->listWidget->addItem(name);
     }
 }
 

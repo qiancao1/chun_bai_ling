@@ -24,7 +24,7 @@
 #include <QJsonArray>
 #include <QUrlQuery>
 #include <QDateTime>
-#include <QEventLoop>
+
 #include "global.h"
 #include <QNetworkReply>
 #include <QCoreApplication>
@@ -289,7 +289,7 @@ void QQBotClient::onConnected()
 
 void QQBotClient::onDisconnected()
 {
-    AppendEventLog("WebSocket 已断开", 0xff);
+    AppendEventLog("WebSocket 已断开(30分钟腾讯会强行断开一次...是正常现象)", 0xff);
     stopHeartbeatTimer();
     bool wasOnline = m_info->online;
     m_info->online = false;
@@ -836,7 +836,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.callbackId = d.value("join_request_id").toString();
         ev.nickname =d.value("username").toString();
         ev.user2 =d.value("invited_by").toString();
-
+        if(!ev.user2.isEmpty())
+            ev.subType = 1;
         QJsonObject o2=d["verify_info"].toObject();
         QJsonArray arr=o2["review_qa_list"].toArray();
         QJsonObject o3 = arr.at(0).toObject();
@@ -856,10 +857,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
-
+    QElapsedTimer t;
+    t.start();
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-
+    qDebug()<<"接收消息" << t.elapsed();
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
     if (ev.msg.startsWith("/")) {
@@ -951,9 +953,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         {
             setGroupRestrictChatSetting(ev.groupId,ev.user,60,
                 [this,ev](const QString &resp, QNetworkReply::NetworkError err) {
-                QString pname= "[刷屏检测]";
+
                 if(resp == "{}")
                 {
+                    QString pname= "[刷屏检测]";
                     QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
                     delete_messages(ev.type,ev.groupId,ev.msgId,[](auto, auto){ return; });
                     send_messagesAsync(ev.type,ev.groupId,pname,text,ev.msgId);
@@ -979,7 +982,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             send_messagesAsync(ev.type,ev.groupId,pname,m_info->help,ev.msgId);
             return ;
         }
-    }else if(ev.msg.isEmpty())
+    }else if(ev.msg.isEmpty() && ev.at_you)
     {
         if(!m_info->at.isEmpty())
         {
@@ -1305,7 +1308,7 @@ QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, co
     } else {
         headers.insert("Content-Type", contentType);
     }
-    std::future<QString> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
     QString resp = future.get();
     if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
         refreshAccessToken();
@@ -1333,7 +1336,7 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
     QJsonObject currentJson = jsonData;
 
     QByteArray jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
-    std::future<QString> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
     QString resp = future.get();
 
     if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
@@ -1453,7 +1456,7 @@ QString QQBotClient::GetSync(const QString &url, const QString &contentType, int
         headers.insert("Content-Type", contentType);
     }
 
-    std::future<QString> future = NetManager::instance()->get(url, headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->get(url, headers, timeoutMs);
     return future.get();
 }
 void QQBotClient::GetAsync(const QString &url, const QString &contentType, int timeoutMs, Callback callbacks) {
@@ -1480,7 +1483,7 @@ QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, 
         headers.insert("Content-Type", contentType);
     }
     QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
-    std::future<QString> future = NetManager::instance()->Patch(url,jsonbyte ,headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->Patch(url,jsonbyte ,headers, timeoutMs);
     return future.get();
 }
 QString QQBotClient::put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs, Callback callbacks) {
@@ -1510,10 +1513,10 @@ QString QQBotClient::put(const QString &url, const QByteArray &data, const QStri
         headers.insert("Content-Type", contentType);
     }
 
-    std::future<QString> future = NetManager::instance()->put(url,data ,headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->put(url,data ,headers, timeoutMs);
     return future.get();
 }
-std::future<QString> QQBotClient::put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs) {
+std::future<QByteArray> QQBotClient::put2(const QString &url, const QByteArray &data, const QString &contentType, int timeoutMs) {
 
     QHash<QString, QString> headers;
     headers.insert("X-Union-Appid", m_info->appid);
@@ -1578,7 +1581,7 @@ QString QQBotClient::DeleteSync(const QString &url, const QJsonObject &jsonData,
         headers.insert("Content-Type", contentType);
     }
     QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
-    std::future<QString> future = NetManager::instance()->Delete(url, jsonbyte, headers, timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->Delete(url, jsonbyte, headers, timeoutMs);
     return future.get();
 }
 void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType ,int timeoutMs, Callback callbacks) {
@@ -1596,37 +1599,7 @@ void QQBotClient::DeleteAsync(const QString &url, const QJsonObject &jsonData, c
 
 }
 
-//弃用
-QString QQBotClient::_Get(const QString &url, int timeoutMs)
-{
 
-
-    // 2. 创建请求对象
-    QNetworkRequest request;
-    request.setUrl(QUrl(url));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("QQBot " + m_accessToken).toUtf8());
-    request.setRawHeader("X-Union-Appid", m_info->appid.toUtf8());
-
-    // 3. 创建网络管理器（局部变量，在同步阻塞模式下安全）
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.get(request);
-
-    // 4. 同步等待：事件循环 + 超时定时器
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();   // 阻塞直到请求完成或超时
-
-    // 5. 处理结果
-    QString response= QString::fromUtf8(reply->readAll());
-
-    reply->deleteLater();
-    return response;
-}
 
 void QQBotClient::fetchSelfInfo()
 {

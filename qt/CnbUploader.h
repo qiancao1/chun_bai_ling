@@ -10,7 +10,7 @@
 #include <QFile>
 #include <QTimer>
 #include <QUrlQuery>
-#include <QEventLoop>
+
 #include <QDebug>
 #include <QFileInfo>
 #include <QUrl>

@@ -216,53 +216,191 @@ void MenuPanelWidget::setupUI()
     connect(m_panelListTable, &QTableWidget::itemChanged, this, &MenuPanelWidget::onPanelRemarkChanged);
     onMenuTypeChanged("send_message");
 
+    connect(m_targetTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MenuPanelWidget::onTargetTypeChanged);
 
+
+    updateEditButtons();
+}
+void MenuPanelWidget::updateEditButtons()
+{
+    bool isSpecific = (m_targetTypeCombo->currentText() == "specific");
+    QString scope = currentScope();
+    bool enableGroup = isSpecific && (scope == "group");
+    bool enableFriend = isSpecific && (scope == "c2c" || scope == "dm");
+    m_editGroupsBtn->setEnabled(enableGroup);
+    m_editFriendsBtn->setEnabled(enableFriend);
+
+    // 更新按钮显示当前数量
+    m_editGroupsBtn->setText(QString("编辑群ID (%1)").arg(m_bindGroups.size()));
+    m_editFriendsBtn->setText(QString("编辑好友ID (%1)").arg(m_bindFriends.size()));
+}
+void MenuPanelWidget::onTargetTypeChanged(int index)
+{
+    Q_UNUSED(index);
+    updateEditButtons();
 }
 void MenuPanelWidget::onScopeRadioClicked(int id)
 {
-    Q_UNUSED(id);  // id 参数可以不直接使用，因为 currentScope() 会从按钮组获取状态
+    Q_UNUSED(id);
 
-    // 1. 获取当前选中的场景字符串
-    QString scope = currentScope();
+    updateEditButtons();
 
-    // 2. 根据场景启用/禁用编辑按钮（可选）
-    // 群聊场景允许编辑群ID，私聊/频道私聊允许编辑好友ID
-    m_editGroupsBtn->setEnabled(scope == "group");
-    m_editFriendsBtn->setEnabled(scope == "c2c" || scope == "dm");
-
-    // 3. 加载该场景下的面板列表（刷新左侧列表和缓存）
     loadPanelsForCurrentScope();
-
-    // 4. 状态栏提示
-    updateStatus(QString("已切换到场景: %1").arg(scope));
+    updateStatus(QString("已切换到场景: %1").arg(currentScope()));
 }
 #include <QInputDialog>
 void MenuPanelWidget::onEditGroups()
 {
-    bool ok;
-    QString text = QInputDialog::getMultiLineText(this, "编辑绑定群列表",
-                                                  "请输入群ID，每行一个或用逗号分隔：",
-                                                  m_bindGroups.join(","), &ok);
-    if (ok) {
-        // 解析为字符串列表
+    if (!m_botClient) {
+        updateStatus("未选择Bot", true);
+        return;
+    }
+    // 如果当前是新建面板（无ID），只修改本地变量
+    QInputDialog dialog(this);
+    dialog.setWindowTitle("编辑绑定群列表");
+    dialog.setLabelText("请输入群ID，每行一个或用逗号分隔：");
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setTextValue(m_bindGroups.join(","));
+    dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
+    dialog.resize(500, 400);
+    if (dialog.exec() == QDialog::Accepted) {
+        QString text = dialog.textValue();
         QStringList ids = text.split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
-        m_bindGroups = ids;
-        updateStatus(QString("已设置 %1 个群ID").arg(ids.size()));
+        // 调用统一处理函数
+        applyTargetChanges(ids, m_bindFriends);  // 只改群列表，好友保持不变
     }
 }
 
 void MenuPanelWidget::onEditFriends()
 {
-    bool ok;
-    QString text = QInputDialog::getMultiLineText(this, "编辑绑定好友列表",
-                                                  "请输入用户ID，每行一个或用逗号分隔：",
-                                                  m_bindFriends.join(","), &ok);
-    if (ok) {
+    if (!m_botClient) {
+        updateStatus("未选择Bot", true);
+        return;
+    }
+    QInputDialog dialog(this);
+    dialog.setWindowTitle("编辑绑定好友列表");
+    dialog.setLabelText("请输入用户ID，每行一个或用逗号分隔：");
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setTextValue(m_bindFriends.join(","));
+    dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
+    dialog.resize(500, 400);
+    if (dialog.exec() == QDialog::Accepted) {
+        QString text = dialog.textValue();
         QStringList ids = text.split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
-        m_bindFriends = ids;
-        updateStatus(QString("已设置 %1 个好友ID").arg(ids.size()));
+        applyTargetChanges(m_bindGroups, ids);  // 只改好友列表，群不变
     }
 }
+void MenuPanelWidget::applyTargetChanges(const QStringList &newGroups, const QStringList &newFriends)
+{
+    // 仅当有当前面板ID且 target_type 为 specific 时执行
+    if (m_currentPanelId.isEmpty()) {
+        // 新建面板：只更新本地变量，等创建时一并提交
+        m_bindGroups = newGroups;
+        m_bindFriends = newFriends;
+        updateStatus(QString("已更新本地绑定列表（新建面板）"));
+        m_editGroupsBtn->setText(QString("编辑群ID (%1)").arg(newGroups.size()));
+        m_editFriendsBtn->setText(QString("编辑好友ID (%1)").arg(newFriends.size()));
+        return;
+    }
+
+    // 从缓存中获取原始列表
+    if (!m_panelCache.contains(m_currentPanelId)) {
+        updateStatus("错误：缓存中无当前面板数据", true);
+        return;
+    }
+    QJsonObject record = m_panelCache[m_currentPanelId];
+    QString targetType = record["target_type"].toString("all");
+    if (targetType != "specific") {
+        updateStatus("当前面板不是 specific，无法修改 target", true);
+        return;
+    }
+
+    // 获取原始 group_openids 和 user_openids
+    QStringList originalGroups, originalFriends;
+    if (record.contains("group_openids")) {
+        const QJsonArray arr = record["group_openids"].toArray();
+        for (const QJsonValue &v : arr) originalGroups << v.toString();
+    }
+    if (record.contains("user_openids")) {
+        const QJsonArray arr = record["user_openids"].toArray();
+        for (const QJsonValue &v : arr) originalFriends << v.toString();
+    }
+
+    // 计算差异
+    QStringList addGroups = newGroups;
+    for (const QString &id : std::as_const(originalGroups)) addGroups.removeAll(id);
+    QStringList delGroups = originalGroups;
+    for (const QString &id : newGroups) delGroups.removeAll(id);
+
+    QStringList addFriends = newFriends;
+    for (const QString &id : std::as_const(originalFriends)) addFriends.removeAll(id);
+    QStringList delFriends = originalFriends;
+    for (const QString &id : newFriends) delFriends.removeAll(id);
+
+    // 如果无变化，直接返回
+    if (addGroups.isEmpty() && delGroups.isEmpty() && addFriends.isEmpty() && delFriends.isEmpty()) {
+        updateStatus("绑定列表无变化");
+        return;
+    }
+
+    // 执行删除和添加操作（API 一次只能一种 op，且最多 20 个）
+    // 这里简单顺序执行，如果超过20个可能需要分批，本例先实现单次最多20个
+    auto doUpdate = [this](const QString &op, const QStringList &groups, const QStringList &friends) {
+        if (groups.isEmpty() && friends.isEmpty()) return;
+        QJsonObject targetData;
+        targetData["op"] = op;
+        // 切分最多20个
+        QStringList g = groups.mid(0, 20);
+        QStringList f = friends.mid(0, 20);
+        if (!g.isEmpty()) targetData["group_openids"] = QJsonArray::fromStringList(g);
+        if (!f.isEmpty()) targetData["user_openids"] = QJsonArray::fromStringList(f);
+        m_botClient->updatePanelTarget(m_currentPanelId, targetData, [this, op](const QString &resp, QNetworkReply::NetworkError err) {
+            QMetaObject::invokeMethod(this, [this, op, err, resp]() {
+                if (err == QNetworkReply::NoError) {
+                    updateStatus(QString("Target %s 操作成功").arg(op));
+                } else {
+                    updateStatus(QString("Target %s 操作失败: ").arg(op) + resp, true);
+                }
+            });
+        });
+    };
+
+    // 先执行删除，再添加（顺序可调整）
+    if (!delGroups.isEmpty() || !delFriends.isEmpty()) {
+        doUpdate("del", delGroups, delFriends);
+    }
+    if (!addGroups.isEmpty() || !addFriends.isEmpty()) {
+        doUpdate("add", addGroups, addFriends);
+    }
+
+    // 更新本地变量和缓存（待操作成功回调后更新，但为了界面即时反馈，先乐观更新）
+    m_bindGroups = newGroups;
+    m_bindFriends = newFriends;
+    // 更新缓存中的 target 列表
+    updateCacheTarget(newGroups, newFriends);
+    // 更新按钮文本
+    m_editGroupsBtn->setText(QString("编辑群ID (%1)").arg(newGroups.size()));
+    m_editFriendsBtn->setText(QString("编辑好友ID (%1)").arg(newFriends.size()));
+    updateStatus("绑定列表已更新（本地），等待服务器同步...");
+
+    // 注意：如果 API 失败，缓存可能不一致，但这里先乐观更新，后续可增加重试机制。
+}
+void MenuPanelWidget::updateCacheTarget(const QStringList &groups, const QStringList &friends)
+{
+    if (!m_panelCache.contains(m_currentPanelId)) return;
+    QJsonObject record = m_panelCache[m_currentPanelId];
+    if (!groups.isEmpty())
+        record["group_openids"] = QJsonArray::fromStringList(groups);
+    else
+        record.remove("group_openids");  // 如果为空，可移除或保留空数组
+    if (!friends.isEmpty())
+        record["user_openids"] = QJsonArray::fromStringList(friends);
+    else
+        record.remove("user_openids");
+    m_panelCache[m_currentPanelId] = record;
+}
+
 void MenuPanelWidget::onPanelListItemClicked(QTableWidgetItem *item)
 {
     if (!item) return;
@@ -270,20 +408,158 @@ void MenuPanelWidget::onPanelListItemClicked(QTableWidgetItem *item)
     if (panelId.isEmpty()) return;
 
     if (panelId == "__new__") {
-        // 临时项：清空表格，设置当前ID为空
         m_panelTable->setRowCount(0);
         m_currentPanelId.clear();
         updateStatus("正在编辑新面板");
         return;
     }
 
-    if (!m_panelCache.contains(panelId)) {
-        updateStatus("错误：面板数据未缓存");
+    // 如果缓存中有记录，检查是否包含 target 信息
+    if (m_panelCache.contains(panelId)) {
+        QJsonObject record = m_panelCache[panelId];
+        QString targetType = record["target_type"].toString("all");
+        // 如果是 specific 且缺少 target 列表，则调用 getPanel 补充
+        if (targetType == "specific") {
+            bool hasTarget = false;
+            QString scope = record["scope"].toString();
+            if (scope == "group" && record.contains("group_openids") && record["group_openids"].toArray().size() > 0)
+                hasTarget = true;
+            else if ((scope == "c2c" || scope == "dm") && record.contains("user_openids") && record["user_openids"].toArray().size() > 0)
+                hasTarget = true;
+            // 如果缺少，则请求详情
+            if (!hasTarget) {
+                fetchPanelDetail(panelId);
+                return;
+            }
+        }
+        loadPanelData(record);
+        updateStatus("已加载面板: " + panelId);
+    } else {
+        // 缓存中没有，直接请求详情
+        fetchPanelDetail(panelId);
+    }
+}
+void MenuPanelWidget::fetchPanelDetail(const QString &panelId)
+{
+    if (!m_botClient) {
+        updateStatus("未选择Bot", true);
         return;
     }
-    loadPanelData(m_panelCache[panelId]);  // 传入单个 PanelRecord
-    updateStatus("已加载面板: " + panelId);
+    updateStatus("正在获取面板详情...");
+    m_botClient->getPanel(panelId, [this, panelId](const QString &resp, QNetworkReply::NetworkError err) {
+        QMetaObject::invokeMethod(this, [this, resp, panelId, err]() {
+            if (err == QNetworkReply::NoError) {
+                QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
+                if (doc.isObject()) {
+                    QJsonObject record = doc.object();  // getPanel 直接返回完整对象
+                    m_panelCache[panelId] = record;
+                    loadPanelData(record);
+                    updateStatus("已加载面板: " + panelId);
+                    return;
+                }
+                updateStatus("解析面板详情失败", true);
+            } else {
+                updateStatus("获取面板详情失败: " + resp, true);
+            }
+        });
+    });
 }
+
+void MenuPanelWidget::loadPanelTarget(const QJsonObject &record)
+{
+    QString targetType = record["target_type"].toString("all");
+    QString scope = record["scope"].toString();
+    m_bindGroups.clear();
+    m_bindFriends.clear();
+
+    if (targetType == "specific") {
+        if (scope == "group") {
+            QJsonArray groups = record["group_openids"].toArray();
+            for (const QJsonValue &v : std::as_const(groups))
+                m_bindGroups << v.toString();
+        } else if (scope == "c2c" || scope == "dm") {
+            QJsonArray users = record["user_openids"].toArray();
+            for (const QJsonValue &v : users)
+                m_bindFriends << v.toString();
+        }
+    }
+
+    bool enableGroup = (targetType == "specific" && scope == "group");
+    bool enableFriend = (targetType == "specific" && (scope == "c2c" || scope == "dm"));
+    m_editGroupsBtn->setEnabled(enableGroup);
+    m_editFriendsBtn->setEnabled(enableFriend);
+
+    m_editGroupsBtn->setText(QString("编辑群ID (%1)").arg(m_bindGroups.size()));
+    m_editFriendsBtn->setText(QString("编辑好友ID (%1)").arg(m_bindFriends.size()));
+    updateEditButtons();
+}
+void MenuPanelWidget::updatePanelTargetIfNeeded()
+{
+    if (m_currentPanelId.isEmpty()) return;  // 仅更新已有面板
+
+    QString targetType = m_targetTypeCombo->currentText();
+    if (targetType != "specific") return;
+
+    // 从缓存中获取原始 target 列表
+    QJsonObject record = m_panelCache.value(m_currentPanelId);
+    QStringList originalGroups, originalFriends;
+    if (record.contains("group_openids")) {
+        const QJsonArray arr = record["group_openids"].toArray();
+        for (const QJsonValue &v : arr) originalGroups << v.toString();
+    }
+    if (record.contains("user_openids")) {
+        const QJsonArray arr = record["user_openids"].toArray();
+        for (const QJsonValue &v : arr) originalFriends << v.toString();
+    }
+
+    // 计算需要添加和删除的 ID（差集）
+    QStringList currentGroups = m_bindGroups;
+    QStringList currentFriends = m_bindFriends;
+
+    QStringList addGroups = currentGroups;
+    for (const QString &id : std::as_const(originalGroups)) addGroups.removeAll(id);
+
+    QStringList delGroups = originalGroups;
+    for (const QString &id : std::as_const(currentGroups)) delGroups.removeAll(id);
+
+    QStringList addFriends = currentFriends;
+    for (const QString &id : originalFriends) addFriends.removeAll(id);
+
+    QStringList delFriends = originalFriends;
+    for (const QString &id : currentFriends) delFriends.removeAll(id);
+
+    // 如果没有任何变化，直接返回
+    if (addGroups.isEmpty() && delGroups.isEmpty() && addFriends.isEmpty() && delFriends.isEmpty())
+        return;
+
+
+    auto doUpdate = [this](const QString &op, const QStringList &groups, const QStringList &friends) {
+        if (groups.isEmpty() && friends.isEmpty()) return;
+        QJsonObject targetData;
+        targetData["op"] = op;
+        if (!groups.isEmpty()) targetData["group_openids"] = QJsonArray::fromStringList(groups);
+        if (!friends.isEmpty()) targetData["user_openids"] = QJsonArray::fromStringList(friends);
+        m_botClient->updatePanelTarget(m_currentPanelId, targetData, [this, op](const QString &resp, QNetworkReply::NetworkError err) {
+            QMetaObject::invokeMethod(this, [this, op, err, resp]() {
+                if (err == QNetworkReply::NoError) {
+                    updateStatus(QString("Target %1 操作成功").arg(op));
+                } else {
+                    updateStatus(QString("Target %1 操作失败: ").arg(op) + resp, true);
+                }
+            });
+        });
+    };
+
+    if (!delGroups.isEmpty() || !delFriends.isEmpty()) {
+        doUpdate("del", delGroups, delFriends);
+    }
+    if (!addGroups.isEmpty() || !addFriends.isEmpty()) {
+        doUpdate("add", addGroups, addFriends);
+    }
+
+
+}
+
 
 void MenuPanelWidget::onPanelRemarkChanged(QTableWidgetItem *item)
 {
@@ -301,17 +577,24 @@ void MenuPanelWidget::onPanelRemarkChanged(QTableWidgetItem *item)
 }
 void MenuPanelWidget::onCreatePanel()
 {
-    // 清空右侧表格
+    // 清空右侧表格和当前ID
     m_panelTable->setRowCount(0);
-    m_currentPanelId.clear();  // 标记为新建
+    m_currentPanelId.clear();
 
-    // 在左侧列表添加一个临时项（panel_id 为 "__new__"）
+    // 清空绑定的群/好友列表（新建时重置）
+    m_bindGroups.clear();
+    m_bindFriends.clear();
+
+    // 添加临时项到左侧列表
     int row = m_panelListTable->rowCount();
     m_panelListTable->insertRow(row);
     QTableWidgetItem *item = new QTableWidgetItem("新面板");
-    item->setData(Qt::UserRole, "__new__");   // 特殊标记
+    item->setData(Qt::UserRole, "__new__");
     m_panelListTable->setItem(row, 0, item);
     m_panelListTable->selectRow(row);
+
+    // 根据当前 target_type 和 scope 更新编辑按钮状态
+    updateEditButtons();
 
     updateStatus("已创建新面板，编辑内容后点击「更新面板到机器人」提交");
 }
@@ -368,7 +651,8 @@ void MenuPanelWidget::loadPanelsForCurrentScope()
     }
     QString scope = currentScope();
     updateStatus(QString("正在加载场景 [%1] 的面板...").arg(scope));
-
+    m_bindGroups.clear();
+    m_bindFriends.clear();
     m_botClient->listPanels(scope, 20, "", [this](const QString &resp, QNetworkReply::NetworkError err) {
         QMetaObject::invokeMethod(this, [this, resp, err]() {
             qDebug()<<resp;
@@ -683,13 +967,14 @@ void MenuPanelWidget::onUpdateMenu()
 // ---------- 指令面板 ----------
 void MenuPanelWidget::loadPanelData(const QJsonObject &record)
 {
+
     // 1. 提取面板基础信息（单个记录）
     m_currentPanelId = record["panel_id"].toString();
     m_targetTypeCombo->setCurrentText(record["target_type"].toString("all"));
 
     // 2. 清空表格
     m_panelTable->setRowCount(0);
-
+    loadPanelTarget(record);
     // 3. 提取面板内的 items 数组
     QJsonObject panel = record["panel"].toObject();
     QJsonArray items = panel["items"].toArray();
@@ -717,14 +1002,26 @@ void MenuPanelWidget::loadPanelData(const QJsonObject &record)
         adminCheck->setChecked(item["only_admin"].toBool(false));
         m_panelTable->setCellWidget(row, 4, adminCheck);
     }
+
 }
 QJsonObject MenuPanelWidget::buildPanelJson()
 {
     QJsonObject obj;
 
     obj["scope"] = currentScope();
-    obj["target_type"] = m_targetTypeCombo->currentText();
-
+    QString targetType = m_targetTypeCombo->currentText();
+    obj["target_type"] = targetType;
+    if (m_currentPanelId.isEmpty() && targetType == "specific") {
+        QJsonArray groupArray, userArray;
+        for (const QString &id : m_bindGroups) {
+            if (!id.trimmed().isEmpty()) groupArray.append(id.trimmed());
+        }
+        for (const QString &id : m_bindFriends) {
+            if (!id.trimmed().isEmpty()) userArray.append(id.trimmed());
+        }
+        obj["group_openids"] = groupArray;
+        obj["user_openids"] = userArray;
+    }
     QJsonArray items;
     for (int i = 0; i < m_panelTable->rowCount(); ++i) {
         QTableWidgetItem *nameItem = m_panelTable->item(i, 0);
@@ -807,10 +1104,18 @@ void MenuPanelWidget::onUpdatePanel()
         }
     }
 
+    // 创建时校验 specific 必须有 target
+    if (m_currentPanelId.isEmpty() && m_targetTypeCombo->currentText() == "specific") {
+        if (m_bindGroups.isEmpty() && m_bindFriends.isEmpty()) {
+            QMessageBox::warning(this, "提示", "创建 specific 面板时，必须至少指定一个群ID或好友ID！");
+            return;
+        }
+    }
+
     QJsonObject panelData = buildPanelJson();
 
     if (m_currentPanelId.isEmpty()) {
-
+        // 新建（创建时已包含 target 在 panelData 中）
         updateStatus("正在创建面板...");
         m_botClient->createPanel(panelData, [this](const QString &resp, QNetworkReply::NetworkError err) {
             QMetaObject::invokeMethod(this, [this, resp, err]() {
@@ -819,7 +1124,6 @@ void MenuPanelWidget::onUpdatePanel()
                     if (doc.isObject()) {
                         QString newId = doc.object()["panel_id"].toString();
                         if (!newId.isEmpty()) {
-
                             loadPanelsForCurrentScope();
                             updateStatus("面板创建成功，ID: " + newId);
                             return;
@@ -832,11 +1136,14 @@ void MenuPanelWidget::onUpdatePanel()
             });
         });
     } else {
-        // 更新已有面板
+        // 更新已有面板（只更新 panel 内容，不包含 target）
         updateStatus("正在更新面板...");
         m_botClient->updatePanel(m_currentPanelId, panelData, [this](const QString &resp, QNetworkReply::NetworkError err) {
             QMetaObject::invokeMethod(this, [this, err, resp]() {
                 if (err == QNetworkReply::NoError) {
+                    // 面板内容更新成功后，再处理 target 变化
+                    updatePanelTargetIfNeeded();
+                    // 刷新面板列表以同步最新状态
                     loadPanelsForCurrentScope();
                     updateStatus("面板更新成功");
                 } else {
@@ -845,8 +1152,7 @@ void MenuPanelWidget::onUpdatePanel()
             });
         });
     }
-}
-// ---------- 切换Bot ----------
+}// ---------- 切换Bot ----------
 void MenuPanelWidget::switchBot()
 {
     if (!m_botClients.contains(g_appid)) {

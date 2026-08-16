@@ -24,9 +24,9 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QUrlQuery>
-#include <QEventLoop>
-#include <QTimer>
 
+#include <QTimer>
+#include "netmanager.h"
 
 ScreenshotSyncClient::ScreenshotSyncClient(QObject *parent)
     : QObject(parent),
@@ -36,76 +36,20 @@ ScreenshotSyncClient::ScreenshotSyncClient(QObject *parent)
 
 QByteArray ScreenshotSyncClient::captureHtmlSync(const QString &html, int width, int height, int timeoutMs)
 {
-    QUrl url(m_serverUrl);
-    QUrlQuery query;
     if(width<=0) width=400;
     if(height<=0) height=400;
-    query.addQueryItem("width", QString::number(width));
-    query.addQueryItem("height", QString::number(height));
-
-    url.setQuery(query);
-
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
-
-    QNetworkAccessManager nam;
-    QNetworkReply *reply = nam.post(request, html.toUtf8());
-
-    // 设置超时定时器
-    QTimer timer;
-    timer.setSingleShot(true);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-
-    loop.exec(); // 阻塞直到 finished 或超时
-    if (timer.isActive()) {
-        timer.stop(); // 正常完成
-        if (reply->error() == QNetworkReply::NoError) {
-            return reply->readAll();
-        }
-    } else {
-
-        reply->abort();
-    }
-
-    reply->deleteLater();
-    return QByteArray();
+    QString url = QString(m_serverUrl+"?width=%1&height=%2").arg(width).arg(height);
+    auto f = NetManager::instance()->post(url,html.toUtf8(),QHash<QString,QString>(),timeoutMs);
+    return f.get();
 }
 
 QByteArray ScreenshotSyncClient::captureUrlSync(const QString &url, int width, int height, int timeoutMs)
 {
-    QUrl requestUrl(m_serverUrl);
-    QUrlQuery query;
-    query.addQueryItem("url", url);
-    query.addQueryItem("width", QString::number(width));
-    query.addQueryItem("height", QString::number(height));
-    requestUrl.setQuery(query);
-
-    QNetworkRequest request(requestUrl);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
-
-    QNetworkAccessManager nam;
-    QNetworkReply *reply = nam.post(request, QByteArray());
-
-    QTimer timer;
-    timer.setSingleShot(true);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();
-    if (timer.isActive()) {
-        timer.stop();
-        if (reply->error() == QNetworkReply::NoError) {
-            return reply->readAll();
-        }
-    } else {
-        reply->abort();
-    }
-    reply->deleteLater();
-    return QByteArray();
+    if(width<=0) width=400;
+    if(height<=0) height=400;
+    QString url2 = QString(m_serverUrl+"?width=%1&height=%2&url=%3").arg(width).arg(height).arg(url);
+    auto f = NetManager::instance()->post(url2,QByteArray(),QHash<QString,QString>(),timeoutMs);
+    return f.get();
 }
 
 

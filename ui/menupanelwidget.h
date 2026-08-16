@@ -48,7 +48,7 @@ private slots:
     void onEditFriends();
     void onScopeRadioClicked(int id);              // 场景单选按钮切换
     void onPanelRemarkChanged(QTableWidgetItem *item);   // 备注编辑后更新缓存
-
+    void onTargetTypeChanged(int index);   // target_type 下拉框切换
 
 private:
     void setupUI();
@@ -65,8 +65,12 @@ private:
 
     QJsonObject buildPanelJson();
      void onScopeChanged();   // 场景切换时加载面板
-
-
+    void loadPanelTarget(const QJsonObject &record);   // 从记录中提取 target 列表
+    void updatePanelTargetIfNeeded();                  // 对比并更新 target
+    void fetchPanelDetail(const QString &panelId);     // 获取面板详情并加载
+    void updateEditButtons();
+    void applyTargetChanges(const QStringList &newGroups, const QStringList &newFriends);
+    void updateCacheTarget(const QStringList &groups, const QStringList &friends);
     // ---- 菜单控件 ----
     QTreeWidget *m_menuTree;
 
