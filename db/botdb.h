@@ -101,7 +101,7 @@ public:
     QStringList listSubscriptions(const QString &mark);
     static uint32_t nowMinutes();
     QList<QString> getAllGroupIds();
-    uint32_t getOrUpdateUser(QQBotClient *qqbot,MessageEvent &ev);
+    uint32_t getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc=false);
     uint32_t getOrUpdateUser(const QString &openid, QString &name);//不能删
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
 

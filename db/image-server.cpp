@@ -39,7 +39,7 @@
 #include <QSslCertificate>
 #include <QSslKey>
 #include <QSslConfiguration>
-
+#include "netmanager.h"
 #include <QDir>
 #include <QUuid>
 #include <QDateTime>
@@ -50,8 +50,8 @@
 #include <QSet>
 #include <QCryptographicHash>
 #include <QNetworkReply>
-#include <QJsonDocument>
-#include <QJsonObject>
+
+
 #include <QUrl>
 #include <QFileInfo>
 
@@ -628,7 +628,7 @@ static void handleUploadByPath(QTcpSocket *socket, const QByteArray &headers, co
 }// 使用 Qt 的 HTTP 客户端直接调用 /upload_by_path
 
 
-#include "netmanager.h"
+
 
 QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg)
 {
@@ -649,7 +649,7 @@ QString uploadImageByPath(const QString &serverUrl, const QString &localPath, in
 
     QString url = serverUrl +"/upload_by_path";
     QByteArray data = QString(R"({"path":"%1"})").arg(localPath).toUtf8();
-    std::future<QString> future = NetManager::instance()->post(url, data, QHash<QString,QString>(), timeoutMs);
+    std::future<QByteArray> future = NetManager::instance()->post(url, data, QHash<QString,QString>(), timeoutMs);
     QString responseBody = future.get();
     QJsonParseError parseErr;
     QJsonDocument doc = QJsonDocument::fromJson(responseBody.toUtf8(), &parseErr);
@@ -891,109 +891,5 @@ static QByteArray buildMultipart(const QString& fieldName, const QString& fileNa
     return body;
 }
 
-/**
- * 同步上传图片到图床
- * @param serverUrl  图床上传地址，例如 "http://127.0.0.1:8080/remote_upload"
- * @param token       认证 token
- * @param filePath    本地图片路径
- * @param timeoutMs   超时时间（毫秒），默认30秒
- * @param errorMsg    可选，输出错误信息
- * @return 成功返回图片 URL，失败返回空字符串
- */
-QString uploadImageSync(const QString& serverUrl, const QString &token, const QString& filePath,
-                        int timeoutMs, QString* errorMsg)
-{
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (errorMsg) *errorMsg = QString("Cannot open file: %1").arg(file.errorString());
-        return QString();
-    }
-    QByteArray fileData = file.readAll();
-    file.close();
-    if (fileData.isEmpty()) {
-        if (errorMsg) *errorMsg = "File is empty";
-        return QString();
-    }
 
-    QString boundary = generateBoundary();
-    QFileInfo fi(filePath);
-    QString fileName = fi.fileName();
-    QByteArray postData = buildMultipart("file", fileName, fileData, boundary);
-    QString contentType = QString("multipart/form-data; boundary=%1").arg(boundary);
-
-    // 3. 构造请求 URL（将 token 作为查询参数）
-    QUrl urlObj(serverUrl);
-    QUrlQuery query(urlObj);
-    query.addQueryItem("token", token);
-    urlObj.setQuery(query);
-    QString finalUrl = urlObj.toString();
-
-
-    QNetworkRequest request;
-    request.setUrl(QUrl(finalUrl));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
-    request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
-
-    QSslConfiguration sslConfig = QSslConfiguration::defaultConfiguration();
-    sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
-    request.setSslConfiguration(sslConfig);
-
-    // 5. 发送请求（同步阻塞）
-    QNetworkAccessManager manager;
-    QNetworkReply *reply = manager.post(request, postData);
-
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timer.start(timeoutMs);
-    loop.exec();
-
-    // 6. 收集响应结果
-    bool ok = false;
-    int status = 0;
-    QByteArray responseBody;
-    QString reqErrorString;
-
-    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        ok = true;
-        status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        responseBody = reply->readAll();
-    } else {
-        if (!timer.isActive()) {
-            reqErrorString = "Request timeout";
-        } else {
-            reqErrorString = reply->errorString();
-        }
-        status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        responseBody = reply->readAll();
-    }
-    reply->deleteLater();
-
-    if (!ok || status != 200) {
-        if (errorMsg) {
-            if (!responseBody.isEmpty())
-                *errorMsg = QString("HTTP %1: %2").arg(status).arg(QString::fromUtf8(responseBody));
-            else
-                *errorMsg = reqErrorString;
-        }
-        return QString();
-    }
-
-    // 7. 解析 JSON 获取 url 字段
-    QJsonParseError parseErr;
-    QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
-    if (parseErr.error != QJsonParseError::NoError) {
-        if (errorMsg) *errorMsg = QString("JSON parse error: %1").arg(parseErr.errorString());
-        return QString();
-    }
-    QString url = doc.object().value("url").toString();
-    if (url.isEmpty()) {
-        if (errorMsg) *errorMsg = "Response missing 'url' field";
-        return QString();
-    }
-    return url;
-}
-
-#include "image-server.moc"
+ #include "image-server.moc"

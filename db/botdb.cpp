@@ -478,7 +478,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
     });
     return success ? resultSeq : 0;
 }
-uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
+uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
 {
     // ======================== 1. 变量声明（全部提前） ========================
     bool isGroup = (ev.type == 0);
@@ -564,7 +564,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
         }
 
         // ----- 决策（群） -----
-        if (isGroup) {
+        if (isGroup && hc==false) {
             if (!groupExists) {
                 needUpdateGroup = true;
                 newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
@@ -623,7 +623,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev)
         }
 
         // ----- 决策（群） -----
-        if (isGroup) {
+        if (isGroup && hc==false) {
             if (!groupExists) {
                 needUpdateGroup = true;
                 newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
