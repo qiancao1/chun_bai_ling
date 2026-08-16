@@ -54,7 +54,7 @@ public:
 private slots:
 
     void switchTab(int index);  // 切换标签页
-
+    void flushPendingRows();   // 定时器超时，批量插入
 
 private:
     void setupUi();
@@ -65,7 +65,7 @@ private:
 
     QTableView* currentListView();
 
-private:
+
     int getColumnIndex(LogField field) const;
     // 获取指定行指定字段的显示文本
     QString getFieldText(int row, LogField field) const;
@@ -101,6 +101,18 @@ private:
     void loadMore(int limit);
     void resetAndLoad(int limit);
     void onScrollBarValueChanged(int value);
+
+
+    struct PendingRowData {
+        int type;
+        uint64_t seq;
+        int appid;
+        QString groupId;
+        Message msg;
+    };
+    QMutex m_mutex;                      // 保护 m_pendingRows
+    QList<PendingRowData> m_pendingRows;
+    QTimer* m_flushTimer;      // 1秒定时器
 };
 
 #endif // LOGPAGE_H

@@ -145,13 +145,31 @@ void PluginPage::initPython() {
     py::object loop_obj = loop_future.get();
     m_loop_ptr = new py::object(loop_obj); // 【关键！】在堆上分配，绝不会在析构时触发 Py_DECREF
 }
+
+
+// 源文件中实现
+void PluginPage::onItemDoubleClicked(QListWidgetItem *item)
+{
+    if (item) {
+
+        QString name = item->data(Qt::UserRole).toString();
+        int index=findPluginIndex(name);
+        if (index!=-1) {
+            currentSelected_index = index;
+            Enabled_Plugin(currentSelected_index);
+            updatePluginItemInUI(currentSelected_index);
+            savePlugins();
+        }
+
+    }
+}
 void PluginPage::setupUi()
 {
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
 
-    // ========== 左侧：插件列表（完全不变） ==========
+
     QVBoxLayout *leftLayout = new QVBoxLayout;
-    QLabel *listTitle = new QLabel("插件列表");
+    QLabel *listTitle = new QLabel("插件列表(双击启用)");
     listTitle->setStyleSheet("font-size: 16px; font-weight: bold; color: #222222; margin: 4px;");
 
     pluginListWidget = new QListWidget;
@@ -163,7 +181,8 @@ void PluginPage::setupUi()
     pluginListWidget->setAcceptDrops(true);                // 允许接收拖放
     pluginListWidget->setDragDropMode(QAbstractItemView::InternalMove); // 内部移动模式（不复制，只移动）
     pluginListWidget->setDefaultDropAction(Qt::MoveAction); // 确保移动动作
-
+    // 假设在类的构造函数或初始化函数中
+    connect(pluginListWidget, &QListWidget::itemDoubleClicked, this, &PluginPage::onItemDoubleClicked);
     addPluginBtn  = new QPushButton("添加-DLL");
     addPluginBtn2 = new QPushButton("添加-Python");
     addPluginBtn3 = new QPushButton("添加-JS");
@@ -626,9 +645,11 @@ int PluginPage::findPluginIndex(const QString &id) const {
 }
 void plug_tji() {
     plugin_n=2;
+    plugin_n2=false;
     for (int i = 0; i < m_pluginList.size(); ++i) {
 
         if (m_pluginList[i].type == 3) plugin_n++;
+        if(m_pluginList[i].type!=0 && m_pluginList[i].enabled) plugin_n2= true;
 
     }
 

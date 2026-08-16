@@ -185,8 +185,8 @@ void AccountPage::onStatTick()
         stats.appid = acc->appid_int;
 
         // 账号自身统计
-        stats.message_received = acc->message_received;
-        stats.message_sent = acc->message_sent;
+        stats.message_received = acc->received;
+        stats.message_sent = acc->sent;
         stats.今日加群数量 = acc->今日加群数量;
         stats.今日退群数量 = acc->今日退群数量;
         stats.今日好友数量 = acc->今日好友数量;
@@ -216,49 +216,49 @@ void AccountPage::onStatTick()
             // 消息统计
             statText += QString("📨 接收消息：%1（%2%3）\n")
                             .arg(stats.message_received)
-                            .arg(diff.message_received >= 0 ? "+" : "")
+                            .arg(diff.message_received >= 0 ? "+" : "-")
                             .arg(diff.message_received);
 
             statText += QString("📤 发送消息：%1（%2%3）\n")
                             .arg(stats.message_sent)
-                            .arg(diff.message_sent >= 0 ? "+" : "")
+                            .arg(diff.message_sent >= 0 ? "+" : "-")
                             .arg(diff.message_sent);
 
             // 活跃用户/群（来自 BotDB 全局缓存）
             statText += QString("👤 活跃用户：%1（%2%3）\n")
                             .arg(stats.active_users)
-                            .arg(diff.active_users >= 0 ? "+" : "")
+                            .arg(diff.active_users >= 0 ? "+" : "-")
                             .arg(diff.active_users);
 
             statText += QString("💬 活跃群聊：%1（%2%3）\n")
                             .arg(stats.active_groups)
-                            .arg(diff.active_groups >= 0 ? "+" : "")
+                            .arg(diff.active_groups >= 0 ? "+" : "-")
                             .arg(diff.active_groups);
 
             // 群组变动
             statText += QString("\n🏠 群组变动（净增：%1%2）\n")
-                            .arg(netGroup >= 0 ? "+" : "")
+                            .arg(netGroup >= 0 ? "+" : "-")
                             .arg(netGroup);
             statText += QString("  新增加群：%1（%2%3）\n")
                             .arg(stats.今日加群数量)
-                            .arg(diff.今日加群数量 >= 0 ? "+" : "")
+                            .arg(diff.今日加群数量 >= 0 ? "+" : "-")
                             .arg(diff.今日加群数量);
             statText += QString("  退出群聊：%1（%2%3）\n")
                             .arg(stats.今日退群数量)
-                            .arg(diff.今日退群数量 >= 0 ? "+" : "")
+                            .arg(diff.今日退群数量 >= 0 ? "+" : "-")
                             .arg(diff.今日退群数量);
 
             // 好友变动
             statText += QString("\n👥 好友变动（净增：%1%2）\n")
-                            .arg(netFriend >= 0 ? "+" : "")
+                            .arg(netFriend >= 0 ? "+" : "-")
                             .arg(netFriend);
             statText += QString("  新加好友：%1（%2%3）\n")
                             .arg(stats.今日好友数量)
-                            .arg(diff.今日好友数量 >= 0 ? "+" : "")
+                            .arg(diff.今日好友数量 >= 0 ? "+" : "-")
                             .arg(diff.今日好友数量);
             statText += QString("  删除好友：%1（%2%3）\n")
                             .arg(stats.今日删除好友数量)
-                            .arg(diff.今日删除好友数量 >= 0 ? "+" : "")
+                            .arg(diff.今日删除好友数量 >= 0 ? "+" : "-")
                             .arg(diff.今日删除好友数量);
 
             // 频道变动
@@ -267,11 +267,11 @@ void AccountPage::onStatTick()
                             .arg(netChannel);
             statText += QString("  新加频道：%1（%2%3）\n")
                             .arg(stats.今日频道数量)
-                            .arg(diff.今日频道数量 >= 0 ? "+" : "")
+                            .arg(diff.今日频道数量 >= 0 ? "+" : "-")
                             .arg(diff.今日频道数量);
             statText += QString("  退出频道：%1（%2%3）\n")
                             .arg(stats.今日退出频道数量)
-                            .arg(diff.今日退出频道数量 >= 0 ? "+" : "")
+                            .arg(diff.今日退出频道数量 >= 0 ? "+" : "-")
                             .arg(diff.今日退出频道数量);
 
             // 更新时间

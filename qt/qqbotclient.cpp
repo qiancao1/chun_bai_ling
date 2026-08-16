@@ -857,11 +857,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
-    QElapsedTimer t;
-    t.start();
+
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-    qDebug()<<"接收消息" << t.elapsed();
+
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
     if (ev.msg.startsWith("/")) {
@@ -993,16 +992,17 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
     ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
-    d["content"] = ev.msg;
-    d["id"] = ev.msgId;
-    payload["d"] = d;
-    payload["user_id"] = ev.user_int;
-    payload["appid"]=ev.appid;
-    payload["at_you"]=ev.at_you;
-    payload["type"]=ev.type;
-    payload["GroupName"]=ev.groupname;
-    ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-
+    if(plugin_n2){
+        d["content"] = ev.msg;
+        d["id"] = ev.msgId;
+        payload["d"] = d;
+        payload["user_id"] = ev.user_int;
+        payload["appid"]=ev.appid;
+        payload["at_you"]=ev.at_you;
+        payload["type"]=ev.type;
+        payload["GroupName"]=ev.groupname;
+        ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 
     //qDebug() << ev.groupId <<ev.user << ev.msg;
@@ -1021,10 +1021,8 @@ public:
     }
 
     void run() override {
-
         QString msg = m_msg;
         m_client->onTextMessage(msg);
-
     }
 
 private:

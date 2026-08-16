@@ -165,7 +165,7 @@ private slots:
     void onAccountCheckStateChanged(QListWidgetItem *item);
     void onPluginRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
     void stopAsyncioThread();
-
+    void onItemDoubleClicked(QListWidgetItem *item);//列表被双击
     void onNpmFinished(int exitCode, QProcess::ExitStatus status);
     void onNpmOutputReady();
     void onNpmErrorReady();

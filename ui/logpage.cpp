@@ -37,10 +37,14 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
     }
     setupUi();
     applyStyleSheet();
-
+    m_flushTimer = new QTimer(this);
+    connect(m_flushTimer, &QTimer::timeout, this, &LogPage::flushPendingRows);
+    m_flushTimer->start(1000);
 }
 
-LogPage::~LogPage() {}
+LogPage::~LogPage() {
+    m_flushTimer->stop();
+}
 
 void LogPage::switchTab(int index)
 {
@@ -52,7 +56,10 @@ void LogPage::switchTab(int index)
     for (int i = 0; i < btns.size(); ++i) {
         btns[i]->setChecked(i == index);
     }
-
+    {
+        QMutexLocker locker(&m_mutex);
+        m_pendingRows.clear();
+    }
     // 重置分页状态，重新加载
     resetAndLoad(BATCH_SIZE);
     QTableView* view = currentListView();
@@ -231,6 +238,7 @@ void LogPage::loadMore(int limit)
         loadMore(limit);
     }
 }
+
 void LogPage::onNewLogAdded(const QString &text){
 
     Message msg;
@@ -239,6 +247,8 @@ void LogPage::onNewLogAdded(const QString &text){
     msg.msg = text;
     logPage->onNewLogAdded(0,0,0,"",msg);
 }
+
+
 void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& groupId, const Message& msg)
 {
     // 1. 页面可见性 或 类型tab是否对得上
@@ -247,100 +257,131 @@ void LogPage::onNewLogAdded(int type, uint64_t seq, int appid, const QString& gr
     {
         if (m_currentBotId != 0 && appid != m_currentBotId) return;
     }
-    QString botName = getBotName(appid);
-    QMetaObject::invokeMethod(this, [=]() {
+    QMutexLocker locker(&m_mutex);
+    m_pendingRows.append({type, seq, appid, groupId, msg});
+    return;
+
+}
+void LogPage::flushPendingRows()
+{
+    // 1. 交换取出数据，立刻释放锁
+    QList<PendingRowData> rows;
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_pendingRows.isEmpty())
+            return;
+        rows.swap(m_pendingRows);   // 交换后 m_pendingRows 为空
+    }
+    // 现在 rows 拥有所有待插入数据，锁已释放
+
+    // 2. 构建 QStandardItem 行数据（与原有逻辑相同，但使用 rows）
+    int insertCount = rows.size();
+    QList<QList<QStandardItem*>> allRows;
+    allRows.reserve(insertCount);
+
+    for (const auto& data : rows) {
+        QString botName = getBotName(data.appid);
         QList<QStandardItem*> rowItems;
-        QString openid = groupId;
-        if(!openid.isEmpty())
-        {
-            QString name = msg.Gname;
-            if(!name.isEmpty()) openid = name;
+
+        QString openid = data.groupId;
+        if (!openid.isEmpty()) {
+            QString name = data.msg.Gname;
+            if (!name.isEmpty()) openid = name;
         }
-        switch (currentTabIndex) {
+
+        // 根据 type 构建列（注意：使用 data.type 即当时 tab 索引）
+        switch (data.type) {
         case 1: // 群聊
-        case 2: // 频道（群聊类似）
-            rowItems << new QStandardItem(msg.timestamp)
+        case 2: // 频道
+            rowItems << new QStandardItem(data.msg.timestamp)
                      << new QStandardItem(botName)
                      << new QStandardItem(openid)
-                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
-                     << new QStandardItem(msg.msg)
-                     << new QStandardItem(msg.direction); // 可能为空
+                     << new QStandardItem(data.msg.name.isEmpty() ? data.msg.user : data.msg.name)
+                     << new QStandardItem(data.msg.msg)
+                     << new QStandardItem(data.msg.direction);
             break;
         case 3: // 私聊
         case 4: // 频道私聊
-            rowItems << new QStandardItem(msg.timestamp)
+            rowItems << new QStandardItem(data.msg.timestamp)
                      << new QStandardItem(botName)
-                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
-                     << new QStandardItem(msg.msg)
-                     << new QStandardItem(msg.direction);
+                     << new QStandardItem(data.msg.name.isEmpty() ? data.msg.user : data.msg.name)
+                     << new QStandardItem(data.msg.msg)
+                     << new QStandardItem(data.msg.direction);
             break;
         case 0:
-            rowItems << new QStandardItem(msg.timestamp)
+            rowItems << new QStandardItem(data.msg.timestamp)
                      << new QStandardItem(botName)
                      << new QStandardItem(openid)
-                     << new QStandardItem(msg.name.isEmpty() ? msg.user : msg.name)
-                     << new QStandardItem(msg.msg);
+                     << new QStandardItem(data.msg.name.isEmpty() ? data.msg.user : data.msg.name)
+                     << new QStandardItem(data.msg.msg);
             break;
         default:
-            return;
+            continue;
         }
-        if(msg.Color_0!=0)
-        {
-            QColor textColor = QColor(msg.Color_0);
+
+        // 颜色设置
+        if (data.msg.Color_0 != 0) {
+            QColor textColor = QColor(data.msg.Color_0);
             if (textColor.isValid() && textColor.alpha() > 0) {
                 for (QStandardItem *item : std::as_const(rowItems)) {
-                    if (item) {
-                        item->setForeground(textColor);
-                    }
+                    if (item) item->setForeground(textColor);
                 }
             }
         }
 
-        if(currentTabIndex>=2 || currentTabIndex==0)
-        {
-            for (int i=0;i< 4;++i) {
+        // 对齐设置
+        if (data.type >= 2 || data.type == 0) {
+            for (int i = 0; i < 4 && i < rowItems.size(); ++i)
                 rowItems[i]->setTextAlignment(Qt::AlignCenter);
-            }
-        }else{
-            for (int i=0;i< 5;++i) {
+        } else {
+            for (int i = 0; i < 5 && i < rowItems.size(); ++i)
                 rowItems[i]->setTextAlignment(Qt::AlignCenter);
-            }
         }
 
-        m_model->appendRow(rowItems);
+        allRows.append(rowItems);
+    }
 
-        // --- 行数控制，超过10500条则删除最早的三分之一 ---
-        int rowCount = m_model->rowCount();
-        if (rowCount > 10500) {
-            int removeCount = rowCount / 3;
-            if (removeCount > 0) {
-                m_model->removeRows(0, removeCount);
-            }
+    // 3. 批量追加到 model（主线程执行）
+    for (auto& row : allRows) {
+        m_model->appendRow(row);
+    }
+
+    // 4. 行数控制（超过10500删除最早的三分之一）
+    int rowCount = m_model->rowCount();
+    if (rowCount > 10500) {
+        int removeCount = rowCount / 3;
+        if (removeCount > 0) {
+            m_model->removeRows(0, removeCount);
         }
-        // -------------------------------------------------------
+    }
 
-        int newRow = m_model->rowCount() - 1;
-        QModelIndex idx = m_model->index(newRow, 0);
-        QString key = g_logdb[0]->makeKey(QString::number(appid), groupId, seq);
+    // 5. 设置每行的 UserRole（key, seq）
+    int currentRowCount = m_model->rowCount();
+    int startRow = currentRowCount - insertCount; // 新插入的行位于末尾
+    for (int i = 0; i < insertCount; ++i) {
+        const auto& data = rows.at(i);
+        int row = startRow + i;
+        QModelIndex idx = m_model->index(row, 0);
+        QString key = g_logdb[0]->makeKey(QString::number(data.appid), data.groupId, data.seq);
         m_model->setData(idx, key, Qt::UserRole);
-        m_model->setData(idx, seq, Qt::UserRole+1);
+        m_model->setData(idx, data.seq, Qt::UserRole + 1);
+    }
 
-        m_offset++;
-        QTableView* view = currentListView();
-        if (view) {
-            QScrollBar* vScroll = view->verticalScrollBar();
-            if (vScroll) {
-                // 判断当前滚动条是否在底部（允许5像素的误差）
-                int maxVal = vScroll->maximum();
-                int curVal = vScroll->value();
-                // 若已滑到底部（或内容不够一页，最大值=0），则自动滚到底部
-                if (curVal >= maxVal - 5) {
-                    view->scrollToBottom();
-                }
-                // 否则不滚动，保持用户当前浏览位置
+    // 6. 更新 m_offset
+    m_offset += insertCount;
+
+    // 7. 滚动到底部（如果当前在底部）
+    QTableView* view = currentListView();
+    if (view) {
+        QScrollBar* vScroll = view->verticalScrollBar();
+        if (vScroll) {
+            int maxVal = vScroll->maximum();
+            int curVal = vScroll->value();
+            if (curVal >= maxVal - 5) {
+                view->scrollToBottom();
             }
         }
-    });
+    }
 }
 
 QTableView* LogPage::currentListView()
@@ -357,20 +398,34 @@ QTableView* LogPage::currentListView()
 
 void LogPage::findRowBySeq(int type, int appid, uint64_t targetSeq, const QString &direction)
 {
+
     if (!m_active || currentTabIndex != type) return;
     if (m_currentBotId != 0 && appid != m_currentBotId) return;
+
+    // 第一步：加锁查 pending 队列
+    {
+        QMutexLocker locker(&m_mutex);
+        for (auto &data : m_pendingRows) {
+            if (data.seq == targetSeq) {
+                data.msg.direction = direction;   // 直接修改，刷新时会使用新值
+                return;
+            }
+        }
+    }
+
 
     QMetaObject::invokeMethod(this, [=]() {
         for (int row = m_model->rowCount() - 1; row >= 0; --row) {
             QModelIndex idx = m_model->index(row, 0);
             uint64_t seq = m_model->data(idx, Qt::UserRole + 1).toULongLong();
             if (seq == targetSeq) {
-                int col = m_model->columnCount() - 1; // direction 列
+                int col = m_model->columnCount() - 1; // 最后一列为 direction
                 QStandardItem *item = m_model->item(row, col);
                 if (item) item->setText(direction);
                 return;
             }
         }
+
     });
 }
 

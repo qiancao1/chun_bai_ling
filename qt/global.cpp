@@ -49,6 +49,7 @@ int mapTypeToTabIndex(int type)
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 int plugin_n=0;
+int plugin_n2=false;
 void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
 {
     if (!m_botClients.contains(appid)) return;

@@ -153,6 +153,7 @@ extern int 聊天发送模式;
 extern int 定时检查变量;
 extern bool 框架退出;
 extern int plugin_n;
+extern int plugin_n2;
 extern QList<PluginInfo2> m_allPlugins;
 extern MessageEvent *g_cqev;
 
