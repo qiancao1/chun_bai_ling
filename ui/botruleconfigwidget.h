@@ -75,7 +75,7 @@ private:
     void addRowsFromTSV(const QString &tsv);
     void saveAllRulesToFile(const QString &filePath = "data/bot_rules.json");
     void loadAllRulesFromFile(const QString &filePath = "data/bot_rules.json");
-    void oninitbot();
+    void oninitbot(int appid);
     // UI组件
     QSplitter *mainSplitter;
 

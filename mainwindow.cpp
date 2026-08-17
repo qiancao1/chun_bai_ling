@@ -71,12 +71,20 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.7.40"
-#define APP_BUILD_NUMBER 40
+#define APP_VERSION_STR "v1.2.7.43"
+#define APP_BUILD_NUMBER 43
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.7.40 (2026-08-16)
+## v1.2.8.48 (2026-08-17)
+- 优化 订阅主动推送 会触发限制问题
+- 增加 关键词回复 允许自动按照空格分割这里
+- 增加 api请求处理格式：结果1：%1 结果2：%2 [get url=xxx json.xx json.xx] 其中 json.xx 代表json路径 当然可不传
+
+## v1.2.7.43 (2026-08-16)
+- 修复 Ai把我 @event 等装饰器 等代码删了导致无法 注册指令
+- 增加 查看py注册指令按钮
+- 修复 按钮挂载启动时不自动加载问题
 - 修复 内存泄漏 移除 部分 QEventLoop 的使用 运行时 可能100m 缓存上去可能200m然后固定
 - 优化 指令修改面板
 - 优化 Ai艾特不转换问题
@@ -135,7 +143,7 @@ QString Homev=R"(
 - 优化 接收到消息自动删除/字符
 - 修复 日志数据库 满了不自动扩容问题
 - 修复 python热重载 缓存未清理问题
-- 增加 一个内置指令#纯白铃铛
+- 增加 一个内置指令#纯白铃铛 #纯白铃
 - 为内置关键词回复 添加 提示
 
 ## v1.1.3.17 (2026-07-17)
@@ -288,6 +296,9 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     setupUi();
     xr();
     applyStyleSheet();
+
+
+
     // 默认选中首页
     btnHome->setChecked(true);
     stackedWidget->setCurrentIndex(0);
@@ -743,8 +754,13 @@ void MainWindow::setupUi()
 
 
 }
+constexpr unsigned int hash(const char* str, unsigned int h = 0) {
+    return *str ? hash(str + 1, (h * 31) + static_cast<unsigned int>(*str)) : h;
+}
 
-
+constexpr unsigned int getRandomNumber() {
+    return hash(__TIME__) % 100;
+}
 
 void MainWindow::createTitleBar()
 {
@@ -766,13 +782,25 @@ void MainWindow::createTitleBar()
 
     // 左侧图标（可替换为真实图标资源）
     QLabel *iconLabel = new QLabel("🔔");
-    iconLabel->setFixedSize(34, 34);
+    int randomIndex = getRandomNumber() % 19 + 1;
+    QString imagePath = QString(":/icons/log (%1).jpg").arg(randomIndex);
+    QPixmap pixmap(imagePath);
+
+    if (pixmap.isNull()) {
+        pixmap = QPixmap(":/icons/log.jpg"); // 保险起见
+    }
+
+
+    iconLabel->setPixmap(pixmap);
+    iconLabel->setFixedSize(40, 40);
+    iconLabel->setScaledContents(true);   // 拉伸填满 40x40
     iconLabel->setAlignment(Qt::AlignCenter);
+    // 注意：不再需要 resize(pixmap.size())，因为 setFixedSize 已经固定
     // 右侧垂直标签
     QVBoxLayout *textLayout = new QVBoxLayout;
     textLayout->setContentsMargins(0, 0, 0, 0);
     textLayout->setSpacing(2);
-    QLabel *mainLabel = new QLabel(QString("纯白铃铛 %1").arg(APP_VERSION_STR));
+    QLabel *mainLabel = new QLabel(QString("纯白铃 %1").arg(APP_VERSION_STR));
     mainLabel->setObjectName("leftMainLabel");
 
 
@@ -1200,16 +1228,6 @@ void MainWindow::checkUpdate() {
         QString remoteTag = obj.value("tag_name").toString();  // 例如 "v1.0.1.12931"
         QString releaseNotes = obj.value("body").toString();   // 更新说明
         const QJsonArray assets = obj.value("assets").toArray();
-        QString downloadUrl;
-        for (const auto &asset : assets) {
-            QJsonObject assetObj = asset.toObject();
-            QString fileName = assetObj.value("name").toString();
-
-            if (fileName.endsWith(".exe", Qt::CaseInsensitive)) {
-                downloadUrl = assetObj.value("browser_download_url").toString();
-                break; // 找到 exe 文件，退出循环
-            }
-        }
 
 
         int remoteBuild = 0;
@@ -1221,144 +1239,67 @@ void MainWindow::checkUpdate() {
         }
 
         if (remoteBuild > APP_BUILD_NUMBER) {
-            showUpdateDialog(remoteTag, releaseNotes, downloadUrl);
+            showUpdateDialog(remoteTag, releaseNotes);
         } else {
             QMessageBox::information(this, "检查更新", "当前已经是最新版本");
         }
     });
 }
+#include "netmanager.h"
+extern bool __cqkj;
+QString checkUpdate(const MessageEvent &ev) {
 
-void MainWindow::startDownloadAndReplace(const QString &version, const QString &downloadUrl) {
-
-
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
-    if (QFile::exists(exePath)) {
-
-        QStringList arguments;
-        arguments << downloadUrl;
-        bool started = QProcess::startDetached(exePath, arguments);
-        if (started) {
-            QCoreApplication::quit();
-            return ;
-        }
-
+    auto f = NetManager::instance()->get("https://gitee.com/api/v5/repos/linglan2/chun-bai-ling-dang/releases/latest");
+    QByteArray data = f.get();
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    if (err.error != QJsonParseError::NoError) {
+        return  "JSON数据解析错误";
     }
-    QMessageBox::warning(this,"下载器不存在","下崽器不存在或者 运行失败 将直接下载 无法覆盖本文件名");
-
-
-    QString cleanVersion = version;
-    if (cleanVersion.startsWith('v')) cleanVersion.remove(0, 1);
-    QString exeName = QString("纯白铃铛-%1.exe").arg(cleanVersion);
-    QString savePath = QCoreApplication::applicationDirPath() + "/" + exeName;
-
-    if (QFile::exists(savePath) && !QFile::remove(savePath)) {
-        QMessageBox::critical(this, "文件错误", "无法删除旧版本文件");
-        return;
+    QJsonObject obj = doc.object();
+    QString remoteTag = obj.value("tag_name").toString();  // 例如 "v1.0.1.12931"
+    QString releaseNotes = obj.value("body").toString();   // 更新说明
+    const QJsonArray assets = obj.value("assets").toArray();
+    int remoteBuild = 0;
+    QStringList parts = remoteTag.split('.');
+    if (!parts.isEmpty()) {
+        QString last = parts.last();
+        last.remove(QRegularExpression("[^0-9]")); // 去掉可能的 'v'
+        remoteBuild = last.toInt();
     }
-
-    QProgressDialog *progressDialog = new QProgressDialog("正在下载更新...", "取消", 0, 100, this);
-    progressDialog->setWindowTitle("更新");
-    progressDialog->setMinimumDuration(0);
-    progressDialog->setAutoReset(false);
-    progressDialog->setAutoClose(false);
-    progressDialog->show();
-
-    QNetworkRequest request((QUrl(downloadUrl)));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-
-    QNetworkAccessManager *downloadManager = new QNetworkAccessManager(this);
-    QNetworkReply *reply = downloadManager->get(request);
-
-    connect(reply, &QNetworkReply::downloadProgress, [progressDialog](qint64 recv, qint64 total) {
-        if (total > 0) {
-            progressDialog->setValue(int(recv * 100 / total));
-        } else {
-            progressDialog->setValue(0);
-        }
-    });
-
-    connect(progressDialog, &QProgressDialog::canceled, [reply, downloadManager, progressDialog]() {
-        reply->abort();
-        progressDialog->close();
-    });
-
-    connect(reply, &QNetworkReply::finished, [=]() {
-        progressDialog->setValue(100);
-
-        // 辅助清理 lambda
-        auto cleanup = [reply, downloadManager, progressDialog]() {
-            reply->deleteLater();
-            downloadManager->deleteLater();
-            progressDialog->deleteLater();
-        };
-
-        if (reply->error() == QNetworkReply::OperationCanceledError) {
-            cleanup();
-            return;
-        }
-
-        if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::critical(this, "下载失败", "网络错误: " + reply->errorString());
-            cleanup();
-            return;
-        }
-        int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        QUrl finalUrl = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
-        if (!finalUrl.isEmpty()) {
-            qDebug() << "检测到重定向到：" << finalUrl.toString();
-            QMessageBox::critical(this, "下载失败", "重定向未自动处理，请重试");
-            cleanup();
-            return;
-        }
-
-        QByteArray data = reply->readAll();
-        qint64 actualSize = data.size();
-        qint64 expectedSize = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
-
-        // 检查是否为 HTML 错误页面
-        if (data.size() < 500 && (data.contains("redirected") || data.contains("<html"))) {
-            QMessageBox::critical(this, "下载失败", "服务器返回了重定向页面，可能是网络问题");
-            cleanup();
-            return;
-        }
-
-        if (expectedSize > 0 && actualSize != expectedSize) {
-            QMessageBox::critical(this, "下载不完整",
-                                  QString("预期大小: %1 字节, 实际: %2 字节").arg(expectedSize).arg(actualSize));
-            cleanup();
-            return;
-        }
-
-        // 原子保存
-        QSaveFile file(savePath);
-        if (!file.open(QIODevice::WriteOnly)) {
-            QMessageBox::critical(this, "写入失败", "无法创建文件: " + savePath);
-            cleanup();
-            return;
-        }
-        file.write(data);
-        if (!file.commit()) {
-            QMessageBox::critical(this, "写入失败", "保存文件失败");
-            cleanup();
-            return;
-        }
-
-        // 启动新程序
-        if (!QProcess::startDetached(savePath, QStringList())) {
-            QMessageBox::critical(this, "启动失败", "无法启动更新程序: " + savePath);
-            cleanup();
-            return;
-        }
-
-        // 关闭当前程序
-        QCoreApplication::quit();
-        cleanup();
-    });
-
+    if (remoteBuild > APP_BUILD_NUMBER) {
+        __cqkj=true;
+        return "#"+remoteTag+"\n>"+releaseNotes+"\n\n---\n\n发送[#确认更新框架]() 来更新 注意更新需要重启 如果更新失败 可能需要手动更新";
+    }
+    return  "当前已经是最新版本";
 }
 
-void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl) {
+
+
+
+QString startDownloadAndReplace() {
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
+    if (!QFile::exists(exePath))
+        return "纯白铃铛-下崽器 不存在 或 运行失败 需要这个才能更新框架";
+
+    std::wstring exe = exePath.toStdWString();
+    std::wstring args = L" 啥也没";   // 注意参数前有空格
+    std::wstring cmdLine = exe + args;
+
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    if (CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
+                       CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        QCoreApplication::quit();
+        return QString();
+    }
+    return "启动失败（CreateProcess 返回错误）";
+}
+
+void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes) {
     QDialog dialog(this);
     dialog.setWindowTitle("发现新版本");
     dialog.setMinimumWidth(500);
@@ -1389,7 +1330,7 @@ void MainWindow::showUpdateDialog(const QString &version, const QString &release
     layout->addLayout(btnLayout);
 
 
-    connect(downloadBtn, &QPushButton::clicked, [this, version, downloadUrl, &dialog]() {
+    connect(downloadBtn, &QPushButton::clicked, [this, &dialog]() {
         // 1. 确认更新
         QMessageBox::StandardButton reply = QMessageBox::warning(&dialog,
                                                                  "确认更新",
@@ -1399,8 +1340,10 @@ void MainWindow::showUpdateDialog(const QString &version, const QString &release
         if (reply != QMessageBox::Yes) return;
 
         dialog.accept();
-        qDebug() << downloadUrl;
-        startDownloadAndReplace(version, downloadUrl);
+
+        QString text = startDownloadAndReplace();
+        if(!text.isEmpty())
+            QMessageBox::warning(this,"错误",text);
     });
     connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
 

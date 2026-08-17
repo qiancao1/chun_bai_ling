@@ -24,6 +24,11 @@ QJsonObject KeywordMatchRule::toJson() const {
     obj["matchType"] = matchType;
     obj["replyContent"] = replyContent;
     obj["forbiddenWords"] = forbiddenWords.join("|||");
+    if(matchType==1)
+    {
+        obj["cans"]=cans;
+        obj["err"]=err;
+    }
     return obj;
 }
 
@@ -34,6 +39,8 @@ KeywordMatchRule KeywordMatchRule::fromJson(const QJsonObject &obj) {
     rule.matchType = obj["matchType"].toInt(0);
     rule.replyContent = obj["replyContent"].toString("");
     rule.forbiddenWords = obj["forbiddenWords"].toString("").split("|||", Qt::SkipEmptyParts);
+    rule.cans = obj["cans"].toInt(0);
+    rule.err = obj["err"].toString("");
     return rule;
 }
 
@@ -151,7 +158,7 @@ void KeywordMatchConfigWidget::setupUI() {
 
     QWidget *rightWidget = new QWidget;
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
-    QLabel *ruleLabel = new QLabel("关键词匹配规则表 (可拖拽行首移动) 注意 只有精确 允许多key 也就是|||分割 其他代表这个关键词必须存在");
+    QLabel *ruleLabel = new QLabel("关键词匹配规则表 (可拖拽行首移动) 注意 只有精确 允许多key 也就是|||分割 其他代表这个关键词必须存在(参数数量仅限于类型1)");
     ruleTable = new MovableKeywordTable;
     ruleTable->setAlternatingRowColors(true);
     ruleTable->setStyleSheet(
@@ -207,13 +214,18 @@ void KeywordMatchConfigWidget::setupUI() {
 }
 
 void KeywordMatchConfigWidget::initTable() {
-    QStringList headers = {"关键词 (|||分隔多个)", "匹配类型", "回复内容", "禁止词 (|||分隔多个)"};
+    QStringList headers = {"关键词 (|||分隔多个)", "匹配类型", "回复内容", "禁止词 (|||分隔多个)","参数数量(类型1可用)","参数不满足回复(类型1可用)"};
     ruleTable->setColumnCount(headers.size());
     ruleTable->setHorizontalHeaderLabels(headers);
-    ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    //ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     // 启用列固定宽度30，其他列自动拉伸
-    //ruleTable->horizontalHeader()->setSectionResizeMode(COL_ENABLED, QHeaderView::Fixed);
-    //ruleTable->setColumnWidth(COL_ENABLED, 30);
+    ruleTable->horizontalHeader()->setSectionResizeMode(COL_ENABLED, QHeaderView::Fixed);
+    ruleTable->setColumnWidth(0, 200);
+    ruleTable->setColumnWidth(1, 200);
+    ruleTable->setColumnWidth(2, 200);
+    ruleTable->setColumnWidth(3, 200);
+    ruleTable->setColumnWidth(4, 200);
+    ruleTable->setColumnWidth(5, 200);
     ruleTable->verticalHeader()->setVisible(true);
 }
 
@@ -274,7 +286,11 @@ void KeywordMatchConfigWidget::setRuleItemToRow(int row, const KeywordMatchRule 
     ensureItem(COL_KEYWORDS)->setText(rule.keywords.join("|||"));
     ensureItem(COL_REPLY)->setText(rule.replyContent);
     ensureItem(COL_FORBIDDEN)->setText(rule.forbiddenWords.join("|||"));
-
+    if(rule.matchType==1)
+    {
+        ensureItem(4)->setText(QString::number(rule.cans));
+        ensureItem(5)->setText(rule.err);
+    }
     QComboBox *combo = new QComboBox(ruleTable);
     combo->addItem("0精确", 0);
     combo->addItem("1指令头(首个为头,其余必含)", 1);
@@ -299,7 +315,8 @@ KeywordMatchRule KeywordMatchConfigWidget::getRuleItemFromRow(int row) const {
     rule.keywords = text(COL_KEYWORDS).split("|||", Qt::SkipEmptyParts);
     rule.replyContent = text(COL_REPLY);
     rule.forbiddenWords = text(COL_FORBIDDEN).split("|||", Qt::SkipEmptyParts);
-
+    rule.cans = text(4).toInt();
+    rule.err = text(5);
     QWidget *widget = ruleTable->cellWidget(row, COL_MATCH_TYPE);
     if (auto *combo = qobject_cast<QComboBox*>(widget))
         rule.matchType = combo->currentData().toInt();
@@ -351,10 +368,11 @@ void KeywordMatchConfigWidget::onCopyRow() {
         return;
     }
     KeywordMatchRule rule = getRuleItemFromRow(row);
-    QString line = QString("%1\t%2\t%3\t%4\t%5")
+    QString line = QString("%1\t%2\t%3\t%4\t%5\t%6\t%7")
                        .arg(rule.enabled ? "1" : "0",rule.keywords.join("|||"))
                        .arg(rule.matchType)
-                       .arg(rule.replyContent, rule.forbiddenWords.join("|||"));
+                       .arg(rule.replyContent, rule.forbiddenWords.join("|||"))
+                       .arg(rule.cans).arg(rule.err);
     QApplication::clipboard()->setText(line);
     QMessageBox::information(this, "提示", "已复制当前行到剪贴板");
 }
@@ -449,6 +467,8 @@ QStringList KeywordMatchConfigWidget::getTableAsTSV() const {
         fields << QString::number(rule.matchType);
         fields << rule.replyContent;
         fields << rule.forbiddenWords.join("|||");
+        fields << QString::number(rule.cans);
+        fields << rule.err;
         lines << fields.join("\t");
     }
     return lines;
@@ -459,13 +479,15 @@ void KeywordMatchConfigWidget::addRowsFromTSV(const QString &tsv) {
     int added = 0;
     for (const QString &line : lines) {
         QStringList parts = line.split("\t");
-        if (parts.size() >= 5) {
+        if (parts.size() >= 7) {
             KeywordMatchRule rule;
             rule.enabled = (parts[0] == "1");
             rule.keywords = parts[1].split("|||", Qt::SkipEmptyParts);
             rule.matchType = parts[2].toInt();
             rule.replyContent = parts[3];
             rule.forbiddenWords = parts[4].split("|||", Qt::SkipEmptyParts);
+            rule.cans = parts[5].toInt();
+            rule.err = parts[6];
             addRowFromRuleItem(rule);
             added++;
         } else if (parts.size() >= 1 && !line.trimmed().isEmpty()) {
@@ -542,6 +564,10 @@ void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
         ri.keywords = rule.keywords;               // 浅拷贝
         ri.keywordCount = rule.keywords.size();
         ri.primaryLen = rule.keywords.isEmpty() ? 0 : rule.keywords.first().length();
+        if(ri.isExactMode==1){
+            ri.cans = rule.cans;
+            ri.err = rule.err;
+        }
         if (ri.isExactMode == 0) {
             for (const QString &kw : rule.keywords) {   // 引用，不拷贝
                 if (!exactMap.contains(kw)) {
@@ -601,7 +627,7 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
         return a < b;
     });
 
-    for (int idx : candidates) {
+    for (int idx : std::as_const(candidates)) {
         const auto &ri = ruleList[idx];
         if (ri.isExactMode == 0) continue;
 
@@ -617,7 +643,7 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
                 if (!msg.contains(kw)) { allHit = false; break; }
             }
             if (allHit) return ri.reply;
-        } else { // 指令头模式
+        } else if(ri.isExactMode == 1) { // 指令头模式
             if (ri.keywords.isEmpty()) continue;
             QString header = ri.keywords.first();
             if (!msg.startsWith(header)) continue;
@@ -626,7 +652,26 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
             for (int i = 1; i < ri.keywords.size(); ++i) {
                 if (!remaining.contains(ri.keywords[i])) { allSubHit = false; break; }
             }
-            if (allSubHit) return ri.reply;
+            if (allSubHit){
+                if(ri.reply.contains("[参数1]"))
+                {
+                    QString reply=ri.reply;
+                    QStringList list = remaining.split(" ");
+                    if(ri.cans>list.size()) return ri.err;
+                    int i=0;
+                    for(const auto & text :std::as_const(list))
+                    {
+                        i++;
+                        reply.replace(QString("[参数%1]").arg(i),text);
+                    }
+                    return reply;
+                }
+
+                return ri.reply;
+            }
+        }else{
+            if (ri.keywords.isEmpty()) continue;
+            if(ri.keywords[0] == msg) return ri.reply;
         }
     }
     return QString();

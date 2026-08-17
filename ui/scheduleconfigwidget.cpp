@@ -468,11 +468,11 @@ void ScheduleConfigWidget::onAddRow()
     }
     newTask.scheduleTime.clear();
     newTask.executeCount = -1;
-    newTask.executeType = 0;
+    newTask.executeType = 1;
     newTask.addSubscribeCmd = "";
     newTask.cancelSubscribeCmd = "";
     newTask.replyContent = R"(#python 不带这行就是普通信息 注意这里只有appid有值
-api.outlog(f"收到来自 {msg.appid} 的消息")
+#api.outlog(f"收到来自 {msg.appid} 的消息")
 __result__ = f"收到来自 {msg.appid} 的消息"
 
 #msg.msg #你添加到数据库的 内容 使用|||分割 注意 触发类型必须是"每个群执行一次" 这个保留才他值
@@ -487,25 +487,25 @@ __result__ = f"收到来自 {msg.appid} 的消息"
     newTask.addSubscribe_text=R"(#只支持pyhton代码下面例子
 __result__="添加订阅成功 在特定时间将会推送 订阅内容 记得打开主动功能"
 __ok__="1"  #返回1代表成功
-__data__="要添加到数据库内容" #使用|||分割添加多个
+#__data__="要添加到数据库内容" #使用|||分割添加多个
 )";
-    newTask.cancelSubscribe_text= R"(只支持pyhton代码下面例子
+    newTask.cancelSubscribe_text= R"(#只支持pyhton代码下面例子
 __result__="取消订阅成功"
 __ok__="1"  #返回1代表成功
-__data__="要从数据库删除的内容"  #使用|||分割删除多个
+#__data__="要从数据库删除的内容"  #使用|||分割删除多个
 #__ok__ 为1时 __data__="" 返回空将清空所有数据
 )";
 
 
     if (!tasksMap.contains(g_appid))
         tasksMap[g_appid] = QList<ScheduleTask>();
-    bool shua_xin =tasksMap[g_appid].size()!=taskTable->rowCount();
+
     tasksMap[g_appid].append(newTask);
 
     QString key = QString("task_%1_%2").arg(g_appid).arg(newTask.mark);
     QByteArray jsonData = QJsonDocument(newTask.toJson()).toJson(QJsonDocument::Indented);
     dsdb->put(key, jsonData);
-    if(shua_xin) loadTasksForRobot(g_appid);
+    loadTasksForRobot(g_appid);
 }
 
 void ScheduleConfigWidget::onDeleteRow()
@@ -621,151 +621,291 @@ void ScheduleConfigWidget::onPasteFromClipboard()
     }
     addRowsFromTSV(text);
 }
+QString python_code(const QString &py_code,const MessageEvent &msg);
 int accinfo(int appid);
-void ___dsrw(){
+// 全局互斥锁，保护 schedule->tasksMap 的访问
+QMutex scheduleMutex;
+void processAppidTasks(int appid) {
     QDateTime now = QDateTime::currentDateTime();
     const QTime time = now.time();
     const QDate date = now.date();
 
+    // ---- 获取任务列表 ----
+    QMutexLocker locker(&scheduleMutex);
+    auto it = schedule->tasksMap.find(appid);
+    if (it == schedule->tasksMap.end()) return;
+    QList<ScheduleTask> &list = it.value();
+    locker.unlock();
 
-    for (auto it = schedule->tasksMap.begin(); it != schedule->tasksMap.end(); ++it) {
-        int appid = it.key();
-        bool ok = false;
-        for (auto &acc : m_accounts) {
-            if(acc->appid_int!=appid) continue;
-            if(!acc->online) continue;
-            ok=true;
-            break;   // 这里建议加上 break，既然找到了就没必要继续循环了
-        }
-        if(!ok) continue;
-        if(!m_botClients.contains(appid)) continue;
-        if(!g_botdb.contains(appid)) continue;
-        QList<ScheduleTask> &list = it.value();
-        for(auto &t : list) {
-            if(!t.enabled) continue;
+    // ---- 线程局部限速变量 ----
+    const int GROUP_MIN_LIMIT = 50;
+    int groupCount = 0;
+    int groupLastMinute = now.toTime_t() / 60;
+
+    const int PRIVATE_QPS = 8;
+    const qint64 MIN_INTERVAL_MS = 1000 / PRIVATE_QPS;
+    qint64 lastPrivateSendTime = 0;
+
+    // ---- 遍历任务 ----
+    for (auto &t : list) {
+        if (!t.enabled) continue;
+
+        // ---- 判断是否有剩余数据（续传） ----
+        bool hasRemaining = (t.privateOffset > 0 || t.groupOffset > 0);
+
+        // ---- 如果没有剩余，才检查时间规则并触发 ----
+        bool shouldTrigger = false;
+        if (!hasRemaining) {
+            // 检查是否有时间规则匹配当前时间
             for (const TimeRule &rule : std::as_const(t.scheduleTime)) {
-                if (!rule.matches(date, time)) continue;
-
-                if(t.jis>t.executeCount && t.executeCount!=-1) break;
-                t.jis++;
-                if(t.zdsc)
-                {
-                    if(t.replyContent.startsWith("code_ai|||"))
-                    {
-                        int index =accinfo(appid);
-                        if(index !=-1)
-                        {
-                            QMetaObject::invokeMethod(ai_ui, [index, replyContent = t.replyContent]() {
-
-                                MessageEvent ev;
-                                QStringList list = replyContent.split("|||");
-                                if(list.size()<5) return ;
-                                AccountInfo *info = m_accounts[index].get();
-                                ev.appid = info->appid_int;
-                                ev.user =list[1];
-                                ev.groupId =list[2];
-                                ev.msg =list[3];
-                                ev.type = list[4].toInt();
-                                ai_ui->onNewMessage(info, ev,false,true);
-                            }, Qt::QueuedConnection);
-                        }
-                        continue;
-                    }
-
+                if (rule.matches(date, time)) {
+                    shouldTrigger = true;
+                    break;
                 }
-
-
-                QString text =  "[订阅推送:" + t.remark + "]";
-                auto *db = g_botdb[appid];
-                QStringList fullList = db->listSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark));
-                AppendEventLog(text+" 群数："+QString::number(fullList.size()),0x35E496);
-
-
-                auto *task = new api_dsrw(appid, fullList, t.replyContent,text, t.executeType,t.mark);
-                QThreadPool::globalInstance()->start(task);
-
             }
+            if (!shouldTrigger) continue;   // 时间不匹配且无剩余，跳过
+
+            // 检查执行次数限制
+            if (t.jis >= t.executeCount && t.executeCount != -1) {
+                continue;   // 已达触发上限
+            }
+            t.jis++;   // 触发计数+1
         }
+
+        // ---- 此时：有剩余 或 刚触发，进入发送逻辑 ----
+
+        // ---- AI 特殊处理（原样保留） ----
+        if (t.zdsc && t.replyContent.startsWith("code_ai|||")) {
+            int index = accinfo(appid);
+            if (index != -1) {
+                QMetaObject::invokeMethod(ai_ui, [index, replyContent = t.replyContent]() {
+                    MessageEvent ev;
+                    QStringList list = replyContent.split("|||");
+                    if (list.size() < 5) return;
+                    AccountInfo *info = m_accounts[index].get();
+                    ev.appid = info->appid_int;
+                    ev.user = list[1];
+                    ev.groupId = list[2];
+                    ev.msg = list[3];
+                    ev.type = list[4].toInt();
+                    ai_ui->onNewMessage(info, ev, false, true);
+                }, Qt::QueuedConnection);
+            }
+            continue;
+        }
+
+        // ---- 获取订阅列表 ----
+        auto *db = g_botdb[appid];
+        QStringList fullList = db->listSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark));
+        if (fullList.isEmpty()) {
+            t.privateOffset = 0;
+            t.groupOffset = 0;
+            continue;
+        }
+
+        // ---- 拆分为私聊和群聊 ----
+        QStringList privateList, groupList;
+        for (const QString &item : std::as_const(fullList)) {
+            auto li = item.split('|');
+            if (li.size() < 2) continue;
+            int type = li[0].toInt();
+            if (type == 2)
+                privateList.append(item);
+            else
+                groupList.append(item);
+        }
+
+        // ---- 发送私聊（无分钟限制，仅秒限速） ----
+        int start = t.privateOffset;
+        if (start >= privateList.size()) {
+            t.privateOffset = 0;
+            start = 0;
+        }
+        for (int i = start; i < privateList.size(); ++i) {
+            const QString &item = privateList[i];
+            auto li = item.split('|');
+            if (li.size() < 2) continue;
+            int type = li[0].toInt();
+            QString openid = li[1];
+
+            // ---- 构建消息（复用原逻辑） ----
+            QString text = "[订阅推送:" + t.remark + "]";
+            QString data = t.replyContent;
+            bool ok = data.startsWith("#python");
+            MessageEvent ev{};
+            ev.appid = appid;
+            if (ok && t.executeType == 0)
+                data = python_code(data, ev);
+            else
+                ok = t.executeType == 1 && ok;
+
+            QQBotClient *client = m_botClients[appid];
+            if (ok) {
+                ev.type = type;
+                ev.groupId = openid;
+                ev.msg = db->getSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark), type, openid);
+                data = python_code(data, ev);
+            }
+            bool is_wakeup = true;
+
+            // ---- 秒级限速 ----
+            qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            if (lastPrivateSendTime > 0) {
+                qint64 elapsed = nowMs - lastPrivateSendTime;
+                if (elapsed < MIN_INTERVAL_MS) {
+                    QThread::msleep(MIN_INTERVAL_MS - elapsed);
+                }
+            }
+            lastPrivateSendTime = QDateTime::currentMSecsSinceEpoch();
+
+            if (!data.isEmpty()) {
+                client->send_messagesAsync(type, openid, text, data, QString());
+            }
+
+            t.privateOffset = i + 1;
+        }
+        if (t.privateOffset >= privateList.size()) {
+            t.privateOffset = 0;
+        }
+
+        // ---- 发送群聊（分钟限速 50） ----
+        start = t.groupOffset;
+        if (start >= groupList.size()) {
+            t.groupOffset = 0;
+            start = 0;
+        }
+        for (int i = start; i < groupList.size(); ++i) {
+            // 检查分钟重置
+            int curMinute = QDateTime::currentSecsSinceEpoch() / 60;
+            if (curMinute != groupLastMinute) {
+                groupCount = 0;
+                groupLastMinute = curMinute;
+            }
+            if (groupCount >= GROUP_MIN_LIMIT) {
+                break;   // 达到限额，保留偏移
+            }
+
+            const QString &item = groupList[i];
+            auto li = item.split('|');
+            if (li.size() < 2) continue;
+            int type = li[0].toInt();
+            QString openid = li[1];
+
+            // ---- 构建消息 ----
+            QString text = "[订阅推送:" + t.remark + "]";
+            QString data = t.replyContent;
+            bool ok = data.startsWith("#python");
+            MessageEvent ev{};
+            ev.appid = appid;
+            if (ok && t.executeType == 0)
+                data = python_code(data, ev);
+            else
+                ok = t.executeType == 1 && ok;
+
+            QQBotClient *client = m_botClients[appid];
+            if (ok) {
+                ev.type = type;
+                ev.groupId = openid;
+                ev.msg = db->getSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark), type, openid);
+                data = python_code(data, ev);
+            }
+            bool is_wakeup = false;
+
+            if (!data.isEmpty()) {
+                client->send_messagesAsync(type, openid, text, data, QString(), is_wakeup);
+                groupCount++;
+            }
+
+            t.groupOffset = i + 1;
+        }
+        if (t.groupOffset >= groupList.size()) {
+            t.groupOffset = 0;
+        }
+
     }
 }
 
-int 计数器=0;
-class ___dtrw : public QRunnable {
-public:
-    // 通过构造函数把需要的数据传进来（如果有的话）
-    ___dtrw() {}
-
-    void run() override {
-        计数器++;
-        ___dsrw();
-        计数器--;
-        if(计数器<0) 计数器=0;//1分钟才会启动一次的线程
-    }
-};
-void ScheduleConfigWidget::jiancha()
-{
+void cleanupAppidTasks(int appid) {
     QDateTime now = QDateTime::currentDateTime();
 
-    const QTime time = now.time();
-    int dqsj=time.minute();
-    if (定时检查变量 == dqsj) return;
-    定时检查变量 = dqsj;
-    if(计数器==0)
-    {
-        //for (auto &tasks : schedule->tasksMap)   // tasks 是一个任务容器（如 vector/list）
-        for (auto tasks = schedule->tasksMap.begin(); tasks != schedule->tasksMap.end(); )  // 改用迭代器
-        {
-            int appid = tasks.key();
-            for (auto it = tasks->begin(); it != tasks->end(); )  // 改用迭代器
-            {
-                auto &s = *it;
-                bool ok=true;
-                if (s.zdsc) // 允许自动删除
-                {
-                    for(auto & time : s.scheduleTime) //时间大于显示时间
-                    {
-                        if(!time.isExpired(now))
-                        {
-                            ok=false;
-                            break;
-                        }
-                    }
-                    if(ok)
-                    {
-                        dsdb->remove(QString("t_%1_%2").arg(appid).arg(it->mark));
-                        it = tasks->erase(it);
+    QMutexLocker locker(&scheduleMutex);
+    auto it = schedule->tasksMap.find(appid);
+    if (it == schedule->tasksMap.end()) return;
+    QList<ScheduleTask> &list = it.value();
 
-                        continue;
-                    }
-                }
-
-                if (s.executeCount == -1)   // 设定值为-1，跳过
-                {
-                    ++it;
-                    continue;
-                }
-                if (s.executeCount > s.jis) // 设定值 >= 实际次数，未超标，跳过
-                {
-                    ++it;
-                    continue;
-                }
-                if (s.zdsc)  // 如果允许自动删除
-                {
-                    dsdb->remove(QString("t_%1_%2").arg(appid).arg(it->mark));
-                    it = tasks->erase(it);
-
-                }
-                else
-                {
-                    s.enabled = false;  // 不允许删除，则禁用
-                    ++it;
+    for (auto it2 = list.begin(); it2 != list.end(); ) {
+        auto &s = *it2;
+        bool ok = true;
+        if (s.zdsc) {
+            for (auto &time : s.scheduleTime) {
+                if (!time.isExpired(now)) {
+                    ok = false;
+                    break;
                 }
             }
-            ++tasks;
+            if (ok) {
+                dsdb->remove(QString("t_%1_%2").arg(appid).arg(it2->mark));
+                it2 = list.erase(it2);
+                continue;
+            }
+        }
+
+        if (s.executeCount == -1) {
+            ++it2;
+            continue;
+        }
+        if (s.executeCount > s.jis) {
+            ++it2;
+            continue;
+        }
+        if (s.zdsc) {
+            dsdb->remove(QString("t_%1_%2").arg(appid).arg(it2->mark));
+            it2 = list.erase(it2);
+        } else {
+            s.enabled = false;
+            ++it2;
         }
     }
-    auto *task = new ___dtrw();
-    QThreadPool::globalInstance()->start(task);
+    // 如果列表为空，可考虑删除整个键（可选）
+    if (list.isEmpty()) {
+        it = schedule->tasksMap.erase(it);
+    }
+}
+class AppidTaskRunnable : public QRunnable {
+public:
+    AppidTaskRunnable(int appid, bool cleanupFirst = false)
+        : m_appid(appid), m_cleanupFirst(cleanupFirst) {}
+
+    void run() override {
+        if (m_cleanupFirst) {
+            cleanupAppidTasks(m_appid);
+        }
+        processAppidTasks(m_appid);
+    }
+
+private:
+    int m_appid;
+    bool m_cleanupFirst;
+};
+void ScheduleConfigWidget::jiancha() {
+    QDateTime now = QDateTime::currentDateTime();
+    const QTime time = now.time();
+    int dqsj = time.minute();
+    if (定时检查变量 == dqsj) return;
+    定时检查变量 = dqsj;
+
+    // 收集所有 appid
+    QList<int> appids;
+    {
+        QMutexLocker locker(&scheduleMutex);
+        appids = schedule->tasksMap.keys();
+    }
+
+    // 为每个 appid 提交一个任务（清理 + 执行）
+    for (int appid : appids) {
+        AppidTaskRunnable *task = new AppidTaskRunnable(appid, true);
+        QThreadPool::globalInstance()->start(task);
+    }
 }
 
 QString ScheduleConfigWidget::add_byAi(const QString &remark, int appid, const QString &时间, int 执行次数, const QString &python_code)

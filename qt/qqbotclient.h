@@ -104,10 +104,19 @@ public:
     QString onTextMessage(const QString &message);
     QString onTextMessage(const QByteArray &message);
     // 发送消息接口
+
+    QString send_msgAsync(int type, const QString &openid, const QString &pname, QString &text,
+                          const QString &msgid, bool is_wakeup=false, bool mode=false, int sendType=0, bool noref=false);
+
     QString send_messages(int type, const QString &openid, const QString &pname, QString &text, const QString &msgid=QString(),
-                          bool is_wakeup=false, bool mode=false, int = 0, bool noref=false);
+                          bool is_wakeup=false, bool mode=false, int sendType= 0, bool noref=false);
     QString send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int 发送类型=0,bool noref=false);
+                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int sendType=0,bool noref=false);
+
+    QString send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
+                                const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
+                                const QJsonArray &prompt_keyboard, const QJsonObject &keyboard);
+
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
                           const QString &message_reference, const QString &msgid,

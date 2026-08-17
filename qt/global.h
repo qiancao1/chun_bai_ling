@@ -181,7 +181,7 @@ bool W_file(const QString &path,const QByteArray &data);
 int accinfo(int appid);
 void processPendingEvents();
 QString python_code(const QString &py_code);
-
+QString python_code(const QString &py_code,const MessageEvent &msg);
 
 
 
@@ -262,11 +262,6 @@ public:
                 }
                 sentText.replace("{混合}",nat);
             }
-
-
-
-
-
 
 
         }
@@ -387,51 +382,8 @@ private:
     QJsonArray m_params;
     QPointer<NodeProcess> m_proc;
 };
-QString python_code(const QString &py_code,const MessageEvent &msg);
 
-class api_dsrw : public QRunnable {
-public:
-    api_dsrw(int appid,const QStringList &list, const QString &data,const QString &订阅名,int 发送类型,int biaoji)
-        : m_appid(appid), m_openid(list), m_data(data),m_订阅名(订阅名),m_发送类型(发送类型),m_biaoji(biaoji)
-    {
-        setAutoDelete(true);
-    }
 
-    void run() override {
-        bool ok = m_data.startsWith("#python");
-        MessageEvent ev{};
-        ev.appid = m_appid;
-
-        if(ok && m_发送类型 == 0) m_data = python_code(m_data,ev);
-        else ok = m_发送类型 == 1 && ok;
-        QQBotClient *client = m_botClients[m_appid];
-        auto *db = g_botdb[m_appid];
-        for (auto &openid : m_openid)
-        {
-            auto li =openid.split("|");
-            if(li.size()<2) continue;
-            int type=li[0].toInt();
-            QString data=m_data ;
-            if(ok)
-            {
-                ev.type = type;
-                ev.groupId = li[1];
-                ev.msg = db->getSubscriptions(QString("t_%1_%2").arg(ev.appid).arg(m_biaoji),type,li[1]);
-                data = python_code(data,ev);
-            }
-            bool is_wakeup=false;
-            if(type==2) is_wakeup =true;
-            if(!data.isEmpty()) client->send_messages(type,li[1],m_订阅名,data,QString(),is_wakeup);
-        }
-    }
-
-private:
-    int m_appid;
-    int m_发送类型,m_biaoji;
-    QString m_data,m_订阅名;
-    QStringList m_openid;
-
-};
 
 enum CharCategory { CatUnknown, CatChinese, CatLetter, CatDigit, CatSymbol };
 

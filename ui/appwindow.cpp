@@ -1512,7 +1512,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
     return result;
 }
 
-bool matchRule(const Rule &rule, const QString &msg);
+bool matchRule(const Rule &rule, const MessageEvent &ev);
 
 QString onMessageReceived2(const MessageEvent &msg,int i) {
 
@@ -1522,7 +1522,7 @@ QString onMessageReceived2(const MessageEvent &msg,int i) {
         QString reply;
         // 1. 优先按规则匹配
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
-            if (matchRule(rule, msg.msg)) {
+            if (matchRule(rule, msg)) {
                 // 调用规则对应的函数
                 py::object ret = rule.function(msg);
                 if (!ret.is_none() && py::isinstance<py::str>(ret)) {
@@ -1533,16 +1533,7 @@ QString onMessageReceived2(const MessageEvent &msg,int i) {
                 }
             }
         }
-        if(m_pluginList[i].python.event.contains(msg.msgType)){
-            auto &ev = m_pluginList[i].python.event[msg.msgType];
-            py::object ret = ev(msg);
-            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
-                if(reply.isEmpty())
-                    reply = QString::fromStdString(py::str(ret).cast<std::string>());
-                else
-                    reply += "\n" + QString::fromStdString(py::str(ret).cast<std::string>());
-            }
-        }
+
         return reply;
 
 

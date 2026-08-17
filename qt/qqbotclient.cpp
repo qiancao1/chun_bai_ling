@@ -958,7 +958,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
                     QString pname= "[刷屏检测]";
                     QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
                     delete_messages(ev.type,ev.groupId,ev.msgId,[](auto, auto){ return; });
-                    send_messagesAsync(ev.type,ev.groupId,pname,text,ev.msgId);
+                    send_msgAsync(ev.type,ev.groupId,pname,text,ev.msgId);
                 }
             });
             return ;
@@ -970,7 +970,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(!m_info->caidan.isEmpty())
         {
             QString pname= "[私有指令]";
-            send_messagesAsync(ev.type,ev.groupId,pname,m_info->caidan,ev.msgId);
+            send_msgAsync(ev.type,ev.groupId,pname,m_info->caidan,ev.msgId);
             return ;
         }
     }else if(ev.msg =="帮助" || ev.msg =="help")
@@ -978,7 +978,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(!m_info->help.isEmpty())
         {
             QString pname= "[私有指令]";
-            send_messagesAsync(ev.type,ev.groupId,pname,m_info->help,ev.msgId);
+            send_msgAsync(ev.type,ev.groupId,pname,m_info->help,ev.msgId);
             return ;
         }
     }else if(ev.msg.isEmpty() && ev.at_you)
@@ -986,7 +986,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(!m_info->at.isEmpty())
         {
             QString pname= "[私有指令]";
-            send_messagesAsync(ev.type,ev.groupId,pname,m_info->at,ev.msgId);
+            send_msgAsync(ev.type,ev.groupId,pname,m_info->at,ev.msgId);
             return ;
         }
     }
@@ -1652,7 +1652,7 @@ void QQBotClient::fetchSelfInfo()
             QString pname = "[私有指令]";
             QString text = QString("重启成功 耗时%1秒...")
                                .arg(QDateTime::currentSecsSinceEpoch() - g_cqev->log);
-            send_messages(g_cqev->type, g_cqev->groupId, pname, text, g_cqev->msgId);
+            send_msgAsync(g_cqev->type, g_cqev->groupId, pname, text, g_cqev->msgId);
 
             delete g_cqev;   // 释放内存
             g_cqev = nullptr;

@@ -73,8 +73,9 @@ private:
     void switchToBot(int index);
     void xr();
     void checkUpdate();
-    void showUpdateDialog(const QString &version, const QString &releaseNotes, const QString &downloadUrl);
-    void startDownloadAndReplace(const QString &version, const QString &downloadUrl) ;
+
+    void showUpdateDialog(const QString &version, const QString &releaseNotes);
+
     QPixmap generateBotAvatar(const QString &initial, const QString &colorHex) const;
     QNetworkAccessManager *networkManager=nullptr;
 

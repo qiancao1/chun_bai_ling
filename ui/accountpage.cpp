@@ -348,7 +348,7 @@ void AccountPage::loadAccounts() {
 void AccountPage::saveAccounts(const AccountInfo *info) {
 
     if(框架退出) return;
-    qDebug() << "保存acc";
+
     accdb->put(info->appid,info->toJson());
 }
 void AccountPage::refreshCards2(AccountInfo *info) {

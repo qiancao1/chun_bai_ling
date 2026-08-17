@@ -25,6 +25,7 @@
 #include "chatpage.h"
 #include "pluginmarket.h"
 #include "netmanager.h"
+#include "MainWindow.h"
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
@@ -95,7 +96,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
                     return;
                 }
                 QString text = "[未被处理回应]";
-                c->send_messagesAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
+                c->send_msgAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
 
                 timer->deleteLater();  // 任务完成，清理定时器
             });
@@ -350,7 +351,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
     return QString();
 }
 
-QString python_code(const QString &py_code,const MessageEvent &msg);
+
 QString ruqunhy(AccountInfo *info,const MessageEvent &ev);
 QString 内置指令(MessageEvent &ev)
 {
@@ -667,6 +668,9 @@ bool extractLoadParams(const QString &cmd, int &type, QString &path) {
     path = parts[2];
     return true;
 }
+QString checkUpdate(const MessageEvent &ev);
+
+bool __cqkj=false;
 QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
 
@@ -904,6 +908,46 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
         return "正在重启";
     }
+    if(ev.msg=="#更新框架")
+    {
+
+        return checkUpdate(ev);
+    }
+    if(ev.msg=="#确认更新框架")
+    {
+        if(!__cqkj) return "请发送 [#更新框架]() 来检查是否需要更新";
+
+            QString appDir = QCoreApplication::applicationDirPath();
+            QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
+            if (!QFile::exists(exePath))
+                return "纯白铃铛-下崽器 不存在 或 运行失败 需要这个才能更新框架";
+
+            std::wstring exe = exePath.toStdWString();
+            std::wstring args = L" 啥也没";   // 注意参数前有空格
+            std::wstring cmdLine = exe + args;
+
+            STARTUPINFOW si = { sizeof(si) };
+            PROCESS_INFORMATION pi;
+            if (CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
+                               CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi)) {
+                QJsonObject obj;
+                obj["msgid"] = ev.msgId;
+                obj["type"]   = ev.type;
+                obj["openid"] = ev.groupId;
+                obj["time"]   = QDateTime::currentSecsSinceEpoch();
+                obj["appid"]  = ev.appid;
+                g_config["zdcq"] = obj;
+                saveConfig();   // 必须同步写入磁盘
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                QCoreApplication::quit();
+                return QString();
+            }
+
+
+        return "启动失败（CreateProcess 返回错误）";
+
+    }
     if(ev.msg=="关闭webui")
     {
         setA->set_webui(false);
@@ -1064,7 +1108,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             ">[addadmin]() <appid> <ID> 为某个bot添加一个管理员\n"
             ">[deladmin]() <appid> <ID> 删除某个bot一个管理员\n\n"
             "**框架相关**\n"
-            ">[#重启框架]()\n"
+            ">[#重启框架]()\n>[#更新框架]()\n"
 
                        ">'<>'为必填 '{}'可选\n>以上指令需要艾特 机器人才能触发")
                         .arg(js).arg(dll).arg(dll32).arg(python)
@@ -1147,19 +1191,10 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             resu.reserve(1024);
             QQBotClient *client = m_botClients[info->appid_int];
-            resu.append("**获取群信息**\n>");
-            resu.append( client->get_groups_info(ev.groupId));
 
-            resu.append("\n\n**获取机器人信息**\n>");
-            resu.append( client->get_groups_bot_state(ev.groupId));
             resu.append("\n\n**获取用户信息**\n>");
             resu.append( client->get_groups_members(ev.groupId,ev.user));
 
-            resu.append("\n\n**禁言某人**\n>");
-            resu.append(client->setGroupRestrictChatSetting(ev.groupId,ev.user,60));
-            resu.append("\n\n**获取禁言列表**\n>");
-
-            resu.append(client->getGroupRestrictChatSetting(ev.groupId));
 
             resu.append("\n\n**获取群列表**\n>");
             resu.append(client->get_groups_list(5,0));
@@ -1173,11 +1208,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             resu.append("\n\n**移除群成员**\n>");
             resu.append(client->del_members(ev.type,ev.groupId,info->unid));
 
-            resu.append("\n\n**同意某人加群**\n>");
-            resu.append(client->approveGroupJoinRequest(ev.groupId,"8D011B7EB3DE24CE2FB2585A3C7091BC",true,"Aaka_C4KVIpHrBKwx3NUyp9-D8KtmQelPvuh5yPmlQ65Ll3aFlsqbJjlU0DUfw35mvK_HmVDr5o1luVyZ0W_QM8NVZWkPz3f-jk8M7c2C8Pef57qZZpevgM0lLU7HpnlFnxuNA-pPXeIv1Edc2AQN6z9W1Ly_SIb",QString(),false));
-            resu.append("\n\n**获取加群列表**\n>");
 
-            resu.append(client->getjoin_request_list(ev.groupId));
         }
         return resu;
     }
@@ -1319,7 +1350,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             {
                 QQBotClient *client = m_botClients[info->appid_int];
                 QString text = "[欢迎语]";
-                client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+                client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
             }
         }
 
@@ -1327,12 +1358,14 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
     QString text;
     QString ret= 内置指令(ev);
-    if(ret.isEmpty()) ret = admin_zl(info,ev);
+    if(ret.isEmpty())
+        ret = admin_zl(info,ev);
+
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
         if(text.isEmpty()) text = "[私有指令|%1ms]";
-        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+        client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
 
@@ -1342,11 +1375,13 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
     ret =ruqunhy(info,ev);
 
+
+
     if(!ret.isEmpty() && ret!="*")
     {
         QQBotClient *client = m_botClients[info->appid_int];
         if(text.isEmpty()) text = "[入群提示|%1ms]";
-        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+        client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
     ret = ai_ui->Ai_qx(info,ev);
@@ -1358,15 +1393,18 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     {
         QQBotClient *client = m_botClients[info->appid_int];
         if(text.isEmpty()) text = "[Ai|%1ms]";
-        client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+        client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
+
     ret = keyword->match(info->appid_int,ev.msg);
-    if(ret.isEmpty()) ret = schedule->ppzl(ev,text,info);
+    if(ret.isEmpty())
+        ret = schedule->ppzl(ev,text,info);
+    if(ret == "*") return;
 
     if(!ret.isEmpty())
     {
-        if(ret == "*") return;
+
         if(m_botClients.contains(info->appid_int))
         {
             if(ret.startsWith("#python")) ret = python_code(ret,ev);
@@ -1374,7 +1412,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             {
                 QQBotClient *client = m_botClients[info->appid_int];
                 if(text.isEmpty()) text = "[关键词匹配|%1ms]";
-                client->send_messages(ev.type,ev.groupId,text,ret,ev.msgId);
+                client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
                 return;
             }
         }
@@ -1624,21 +1662,21 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             c->getGroupRestrictChatSetting(ev.groupId, [=](const QString& jsonStr, QNetworkReply::NetworkError err) {
                 if (err != QNetworkReply::NoError) {
                     QString text = "❌ 获取禁言列表失败（网络错误）";
-                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
                     return;
                 }
                 QJsonParseError parseError;
                 QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
                 if (parseError.error != QJsonParseError::NoError) {
                     QString text = "❌ 解析禁言列表失败";
-                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
                     return;
                 }
                 QJsonObject root = doc.object();
                 QJsonArray members = root["members"].toArray();
                 if (members.isEmpty()) {
                     QString text = "✅ 当前没有需要解禁的成员";
-                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
                     return;
                 }
                 // 构造批量解禁的 JSON 数组
@@ -1662,7 +1700,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     } else {
                         text = "❌ 一键解禁失败，可能无权限或接口错误: " + resJson;
                     }
-                    c->send_messagesAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
                 });
             });
 

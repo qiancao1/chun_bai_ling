@@ -186,6 +186,9 @@ else()
             qt/CnbUploader.h
             ui/menupanelwidget.h ui/menupanelwidget.cpp
             ui/ui_menupanelwidget.ui
+            qt/apiprocessor.h qt/apiprocessor.cpp
+
+
 
 
 

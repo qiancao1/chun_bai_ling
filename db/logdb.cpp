@@ -47,7 +47,7 @@ LogDB::LogDB(const QString &dbPath, QObject *parent)
         m_buffer[i].store(0, std::memory_order_relaxed);
     }
     m_flushTimer = new QTimer(this);
-    m_flushTimer->setInterval(4000);   // 4000 毫秒
+    m_flushTimer->setInterval(5000);   // 4000 毫秒
     connect(m_flushTimer, &QTimer::timeout, this, &LogDB::flushCacheToDB);
     m_flushTimer->start();
 }

@@ -447,7 +447,7 @@ void BotRuleConfigWidget::onSaveToFile()
     if (g_appid != 0)
         saveCurrentRulesToMap();
     saveAllRulesToFile();
-    oninitbot();
+    oninitbot(g_appid);
     QMessageBox::information(this, "保存成功", "机器人规则已保存到 bot_rules.json");
 }
 
@@ -517,13 +517,13 @@ void BotRuleConfigWidget::saveAllRulesToFile(const QString &filePath)
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
-void BotRuleConfigWidget::oninitbot()
+void BotRuleConfigWidget::oninitbot(int appid)
 {
-    if (g_appid == 0) return;
-    const QList<BotRuleItem>& rules = m_ruleMap[g_appid];
+    if (appid == 0) return;
+    const QList<BotRuleItem>& rules = m_ruleMap[appid];
     if (rules.isEmpty()) return;
     for (auto& account : m_accounts) {
-        if (account->appid_int != g_appid) continue;
+        if (account->appid_int != appid) continue;
         account->mdbtn.clear();
         for (const auto& rule : rules) {
             QJsonParseError parseError;
@@ -569,6 +569,6 @@ void BotRuleConfigWidget::loadAllRulesFromFile(const QString &filePath)
         }
         m_ruleMap[robotId] = items;
 
-        oninitbot();
+        oninitbot(robotId);
     }
 }

@@ -214,11 +214,12 @@ void PluginPage::setupUi()
 
     QHBoxLayout *iconNameLayout3 = new QHBoxLayout;
     plugin_sc = new QPushButton("插件市场");
-    pypip = new QPushButton("安装py插件库");
-    pypip->setFixedWidth(120);
+    pypip = new QPushButton("py引用库");
+    QPushButton *tjzl = new QPushButton("指令");
+    pypip->setFixedWidth(90);
     iconNameLayout3->addWidget(pypip);
     iconNameLayout3->addWidget(plugin_sc);
-
+    iconNameLayout3->addWidget(tjzl);
     middleLayout->addLayout(iconNameLayout3);
     //middleLayout->addStretch(); // 让列表顶部分布，下方留白
 
@@ -407,6 +408,56 @@ void PluginPage::setupUi()
         }
     });
 
+    connect(tjzl, &QPushButton::clicked, this, [this]() {
+        QString text;
+        text.reserve(4096);
+
+        for (const auto &plugin : std::as_const(m_pluginList)) {
+            if (plugin.type != 0)  // 仅处理已启用的插件
+                continue;
+
+            text.append(QStringLiteral("插件: %1\n").arg(plugin.name));
+
+            if (plugin.python.rules.isEmpty()) {
+                text.append("  未注册任何指令\n");
+            } else {
+                // 1. 按类型分组
+                QMap<MatchType, QStringList> groups;
+                for (const auto &rule : plugin.python.rules) {
+                    groups[rule.type].append(rule.key);
+                }
+
+                // 2. 记录类型首次出现的顺序（保持注册顺序）
+                QList<MatchType> typeOrder;
+                for (const auto &rule : plugin.python.rules) {
+                    if (!typeOrder.contains(rule.type))
+                        typeOrder.append(rule.type);
+                }
+
+                // 3. 按顺序输出每组
+                for (auto type : typeOrder) {
+                    const auto &keys = groups[type];
+                    if (keys.isEmpty()) continue;
+
+                    QString typeStr;
+                    switch (type) {
+                    case MatchType::Equals:     typeStr = "等于"; break;
+                    case MatchType::StartsWith: typeStr = "开头"; break;
+                    case MatchType::EndsWith:   typeStr = "结尾"; break;
+                    case MatchType::Contains:   typeStr = "包含"; break;
+                    case MatchType::Regex:      typeStr = "正则"; break;
+                    case MatchType::event:      typeStr = "事件"; break;
+                    }
+                    text.append(QStringLiteral("  %1: %2\n").arg(typeStr, keys.join("，")));
+                }
+            }
+            text.append("\n");  // 插件间空行
+        }
+        QMessageBox::warning(this,"",text);
+        // 将结果显示到界面（请根据实际控件名替换）
+        // 例如：ui->textEdit->setPlainText(text);
+        // 或 qDebug() << text;
+    });
 
     connect(ai_c_j, &QPushButton::clicked,this, [this]() {
         auto *w = new AppWindow();
@@ -683,7 +734,8 @@ QString python_code(const QString &py_code,const MessageEvent &msg)
     return QString();
 }
 
-bool matchRule(const Rule &rule, const QString &msg) {
+bool matchRule(const Rule &rule, const MessageEvent &ev) {
+    QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
         return rule.caseSensitive ? (msg == rule.key)
@@ -702,7 +754,8 @@ bool matchRule(const Rule &rule, const QString &msg) {
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
-        break;
+
+        return ev.type == rule.key;
     }
     return false;
 }
@@ -728,7 +781,7 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
 
         // --- 2. 处理 Rule 列表 ---
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
-            if (matchRule(rule, msg.msg)) {
+            if (matchRule(rule, msg)) {
                 py::object ret = rule.function(msg);
 
 
@@ -736,18 +789,13 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
             }
         }
 
-        if (m_pluginList[i].python.event.contains(msg.msgType)) {
-            auto &ev = m_pluginList[i].python.event[msg.msgType];
-            py::object ret = ev(msg);
-            QString str = QString::fromStdString(py::str(ret).cast<std::string>());
-            process_ret(ret); // 复用处理逻辑
-        }
+
 
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
                 QString pname ="["+m_pluginList[i].name+"|%1ms]";
-                client->send_messagesAsync(msg.type,msg.groupId,pname,reply,msg.msgId);
+                client->send_msgAsync(msg.type,msg.groupId,pname,reply,msg.msgId);
             }
             return ;
         }
@@ -1014,7 +1062,7 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
     if (info.type == 0) {
         safeCall(info.python.onUnload);
         py::gil_scoped_acquire gil;
-        info.python.event.clear();
+
         info.python.rules.clear();
         info.python.instance = py::object();
         info.python.onSet = py::object();
@@ -1655,7 +1703,7 @@ void PluginPage::syncPluginsTo32()
 
 QString PluginPage::LoadPlugin_py(PluginInfo &info)
 {
-    bool isReload = !info.python.rules.isEmpty() || !info.python.event.isEmpty();
+    bool isReload = !info.python.rules.isEmpty();
     if (isReload) {
         qDebug() << "热重载插件:" << info.path << "，执行清理旧缓存";
 
@@ -1669,7 +1717,7 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         }
 
         // 2. 清空 C++ 侧持有的所有 Python 对象引用
-        info.python.event.clear();
+
         info.python.rules.clear();
         info.python.instance = py::object();
         info.python.onSet = py::object();
@@ -1729,17 +1777,42 @@ def clean_plugin(plugin_path):
     }
 
     try {
-        // 将插件路径转换为模块名：例如 "plugin/漂流瓶" -> "plugin.漂流瓶"
         QString moduleName = info.path;
-        // 标准化路径分隔符为点号
         moduleName.replace('/', '.').replace('\\', '.');
-        // 移除末尾可能残留的点
         if (moduleName.endsWith('.')) moduleName.chop(1);
-        // 加上主模块名
         QString fullModuleName = moduleName + ".main";  // 例如 "plugin.漂流瓶.main"
+        py::exec(R"(
+# 1. 注册表容器
+_plugin_commands = {
+    "equals": [],
+    "startswith": [],
+    "endswith": [],
+    "contains": [],
+    "regex": [],
+    "event": []
+}
 
-        qDebug() << "正在导入插件模块:" << fullModuleName;
+# 2. 内部注册器
+def _register_rule(match_type):
+    def decorator(key, case_sensitive=True):
+        def wrapper(func):
+            _plugin_commands[match_type].append({
+                "key": key,
+                "fun": func.__name__,
+                "case_sensitive": case_sensitive
+            })
+            return func
+        return wrapper
+    return decorator
 
+# 3. 开放给开发者使用的简洁装饰器
+equals = _register_rule("equals")
+startswith = _register_rule("startswith")
+endswith = _register_rule("endswith")
+contains = _register_rule("contains")
+regex = _register_rule("regex")
+event = _register_rule("event")
+        )");
 
         py::module_ plugin_module = py::module_::import(fullModuleName.toUtf8().constData());
         py::dict plugin_globals = plugin_module.attr("__dict__");
@@ -1765,9 +1838,7 @@ def clean_plugin(plugin_path):
         info.python.onEnable = getCb("on_enable");
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
-
         // 7. 解析 _plugin_commands（规则注册）
-        info.python.event.clear();
         info.python.rules.clear();
         if (plugin_globals.contains("_plugin_commands") && py::isinstance<py::dict>(plugin_globals["_plugin_commands"])) {
             py::dict commands = plugin_globals["_plugin_commands"].cast<py::dict>();
@@ -1786,16 +1857,12 @@ def clean_plugin(plugin_path):
                         qWarning() << "指令/事件函数" << funName << "不存在或不可调用，跳过";
                         continue;
                     }
-
-                    if (matchType == MatchType::event) {
-                        info.python.event.insert(keyStr, funcObj);
-                    } else {
-                        bool caseSensitive = true;
-                        if (cmd.contains("case_sensitive")) {
-                            caseSensitive = cmd["case_sensitive"].cast<bool>();
-                        }
-                        info.python.rules.append({matchType, keyStr, funcObj, caseSensitive});
+                    bool caseSensitive = true;
+                    if (cmd.contains("case_sensitive")) {
+                        caseSensitive = cmd["case_sensitive"].cast<bool>();
                     }
+                    info.python.rules.append({matchType, keyStr, funcObj, caseSensitive});
+
                 }
             };
 
@@ -1868,11 +1935,8 @@ def clean_plugin(plugin_path):
                             if (ruleDict.contains("case_sensitive") && !ruleDict["case_sensitive"].is_none()) {
                                 caseSensitive = ruleDict["case_sensitive"].cast<bool>();
                             }
-                            if (matchType == MatchType::event) {
-                                info.python.event.insert(key, funcObj);
-                            } else {
-                                info.python.rules.append({matchType, key, funcObj, caseSensitive});
-                            }
+                            info.python.rules.append({matchType, key, funcObj, caseSensitive});
+
                         }
                     }
                 };

@@ -17,12 +17,14 @@ class AhoCorasick;
 
 // 关键词匹配规则结构体
 struct KeywordMatchRule {
-    bool enabled = true;
+
     QStringList keywords;       // 多个关键词，存储时用 ||| 连接
-    int matchType = 0;          // 0=精确 1=指令头(首个为头,其余必须在剩余部分出现) 2=包含
+    QString err;//参数不满足时回复
     QString replyContent;
     QStringList forbiddenWords; // 禁止词列表，任一出现则失败
-
+    qint16 cans = 0;//参数数量
+    qint16 matchType = 0;          // 0=精确 1=指令头(首个为头,其余必须在剩余部分出现) 2=包含
+    bool enabled = true;
     QJsonObject toJson() const;
     static KeywordMatchRule fromJson(const QJsonObject &obj);
 };
@@ -113,13 +115,16 @@ private:
 
     // 高性能匹配相关（静态成员，所有实例共享）
     struct RuleIndex {
-        int ruleIdx = -1;
-        int isExactMode = 0; //匹配模式
-        int keywordCount;    // 缓存 keywords.size()
-        int primaryLen;      // 缓存 keywords[0].length()
+        qint16 ruleIdx = -1;
+        qint8 isExactMode = 0; //匹配模式
+        qint8 cans = 0; //参数数量
+        qint16 keywordCount;    // 缓存 keywords.size()
+        qint16 primaryLen;      // 缓存 keywords[0].length()
+
         QStringList keywords; //关键词
         QStringList forbiddenWords;//禁止词
         QString reply; //回复
+        QString err;
     };
     static QMap<int, AhoCorasick> s_acMatchers;
     static QMap<int, QList<RuleIndex>> s_rulesList;

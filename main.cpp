@@ -20,6 +20,7 @@
 
 
 
+
 #include <pybind11/embed.h>
 #include <pybind11/functional.h>
 
@@ -27,7 +28,7 @@
 #define _CRTDBG_MAP_ALLOC   // 映射 malloc/free 到调试版本，提供更详细信息
 #include <crtdbg.h>
 #include <stdlib.h>
-
+#include "ApiProcessor.h"
 #include <QApplication>
 #include "CnbUploader.h"
 #include "PluginMarketWindow.h"
@@ -176,7 +177,7 @@ double totalMemMB=0;
 qint64 g_totalRuntime=0;
 
 void detectOptimalRegion();
-
+QString processText(const QString &text, int timeoutMs);
 
 
 
@@ -253,12 +254,7 @@ int main(int argc, char *argv[]) {
         dsdb = new LmdbKV("botdb/dsdb");
         accdb = new LmdbKV("botdb/accountinfo");
 
-
-
-
-
-
-         MainWindow *w = new MainWindow();
+        MainWindow *w = new MainWindow();
         if (QSystemTrayIcon::isSystemTrayAvailable()) {
             QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
             trayIcon->setIcon(QIcon(":/icons/app_icon.ico")); // 从资源文件加载[reference:2][reference:3]

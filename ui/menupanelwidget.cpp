@@ -722,7 +722,7 @@ void MenuPanelWidget::updateStatus(const QString &msg, bool isError)
 {
     if (m_statusBar) {
         m_statusBar->showMessage(msg);
-        if (isError) qWarning() << "Error:" << msg;
+
     }
 }
 

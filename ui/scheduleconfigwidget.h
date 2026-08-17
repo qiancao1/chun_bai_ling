@@ -158,12 +158,14 @@ struct ScheduleTask {
     bool zdsc=false; //ai的
     QString remark; //备注
     QList<TimeRule> scheduleTime;
-
+    int sendOffset = 0;
     int executeCount = -1;          // -1表示无限次
     int jis =0;                       //已经执行次数
     int executeType = 0;
     int mark=0;
     int role=2;
+    int privateOffset = 0;   // 私聊订阅列表已发送索引
+    int groupOffset = 0;     // 群聊订阅列表已发送索引
     QString replyContent;           // 回复内容（可含Python代码）
     QString addSubscribeCmd;        // 添加订阅指令
     QString cancelSubscribeCmd;     // 取消订阅指令
@@ -320,6 +322,8 @@ private:
     QPushButton *pasteBtn;
     QPushButton *saveBtn;
 
+    QMap<int, int> g_sendCount;    // appid -> 当前分钟已发数
+    QMap<int, int> g_lastMinute;   // appid -> 上次记录分钟数
 
 
     // 表格列索引（只有一列）

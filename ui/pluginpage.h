@@ -60,7 +60,7 @@ struct Rule {
 
 struct PythonPluginobj {
     //py::dict globals;
-    QMap<QString,py::object> event;
+
     py::object instance;                 // on_message 函数
     py::object onSet;                   // 加载后调用
     py::object onEnable;                 // 启用时调用

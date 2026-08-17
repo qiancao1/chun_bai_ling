@@ -19,6 +19,8 @@
  */
 
 
+#include "ApiProcessor.h"
+#include "netmanager.h"
 #include "qqbotclient.h"
 #include <QRandomGenerator>
 #include <qwaitcondition.h>
@@ -550,7 +552,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         bool is_wakeup = toBool(_5);
         QString ret;
         if(toBool(_6))
-            ret = client->send_messagesAsync(type, openid,pname, text,msgid, is_wakeup);
+            ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup);
         else
             ret = client->send_messages(type, openid,pname, text,msgid, is_wakeup);
         result = ret.toStdString();
@@ -1423,7 +1425,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                       return a.start > b.start;
                   });
 
-        for (const ReplaceInfo &ri : replacements) {
+        for (const ReplaceInfo &ri : std::as_const(replacements)) {
             if (ri.newUrl.isEmpty()) {
                 text.replace(ri.start, ri.length, QString());
                 continue;
@@ -1991,7 +1993,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 if(ctx.openid.isEmpty())
                     send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
                 else
-                    send_messagesAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
+                    send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
             }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty()) { //发的链接是没有md5的
                 cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
             }
@@ -2485,11 +2487,12 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
         return QString();
     }
 }
+QString processText(const QString &text, int timeoutMs = 30000);
 
-QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
-                                    const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
+QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
+                              const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
-    if(type<0 || type >3) return R"({"message":"发送类型错误 不在0-3之间"})";
+     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
     QString newtext = text;
 
     if(text.contains("#python"))
@@ -2499,25 +2502,63 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         ev.groupId = openid;
         ev.msgId=msgid;
         ev.type = type;
-       newtext =python_code(text,ev);
+        newtext =python_code(text,ev);
     }
-    auto now = std::chrono::steady_clock::now();
-    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,发送类型,noref,MessageLogContext());//检查也没有要发送 的语言视频 文件 原位修改text
-    if (newtext.isEmpty()) return newtext2;
+    if(text.contains("[get url") || text.contains("[post url")){
+        auto [index, realMsgId] = splitWrappedMsgId(msgid);
+        QJsonObject keyboard;
+        QJsonArray prompt_keyboard;
+        QString mb;
+        QString textB = normalizeNewlinesToCR(newtext); //处理换行
+        bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+        auto *processor = new AsyncApiProcessor(textB, [this,type,openid,pname,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard](const QString &result) {
+            QString text = result;
+            return send_messagesAsync2(type,openid,pname,text,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard);
+        });
+        processor->start();
+        return "{}";
+    }
+
+    return send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref);
+}
+
+QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
+                                    const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
+{
+    if(type<0 || type >3) return R"({"message":"发送类型错误 不在0-3之间"})";
+
+    QString newtext = text;
+
+    if(text.contains("#python"))
+    {
+        MessageEvent ev;
+        ev.appid = m_info->appid_int;
+        ev.groupId = openid;
+        ev.msgId=msgid;
+        ev.type = type;
+        newtext =python_code(text,ev);
+    }
+
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     QJsonObject keyboard;
     QJsonArray prompt_keyboard;
     QString message_reference,mb;
 
-    QString textB=normalizeNewlinesToCR(newtext); //处理换行
+    newtext=normalizeNewlinesToCR(newtext); //处理换行
 
-    bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    bianl(type,index,newtext,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    if(newtext.contains("[get url") || newtext.contains("[post url"))
+        newtext = processText(newtext);
+    auto now = std::chrono::steady_clock::now();
+    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,MessageLogContext());//检查也没有要发送 的语言视频 文件 原位修改text
+    if (newtext.isEmpty()) return newtext2;
+
     bool mbise= mb.isEmpty();
-    if(textB.isEmpty() && mbise)
+    if(newtext.isEmpty() && mbise)
     {
         QString response = R"({"message":"发送内容不能为空"})";
-        addmsglog(response,index,pname,newtext,now_us,type,openid);
+        addmsglog(response,index,pname,text,now_us,type,openid);
         return response;
     }
     int seq_index=0;
@@ -2530,26 +2571,26 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     {
         if(!mbise)
         {
-            textB = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);
+            newtext = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(newtext);
             response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
-            addmsglog(response,index,pname,newtext,now_us,type,openid);
+            addmsglog(response,index,pname,text,now_us,type,openid);
             return response;
         }
-        if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
+        if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
         {
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);
+            newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(newtext);
             //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            response = R"("message":"暂时不支持模板方式")";
-        }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+            response = R"({"message":"暂时不支持模板方式"})";
+        }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);//违禁词过滤
+            newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(newtext);//违禁词过滤
             response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
         }else {
-            textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);//违禁词过滤
+            newtext = processImageTags(newtext,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(newtext);//违禁词过滤
             QString url = get_url(type, openid, "messages");
             response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,MessageLogContext(),noref);
         }
@@ -2558,23 +2599,23 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     }
     if(!mbise)
     {
-        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(textB);
+        newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(newtext);
         response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
         addmsglog(response,index,pname,newtext,now_us,type,openid);
         return response;
     }
-    if(!mode && m_info->markdown || mode && 发送类型==1)
+    if(!mode && m_info->markdown || mode && sendType==1)
     {
 
-        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
 
-        QString textA = forbidden->filterText(textB);
+        QString textA = forbidden->filterText(newtext);
         response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
     }else{
 
-        textB = processImageTags(textB,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(textB);
+        newtext = processImageTags(newtext,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(newtext);
         response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
     }
     addmsglog(response,index,pname,newtext,now_us,type,openid);
@@ -2584,7 +2625,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
 }
 
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref)
+                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
     QString newtext = text;
@@ -2607,16 +2648,19 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     ctx.now_us = now_us;
     ctx.type = type;
     ctx.openid = openid;
-
-    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,发送类型,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
-    if (newtext.isEmpty()) return newtext2;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
-     ctx.index = index;
+    ctx.index = index;
     QJsonObject keyboard;
     QJsonArray prompt_keyboard;
     QString message_reference,mb;
     QString textB = normalizeNewlinesToCR(newtext); //处理换行
     bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+
+
+
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
+    if (newtext.isEmpty()) return newtext2;
+
     bool mbise= mb.isEmpty();
     if(textB.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
     int seq_index=0;
@@ -2640,13 +2684,13 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
             send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx,noref);
             return response;
         }
-        if(!mode && m_info->markdown_pd_mb || mode && 发送类型==2) //模板
+        if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
         {
             textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
             QString textA = forbidden->filterText(textB);
             //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            response = R"("message":"暂时不支持模板方式")";
-        }else if(!mode && m_info->markdown_pd || mode && 发送类型==1) //原生
+            response = R"({"message":"暂时不支持模板方式"})";
+        }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
             textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
             QString textA = forbidden->filterText(textB);//违禁词过滤
@@ -2666,7 +2710,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
         QString textA = forbidden->filterText(textB);
         send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
     }
-    if(!mode && m_info->markdown || mode && 发送类型==1)
+    if(!mode && m_info->markdown || mode && sendType==1)
     {
         textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
         QString textA = forbidden->filterText(textB);
@@ -2674,6 +2718,88 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     }else{
         textB = processImageTags(textB,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
         QString textA = forbidden->filterText(textB);
+        send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }
+    return response;
+}
+QString QQBotClient::send_messagesAsync2(int type, const QString &openid,const QString &pname, QString &text,
+                                        const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,const QString &mb2,
+                                         const QJsonArray &prompt_keyboard,const QJsonObject &keyboard)
+{
+    QString mb=mb2;
+    auto now = std::chrono::steady_clock::now();
+    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    MessageLogContext ctx;
+    ctx.index = 0;
+    ctx.pname = pname;                     // 拷贝
+    ctx.jsonString = text;
+    ctx.now_us = now_us;
+    ctx.type = type;
+    ctx.openid = openid;
+    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    ctx.index = index;
+
+    QString message_reference;
+    QString newtext2 = sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
+    if (text.isEmpty()) return newtext2;
+
+    bool mbise= mb.isEmpty();
+    if(text.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
+    int seq_index=0;
+    bool ok=false;
+    if(index>=0){
+
+        g_logdb[type+1]->setBuffer_250(index,ok);
+    }
+    if(ok)
+        seq_index = 1;
+    else if(noref) return "{}";
+    else seq_index = 2;
+
+    QString response="{}",fileinfo;
+    if(type==1 || type ==3)
+    {
+        if(!mbise)
+        {
+            text = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(text);
+            send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx,noref);
+            return response;
+        }
+        if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
+        {
+            text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(text);
+            //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
+            response = R"({"message":"暂时不支持模板方式"})";
+        }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
+        {
+            text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(text);//违禁词过滤
+            send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        }else {
+            text = processImageTags(text,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            QString textA = forbidden->filterText(text);//违禁词过滤
+            QString url = get_url(type, openid, "messages");
+            send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,ctx,noref);
+        }
+        return response;
+    }
+
+    if(!mbise) //模板 一般用不到
+    {
+        text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(text);
+        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }
+    if(!mode && m_info->markdown || mode && sendType==1)
+    {
+        text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(text);
+        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+    }else{
+        text = processImageTags(text,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        QString textA = forbidden->filterText(text);
         send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
     }
     return response;
@@ -2883,7 +3009,8 @@ QString QQBotClient::get_groups_bot_state(const QString& group,Callback callback
 }
 QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days,Callback callbacks)
 {
-    QString url = QString("https://api.bot.qq.com/%1/members/%2").arg(type==0?"v2/groups":"guilds",user);
+
+    QString url = get_url(type,group,"members",user);
     if(add_blacklist || delete_history_msg_days!=0){
         QJsonObject obj;
         obj["add_blacklist"] = add_blacklist;
