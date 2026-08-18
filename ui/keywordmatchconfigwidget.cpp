@@ -148,10 +148,24 @@ KeywordMatchConfigWidget::KeywordMatchConfigWidget(QWidget *parent) : QWidget(pa
     connect(this, &KeywordMatchConfigWidget::needLoadRules,
             this, &KeywordMatchConfigWidget::loadRulesForRobot,
             Qt::QueuedConnection);
+    connect(this, &KeywordMatchConfigWidget::needRefreshTable,
+            this, &KeywordMatchConfigWidget::refreshTable,
+            Qt::QueuedConnection);
 }
 
 KeywordMatchConfigWidget::~KeywordMatchConfigWidget() {}
+void KeywordMatchConfigWidget::refreshTable()
+{
+    if (g_appid == 0) return;
+    if (!rulesMap.contains(g_appid)) return;
 
+    bool wasBlocked = ruleTable->blockSignals(true);
+    const QList<KeywordMatchRule> &rules = rulesMap[g_appid];
+    ruleTable->setRowCount(rules.size());
+    for (int i = 0; i < rules.size(); ++i)
+        setRuleItemToRow(i, rules[i]);
+    ruleTable->blockSignals(wasBlocked);
+}
 void KeywordMatchConfigWidget::setupUI() {
     mainSplitter = new QSplitter(Qt::Horizontal, this);
 
@@ -255,15 +269,10 @@ void KeywordMatchConfigWidget::loadRulesForRobot(int robotId) {
     if (isLoading) return;
     isLoading = true;
 
-    bool wasBlocked = ruleTable->blockSignals(true);
-    const QList<KeywordMatchRule> &rules = rulesMap[robotId];
-    ruleTable->setRowCount(rules.size());
-    for (int i = 0; i < rules.size(); ++i)
-        setRuleItemToRow(i, rules[i]);
-    ruleTable->blockSignals(wasBlocked);
+    // 直接调用 refreshTable（或使用异步信号）
+    refreshTable();
+
     isLoading = false;
-
-
     buildMatcherForRobot(robotId);
 }
 
@@ -343,8 +352,16 @@ api.outlog(f"收到来自 {msg.appid} 的消息")
 __result__ = f"收到来自 {msg.appid} 的消息"
 )";
     newRule.forbiddenWords.clear();
-    addRowFromRuleItem(newRule);
-    onTableDataChanged();
+
+    // 添加到数据
+    if (g_appid != 0) {
+        rulesMap[g_appid].append(newRule);
+        // 断开信号，刷新表格
+        disconnect(ruleTable, &QTableWidget::itemChanged,
+                   this, &KeywordMatchConfigWidget::onTableDataChanged);
+        emit needRefreshTable();
+        ruleTable->selectRow(rulesMap[g_appid].size() - 1);
+    }
 }
 
 void KeywordMatchConfigWidget::onDeleteRow() {
@@ -353,14 +370,22 @@ void KeywordMatchConfigWidget::onDeleteRow() {
         QMessageBox::information(this, "提示", "请先选中要删除的行");
         return;
     }
-    ruleTable->removeRow(row);
-    onTableDataChanged();
-    if (ruleTable->rowCount() > 0) {
-        int newRow = qMin(row, ruleTable->rowCount() - 1);
-        ruleTable->selectRow(newRow);
+    if (g_appid == 0 || !rulesMap.contains(g_appid)) return;
+
+    QList<KeywordMatchRule> &rules = rulesMap[g_appid];
+    if (row >= rules.size()) return;
+
+    rules.removeAt(row);
+    disconnect(ruleTable, &QTableWidget::itemChanged,
+               this, &KeywordMatchConfigWidget::onTableDataChanged);
+    emit needRefreshTable();
+
+    if (row < rules.size()) {
+        ruleTable->selectRow(row);
+    } else if (rules.size() > 0) {
+        ruleTable->selectRow(rules.size() - 1);
     }
 }
-
 void KeywordMatchConfigWidget::onCopyRow() {
     int row = ruleTable->currentRow();
     if (row < 0) {
@@ -429,17 +454,26 @@ void KeywordMatchConfigWidget::onMoveRowDown() {
 
 void KeywordMatchConfigWidget::onRowsSwapped(int fromRow, int toRow) {
     if (g_appid == 0) return;
-    if (rulesMap.contains(g_appid)) {
-        QList<KeywordMatchRule> &rules = rulesMap[g_appid];
-        if (fromRow >= 0 && fromRow < rules.size() && toRow >= 0 && toRow < rules.size()) {
-            KeywordMatchRule moving = rules.takeAt(fromRow);
-            int insertPos = toRow;
-            if (toRow >= fromRow && insertPos < rules.size()) insertPos++;
-            rules.insert(insertPos, moving);
-        }
-    }
-    disconnect(ruleTable, &QTableWidget::itemChanged, this, &KeywordMatchConfigWidget::onTableDataChanged);
-    loadRulesForRobot(g_appid);
+    if (!rulesMap.contains(g_appid)) return;
+
+    QList<KeywordMatchRule> &rules = rulesMap[g_appid];
+    if (fromRow < 0 || fromRow >= rules.size() || toRow < 0 || toRow >= rules.size())
+        return;
+
+    // 交换数据
+    KeywordMatchRule moving = rules.takeAt(fromRow);
+    int insertPos = toRow;
+    if (toRow >= fromRow && insertPos < rules.size()) insertPos++;
+    rules.insert(insertPos, moving);
+
+    // 断开 itemChanged 信号，防止刷新时触发
+    disconnect(ruleTable, &QTableWidget::itemChanged,
+               this, &KeywordMatchConfigWidget::onTableDataChanged);
+
+    // 异步刷新表格
+    emit needRefreshTable();
+
+    // 选中目标行
     ruleTable->selectRow(toRow);
 }
 

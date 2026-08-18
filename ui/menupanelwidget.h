@@ -16,13 +16,28 @@
 #include "PlaceholderLineEdit.h"
 #define QLineEdit PlaceholderLineEdit
 class QQBotClient;
-
+class MovableTableWidget : public QTableWidget
+{
+    Q_OBJECT
+public:
+    explicit MovableTableWidget(QWidget *parent = nullptr);
+signals:
+    void rowsSwapped(int fromRow, int toRow);
+protected:
+    void startDrag(Qt::DropActions supportedActions) override;
+    void dropEvent(QDropEvent *event) override;
+private:
+    int dragStartRow = -1;
+};
 class MenuPanelWidget : public QWidget
 {
     Q_OBJECT
 public:
     explicit MenuPanelWidget(QWidget *parent = nullptr);
     QQBotClient *m_botClient = nullptr;
+
+signals:
+    void needRefreshTable();  // 异步刷新信号
 
 public slots:
     void switchBot();   // 切换Bot，自动加载菜单和面板
@@ -35,7 +50,7 @@ private slots:
     void onDeleteSelected();
     void onSaveMenuNode();
     void onUpdateMenu();
-
+    void refreshTable();
     // ---- 面板 ----
     void onAddTableRow();
     void onRemoveTableRow();
@@ -49,6 +64,12 @@ private slots:
     void onScopeRadioClicked(int id);              // 场景单选按钮切换
     void onPanelRemarkChanged(QTableWidgetItem *item);   // 备注编辑后更新缓存
     void onTargetTypeChanged(int index);   // target_type 下拉框切换
+    void onRowsSwapped(int fromRow, int toRow);
+    void onTableItemChanged(QTableWidgetItem *item);
+    void onComboBoxChanged(int row, QComboBox *combo);
+    void onCheckBoxChanged(int row, QCheckBox *chk);
+
+
 
 private:
     void setupUI();
@@ -85,7 +106,8 @@ private:
     QPushButton *m_updateMenuBtn;
 
     // ---- 面板控件 ----
-
+    QList<QJsonObject> m_currentItems;   // 数据列表
+                    // 刷新表格
 
     QComboBox *m_targetTypeCombo;   // 作用范围 all/specific
     QTableWidget *m_panelTable;

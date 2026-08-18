@@ -358,16 +358,17 @@ QString 内置指令(MessageEvent &ev)
     QString text;
     if(ev.msg=="我的id" || ev.msg=="我的ID")
     {
-        if(g_botdb.contains(ev.appid ))
+        if(g_botdb.contains(ev.appid))
         {
             QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
-             QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
+            QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
             auto *db =  g_botdb[ev.appid];
-            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%6").arg(ev.user_int).arg(ev.user, ev.groupId)
+            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5")
+                       .arg(ev.user_int).arg(ev.user, ev.groupId)
                        .arg(db->getUserTodayMsgCount(userKeyBytes)).arg(db->getGroupTodayMsgCount(groupKeyBytes));
 
         }
-        text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%6").arg(ev.user_int).arg(ev.user, ev.groupId);
+        text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5").arg(ev.user_int).arg(ev.user, ev.groupId);
     }
 
     return text;

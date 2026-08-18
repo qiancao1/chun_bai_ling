@@ -60,9 +60,10 @@ public:
 
 signals:
     void needLoadRules(int robotId);
+    void needRefreshTable();  // 新增：异步刷新信号
 
 private slots:
-
+    void refreshTable();  // 新增：刷新表格函数
 
     void onAddRow();
     void onDeleteRow();
@@ -96,6 +97,8 @@ private:
         COL_FORBIDDEN=3,
         COL_COUNT=4
     };
+
+    QList<KeywordMatchRule> m_currentRules;  // 新增：当前显示的数据副本（可选，或者直接用 rulesMap[g_appid]）
 
     // UI 组件
     QSplitter *mainSplitter = nullptr;

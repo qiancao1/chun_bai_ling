@@ -164,10 +164,11 @@ void MenuPanelWidget::setupUI()
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
     rightLayout->setContentsMargins(0, 0, 0, 0);
 
-    m_panelTable = new QTableWidget(this);
+    m_panelTable = new MovableTableWidget(this);
     m_panelTable->setColumnCount(5);
     m_panelTable->setHorizontalHeaderLabels({"标题 7字", "声明(desc 15字)", "类型", "链接", "仅管理员"});
     m_panelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+
     rightLayout->addWidget(m_panelTable);
 
     QHBoxLayout *tableBtnLayout = new QHBoxLayout;
@@ -218,10 +219,189 @@ void MenuPanelWidget::setupUI()
 
     connect(m_targetTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MenuPanelWidget::onTargetTypeChanged);
+    // 监听表格内容变化
 
-
+    connect(static_cast<MovableTableWidget*>(m_panelTable), &MovableTableWidget::rowsSwapped,
+            this, &MenuPanelWidget::onRowsSwapped);
+    connect(this, &MenuPanelWidget::needRefreshTable,this, &MenuPanelWidget::refreshTable,Qt::QueuedConnection);
     updateEditButtons();
 }
+void MenuPanelWidget::onTableItemChanged(QTableWidgetItem *item)
+{
+    if (!item) return;
+    int row = item->row();
+    int col = item->column();
+    if (row < 0 || row >= m_currentItems.size()) return;
+
+    // 只处理文本列（0、1、3）
+    if (col == 0) {
+        m_currentItems[row]["name"] = item->text();
+    } else if (col == 1) {
+        m_currentItems[row]["desc"] = item->text();
+    } else if (col == 3) {
+        QString type = m_currentItems[row]["type"].toString("command");
+        if (type == "command") {
+            m_currentItems[row]["command"] = item->text();
+        } else {
+            m_currentItems[row]["link"] = item->text();
+        }
+    }
+}
+// MovableTableWidget 实现（完全复制 BotMovableTableWidget）
+MovableTableWidget::MovableTableWidget(QWidget *parent)
+    : QTableWidget(parent)
+{
+    setDragEnabled(true);
+    setAcceptDrops(true);
+    setDropIndicatorShown(true);
+    setDragDropMode(QAbstractItemView::InternalMove);
+    setSelectionBehavior(QAbstractItemView::SelectRows);
+    setSelectionMode(QAbstractItemView::SingleSelection);
+}
+
+void MovableTableWidget::startDrag(Qt::DropActions supportedActions)
+{
+    QModelIndexList indexes = selectionModel()->selectedIndexes();
+    if (!indexes.isEmpty())
+        dragStartRow = indexes.first().row();
+    QTableWidget::startDrag(supportedActions);
+}
+
+void MovableTableWidget::dropEvent(QDropEvent *event)
+{
+    if (event->source() != this || dragStartRow == -1) {
+        QTableWidget::dropEvent(event);
+        return;
+    }
+
+    QPoint dropPos = event->pos();
+    int targetRow = indexAt(dropPos).row();
+    if (targetRow == -1)
+        targetRow = rowCount();
+
+    int fromRow = dragStartRow;
+    int toRow = targetRow;
+    if (fromRow == toRow) {
+        dragStartRow = -1;
+        event->accept();
+        return;
+    }
+    if (fromRow < toRow)
+        toRow--;
+
+    emit rowsSwapped(fromRow, toRow);
+
+    dragStartRow = -1;
+    event->accept();
+}
+
+
+void MenuPanelWidget::refreshTable()
+{
+
+    m_panelTable->setRowCount(0);
+
+    for (int i = 0; i < m_currentItems.size(); ++i) {
+        const QJsonObject &obj = m_currentItems[i];
+        int row = m_panelTable->rowCount();
+        m_panelTable->insertRow(row);
+
+        // 列0：标题
+        m_panelTable->setItem(row, 0, new QTableWidgetItem(obj["name"].toString()));
+
+        // 列1：描述
+        m_panelTable->setItem(row, 1, new QTableWidgetItem(obj["desc"].toString()));
+
+        // 列2：类型下拉框
+        QComboBox *combo = new QComboBox();
+        combo->addItems({"command", "link"});
+        combo->setCurrentText(obj["type"].toString("command"));
+        // 连接信号：变化时保存
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, row, combo]() {
+                    onComboBoxChanged(row, combo);
+                });
+        m_panelTable->setCellWidget(row, 2, combo);
+
+        // 列3：数据
+        QString type = obj["type"].toString("command");
+        QString data = (type == "command") ? obj["command"].toString() : obj["link"].toString();
+        m_panelTable->setItem(row, 3, new QTableWidgetItem(data));
+
+        // 列4：仅管理员复选框
+        QCheckBox *chk = new QCheckBox();
+        chk->setChecked(obj["only_admin"].toBool(false));
+        // 连接信号：变化时保存
+        connect(chk, &QCheckBox::stateChanged, this, [this, row, chk]() {
+            onCheckBoxChanged(row, chk);
+        });
+        m_panelTable->setCellWidget(row, 4, chk);
+    }
+    connect(m_panelTable, &QTableWidget::itemChanged,
+            this, &MenuPanelWidget::onTableItemChanged);
+
+}
+
+
+// 下拉框变化
+void MenuPanelWidget::onComboBoxChanged(int row, QComboBox *combo)
+{
+    if (row < 0 || row >= m_currentItems.size() || !combo) return;
+
+    QString newType = combo->currentText();
+    QString oldType = m_currentItems[row]["type"].toString("command");
+
+    // 更新类型
+    m_currentItems[row]["type"] = newType;
+
+    // 如果类型变了，清空对应的数据字段
+    if (newType != oldType) {
+        if (newType == "command") {
+            m_currentItems[row]["command"] = "";
+            // 更新表格第3列显示
+            QTableWidgetItem *item = m_panelTable->item(row, 3);
+            if (item) item->setText("");
+        } else {
+            m_currentItems[row]["link"] = "";
+            QTableWidgetItem *item = m_panelTable->item(row, 3);
+            if (item) item->setText("");
+        }
+    }
+}
+
+// 复选框变化
+void MenuPanelWidget::onCheckBoxChanged(int row, QCheckBox *chk)
+{
+    if (row < 0 || row >= m_currentItems.size() || !chk) return;
+    m_currentItems[row]["only_admin"] = chk->isChecked();
+}
+// 交换槽函数
+void MenuPanelWidget::onRowsSwapped(int fromRow, int toRow)
+{
+    // 边界检查
+    if (fromRow < 0 || toRow < 0 ||
+        fromRow >= m_currentItems.size() || toRow >= m_currentItems.size()) {
+        return;
+    }
+
+    // 从列表中取出源行
+    QJsonObject moving = m_currentItems.takeAt(fromRow);
+
+    // 计算插入位置（因为 takeAt 后列表长度减1）
+    int insertPos = toRow;
+    if (toRow >= fromRow && insertPos < m_currentItems.size()) {
+        insertPos++;
+    }
+
+    m_currentItems.insert(insertPos, moving);
+    disconnect(m_panelTable, &QTableWidget::itemChanged,this, &MenuPanelWidget::onTableItemChanged);
+    emit needRefreshTable();
+
+    // 选中目标行
+    m_panelTable->selectRow(toRow);
+}
+
+
 void MenuPanelWidget::updateEditButtons()
 {
     bool isSpecific = (m_targetTypeCombo->currentText() == "specific");
@@ -479,7 +659,7 @@ void MenuPanelWidget::loadPanelTarget(const QJsonObject &record)
                 m_bindGroups << v.toString();
         } else if (scope == "c2c" || scope == "dm") {
             QJsonArray users = record["user_openids"].toArray();
-            for (const QJsonValue &v : users)
+            for (const QJsonValue &v : std::as_const(users))
                 m_bindFriends << v.toString();
         }
     }
@@ -523,10 +703,10 @@ void MenuPanelWidget::updatePanelTargetIfNeeded()
     for (const QString &id : std::as_const(currentGroups)) delGroups.removeAll(id);
 
     QStringList addFriends = currentFriends;
-    for (const QString &id : originalFriends) addFriends.removeAll(id);
+    for (const QString &id : std::as_const(originalFriends)) addFriends.removeAll(id);
 
     QStringList delFriends = originalFriends;
-    for (const QString &id : currentFriends) delFriends.removeAll(id);
+    for (const QString &id :  std::as_const(currentFriends)) delFriends.removeAll(id);
 
     // 如果没有任何变化，直接返回
     if (addGroups.isEmpty() && delGroups.isEmpty() && addFriends.isEmpty() && delFriends.isEmpty())
@@ -577,11 +757,12 @@ void MenuPanelWidget::onPanelRemarkChanged(QTableWidgetItem *item)
 }
 void MenuPanelWidget::onCreatePanel()
 {
-    // 清空右侧表格和当前ID
-    m_panelTable->setRowCount(0);
+    // 清空数据列表和表格
+    m_currentItems.clear();
+    refreshTable();
     m_currentPanelId.clear();
 
-    // 清空绑定的群/好友列表（新建时重置）
+    // 清空绑定的群/好友列表
     m_bindGroups.clear();
     m_bindFriends.clear();
 
@@ -593,9 +774,7 @@ void MenuPanelWidget::onCreatePanel()
     m_panelListTable->setItem(row, 0, item);
     m_panelListTable->selectRow(row);
 
-    // 根据当前 target_type 和 scope 更新编辑按钮状态
     updateEditButtons();
-
     updateStatus("已创建新面板，编辑内容后点击「更新面板到机器人」提交");
 }
 void MenuPanelWidget::onDeleteSelectedPanel()
@@ -967,121 +1146,87 @@ void MenuPanelWidget::onUpdateMenu()
 // ---------- 指令面板 ----------
 void MenuPanelWidget::loadPanelData(const QJsonObject &record)
 {
-
-    // 1. 提取面板基础信息（单个记录）
+    // 1. 提取面板基础信息
     m_currentPanelId = record["panel_id"].toString();
     m_targetTypeCombo->setCurrentText(record["target_type"].toString("all"));
-
-    // 2. 清空表格
-    m_panelTable->setRowCount(0);
     loadPanelTarget(record);
+
+    // 2. 清空数据列表
+    m_currentItems.clear();
+
     // 3. 提取面板内的 items 数组
     QJsonObject panel = record["panel"].toObject();
     QJsonArray items = panel["items"].toArray();
 
-    // 4. 遍历填充表格
-    for (const QJsonValue &val : std::as_const(items)) {
-        QJsonObject item = val.toObject();
-        int row = m_panelTable->rowCount();
-        m_panelTable->insertRow(row);
-
-        m_panelTable->setItem(row, 0, new QTableWidgetItem(item["name"].toString()));
-        m_panelTable->setItem(row, 1, new QTableWidgetItem(item["desc"].toString()));
-
-        QComboBox *typeCombo = new QComboBox();
-        typeCombo->addItems({"command", "link"});
-        QString type = item["type"].toString("command");
-        int idx = typeCombo->findText(type);
-        if (idx >= 0) typeCombo->setCurrentIndex(idx);
-        m_panelTable->setCellWidget(row, 2, typeCombo);
-
-        QString data = (type == "command") ? item["command"].toString() : item["link"].toString();
-        m_panelTable->setItem(row, 3, new QTableWidgetItem(data));
-
-        QCheckBox *adminCheck = new QCheckBox();
-        adminCheck->setChecked(item["only_admin"].toBool(false));
-        m_panelTable->setCellWidget(row, 4, adminCheck);
+    // 4. 填充数据列表
+    for (const QJsonValue &val : items) {
+        m_currentItems.append(val.toObject());
     }
 
+    // 5. 刷新表格
+    refreshTable();
 }
+
 QJsonObject MenuPanelWidget::buildPanelJson()
 {
     QJsonObject obj;
 
+    // 1. 基础信息
     obj["scope"] = currentScope();
     QString targetType = m_targetTypeCombo->currentText();
     obj["target_type"] = targetType;
+
+    // 2. 如果是新建面板且为 specific，带上群/好友 ID
     if (m_currentPanelId.isEmpty() && targetType == "specific") {
         QJsonArray groupArray, userArray;
-        for (const QString &id : m_bindGroups) {
+        for (const QString &id : std::as_const(m_bindGroups)) {
             if (!id.trimmed().isEmpty()) groupArray.append(id.trimmed());
         }
-        for (const QString &id : m_bindFriends) {
+        for (const QString &id : std::as_const(m_bindFriends)) {
             if (!id.trimmed().isEmpty()) userArray.append(id.trimmed());
         }
-        obj["group_openids"] = groupArray;
-        obj["user_openids"] = userArray;
-    }
-    QJsonArray items;
-    for (int i = 0; i < m_panelTable->rowCount(); ++i) {
-        QTableWidgetItem *nameItem = m_panelTable->item(i, 0);
-        QTableWidgetItem *descItem = m_panelTable->item(i, 1);
-        if (!nameItem) continue;
-
-        QComboBox *typeCombo = qobject_cast<QComboBox*>(m_panelTable->cellWidget(i, 2));
-        QString type = typeCombo ? typeCombo->currentText() : "command";
-
-        QTableWidgetItem *dataItem = m_panelTable->item(i, 3);
-        QString data = dataItem ? dataItem->text() : "";
-
-        QCheckBox *adminCheck = qobject_cast<QCheckBox*>(m_panelTable->cellWidget(i, 4));
-        bool onlyAdmin = adminCheck ? adminCheck->isChecked() : false;
-
-        QJsonObject itemObj;
-        itemObj["name"] = nameItem->text();
-        if (descItem) itemObj["desc"] = descItem->text();
-        itemObj["type"] = type;
-        if (type == "link")
-            itemObj["link"] = data;
-        itemObj["only_admin"] = onlyAdmin;
-        items.append(itemObj);
+        if (!groupArray.isEmpty()) obj["group_openids"] = groupArray;
+        if (!userArray.isEmpty()) obj["user_openids"] = userArray;
     }
 
+    // 3. 从数据列表构造 items 数组
+    QJsonArray itemsArray;
+    for (const QJsonObject &itemObj : std::as_const(m_currentItems)) {
+        itemsArray.append(itemObj);
+    }
+
+    // 4. 获取备注
     QString remark;
     if (!m_currentPanelId.isEmpty() && m_panelCache.contains(m_currentPanelId)) {
         remark = m_panelCache[m_currentPanelId]["panel"].toObject()["remark"].toString();
     } else {
-        // 新建面板：从左侧列表当前选中项获取备注（如果存在）
         int row = m_panelListTable->currentRow();
         if (row >= 0) {
             QTableWidgetItem *item = m_panelListTable->item(row, 0);
             if (item) remark = item->text();
         }
-        if (remark.isEmpty()) remark = "新面板"; // 默认
+        if (remark.isEmpty()) remark = "新面板";
     }
+
+    // 5. 组装 panel 对象
     QJsonObject panel;
-    panel["items"] = items;
+    panel["items"] = itemsArray;
     panel["remark"] = remark;
     obj["panel"] = panel;
+
     return obj;
 }
-
 void MenuPanelWidget::onAddTableRow()
 {
-    int row = m_panelTable->rowCount();
-    m_panelTable->insertRow(row);
-    m_panelTable->setItem(row, 0, new QTableWidgetItem("新指令"));
-    m_panelTable->setItem(row, 1, new QTableWidgetItem(""));
-
-    QComboBox *typeCombo = new QComboBox();
-    typeCombo->addItems({"command", "link"});
-    m_panelTable->setCellWidget(row, 2, typeCombo);
-
-    m_panelTable->setItem(row, 3, new QTableWidgetItem(""));
-
-    QCheckBox *adminCheck = new QCheckBox();
-    adminCheck->setChecked(false);
-    m_panelTable->setCellWidget(row, 4, adminCheck);
+    QJsonObject newItem;
+    newItem["name"] = "新指令";
+    newItem["desc"] = "";
+    newItem["type"] = "command";
+    newItem["command"] = "";
+    newItem["only_admin"] = false;
+    m_currentItems.append(newItem);
+    refreshTable();
+    m_panelTable->selectRow(m_currentItems.size() - 1);
 }
 
 void MenuPanelWidget::onRemoveTableRow()
@@ -1091,9 +1236,16 @@ void MenuPanelWidget::onRemoveTableRow()
         QMessageBox::information(this, "提示", "请选中一行");
         return;
     }
-    m_panelTable->removeRow(row);
+    if (row < m_currentItems.size()) {
+        m_currentItems.removeAt(row);
+        refreshTable();
+        if (row < m_currentItems.size()) {
+            m_panelTable->selectRow(row);
+        } else if (m_currentItems.size() > 0) {
+            m_panelTable->selectRow(m_currentItems.size() - 1);
+        }
+    }
 }
-
 void MenuPanelWidget::onUpdatePanel()
 {
     if (!m_botClient) {
