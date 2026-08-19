@@ -119,9 +119,9 @@ struct AccountInfo {
     int tiaoshu=5; //刷屏条数
 
     int tq_ychf=0; //退群延迟回复
-    int tq_lq=0;
+    int tq_lq=0 ;
 
-    int rq_ychf=0;
+    int rq_ychf=0, rq_lq=0;
     bool autoht=true;
     bool pbbot=true;
     bool autoConnect = false;
@@ -143,8 +143,8 @@ struct AccountInfo {
     QString bai_sr,bai_sc,bai_qy;
     QString err; //最后错误
     QString tqhy;
-    QString help,caidan,at;
-
+    QString help,caidan,emptyAt;
+    QString apply;// 有人申请加群时
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;

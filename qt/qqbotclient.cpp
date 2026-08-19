@@ -983,10 +983,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }else if(ev.msg.isEmpty() && ev.at_you)
     {
-        if(!m_info->at.isEmpty())
+        if(!m_info->emptyAt.isEmpty())
         {
             QString pname= "[私有指令]";
-            send_msgAsync(ev.type,ev.groupId,pname,m_info->at,ev.msgId);
+            send_msgAsync(ev.type,ev.groupId,pname,m_info->emptyAt,ev.msgId);
             return ;
         }
     }

@@ -8,6 +8,91 @@ qunguan::qunguan(QWidget *parent)
     , ui(new Ui::qunguan)
 {
     ui->setupUi(this);
+
+
+    connect(ui->listWidget, &QListWidget::itemClicked,
+            this, &qunguan::onItemClicked);
+}
+QString getFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fieldName) {
+    // 使用 if-else 或 switch 返回对应字段
+    if (fieldName == "admin") return info->admin;
+    if (fieldName == "caidan") return info->caidan;
+    if (fieldName == "help") return info->help;
+    if (fieldName == "emptyAt") return info->emptyAt;
+    if (fieldName == "rqhy") return info->rqhy;
+    if (fieldName == "tqhy") return info->tqhy;
+    if (fieldName == "fallbackReply") return info->fallbackReply;
+    if (fieldName == "welcomeMsg") return info->welcomeMsg;
+    if (fieldName == "apply") return info->apply;
+    return QString();
+}
+void qunguan::refreshList() {
+    ui->listWidget->clear();
+    if (g_appid == 0) return;
+
+    int idx = accinfo(g_appid);
+    if (idx == -1) {
+
+        return;
+    }
+    auto &info = m_accounts[idx];
+
+    // 使用有序列表，顺序按你定义的顺序保持不变
+    QList<QPair<QString, QString>> items = {
+        {"机器人管理", "admin"},
+        {"发送菜单", "caidan"},
+        {"发送帮助", "help"},
+        {"空艾特时", "emptyAt"},
+        {"用户入群", "rqhy"},
+        {"用户退群", "tqhy"},
+        {"未命中指令", "fallbackReply"},
+        {"机器人入群", "welcomeMsg"},
+        {"有人申请加群", "apply"}
+    };
+
+    for (const auto &pair : items) {
+        QString displayText = pair.first;
+        QString fieldName = pair.second;
+        QListWidgetItem *item = new QListWidgetItem(displayText);
+
+        QString content = getFieldValue(info, fieldName);
+        item->setData(Qt::UserRole, content);
+        item->setData(Qt::UserRole + 1, fieldName);
+
+        ui->listWidget->addItem(item);
+        if(m_currentField == fieldName)
+        {
+            ui->listWidget->setCurrentItem(item);
+            ui->textEdit->setText(content); // 或者 item->data(Qt::UserRole).toString()
+        }
+    }
+}
+void setFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fieldName, const QString& value) {
+    if (fieldName == "admin") info->admin = value;
+    else if (fieldName == "caidan") info->caidan = value;
+    else if (fieldName == "help") info->help = value;
+    else if (fieldName == "emptyAt") info->emptyAt = value;
+    else if (fieldName == "rqhy") info->rqhy = value;
+    else if (fieldName == "tqhy") info->tqhy = value;
+    else if (fieldName == "fallbackReply") info->fallbackReply = value;
+    else if (fieldName == "welcomeMsg") info->welcomeMsg = value;
+    else if (fieldName == "apply") info->apply = value;
+}
+
+
+void qunguan::onItemClicked(QListWidgetItem *item) {
+    if (!item) return;
+    if (g_appid == 0) {
+        QMessageBox::warning(this, "提示", "请先选择有效的机器人");
+        return;
+    }
+
+    // 显示内容
+    QString content = item->data(Qt::UserRole).toString();
+    ui->textEdit->setText(content);
+
+    // 记录当前字段名
+    m_currentField = item->data(Qt::UserRole + 1).toString();
 }
 
 qunguan::~qunguan()
@@ -15,28 +100,51 @@ qunguan::~qunguan()
     delete ui;
 }
 
-void qunguan::on_pushButton_clicked()
-{
-    if (g_appid!=0) {
-        int index=accinfo(g_appid);
-        if(index==-1){
-            QMessageBox::warning(this,"失败","保存失败 保存的指定机器人 好像不在于账号列表 请重新选择 机器人");
-            return;
-        }
-        auto &info = m_accounts [index];
-        info->times =ui->time_Edit->text().toInt();
-        info->tiaoshu=ui->tiao_Edit->text().toInt();
-
-        info->pbbot=ui->checkBox_2->isChecked();
-        info->autoht=ui->zdht->isChecked();
-        info->admin =ui->textEdit->toPlainText();
-
-        info->help =ui->textEdit_4->toPlainText();
-        info->caidan =ui->textEdit_2->toPlainText();
-        info->at =ui->textEdit_3->toPlainText();
-
-        accountPage->saveAccounts(info.get());
+void qunguan::on_pushButton_clicked() {
+    if (g_appid == 0) {
+        QMessageBox::warning(this, "提示", "请先选择有效的机器人");
+        return;
     }
+
+    int index = accinfo(g_appid);
+    if (index == -1) {
+        QMessageBox::warning(this, "失败", "指定的机器人不在账号列表中，请重新选择");
+        return;
+    }
+    auto &info = m_accounts[index];
+
+    // ---- 1. 保存原本的独立控件（times, tiaoshu, 复选框等） ----
+    info->times = ui->time_Edit->text().toInt();
+    info->tiaoshu = ui->tiao_Edit->text().toInt();
+    info->pbbot = ui->checkBox_2->isChecked();
+    info->autoht = ui->zdht->isChecked();
+    info->rq_ychf = ui->lineEdit->text().toInt();
+    info->rq_lq = ui->lineEdit_2->text().toInt();
+    info->tq_ychf = ui->lineEdit_3->text().toInt();
+    info->tq_lq = ui->lineEdit_4->text().toInt();
+
+    // ---- 2. 保存当前编辑的文本内容（如果存在） ----
+    if (!m_currentField.isEmpty()) {
+        QString newContent = ui->textEdit->toPlainText(); // 假设是纯文本
+        setFieldValue(info, m_currentField, newContent);
+
+        // ---- 3. 更新列表中对应项的数据（让列表项显示新内容） ----
+        QListWidgetItem *currentItem = ui->listWidget->currentItem();
+        if (currentItem) {
+            // 更新存储的内容数据
+            currentItem->setData(Qt::UserRole, newContent);
+            // 注意：不要修改显示文本（即 item 的 text），因为那是标题，不是内容
+            // 如果想在列表项中显示部分内容，可以额外设置，这里不需要
+        }
+    } else {
+        // 提示用户没有选中任何列表项，但保存依然进行（只保存独立控件）
+        QMessageBox::information(this, "提示", "独立设置已保存，但未选中任何列表项，文本内容未保存");
+    }
+
+    // ---- 4. 持久化 ----
+    accountPage->saveAccounts(info.get());
+
+    QMessageBox::information(this, "成功", "保存成功");
 }
 
 void qunguan::列表行被单击()
@@ -51,9 +159,15 @@ void qunguan::列表行被单击()
         ui->checkBox_2->setChecked(info->pbbot);
         ui->textEdit->setText(info->admin);
         ui->zdht->setChecked(info->autoht);
-        ui->textEdit_2->setText(info->caidan);
-        ui->textEdit_3->setText(info->at);
-        ui->textEdit_4->setText(info->help);
+
+
+        ui->lineEdit->setText(QString::number(info->rq_ychf));
+        ui->lineEdit_2->setText(QString::number(info->rq_lq));
+        ui->lineEdit_3->setText(QString::number(info->tq_ychf));
+        ui->lineEdit_4->setText(QString::number(info->tq_lq));
+
+        refreshList();
+
     }
 }
 

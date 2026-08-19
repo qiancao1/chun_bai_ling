@@ -51,11 +51,14 @@ void botset::on_pushButton_clicked()
     info->fallbackReply = ui->wclhf->toPlainText();
     info->welcomeMsg= ui->textEdit->toPlainText();
     info->rqhy = ui->textEdit_3->toPlainText();
-    info->rq_ychf = ui->lineEdit_4->text().toInt();
+
+
     info->tqhy= ui->textEdit_2->toPlainText();
+
     info->tq_ychf = ui->lineEdit_2->text().toInt();
     info->tq_lq = ui->lineEdit_3->text().toInt();
-
+    info->rq_ychf = ui->lineEdit_4->text().toInt();
+    info->rq_lq = ui->lineEdit_4->text().toInt();
     accountPage->saveAccounts(info.get());
 }
 

@@ -1090,10 +1090,6 @@ def clean_plugin(plugin_path):
             if file_path.startswith(abs_path):
                 to_remove.append(mod_name)
 
-    print("=== 热重载删除模块 ===")
-    for name in to_remove:
-        print("  -", name)
-
     for name in to_remove:
         del sys.modules[name]
 

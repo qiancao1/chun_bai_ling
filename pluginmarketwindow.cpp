@@ -392,7 +392,7 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
         Installed_type=3;
     }
     // 准备临时文件路径
-    QString tempZipPath = QDir::tempPath() + "/" + targetInfo->id + ".zip";
+    QString tempZipPath = "tmp/market" + targetInfo->id + ".zip";
     QFile *tempFile = new QFile(tempZipPath, this);
     if (tempFile->exists()) {
         tempFile->remove();
@@ -404,7 +404,6 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
     }
     tempFile->close(); // 先关闭，等下载完成再打开写入
     startDownload(targetInfo, QUrl(targetInfo->downloadUrl), 0);
-
 }
 
 
@@ -417,7 +416,7 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
     }
 
     // 创建临时文件路径
-    QString tempZipPath = QDir::tempPath() + "/" + info->id + ".zip";
+    QString tempZipPath = "tmp/market" + info->id + ".zip";
     QFile tempFile(tempZipPath);
     if (tempFile.exists()) {
         tempFile.remove();

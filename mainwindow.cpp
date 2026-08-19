@@ -71,12 +71,12 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.7.43"
-#define APP_BUILD_NUMBER 43
+#define APP_VERSION_STR "v1.2.8.45"
+#define APP_BUILD_NUMBER 45
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.8.48 (2026-08-17)
+## v1.2.8.45 (2026-08-17)
 - 优化 订阅主动推送 会触发限制问题
 - 增加 关键词回复 允许自动按照空格分割这里
 - 增加 api请求处理格式：结果1：%1 结果2：%2 [get url=xxx json.xx json.xx] 其中 json.xx 代表json路径 当然可不传
@@ -263,6 +263,8 @@ int m_currentBotIndex = -1;
 int 定时检查变量=0;
 extern int ts_m_appid;
 extern bool ts_m_stopPush;
+
+
 quint32 getLastTimestamp(const UserStat &stat) {
     if (stat.count == 0) return 0;  // 无数据，当作过期
     int capacity = stat.buffer.size();
@@ -770,19 +772,19 @@ void MainWindow::createTitleBar()
     titleBar->setAttribute(Qt::WA_StyledBackground, true);
 
     QHBoxLayout *layout = new QHBoxLayout(titleBar);
-    layout->setContentsMargins(16, 0, 14, 0);
-    layout->setSpacing(8);
+    layout->setContentsMargins(4, 0, 4, 0);
+    layout->setSpacing(4);
 
     // ========== 新增左侧区域：图标 + 双标签 ==========
     QWidget *leftWidget = new QWidget;
     leftWidget->setObjectName("leftInfoWidget");
     QHBoxLayout *leftLayout = new QHBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(8);
+    leftLayout->setSpacing(4);
 
     // 左侧图标（可替换为真实图标资源）
     QLabel *iconLabel = new QLabel("🔔");
-    int randomIndex = getRandomNumber() % 19 + 1;
+    int randomIndex = getRandomNumber() % 23 + 1;
     QString imagePath = QString(":/icons/log (%1).jpg").arg(randomIndex);
     QPixmap pixmap(imagePath);
 
@@ -1555,7 +1557,3 @@ void MainWindow::applyStyleSheet()
         QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
     )");
 }
-
-
-
-

@@ -180,7 +180,6 @@ void detectOptimalRegion();
 QString processText(const QString &text, int timeoutMs);
 
 
-
 int main(int argc, char *argv[]) {
 
 

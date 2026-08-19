@@ -92,7 +92,7 @@ QString AccountInfo::toJson() const {
     obj["admin"]=admin;
     obj["help"]=help;
     obj["caidan"]=caidan;
-    obj["koat"]=at;
+    obj["koat"]=emptyAt;
 
     obj["xiangliang"]=xiangliang;
     obj["Embed_model"]=Embed_model;
@@ -133,7 +133,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.rqhy = obj["rqhy"].toString();
     info.help=obj["help"].toString();
     info.caidan=obj["caidan"].toString();
-    info.at=obj["koat"].toString();
+    info.emptyAt=obj["koat"].toString();
 
     info.tq_lq = obj["tq_lq"].toInt();
     info.tq_ychf = obj["tq_ychf"].toInt();
