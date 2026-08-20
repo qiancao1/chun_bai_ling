@@ -57,7 +57,7 @@ struct MessageEvent
     QString raw;        // 原始JSON (d对象)
     QString callbackId;     // 回调事件id (用于INTERACTION_CREATE)
     QString replyTo;        // 引用回复的消息id (message_scene字段)
-
+    uint32_t qid[20];
     uint64_t log=0;
     qint64 seq = 0;         // 消息序号 (用于去重/过滤)
     int appid = 0;

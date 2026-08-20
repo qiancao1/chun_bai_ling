@@ -90,8 +90,67 @@ void qunguan::onItemClicked(QListWidgetItem *item) {
     // 显示内容
     QString content = item->data(Qt::UserRole).toString();
     ui->textEdit->setText(content);
+    QString fieldName = item->data(Qt::UserRole+1).toString();
+    if(fieldName=="rqhy")
+    {
+        ui->textEdit->setPlaceholderText(R"(用户加群时#python开头为 py代码
+python:
+UserList = 用户ID列表
+g_appid = 当前事件appid
+api = 和写代码一样的api 有api使用
+__result__ = "返回的内容"
 
-    // 记录当前字段名
+非py代码时可用变量 {id} {艾特} {数量} {头像} {混合} {群名}
+当开始延迟时 统计 {混合} 排版?
+
+)");
+    }
+    else if(fieldName=="apply")
+    {
+        ui->textEdit->setPlaceholderText(R"(用户申请加群时#python开头为 py代码(仅限全量群)
+====
+msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
+msg.user         : 发送者标识 32字节hex(字符串)
+msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 与艾特标签'<@user>' 32字节hex 不需要区分是否艾特了你 取到的必定是其他用户 (字符串)
+msg.appid        : 应用/机器人 ID(整数)
+msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
+msg.nickname     : 发送者昵称
+msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
+msg.raw          : 原始数据（JSON 字符串） (字符串)
+msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
+msg.groupname    : 群昵称
+msg.user2        : 目前已知 用于群聊申请加群时 邀请人
+===
+msg = 事件结构体
+api = 和写代码一样的api 有api使用
+api.set_join_request(msg.appid,msg.groupid,msg.user,true,msg.callbackid，false,"这里是拒绝理由") <-同意某个人入群 true 是同意  callbackid，false 后面的是 是否拉黑名单
+__result__ = "返回的内容"
+
+
+非py代码时可用变量 {id} {验证信息} {头像} 没入群没法获取昵称
+
+)");
+    }
+    else if(fieldName=="tqhy")
+    {
+        ui->textEdit->setPlaceholderText(R"(用户退群时#python开头为 py代码(仅限全量群)
+python:
+UserList = 用户ID列表
+g_appid = 当前事件appid
+api = 和写代码一样的api 有api使用
+__result__ = "返回的内容"
+
+非py代码时可用变量 {id} {数量} {头像} {混合} {群名}
+当开始延迟时 统计 {混合} 排版? 退群后艾特无效
+)");
+    }
+    else if(fieldName=="welcomeMsg")
+    {
+        ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为)");
+    }else
+    {
+        ui->textEdit->setPlaceholderText("无明显提示呢...");
+    }
     m_currentField = item->data(Qt::UserRole + 1).toString();
 }
 

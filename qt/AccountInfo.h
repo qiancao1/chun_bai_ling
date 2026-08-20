@@ -58,6 +58,7 @@ struct UserStat {
 struct PendingGroupEvent {
     qint64 startTime;          // 第一个事件到达的时间（秒）
     QString msgid;
+    QString gname;
     QList<QString> user;  // 收集的用户名
 };
 struct AccountStats {

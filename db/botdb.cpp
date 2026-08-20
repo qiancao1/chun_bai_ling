@@ -423,6 +423,20 @@ static QString fetchGroupNameFromApi(QQBotClient *qqbot, const QString &groupIdH
 uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 {
     uint32_t resultSeq = 0;
+
+    QByteArray userKeyBytes = QByteArray::fromHex(openid.toUtf8());
+    BinKey userKey;
+    memcpy(userKey.data, userKeyBytes.constData(), 16);
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        auto itUser = m_userCache.find(userKey);
+        if (itUser != m_userCache.end()) {
+            UserRecord cachedUser = itUser.value();
+            return cachedUser.seq_id;
+        }
+    }
+
+
     bool success = retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(openid.toUtf8());
         if (keyData.isEmpty()) return -1;
@@ -433,25 +447,8 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 
         int rc = mdb_get(txn, m_dbi_users, &key, &value);
         if (rc == MDB_NOTFOUND) {
-            // 初次写入：清零整个结构体
-            UserRecord record = {};
-            uint32_t newSeq = getNextSeqId(txn);
-            if (newSeq == 0) return -1;
-            record.seq_id = newSeq;
 
-            record.record_time = nowMinutes();
-            record.invited_group_count = 0;
-
-            QByteArray nameBytes = name.toUtf8();
-            size_t copyLen = std::min<size_t>(63, (size_t)nameBytes.size());
-            memcpy(record.nickname, nameBytes.constData(), copyLen);
-            record.nickname[copyLen] = '\0';
-
-            rc = putRecord(txn, m_dbi_users, keyData, &record, sizeof(record));
-            if (rc != MDB_SUCCESS) return rc;
-            if (!saveSeqToOpenId(txn, newSeq, keyData)) return -1;
-            resultSeq = newSeq;
-            return MDB_SUCCESS;
+            return -1;
         } else if (rc == MDB_SUCCESS) {
             UserRecord record;
             memcpy(&record, value.mv_data, sizeof(UserRecord));
@@ -459,6 +456,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
             if (name.isEmpty()) {
                 name = QString::fromUtf8(record.nickname);   // 数据库中的 nickname 保证是干净的 UTF-8
                 resultSeq = record.seq_id;
+
                 return MDB_SUCCESS;
             }
 
@@ -590,6 +588,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             ev.groupname = isGroup ? QString::fromUtf8(oldGroup.name) : QString();
             ev.nickname = QString::fromUtf8(oldUser.nickname);
             ev.bitmap = isGroup ? oldGroup.bitmap : 0;
+            memcpy(ev.qid, finalGroup.qid, sizeof(ev.qid));
             return oldSeqId;
         }
 
@@ -748,12 +747,11 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
         if (isGroup) {
             QMutexLocker locker(&m_cacheMutex);
             m_groupCache[groupKey] = finalGroup;
-        }
-
-        if (isGroup) {
             ev.groupname = finalGroupName;
             ev.bitmap = finalBitmap;
+            memcpy(ev.qid, finalGroup.qid, sizeof(ev.qid));
         }
+
         if (ev.nickname.isEmpty()) {
             ev.nickname = finalUserNickname;
         }
@@ -994,56 +992,37 @@ quint64 BotDB::getGroupTodayMsgCount(const QByteArray &groupIdBin) {
     QMutexLocker locker(&m_msgMutex);
     return m_groupDailyMsg.value(key, 0);
 }
+// 第一个重载：构造 record，设置 autoref 为固定默认值（非空），然后委托给第二个重载
 bool BotDB::addGroup(const QString &groupIdHex, uint32_t createTimeMinutes,
                      uint32_t inviterSeqId, uint32_t bitmap, const QString &name)
 {
-    GroupRecord finalRecord;
-    QByteArray finalKeyBin;
-    bool recordChanged = false;
-
-    bool success = retryWrite([&](MDB_txn *txn) -> int {
-        QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
-        if (keyData.isEmpty()) return -1;
-
-        GroupRecord record;
-        // create_time 使用当前时间（秒），与原来保持一致（createTimeMinutes 参数未使用）
-        record.create_time = static_cast<uint32_t>(time(nullptr));
-        record.inviter_seq_id = inviterSeqId;
-        record.bitmap = bitmap;
-        record.xychy_time = 0;
-        record.tq_CD = 0;
-        record.ncgx = time(nullptr);
-
-        QByteArray nameData = name.toUtf8();
-        size_t copyLen = std::min<size_t>(nameData.size(), sizeof(record.name) - 1);
-        memcpy(record.name, nameData.constData(), copyLen);
-        record.name[copyLen] = '\0';
-
-        int rc = putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
-        if (rc == MDB_SUCCESS) {
-            finalRecord = record;
-            finalKeyBin = keyData;
-            recordChanged = true;
-        }
-        return rc;
-    });
-
-    if (success && recordChanged) {
-        updateGroupCache(finalKeyBin, finalRecord);
-    }
-    return success;
+    GroupRecord record;
+    record.create_time = static_cast<uint32_t>(time(nullptr));
+    record.inviter_seq_id = inviterSeqId;
+    record.bitmap = bitmap;
+    record.xychy_time = 0;
+    record.tq_CD = 0;
+    record.ncgx = time(nullptr);
+    QByteArray nameData = name.toUtf8();
+    size_t copyLen = std::min<size_t>(nameData.size(), sizeof(record.name) - 1);
+    memcpy(record.name, nameData.constData(), copyLen);
+    record.name[copyLen] = '\0';
+    memset(record.autoref,0,128);
+    memset(record.qid,0,40);
+    return addGroup(groupIdHex, record);
 }
-bool BotDB::addGroup(const QString &groupIdHex, const GroupRecord &record)
-{
-    GroupRecord finalRecord = record;   // 复制一份
+
+bool BotDB::addGroup(const QString &groupIdHex, const GroupRecord &record) {
+    GroupRecord finalRecord = record;
     QByteArray finalKeyBin;
     bool recordChanged = false;
 
     bool success = retryWrite([&](MDB_txn *txn) -> int {
         QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
         if (keyData.isEmpty()) return -1;
+        QByteArray valueData = QByteArray((const char*)&record, sizeof(record));
 
-        int rc = putRecord(txn, m_dbi_groups, keyData, &record, sizeof(record));
+        int rc = putRecord(txn, m_dbi_groups, keyData, valueData.constData(), valueData.size());
         if (rc == MDB_SUCCESS) {
             finalKeyBin = keyData;
             recordChanged = true;
@@ -1056,6 +1035,8 @@ bool BotDB::addGroup(const QString &groupIdHex, const GroupRecord &record)
     }
     return success;
 }
+
+
 QList<QString> BotDB::getAllGroupIds()
 {
     QList<QString> result;
@@ -1091,11 +1072,22 @@ bool BotDB::getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord)
     if (!m_env) return false;
     QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
     if (keyData.isEmpty()) return false;
+    BinKey groupKey;
+    memcpy(groupKey.data, keyData.constData(), 16);
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        auto itGroup = m_groupCache.find(groupKey);
+        if (itGroup != m_groupCache.end()) {
+            outRecord = itGroup.value();
+            return true;
+        }
+    }
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) return false;
     bool ok = getRecord(txn, m_dbi_groups, keyData, &outRecord, sizeof(outRecord));
     mdb_txn_abort(txn);
+    updateGroupCache(keyData, outRecord);
     return ok;
 }
 

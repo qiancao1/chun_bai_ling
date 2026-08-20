@@ -211,7 +211,7 @@ QString SharedMemoryBridge::processRequestsA(int timeoutMs)
     }
 
     // 超时
-    qWarning() << "processRequestsA: timeout";
+    qWarning() << "内存共享: timeout";
     return QString();
 }
 

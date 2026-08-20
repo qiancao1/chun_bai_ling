@@ -367,10 +367,24 @@ QString 内置指令(MessageEvent &ev)
                        .arg(ev.user_int).arg(ev.user, ev.groupId)
                        .arg(db->getUserTodayMsgCount(userKeyBytes)).arg(db->getGroupTodayMsgCount(groupKeyBytes));
 
-        }
-        text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5").arg(ev.user_int).arg(ev.user, ev.groupId);
+        }else
+            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5").arg(ev.user_int).arg(ev.user, ev.groupId);
     }
+    if(ev.msg=="代管列表")
+    {
+        text.reserve(200);
+        text.append("**本群代管列表**");
+        for (int i = 0; i < 20; ++i) {
+            if(ev.qid[i]==0){
+                text.append(QString("\n>%1:空位.. [添加](添加本群代管 <id>)").arg(i+1));
+            }else
+            {
+                text.append(QString("\n>%1:%2 [删除](删除本群代管 %3)").arg(i+1).arg(ev.qid[i]).arg(ev.qid[i]));
+            }
+        }
 
+        text.append("\n\n添加代管后可以使用机器人 禁言撤回 同意加群等指令 如果不知道id可以使用 [添加本群代管]() + 艾特 添加");
+    }
     return text;
 }
 QString addbot(int appid,const QString &secret,const QString &wsAddress,int type,const QString  &markdown,int wsIntents)
@@ -1032,17 +1046,21 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         if(!info->admin.contains(ev.user)){
             if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
             {
-                return             "**普通权限**\n>[我的ID]() 获取ID\n\n"
-                       "**群管理**\n>"
-                       "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
-                       "[禁言]() <艾特> <秒> \n>"
-                       "[解禁]() <艾特> 解除禁言某个人\n>"
-                       "[一键解禁]() 批量解除\n>"
-                       "[禁言列表]() 获取禁言列表\n>"
-                       "[本群状态]() 查看开启列表\n>"
-                       "[获取加群列表]() 获取申请加群列表\n"
-                       "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
-                       "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
+                return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n\n"
+                        "**群管理**\n>"
+                        "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
+                        "[禁言]() <艾特> <秒> \n>"
+                        "[解禁]() <艾特> 解除禁言某个人\n>"
+                        "[一键解禁]() 批量解除\n>"
+                        "[禁言列表]() 获取禁言列表\n>"
+                        "[本群状态]() 查看开启列表\n>"
+                        "[获取加群列表]() 获取申请加群列表\n"
+                        "[添加本群代管]() | [删除本群代管]()\n>"
+                        "[开申请加群提示]() | [关申请加群提示]()\n>"
+                        "[开自动同意加群]() | [关自动同意加群]()\n>"
+                        "[设置自动同意加群答案]()\n>"
+                        "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
+                        "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
             }
             return QString();
         }
@@ -1059,7 +1077,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         }
         return
             QString(
-            "**普通权限**\n>[我的ID]() 获取ID\n\n"
+            "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n\n"
             "**群管理**\n>"
             "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
             "[禁言]() <艾特> <秒> \n>"
@@ -1068,6 +1086,10 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             "[禁言列表]() 获取禁言列表\n>"
             "[本群状态]() 查看开启列表\n>"
             "[获取加群列表]() 获取申请加群列表\n"
+            "[添加本群代管]() | [删除本群代管]()\n>"
+            "[开申请加群提示]() | [关申请加群提示]()\n>"
+            "[开自动同意加群]() | [关自动同意加群]()\n>"
+            "[设置自动同意加群答案]()\n>"
             "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
             "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n"
 
@@ -1346,22 +1368,83 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         if(!info->welcomeMsg.isEmpty())
         {
             QString ret = info->welcomeMsg;
-            if(info->welcomeMsg.startsWith("#python")) ret = python_code(ret,ev);
+            if(ret.startsWith("#python")) ret = python_code(ret,ev);
             if(m_botClients.contains(info->appid_int))
             {
                 QQBotClient *client = m_botClients[info->appid_int];
                 QString text = "[欢迎语]";
                 client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
+                return;
+            }
+
+        }
+    }
+    if(ev.type ==18)
+    {
+
+        if(ev.bitmap & BIT_AUTO_JOJI)
+        {
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            QString text = QString::fromUtf8(gid.autoref);
+            if(text.isEmpty()){
+                QQBotClient *client = m_botClients[info->appid_int];
+
+                QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
+                if(t2=="{}") return;
+
+            }else if(text.contains(","))
+            {
+                QStringList list = text.split(",");
+                for(const auto & str : std::as_const(list))
+                {
+                    if(ev.msg.contains(str))
+                    {
+                        QQBotClient *client = m_botClients[info->appid_int];
+                        QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
+                        if(t2=="{}") return;
+                        break;
+                    }
+                }
+            }else if(ev.msg.contains(text)){
+                QQBotClient *client = m_botClients[info->appid_int];
+                QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
+                if(t2=="{}") return;
+            }
+
+        }
+        if(ev.bitmap & BIT_AUTO_JOJI_KG){
+            if(!info->apply.isEmpty())
+            {
+                QString ret = info->apply;
+                if(ret.startsWith("#python")) ret = python_code(ret,ev);
+                if(m_botClients.contains(info->appid_int))
+                {
+                    QQBotClient *client = m_botClients[info->appid_int];
+                    ret.replace("{ID}",ev.user);
+                    ret.replace("{ReqId}",ev.callbackId);
+                    ret.replace("{申请理由}",ev.msg);
+                    if(ret.contains("{头像}"))
+                        ret.replace("{头像}",QString("![#48px #48px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user));
+                    client->send_msgAsync(ev.type,ev.groupId,"[入群申请]",ret,QString());
+                    return;
+                }
+
+            }else{
+                QQBotClient *client = m_botClients[info->appid_int];
+                QString ret = R"(有人申请加群但是未配置文案 点击下面按钮同意加群\n申请人：{ID}#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意入群 {ID} {ReqId}","permission":{"type":1},"type":1,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意入群","style":1,"visited_label":"按钮1"}}]}]}}}#b:#)";
+                ret.replace("{ID}",ev.user);
+                ret.replace("{ReqId}",ev.callbackId);
+                client->send_msgAsync(ev.type,ev.groupId,"[入群申请]",ret,ev.msgId);
             }
         }
-
-
     }
-    QString text;
+
     QString ret= 内置指令(ev);
     if(ret.isEmpty())
         ret = admin_zl(info,ev);
-
+    QString text;
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
@@ -1480,8 +1563,82 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
+    bool admin=false,admin2=false;
+    for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
+        if (ev.qid[i] == ev.user_int) {
+            admin = true;
+            break;
+        }
+    }
+    admin2 = ( (ev.member_role < 2) || g_admin.contains(ev.user) || info->admin.contains(ev.user) );
+    if(admin2)
+    {
+        if (ev.msg.startsWith("添加本群代管"))
+        {
+            QString QID;
+            int cnt = extractParams(ev.msg, "添加本群代管", 0, QID);
+            if (cnt == -1) return "[添加本群代管] 缺少ID|openid";
+            int id = QID.toInt();
+            if(QID.size()==32)
+            {
+                auto *db = g_botdb[info->appid_int];
 
-    if (ev.member_role < 2 || g_admin.contains(ev.user) || info->admin.contains(ev.user)) {
+                QString text ;
+                id =  db->getOrUpdateUser(QID,text);
+            }
+
+            if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
+            for (int i = 0; i < 20; ++i) {
+                if (ev.qid[i] == id) {
+
+                    return QString("该ID:%1 已经添加在代管列表").arg(id);
+                }
+
+            }
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            for (int i = 0; i < 20; ++i) { //懒得记录空位置了
+                if (ev.qid[i] == 0) {
+                    gid.qid[i]=id;
+                    db->addGroup(ev.groupId, gid);
+                    return "添加代管成功 该用户目前可以使用机器人 管理员指令";
+                }
+
+            }
+            return "添加代管失败 代管上线20位 已经达到上限制";
+        }
+        if (ev.msg.startsWith("删除本群代管"))
+        {
+            QString QID;
+            int cnt = extractParams(ev.msg, "删除本群代管", 0, QID);
+            if (cnt == -1) return "[删除本群代管] 缺少id";
+            int id = QID.toInt();
+            if(QID.size()==32)
+            {
+                auto *db = g_botdb[info->appid_int];
+                QString text ;
+                id =  db->getOrUpdateUser(QID,text);
+            }
+
+            if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
+            for (int i = 0; i < 20; ++i) {
+                if (ev.qid[i] == id) {
+                    auto *db = g_botdb[info->appid_int];
+                    GroupRecord gid;
+                    db->getGroupInfo(ev.groupId, gid);
+                    gid.qid[i]=0;
+                    db->addGroup(ev.groupId, gid);
+                    return "删除代管成功";
+
+                }
+
+            }
+            return QString("该ID:%1 不存在在代管列表").arg(id);
+        }
+
+    }
+    if (admin2 || admin) {
         if (ev.msg == "本群状态")
         {
             QString text;
@@ -1498,11 +1655,25 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             text.append(ev.bitmap & BIT_Ainiren ? "✅" : "❌");
             text.append("AI拟人\n>");
             text.append(ev.bitmap & BIT_AI_BAI ? "✅" : "❌");
-            text.append("AI白名单\n\n");
+            text.append("AI白名单\n>");
 
-            text.append("关键词撤回 不在计划内");
+            text.append(ev.bitmap & BIT_AUTO_JOJI_KG ? "✅" : "❌");
+            text.append("入群申请提示\n>");
+            text.append(ev.bitmap & BIT_AUTO_JOJI ? "✅" : "❌");
+            text.append("自动同意入群..");
+            if(g_botdb.contains(ev.appid)){
+                auto *db = g_botdb[ev.appid];
+                GroupRecord gid;
+                db->getGroupInfo(ev.groupId,gid);
+                text.append(QString::number(strlen(gid.autoref)));
+            }
+
+
+
+            text.append("\n\n关键词撤回 不在计划内");
             return text;
         }
+
         if (ev.msg == "获取加群列表")
         {
             auto *c = m_botClients[ev.appid];
@@ -1552,7 +1723,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         {
             auto *c = m_botClients[ev.appid];
             // 获取最多30条加群申请
-            QString js = c->getjoin_request_list(ev.groupId, 30);
+            QString js = c->getjoin_request_list(ev.groupId, 40);
 
             QJsonParseError parseError;
             QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
@@ -1582,6 +1753,20 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 
             // 立即回复用户，表示开始处理
             return QString("✅ 共 %1 条加群申请，已开始逐一同处理，如果没处理代表 接口频率限制 每分钟只处理60个").arg(count);
+        }
+        if (ev.msg.startsWith("同意加群"))
+        {
+            QString QID,joinRequestId;
+            int cnt = extractParams(ev.msg, "同意加群", 0, QID,joinRequestId);
+            if (cnt <= 1) return "[同意加群] 缺少id与处理id 指令 同意加群 ID RequestId";
+            auto *c = m_botClients[ev.appid];
+             c->approveGroupJoinRequest(ev.groupId,QID,true,joinRequestId,QString(),false,[c,ev](const QString &resp, auto){
+                if(resp!="{}"){
+                    QString text = resp;
+                    c->send_messages(ev.type,ev.groupId,"[同意加群]",text,ev.msgId);
+                }
+                return ;
+            });
         }
         if (ev.msg == "禁言列表")
         {
@@ -1764,7 +1949,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             auto *db = g_botdb[info->appid_int];
             GroupRecord gid;
             db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_SHUA_P;
+            gid.bitmap |= BIT_SHUA_P;
             db->addGroup(ev.groupId, gid);
             return "设置刷屏检测成功";
         }
@@ -1776,6 +1961,59 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             gid.bitmap &= ~BIT_SHUA_P;
             db->addGroup(ev.groupId, gid);
             return "关闭刷屏检测成功";
+        }
+        if (ev.msg == "开申请加群提示") {
+            if (ev.bitmap & BIT_AUTO_JOJI_KG)  return "当前已经开启 申请加群提示";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap |= BIT_AUTO_JOJI_KG;
+            db->addGroup(ev.groupId, gid);
+            return "设置申请加群提示成功";
+        }
+        if (ev.msg == "关申请加群提示") {
+            if (!(ev.bitmap & BIT_AUTO_JOJI_KG))  return "当前已经关闭 申请加群提示";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap &= ~BIT_AUTO_JOJI_KG;
+            db->addGroup(ev.groupId, gid);
+            return "关闭申请加群提示成功";
+        }
+
+        if (ev.msg == "开自动同意加群") {
+            if (ev.bitmap & BIT_AUTO_JOJI)  return "当前已经开启 自动同意加群";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap |= BIT_AUTO_JOJI;
+            db->addGroup(ev.groupId, gid);
+            return "设置自动同意加群成功 请使用 [设置自动同意加群答案]() <关键词> 来设置自动同意关键词 如果没设置就全部同意..当前设置的关键词长度(由于并不能查看关键词 请重新设置覆盖).."+QString::number(strlen(gid.autoref));
+        }
+        if (ev.msg == "关自动同意加群") {
+            if (!(ev.bitmap & BIT_AUTO_JOJI))  return "当前已经关闭 自动同意加群";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap &= ~BIT_AUTO_JOJI;
+            db->addGroup(ev.groupId, gid);
+            return "关闭自动同意加群成功";
+        }
+        if (ev.msg.startsWith("设置自动同意加群答案")) {
+            QString text;
+            int cnt = extractParams(ev.msg, "#插件启用", 0, text);
+            if (cnt == -1) return "[设置自动同意加群答案] 缺少关键词";
+
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            QByteArray utf8 = text.toUtf8();
+            if(utf8.size()>=128) return QString("设置的关键词长度不能超128字节 当前%1字节").arg(utf8.size());
+            memcpy(gid.autoref, utf8.constData(), utf8.size());
+            gid.autoref[utf8.size()] = '\0';              // 手动添加终止符
+
+            db->addGroup(ev.groupId, gid);
+            return "设置自动同意加群答案 完成 这里是不显示答案的 最长128直接 相当于42个中文 使用（,） 英文逗号分割多个关键词 可以不设置关键词 会全部通过 然后 没处理可能是 接口跳用超频率";
         }
         if (ev.msg == "设置入群提示") {
             if (!(ev.bitmap & BIT_ruqun))  return "当前已经设置 入群提示";
@@ -1848,6 +2086,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 }
                 sentText.replace("{ID}",ev.user);
                 sentText.replace("{数量}","1");
+                sentText.replace("{群名}",ev.groupname);
                 if(sentText.contains("{头像}"))
                 {
                     QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user);
@@ -1859,6 +2098,8 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     sentText.replace("{混合}",hh);
                 }
 
+
+
             }
 
             return sentText;
@@ -1868,7 +2109,9 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         if (entry.user.isEmpty()) {
 
             entry.startTime = QDateTime::currentSecsSinceEpoch();
+            entry.gname = ev.groupname;
         }
+
         entry.user.append(ev.user);
         entry.msgid=ev.msgId;
         return QString(); // 不立即回复
@@ -1892,7 +2135,9 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         }
         if(info->tq_ychf==0)
         {
-            auto *task = new SendMessageTask2(info->appid_int, 0, ev.groupId,info->tqhy,"","","[退群提示]", QStringList() <<ev.user);
+            QString text = info->tqhy;
+            text.replace("{群名}",ev.groupname);
+            auto *task = new SendMessageTask2(info->appid_int, 0, ev.groupId,text,"","","[退群提示]", QStringList() <<ev.user);
             QThreadPool::globalInstance()->start(task);
             return QString();
         }
@@ -1901,6 +2146,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         if (entry.user.isEmpty()) {
 
             entry.startTime = QDateTime::currentSecsSinceEpoch();
+            entry.gname = ev.groupname;
         }
         entry.msgid=ev.msgId;
         entry.user.append(ev.user);
@@ -1924,7 +2170,9 @@ void processPendingEvents()
                     ++it;
                     continue;
                 }
-                auto *task = new SendMessageTask2(acc->appid_int, 0, groupId,acc->rqhy,evt.msgid,"","[进群提示]", evt.user);
+                QString text = acc->rqhy;
+                text.replace("{群名}",evt.gname);
+                auto *task = new SendMessageTask2(acc->appid_int, 0, groupId,text,evt.msgid,"","[进群提示]", evt.user);
                 QThreadPool::globalInstance()->start(task);
                 it = acc->pendingJoin.erase(it);
             }
@@ -1937,7 +2185,9 @@ void processPendingEvents()
                 ++it;
                 continue;
             }
-            auto *task = new SendMessageTask2(acc->appid_int, 0, groupId, acc->tqhy,"","","[退群提示]", evt.user);
+            QString text = acc->tqhy;
+            text.replace("{群名}",evt.gname);
+            auto *task = new SendMessageTask2(acc->appid_int, 0, groupId,text,"","","[退群提示]", evt.user);
             QThreadPool::globalInstance()->start(task);
             it = acc->pendingLeave.erase(it);
         }
@@ -2162,24 +2412,7 @@ void doWork(int totalDelay) {
     }
 }
 
-/**
- * @brief 提取两个标记之间的内容，并可选择是否包含标记本身。
- * @param original    原始文本
- * @param leftMarker  左侧标记
- * @param rightMarker 右侧标记
- * @param includeSides 若为 true，返回 "左标记 + 中间内容 + 右标记" 的完整子串；
- *                      若为 false，只返回中间的文本。
- * @return 提取到的字符串；若未找到标记，返回空字符串。
- */
-/**
- * @brief 从原文本中批量提取所有由左右标记包围的内容。
- * @param original     原始文本
- * @param leftMarker   左侧标记
- * @param rightMarker  右侧标记
- * @param includeSides 若为 true，每个结果包含左右标记；若为 false，只取中间内容。
- * @return QStringList 包含所有匹配结果的列表（按出现顺序排列）。
- *         如果未找到任何匹配，返回空列表。
- */
+
 QStringList takeAllTextMiddle(const QString &original, const QString &leftMarker,const QString &rightMarker,bool includeSides)
 {
     QStringList results;
@@ -2323,7 +2556,6 @@ QString python_code(const QString &py_code)
         stringio = py::module_::import("io").attr("StringIO")();
         sys.attr("stdout") = stringio;
 
-        // 准备执行环境（保留 qq_api 的全局命名空间，但不再注入 api/msg）
         py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
 
@@ -2335,7 +2567,7 @@ QString python_code(const QString &py_code)
         std::string output = py::str(stringio.attr("getvalue")());
         return QString::fromStdString(output);
     } catch (const std::exception &e) {
-        // 尝试恢复 stdout（避免影响后续调用），忽略恢复中的异常
+
         if (!sys.is_none() && !stdout_old.is_none()) {
             try { sys.attr("stdout") = stdout_old; } catch (...) {}
         }

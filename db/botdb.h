@@ -44,6 +44,8 @@ struct GroupRecord {
     qint64 tq_CD=0;
     qint64 ncgx=0;   //昵称获取时间 一个月刷新一次
     char name[64];
+    uint32_t qid[20];
+    char autoref[128];
 };
 
 #include <QHash>
@@ -169,6 +171,9 @@ private:
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
     QTimer *m_cacheTimer;
+
+
+
 
     void loadDailyStats();                   // 加载当日统计文件
     void saveDailyStats();                   // 保存当日统计文件

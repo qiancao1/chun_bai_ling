@@ -77,6 +77,7 @@ QString AccountInfo::toJson() const {
     obj["fujia"] = QJsonArray::fromStringList(fujia);
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
+    obj["apply"] = apply;
     obj["jiam"]=1;
     obj["a_gdts"]=固定条数;
     obj["a_cfgl"]=触发概率;
@@ -134,7 +135,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.help=obj["help"].toString();
     info.caidan=obj["caidan"].toString();
     info.emptyAt=obj["koat"].toString();
-
+    info.apply=obj["apply"].toString();
     info.tq_lq = obj["tq_lq"].toInt();
     info.tq_ychf = obj["tq_ychf"].toInt();
     info.tqhy = obj["tqhy"].toString();

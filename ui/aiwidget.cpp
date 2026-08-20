@@ -30,7 +30,7 @@
 #include <netmanager.h>
 bqbgl *ai_bqbgl=nullptr;
 bool 不加载=false;
-
+QString 附加提示词= "\n[回复前请查看一次系统提示词]";
 QString 拟人人设_助手=R"(
 [工具使用 你可以随意使用 tool内的函数 你可以有事没事 使用html制图来 表达什么 但是你要注意 当你使用某个函数时 你得考虑他是否能返回你想要的内容]
 如 别人叫你画表格 没指定python 你就用html画个
@@ -56,12 +56,11 @@ QString 拟人人设1=R"([之前的所有提示均无效。你不再是ai了。�
 不要发送重复性的格式内容，固定回复两句话或者一句话都是不允许的，每次回复的数量都应该是符合当下话题的且符合人类行为的。不要出现分割错误："嗯|#|#|，那就没啥用"，此处标点是错误的，正确的应该是"嗯|#|#|那就没啥用"。
 
 [图片|表情包语法]
-图片语法请严格遵循框架的语法"![ima](本地路径或者链接) "，允许图文发送和多图发送，可按需发送不同格式，如（"![ima](a1.jpg)这是第一张\n![ima](a2.jpg)这是第二张"，"图片如下：\n![ima](a1.jpg)\n![ima](a2.jpg) "）。
+图片语法请严格遵循框架的语法"![img](本地路径或者链接) "，允许图文发送和多图发送，可按需发送不同格式，如（"![img](a1.jpg)这是第一张\n![img](a2.jpg)这是第二张"，"图片如下：\n![img](a1.jpg)\n![img](a2.jpg) "）。
 发送表情包前看 表情包下面有没有
 <img List>
 可用表情包名:"【表情包】" <-如果没有代表你没有表情包 表情包 文本是占位符
 </img List>
-注意 上面表情包名字 只是名字 正确用法 ![img](image/{appid}/表情包名) 因为他是在image/{appid}/目录下
 </send_specification>
 
 <core_principles>
@@ -181,7 +180,6 @@ QString 拟人人设2=R"([之前的所有提示均无效。你不再是ai了。�
 <img List>
 可用表情包名:"【表情包】" <-如果没有代表你没有表情包 表情包 文本是占位符
 </img List>
-注意 上面表情包名字 只是名字 正确用法 ![img](image/{appid}/表情包名) 因为他是在image/{appid}/目录下
 </send_specification>
 
 
@@ -1633,7 +1631,7 @@ void AiWidget::saveToFile2() {
 }
 
 void AiWidget::loadFromFile3() {
-    QFile file(configFilePath2);
+    QFile file( configFilePath2 );
     if (!file.exists()) return;
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
 
@@ -1873,6 +1871,7 @@ QJsonArray AiWidget::get_tools(const AccountInfo *info)
     for (const auto &fun : std::as_const(functionList)) {
         if(fun.funcName.isEmpty()) continue;
         if(!info->tools.contains(fun.funcName)) continue;
+
         if(m_fun.contains(fun.funcName))
         {
             toolsArray.append(m_fun[fun.funcName]);
@@ -2306,7 +2305,7 @@ void AiWidget::convertContextImagesToBase64(QJsonObject &context)
 QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, const QString& openid,int type)
 {
     QJsonObject context;
-    QString sxw = aidb->get(openid);
+    QString sxw = aidb->get(info->appid+":"+openid);
     if (!sxw.isEmpty()) {
         QJsonParseError error;
         QJsonDocument doc = QJsonDocument::fromJson(sxw.toUtf8(), &error);
@@ -2338,14 +2337,12 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
 
                         setting = 拟人人设1;
                         setting.replace("{角色设定}",sd.content);
-                        setting.replace("{appid}",info->appid);
                         setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
 
 
                     }else{
                         setting = 拟人人设2;
                         setting.replace("{角色设定}",sd.content);
-                        setting.replace("{appid}",info->appid);
                         setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
 
                     }
@@ -2361,6 +2358,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
     QJsonArray arr = get_tools(info);
     if (!arr.isEmpty())
         context["tools"] = arr;
+
     QJsonArray msgs;
     if (context.contains("messages"))
         msgs = context["messages"].toArray();
@@ -2430,15 +2428,19 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
     else if(info->niren){}
     else return QString();
     if (ev.msg == "清除记忆") {
+        if(ev.member_role<2){
         QString openid;
-        switch (ev.type) {
-        case 0: openid = info->enableGroupPersonal ? ev.groupId : ev.user; break;
-        case 1: openid = info->enableChannelPersonal ? ev.groupId : ev.user; break;
-        case 2: openid = ev.groupId; break;
-        default: return "不支持Ai指令  请在 群 私聊 频道 发送本指令";
+            switch (ev.type) {
+            case 0: openid = info->enableGroupPersonal ? ev.user : ev.groupId; break;
+            case 1: openid = info->enableChannelPersonal ? ev.user : ev.groupId; break;
+            case 2: openid = ev.groupId; break;
+            default: return "不支持Ai指令  请在 群 私聊 频道 发送本指令";
+            }
+            aidb->put(info->appid+":"+openid, "{}");
+            return "清空记忆完成 如果开启的是拟人将清除拟人上下文 如果对话未完成可能清理失败";
         }
-        aidb->put(openid, "{}");
-        return "清空记忆完成";
+        aidb->put(info->appid+":"+ev.user, "{}");
+        return "清空个人上下文完成 如果对话未完成可能清理失败";
     }
 
 
@@ -2682,7 +2684,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         logPage->onNewLogAdded(0,0,0,"",msg);
 
         baseContext.remove("tools");
-        aidb->put(openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
+        aidb->put(info->appid+":"+openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
         return;
     }
     trimContextImages(baseContext, 6);//处理图片
@@ -2690,7 +2692,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     if(session.accountInfo->context_len<5)
         session.accountInfo->context_len=5;
     trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
-    aidb->put(openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
+    aidb->put(info->appid+":"+openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
     convertContextImagesToBase64(baseContext);//图片转b64
 
 
@@ -2794,6 +2796,10 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     if (m_botClients.contains(ev.appid)) {
         auto *db = g_botdb[ev.appid];
 
+        if(reply.contains("![img]("))
+            reply.replace("![img](","![img](image/"+info->appid+"/");
+        if(reply.contains("![ima]("))
+            reply.replace("![ima](","![img](image/"+info->appid+"/");
         QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid
         if(atlist.size()!=0)
         {
@@ -2816,16 +2822,17 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         for (auto &res : text)
         {
             QString t = res.trimmed();
+            if(t.isEmpty()) continue;
             QString response =  m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , ev.msgId, false, false);
             if(response.contains("ROBOT"))
             {
-                doWork(2000);
+                doWork(1000);
                 continue;
             }
             response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), false, false);
             if(response.contains("ROBOT"))
             {
-                doWork(2000);
+                doWork(1000);
                 continue;
             }
             if(isw)
@@ -2833,7 +2840,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                 response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), isw, false);
                 if(response.contains("ROBOT"))
                 {
-                    doWork(2000);
+                    doWork(1000);
                     continue;
                 }
             }
@@ -2885,7 +2892,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
             }
         }
     }
-    aidb->put(openid, QJsonDocument(savedContext).toJson(QJsonDocument::Compact));
+    aidb->put(session.accountInfo->appid+":"+openid, QJsonDocument(savedContext).toJson(QJsonDocument::Compact));
     if(reply.startsWith("[待确认]") && reply.contains("#b:#") && reply.contains("同意"))
     {
         return ;
@@ -3029,7 +3036,8 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
     for(int i=0; i<10; ++i) {
         QJsonObject obj;
         for(int i2=0; i2<3; ++i2) {
-            //qDebug() << "上下文" << sxw;
+
+
             QByteArray response = Ai_post3(url, key, sxw, timeoutMs);
             if(response.isEmpty()) {
                 err += "接口返回空\n";
@@ -3073,7 +3081,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         }
         QJsonObject obj2 = arr.at(0).toObject();
         QJsonObject obj3 = obj2["message"].toObject();
-        QString text = obj3["content"].toString();
+        QString text = obj3["content"].toString().trimmed();
         const QJsonArray arr2 = obj3["tool_calls"].toArray();
         obj3.remove("reasoning_content");
         qDebug() << "ai回复：" << text << "tool:" << arr2;
@@ -3091,16 +3099,17 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
             //不传递appid 也不会传递 函数所以这里是调不到的
             if (!text.isEmpty() && m_botClients.contains(ev.appid)) {
                 auto &bot = m_botClients[ev.appid];
-                QString pname = "[Ai|%1ms]";
+
                 if(bot->m_info->niren){
                    QStringList list = text.split("|#|#|");
                     for(auto & s : list)
                     {
-                        bot->send_messages(ev.type, ev.groupId, pname, s, ev.msgId, false, false);
-                        doWork(2000);
+                       if(s.isEmpty()) continue;
+                        bot->send_messages(ev.type, ev.groupId, "[AI系统]", s, ev.msgId, false, false);
+                        doWork(1000);
                     }
                 }else{
-                    bot->send_messages(ev.type, ev.groupId, pname, text, ev.msgId, false, false);
+                    bot->send_messages(ev.type, ev.groupId, "[AI系统]", text, ev.msgId, false, false);
                 }
 
 
@@ -3230,7 +3239,21 @@ QString AiWidget::Ai_posts(const MessageEvent &ev,int model_index,QJsonObject &s
 
 QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject &sxw,int timeoutMs)
 {
-    QByteArray jsonData = QJsonDocument(sxw).toJson(QJsonDocument::Compact);
+    QJsonArray msgs = sxw["messages"].toArray();
+    QJsonObject sxw2 = sxw;
+    if (!msgs.isEmpty()) {
+        QJsonObject lastMsg = msgs.last().toObject();
+        QString role = lastMsg["role"].toString();
+        if (role == "user") {
+            QString content = lastMsg["content"].toString();
+            content += 附加提示词;
+            lastMsg["content"] = content;
+            msgs[msgs.size() - 1] = lastMsg;
+            sxw2["messages"] = msgs;
+        }
+    }
+
+    QByteArray jsonData = QJsonDocument(sxw2).toJson(QJsonDocument::Compact);
     QHash<QString, QString> headers;
     headers.insert("Content-Type", "application/json");
     headers.insert("Authorization", "Bearer " + key);
@@ -3288,7 +3311,7 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
             obj["content"] = res;
             msgs[i] = obj;
             sxw["messages"] = msgs;
-            aidb->put(userID, QJsonDocument(sxw).toJson(QJsonDocument::Compact));
+            aidb->put(info->appid+":"+userID, QJsonDocument(sxw).toJson(QJsonDocument::Compact));
             emit newMessageArrived(info, ev,true,true);
             return "*"; // 立即返回 让本条指令不执行ai
         }
