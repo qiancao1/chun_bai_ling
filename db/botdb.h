@@ -156,7 +156,7 @@ private:
     QString m_path;
     size_t m_initialMapSize;    // 用户指定的初始大小（字节）
     size_t m_currentMapSize;    // 当前生效的 mapsize（字节）
-    MDB_env* m_env;
+    MDB_env* m_env = nullptr;
     MDB_dbi  m_dbi_users;
     MDB_dbi  m_dbi_seq_idx;
     MDB_dbi  m_dbi_groups;

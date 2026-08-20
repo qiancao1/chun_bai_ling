@@ -64,7 +64,7 @@ enum BitMask {
     BIT_AI_BAI = 1 << 3,
     BIT_SHUA_P = 1<<4,
     BIT_AUTO_JOJI_KG = 1<<5,
-    BIT_AUTO_JOJI = 1>>6
+    BIT_AUTO_JOJI = 1<<6
 };
 
 struct dblog

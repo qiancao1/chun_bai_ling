@@ -480,7 +480,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
 {
     // ======================== 1. 变量声明（全部提前） ========================
     bool isGroup = (ev.type == 0);
-
+    if(!isGroup) isGroup = (ev.type == 18);
     // 键（二进制16字节）
     QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
     BinKey userKey;
@@ -588,7 +588,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             ev.groupname = isGroup ? QString::fromUtf8(oldGroup.name) : QString();
             ev.nickname = QString::fromUtf8(oldUser.nickname);
             ev.bitmap = isGroup ? oldGroup.bitmap : 0;
-            memcpy(ev.qid, finalGroup.qid, sizeof(ev.qid));
+            memcpy(ev.qid, oldGroup.qid, sizeof(ev.qid));
             return oldSeqId;
         }
 

@@ -71,19 +71,19 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.8.45"
-#define APP_BUILD_NUMBER 45
+#define APP_VERSION_STR "v1.2.8.46"
+#define APP_BUILD_NUMBER 46
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.8.45 (2026-08-17)
+## v1.2.8.46 (2026-08-20)
 - 优化 订阅主动推送 会触发限制问题
 - 优化 内置AI图片
 - 增加 关键词回复 允许自动按照空格分割这里
 - 增加 api请求处理格式：结果1：%1 结果2：%2 [get url=xxx json.xx json.xx] 其中 json.xx 代表json路径 当然可不传
 - 增加 根据关键词自动同意加群
 - 增加 入群提醒 管理员可设置是否放行
-- 修复 Ai在群呢无法清除上下文问题
+- 修复 在群里无法清除AI上下文问题
 
 ## v1.2.7.43 (2026-08-16)
 - 修复 Ai把我 @event 等装饰器 等代码删了导致无法 注册指令

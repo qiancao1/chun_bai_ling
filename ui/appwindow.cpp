@@ -85,6 +85,7 @@ msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
 msg.replyto      : 回复目标消息 ID（若本条为回复消息）  是个标签 使用方式 api.send_msgEx(msg,msg.replyto+回复内容) (字符串)
 msg.groupname    : 群昵称
 msg.user2        : 目前已知 用于群聊申请加群时 邀请人
+msg.extra        : 附加内容已知是 用户申请加群是 附加的内容 个是 问题:xxx\n答案：xxx 如果是邀请可能是空
 
 ========================
 事件类型 可订阅 可以不用

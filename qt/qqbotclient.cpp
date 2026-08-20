@@ -354,8 +354,8 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
     case 18: // 有人申请加群
 
 
-        ev.msg = QString("[申请加群] %1 群:%2 申请人:%3(%4)")
-                     .arg(ev.subType == 0 ? "申请加群" : "邀请加群", ev.groupname, ev.nickname,ev.user);
+        ev.msg = QString("[申请加群] %1 群:%2 申请人:%3(%4) \n%5")
+                     .arg(ev.subType == 0 ? "申请加群" : "邀请加群", ev.groupname, ev.nickname,ev.user,ev.extra);
 
 
 
@@ -840,8 +840,13 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             ev.subType = 1;
         QJsonObject o2=d["verify_info"].toObject();
         QJsonArray arr=o2["review_qa_list"].toArray();
-        QJsonObject o3 = arr.at(0).toObject();
-        ev.msg ="问题："+ o3["question"].toString()+"\n答案："+o3["answer"].toString();
+        if(arr.size()>0)
+        {
+            QJsonObject o3 = arr.at(0).toObject();
+
+            ev.extra ="问题："+ o3["question"].toString()+"\n答案："+o3["answer"].toString();
+        }
+
 
 
     }
@@ -860,7 +865,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-
+    qDebug() << "bit" << ev.bitmap << "G" << ev.groupId;
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
     if (ev.msg.startsWith("/")) {

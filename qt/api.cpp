@@ -2492,7 +2492,10 @@ QString processText(const QString &text, int timeoutMs = 30000);
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
                               const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
-     if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
+    if(type==18) type =0;
+
+    if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
+
     QString newtext = text;
 
     if(text.contains("#python"))
@@ -2525,7 +2528,9 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
-    if(type<0 || type >3) return R"({"message":"发送类型错误 不在0-3之间"})";
+    if(type!=18){
+        if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
+    }
 
     QString newtext = text;
 
@@ -2627,7 +2632,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                    const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
-    if(type<0 || type >3) return R"({"msg":"发送类型错误 不在0-3之间"})";
+
     QString newtext = text;
     if(text.contains("#python"))
     {

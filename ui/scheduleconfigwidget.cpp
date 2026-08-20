@@ -902,7 +902,7 @@ void ScheduleConfigWidget::jiancha() {
     }
 
     // 为每个 appid 提交一个任务（清理 + 执行）
-    for (int appid : appids) {
+    for (int appid : std::as_const(appids)) {
         AppidTaskRunnable *task = new AppidTaskRunnable(appid, true);
         QThreadPool::globalInstance()->start(task);
     }
