@@ -43,6 +43,8 @@ QString AccountInfo::toJson() const {
     obj["type"] = type;
     obj["message_received"] = message_received;
     obj["message_sent"] = message_sent;
+    obj["received_day"] = received_day;
+    obj["sent_day"] = sent_day;
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
@@ -143,6 +145,9 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
 
     info.message_received = obj["message_received"].toInt();
     info.message_sent = obj["message_sent"].toInt();
+
+    info.received_day = obj["received_day"].toInt();
+    info.sent_day = obj["sent_day"].toInt();
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
 
@@ -186,6 +191,8 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
         info.今日频道数量=0;
         info.今日退出频道数量=0;
         info.日计时变量=day;
+        info.received_day=0;
+        info.sent_day=0;
     }
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();

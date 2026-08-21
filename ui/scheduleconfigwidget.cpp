@@ -887,10 +887,13 @@ private:
     int m_appid;
     bool m_cleanupFirst;
 };
+
+
 void ScheduleConfigWidget::jiancha() {
     QDateTime now = QDateTime::currentDateTime();
     const QTime time = now.time();
     int dqsj = time.minute();
+
     if (定时检查变量 == dqsj) return;
     定时检查变量 = dqsj;
 

@@ -906,6 +906,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         m_info->message_received++;
         m_info->received++;
+        m_info->received_day++;
         if(ev.fullType && ev.type==0)
         {
             chatPage->addContact(0,ev,mes.name); //为对话聊天增加 新成员

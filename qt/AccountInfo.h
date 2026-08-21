@@ -97,12 +97,15 @@ struct AccountInfo {
 
     int type = 0;               // 0: WebSocket, 1: Webhook
     int message_received = 0;
-
     int message_sent = 0;
-    int received = 0;
 
+    int received = 0;
     int sent = 0;
+
     int wsIntents = 0;          // 订阅事件的位掩码
+    int received_day = 0;
+    int sent_day = 0;
+
 
     int 今日加群数量=0;
     int 今日退群数量=0;

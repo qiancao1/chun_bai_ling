@@ -127,7 +127,8 @@ api.set_join_request(msg.appid,msg.groupid,msg.user,true,msg.callbackid，false,
 __result__ = "返回的内容"
 
 
-非py代码时可用变量 {id} {验证信息} {头像} 没入群没法获取昵称
+非py代码时可用变量 {ID} {申请理由} {头像} {昵称} {群昵称} {ReqId}
+没入群没法获取昵称 用的缓存前提框架有记录
 
 )");
     }

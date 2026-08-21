@@ -3239,6 +3239,7 @@ QString AiWidget::Ai_posts(const MessageEvent &ev,int model_index,QJsonObject &s
 
 QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject &sxw,int timeoutMs)
 {
+    /*
     QJsonArray msgs = sxw["messages"].toArray();
     QJsonObject sxw2 = sxw;
     if (!msgs.isEmpty()) {
@@ -3252,8 +3253,9 @@ QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject
             sxw2["messages"] = msgs;
         }
     }
+    */
 
-    QByteArray jsonData = QJsonDocument(sxw2).toJson(QJsonDocument::Compact);
+    QByteArray jsonData = QJsonDocument(sxw).toJson(QJsonDocument::Compact);
     QHash<QString, QString> headers;
     headers.insert("Content-Type", "application/json");
     headers.insert("Authorization", "Bearer " + key);

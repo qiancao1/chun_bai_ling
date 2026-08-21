@@ -185,8 +185,8 @@ void AccountPage::onStatTick()
         stats.appid = acc->appid_int;
 
         // 账号自身统计
-        stats.message_received = acc->received;
-        stats.message_sent = acc->sent;
+        stats.message_received = acc->received_day;
+        stats.message_sent = acc->sent_day;
         stats.今日加群数量 = acc->今日加群数量;
         stats.今日退群数量 = acc->今日退群数量;
         stats.今日好友数量 = acc->今日好友数量;

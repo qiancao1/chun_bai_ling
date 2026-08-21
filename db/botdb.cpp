@@ -976,6 +976,7 @@ void BotDB::checkDayChange()
         m_userDailyMsg.clear();
         m_groupDailyMsg.clear();
         m_todayDate = now;
+
     }
 }
 

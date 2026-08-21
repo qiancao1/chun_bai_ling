@@ -839,6 +839,7 @@ void QQBotClient::addmsglog(const QString &response,int index,const QString &pna
     int tabIndex = mapTypeToTabIndex(type);
     m_info->message_sent++;
     m_info->sent++;
+    m_info->sent_day++;
     double diff_ms=0;
     bool ok=false;
     if(index>0)

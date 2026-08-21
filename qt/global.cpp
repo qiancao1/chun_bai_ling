@@ -1042,7 +1042,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
     bool upad = g_admin.contains(ev.user);
     if(!upad){
-        if(info->admin.isEmpty()) return QString();
+
         if(!info->admin.contains(ev.user)){
             if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
             {
@@ -1110,7 +1110,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             "**机器人设置**\n"
             ">[login]() <appid> 登录某个机器人\n"
             ">[logout]() <appid> 下线某个bot\n"
-            ">[delbot]() <appid> 删除某个bit\n"
+            ">[delbot]() <appid> 删除某个bot\n"
             "\n\n---\n\n"
             "**下面为超级管理员可用**\n"
             ">[webui]() 网页ui\n"
@@ -1424,7 +1424,10 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
                     QQBotClient *client = m_botClients[info->appid_int];
                     ret.replace("{ID}",ev.user);
                     ret.replace("{ReqId}",ev.callbackId);
+
                     ret.replace("{申请理由}",ev.msg);
+                    ret.replace("{昵称}",ev.nickname);
+                    ret.replace("{群昵称}",ev.groupname);
                     if(ret.contains("{头像}"))
                         ret.replace("{头像}",QString("![#48px #48px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user));
                     client->send_msgAsync(ev.type,ev.groupId,"[入群申请]",ret,QString());

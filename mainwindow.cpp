@@ -71,12 +71,12 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.8.46"
-#define APP_BUILD_NUMBER 46
+#define APP_VERSION_STR "v1.2.8.48"
+#define APP_BUILD_NUMBER 48
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.8.46 (2026-08-20)
+## v1.2.8.48 (2026-08-20)
 - 优化 订阅主动推送 会触发限制问题
 - 优化 内置AI图片
 - 增加 关键词回复 允许自动按照空格分割这里
@@ -313,6 +313,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
         if(框架退出) return;
+
         g_cnb.qcjs++;
         if(logPage->m_active){
             logPage->leiji++;
@@ -777,9 +778,9 @@ void MainWindow::createTitleBar()
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(4);
 
-    // 左侧图标（可替换为真实图标资源）
+    int randomIndex = QRandomGenerator::global()->bounded(1, 11);  // 生成 1~23
     QLabel *iconLabel = new QLabel("🔔");
-    int randomIndex = getRandomNumber() % 23 + 1;
+
     QString imagePath = QString(":/icons/log (%1).jpg").arg(randomIndex);
     QPixmap pixmap(imagePath);
 

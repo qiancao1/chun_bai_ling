@@ -28,7 +28,6 @@
 #define _CRTDBG_MAP_ALLOC   // 映射 malloc/free 到调试版本，提供更详细信息
 #include <crtdbg.h>
 #include <stdlib.h>
-#include "ApiProcessor.h"
 #include <QApplication>
 #include "CnbUploader.h"
 #include "PluginMarketWindow.h"
@@ -318,7 +317,7 @@ int main(int argc, char *argv[]) {
         accdb = nullptr;
         a.sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
-        //TerminateProcess(GetCurrentProcess(), 0);
+        TerminateProcess(GetCurrentProcess(), 0); //防止某些崩溃退出 导致更新无法重启
     }
     return ret;
 }
