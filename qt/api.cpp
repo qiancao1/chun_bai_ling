@@ -1065,17 +1065,8 @@ void get_ref(QString &text,QString &message_reference)
     }
 
 }
-QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg);
-QString uploadToMhimg(const QString &filePath, QString *errorMsg = nullptr);
-QString uploadFileSync_cos(const QString &localPath);
-QString uploadFileSync(const QString &filePath);
+std::future<QString> uploadimg(const QString &filePath);
 
-
-void uploadFileAsync(const QString& filePath,
-                     std::function<void(const QString& url, const QString& error)> callback);
-void uploadFileAsync_cos(const QString& localPath,
-                         std::function<void(const QString& url, const QString& error)> callback);
-#include <QMutexLocker>
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
                                       QString &message_reference)
@@ -1254,24 +1245,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
             bool needPadding;
             QString fileMd5;
             QString originalUrl;
+            QByteArray fileData; // 为了备用上传保存数据
         };
 
         QList<ReplaceInfo> replacements;
-        QMutex resultMutex;
-        QMap<int, QString> uploadResults;   // 索引 -> 上传后的 URL
-
-        QAtomicInt taskCounter(0);
-        QMutex waitMutex;
-        QWaitCondition condition;
-
-        // 自定义任务类（使用 std::function，捕获引用需小心）
-        class UploadTask : public QRunnable {
-        public:
-            UploadTask(std::function<void()> func) : m_func(func) {}
-            void run() override { m_func(); }
-        private:
-            std::function<void()> m_func;
-        };
+        std::vector<std::pair<int, std::future<QString>>> uploadFutures;
 
         // ---------- 遍历所有标签 ----------
         for (int idx = 0; idx < allTags.size(); ++idx) {
@@ -1307,6 +1285,16 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     }
                 }
 
+                // 读取文件数据（用于备用上传）
+                QByteArray fileData;
+                if (!cacheValid) {
+                    QFile file(newUrl);
+                    if (file.open(QIODevice::ReadOnly)) {
+                        fileData = file.readAll();
+                        file.close();
+                    }
+                }
+
                 int replaceIdx = replacements.size();
                 replacements.append({
                     tag.start,
@@ -1319,60 +1307,15 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     tag.height,
                     tag.needPadding,
                     fileMd5,
-                    newUrl
+                    newUrl,
+                    fileData // 保存数据
                 });
 
                 if (!cacheValid) {
-                    taskCounter.ref();
+                    // 需要上传：调用 uploadimg 并保存 future
+                    std::future<QString> future = uploadimg(newUrl); // 假设 openid 为空或由其他逻辑提供
+                    uploadFutures.emplace_back(replaceIdx, std::move(future));
 
-                    // 关键：捕获所有需要的变量，按引用或按值
-                    UploadTask *task = new UploadTask([&, replaceIdx, newUrl, targetType, openid]() {
-                        QString uploadedUrl;
-
-                        // 1. CNB
-                        if (g_cnb.e) {
-                            uploadedUrl = uploadFileSync(newUrl);
-                        }
-                        // 2. COS
-                        if (uploadedUrl.isEmpty() && g_cos.e) {
-                            uploadedUrl = uploadFileSync_cos(newUrl);
-                        }
-                        // 3. 自定义上传
-                        if (uploadedUrl.isEmpty()) {
-                            uploadedUrl = upload(newUrl);
-                        }
-                        // 4. 远程服务器
-                        if (uploadedUrl.isEmpty() && setA->远程服务器) {
-                            QString err;
-                            uploadedUrl = uploadImageByPath("http://127.0.0.1:" + setA->远程端口 + "/", newUrl, 30000, &err);
-                        }
-                        // 5. 富媒体备用
-                        if (uploadedUrl.isEmpty()) {
-                            qint64 time = 0;
-                            QString md5;
-                            bool ok = false;
-                            uploadRichMedia(targetType, openid, 1, newUrl, time, md5, ok, uploadedUrl);
-                            if (ok) uploadedUrl += "&response-content-type=image%2Fpng";
-                        }
-                        // 6. 最后备用 CDN
-                        if (uploadedUrl.isEmpty()) {
-                            uploadedUrl = uploadToMhimg(newUrl);
-                        }
-
-                        // 存储结果（加锁）
-                        {
-                            QMutexLocker locker(&resultMutex);
-                            uploadResults.insert(replaceIdx, uploadedUrl);
-                        }
-
-                        // 任务完成，递减计数
-                        if (!taskCounter.deref()) {
-                            QMutexLocker locker(&waitMutex);
-                            condition.wakeAll();
-                        }
-                    });
-                    task->setAutoDelete(true);
-                    QThreadPool::globalInstance()->start(task);
                 }
             } else {
                 // HTTP 链接或空路径
@@ -1387,36 +1330,47 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     tag.height,
                     tag.needPadding,
                     QString(),
-                    newUrl
+                    newUrl,
+                    QByteArray()
                 });
             }
         }
 
-        // ---------- 等待所有任务完成 ----------
-        {
-            QMutexLocker locker(&waitMutex);
-            while (taskCounter.load() > 0) {
-                condition.wait(&waitMutex);
+        // ---------- 等待所有上传任务完成并获取结果 ----------
+        for (auto &pair : uploadFutures) {
+            int replaceIdx = pair.first;
+            std::future<QString> &future = pair.second;
+            QString uploadedUrl;
+            try {
+                uploadedUrl = future.get();
+            } catch (const std::exception &e) {
+                qWarning() << "uploadimg exception:" << e.what();
+                uploadedUrl = QString();
             }
-        }
 
-        // ---------- 合并结果 ----------
-        {
-            QMutexLocker locker(&resultMutex);
-            for (auto it = uploadResults.begin(); it != uploadResults.end(); ++it) {
-                int idx = it.key();
-                QString url = it.value();
-                if (!url.isEmpty()) {
-                    replacements[idx].newUrl = url;
-                    if (cache_db) {
-                        QString fileMd5 = replacements[idx].fileMd5;
-                        QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
-                        qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
-                        cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(url));
-                    }
-                } else {
-                    replacements[idx].newUrl = replacements[idx].originalUrl;
+            // 如果 uploadimg 返回空，则尝试备用富媒体上传（堵塞）
+            if (uploadedUrl.isEmpty() && !replacements[replaceIdx].fileData.isEmpty()) {
+
+                qint64 expireTime = 0;
+                QString md5;
+                bool ok = false;
+                QString result = uploadRichMedia(targetType, openid, 1,replacements[replaceIdx].fileData,QString(), // filename 可以为空
+                                                         expireTime, md5, ok, uploadedUrl);
+                 if (ok) uploadedUrl += "&response-content-type=image%2Fpng";
+            }
+
+            // 更新 replacements 中的 newUrl
+            if (!uploadedUrl.isEmpty()) {
+                replacements[replaceIdx].newUrl = uploadedUrl;
+                if (cache_db) {
+                    QString fileMd5 = replacements[replaceIdx].fileMd5;
+                    QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
+                    qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                    cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
                 }
+            } else {
+                // 上传失败，保留原路径
+                replacements[replaceIdx].newUrl = replacements[replaceIdx].originalUrl;
             }
         }
 
@@ -1449,11 +1403,13 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 if (h > 0)
                     markdownImg = QString("![#%1px #%2px](%3)").arg(w).arg(h).arg(ri.newUrl);
                 else
-                    markdownImg = QString("![#1000px #0px](%2)").arg(w).arg(ri.newUrl);
+                    markdownImg = QString("![#1000px #0px](%2)").arg(ri.newUrl);
             }
             text.replace(ri.start, ri.length, markdownImg);
         }
-    }else{
+    }
+
+    else{
 
         bool firstProcessed = false;  // 用于 type==0 只处理第一个标签
         bool neiwang=false;//测试内网是否可用
@@ -1574,6 +1530,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
 QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok)
 {
+
+
     qint64 expireTime=0;
     QString md5,info,url;
     if(filePath.startsWith("http"))
@@ -1671,11 +1629,11 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
     sha1Hash.addData(data);
     QString sha1 = sha1Hash.result().toHex();
-    //int tenM = 10 * 1024 * 1024;
-    //QByteArray first10M = data.left(tenM);
-    //QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
-    //md5_10mHash.addData(first10M);
-    //QString md5_10m = md5_10mHash.result().toHex();
+    int tenM = 10 * 1024 * 1024;
+    QByteArray first10M = data.left(tenM);
+    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+    md5_10mHash.addData(first10M);
+    QString md5_10m = md5_10mHash.result().toHex();
 
     // 3. 准备上传准备请求
     QJsonObject prepJson;
@@ -1684,7 +1642,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     prepJson["file_size"] = (qint64)fileSize;
     prepJson["md5"] = md5;
     prepJson["sha1"] = sha1;
-    //prepJson["md5_10m"] = md5_10m;
+    prepJson["md5_10m"] = md5_10m;
     //prepJson["block_size"] = fileSize;
     QString url = get_url(targetType, openid, "upload_prepare");
     QString response = PostSync(url, prepJson,QString(), 30000);
@@ -1986,8 +1944,21 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
         if (needUpload) {
             qint64 expireTime = 0;
             QString md5;
-
-            fileInfo = uploadRichMediaA(type, openid, fileType, filePath,ok);
+            QString uploadedUrl;
+            /*
+            if (g_cnb.e) {
+                uploadedUrl = uploadFileSync(filePath);
+            }
+            // 2. COS
+            if (uploadedUrl.isEmpty() && g_cos.e) {
+                uploadedUrl = uploadFileSync_cos(filePath);
+            }
+            */
+            if(uploadedUrl.isEmpty())
+            {
+                uploadedUrl = filePath;
+            }
+            fileInfo = uploadRichMediaA(type, openid, fileType, uploadedUrl,ok);
 
             if(!ok)
             {

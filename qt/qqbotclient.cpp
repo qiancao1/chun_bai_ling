@@ -502,21 +502,20 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
 
-        if(m_info->unid.isEmpty())
+        const QJsonArray array = d["mentions"].toArray();
+        for (const QJsonValue &a : array)
         {
-            const QJsonArray array = d["mentions"].toArray();
-            for (const QJsonValue &a : array)
+            if(a.isObject())
             {
-                if(a.isObject())
-                {
-                    QJsonObject arronj = a.toObject();
-                    if(!arronj["is_you"].toBool()) continue;
-                    ev.at_you = true;
-                    m_info->unid= arronj["id"].toString();
-                }
-                break;
+                QJsonObject arronj = a.toObject();
+                if(!arronj["is_you"].toBool()) continue;
+                ev.at_you = true;
+                ev.bot_admin = (arronj["member_role"].toString() == "admin");
+                m_info->unid= arronj["id"].toString();
             }
+            break;
         }
+
 
         if(!m_info->unid.isEmpty() && ev.msg.contains(m_info->unid))
         {
@@ -865,7 +864,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if (g_botdb.contains(ev.appid) && ev.subType<=1)
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-    qDebug() << "bit" << ev.bitmap << "G" << ev.groupId;
+    ev.bot_admin = ev.bitmap & BIT_ADMIN;
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
     if (ev.msg.startsWith("/")) {
@@ -954,20 +953,22 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if (ev.type == 0 && (ev.bitmap & BIT_SHUA_P))
     {
-        if(shuaping(m_info,ev))
-        {
-            setGroupRestrictChatSetting(ev.groupId,ev.user,60,
-                [this,ev](const QString &resp, QNetworkReply::NetworkError err) {
+        if(ev.bot_admin) {
+            if(shuaping(m_info,ev))
+            {
+                setGroupRestrictChatSetting(ev.groupId,ev.user,60,
+                    [this,ev](const QString &resp, QNetworkReply::NetworkError err) {
 
-                if(resp == "{}")
-                {
-                    QString pname= "[刷屏检测]";
-                    QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
-                    delete_messages(ev.type,ev.groupId,ev.msgId,[](auto, auto){ return; });
-                    send_msgAsync(ev.type,ev.groupId,pname,text,ev.msgId);
-                }
-            });
-            return ;
+                    if(resp == "{}")
+                    {
+                        QString pname= "[刷屏检测]";
+                        QString text = "<@"+ev.user+"> 发送信息速度过快 疑似刷屏";
+                        delete_messages(ev.type,ev.groupId,ev.msgId,[](auto, auto){ return; });
+                        send_msgAsync(ev.type,ev.groupId,pname,text,ev.msgId);
+                    }
+                });
+                return ;
+            }
         }
     }
     if(m_info->pbbot && ev.bot) return;

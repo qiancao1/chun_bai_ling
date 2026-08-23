@@ -71,11 +71,19 @@
 #include <windows.h>
 #endif
 
-#define APP_VERSION_STR "v1.2.8.48"
-#define APP_BUILD_NUMBER 48
+#define APP_VERSION_STR "v1.2.10.50"
+#define APP_BUILD_NUMBER 50
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.10.50 (2026-08-21)
+- 修复 cos图床不可用问题
+- 优化 内网并发上传
+
+## v1.2.9.49 (2026-08-21)
+- 优化 禁言 撤回 等指令匹配方式 不需要按照特定格式来执行了
+- 增加 内置群管 无管理权限回复
+
 ## v1.2.8.48 (2026-08-20)
 - 优化 订阅主动推送 会触发限制问题
 - 优化 内置AI图片
@@ -572,7 +580,24 @@ void MainWindow::setupUi()
     configTabWidget->addTab(forbidden, "违禁词过滤");
     configTabWidget->addTab(htmltoimg, "HTML制图");
 
+    connect(configTabWidget, &QTabWidget::currentChanged,
+            [configTabWidget](){
+                if(框架退出) return ;
+                if(configTabWidget->currentIndex()==0 ){
 
+                    if(setA->m_cnb->isChecked()!=g_cnb.e){
+                        setA->m_cnb->setChecked(g_cnb.e);
+                        QMessageBox::warning(nullptr,"临时关闭","cnb 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
+                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
+                    }
+                    if(setA->m_cos->isChecked()!=g_cos.e){
+
+                        setA->m_cos->setChecked(g_cos.e);
+                        QMessageBox::warning(nullptr,"临时关闭","cos 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
+                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
+                    }
+                }
+            });
     // 将选择夹放入分组框
     QVBoxLayout *groupLayout = new QVBoxLayout(configGroupBox);
     groupLayout->setContentsMargins(0, 0, 0, 0);

@@ -32,7 +32,6 @@
 #include <QMessageBox>
 #include "cardwidget.h"
 #include "chatpage.h"
-#include "cosclient.h"
 #include "forbiddenwordpage.h"
 #include "htmltoimagewidget.h"
 #include "keywordmatchconfigwidget.h"
@@ -64,7 +63,8 @@ enum BitMask {
     BIT_AI_BAI = 1 << 3,
     BIT_SHUA_P = 1<<4,
     BIT_AUTO_JOJI_KG = 1<<5,
-    BIT_AUTO_JOJI = 1<<6
+    BIT_AUTO_JOJI = 1<<6,
+    BIT_ADMIN= 1<<7
 };
 
 struct dblog
@@ -80,6 +80,7 @@ struct dblog
 
 struct cos_data{
     bool e=false;
+    int errcs=0;
     QString secretId;
     QString secretKey;
     QString host;      // 完整域名
@@ -90,12 +91,12 @@ struct cnb_data{
     QString repo;
     QString key;
     int qcjs=0;
-
+    int errcs=0;
     bool e=false;
 };
 
 
-QString python_code4(const QString &py_code,int appid,QList<QString> user_list);
+
 extern QString g_admin;
 extern QString g_ip;
 extern QListWidget *robotListWidget;
@@ -185,115 +186,6 @@ void processPendingEvents();
 QString python_code(const QString &py_code);
 QString python_code(const QString &py_code,const MessageEvent &msg);
 
-
-
-
-
-class SendMessageTask2 : public QRunnable {
-public:
-    SendMessageTask2(int appid,int msgType,                     // 改为 int
-                    const QString& contactId,const QString& text,
-                     const QString& msgIdFirst,const QString& msgIdRetry,const QString pname,const QList<QString> user_list=QList<QString>())              // 参数名 chatPage
-        : m_appid(appid),
-        m_msgType(msgType),
-        m_contactId(contactId),
-        m_text(text),
-        m_msgIdFirst(msgIdFirst),
-        m_msgIdRetry(msgIdRetry),
-        m_pname(pname),
-        m_user_list(user_list)
-    {
-        setAutoDelete(true);
-    }
-
-    void run() override {
-        if(!m_botClients.contains(m_appid)) return ;
-        QString sentText;
-        if(m_text.contains("#python"))
-            sentText = python_code4(m_text,m_appid,m_user_list);
-        else {
-            sentText =m_text;
-            if(sentText.contains("{艾特}"))
-            {
-                QString nat;
-                int estimatedLen = m_user_list.size() * 36; // 视实际 ID 长度调整，也可遍历一次精确计算
-                nat.reserve(estimatedLen);
-
-                bool first = true;
-                for(const auto &id : std::as_const(m_user_list))
-                {
-                    if(!first)
-                        nat.append(",");
-                    first = false;
-                    nat.append("<@").append(id).append(">");
-                }
-
-                sentText.replace("{艾特}",nat);
-            }
-
-            if(sentText.contains("{ID}"))
-            {
-                QString result = m_user_list.join(",");
-                sentText.replace("{ID}",result);
-            }
-            if(sentText.contains("{数量}"))
-            {
-                sentText.replace("{数量}",QString::number(m_user_list.size()));
-            }
-            if(sentText.contains("{头像}"))
-            {
-                QString nat;
-                int estimatedLen = m_user_list.size() * 32*4;
-                nat.reserve(estimatedLen);
-                for(const auto &id : std::as_const(m_user_list))
-                {
-                    QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)\n").arg(m_appid).arg(id);
-                    nat.append(hh);
-                }
-                sentText.replace("{头像}",nat);
-            }
-            if(sentText.contains("{混合}"))
-            {
-                QString nat;
-                int estimatedLen = m_user_list.size() * 32*4; // 视实际 ID 长度调整，也可遍历一次精确计算
-                nat.reserve(estimatedLen);
-                for(const auto &id : std::as_const(m_user_list))
-                {
-                    QString hh = QString("![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100) <@%3>\n").arg(m_appid).arg(id, id);
-                    nat.append(hh);
-                }
-                sentText.replace("{混合}",nat);
-            }
-
-
-        }
-        QQBotClient* client = m_botClients[m_appid];
-        bool zh=false;
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            QString currentMsgId = (attempt == 0) ? m_msgIdFirst : m_msgIdRetry;
-            QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, sentText, currentMsgId,zh,false);
-            if(rawData.isEmpty()) return;
-            if (rawData.contains("ROBOT") || rawData.contains("消息提交安全审核成功")) { //检查发送成功 或主动推送
-                return;
-            }
-            if(attempt==0 && m_msgType==2)
-            {
-                zh = true; //召回
-            }
-            continue;
-        }
-    }
-
-private:
-    int m_appid;
-    int m_msgType;                  // 整数类型
-    QString m_contactId;
-    QString m_text;
-    QString m_msgIdFirst;
-    QString m_msgIdRetry;
-    QString m_pname;
-    QList<QString> m_user_list;
-};
 
 class SendMessageTask : public QRunnable {
 public:

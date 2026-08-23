@@ -96,12 +96,13 @@ void qunguan::onItemClicked(QListWidgetItem *item) {
         ui->textEdit->setPlaceholderText(R"(用户加群时#python开头为 py代码
 python:
 UserList = 用户ID列表
+UserNameList = 用户昵称列表 长度和 UserList 一样
 g_appid = 当前事件appid
 api = 和写代码一样的api 有api使用
 __result__ = "返回的内容"
 
-非py代码时可用变量 {id} {艾特} {数量} {头像} {混合} {群名}
-当开始延迟时 统计 {混合} 排版?
+非py代码时可用变量 {id} {艾特} {数量} {头像} {混合} {群名} {昵称}
+当开始延迟时 统计 {混合} 排版? {混合x} 直接显示昵称 {混合}为艾特
 
 )");
     }
@@ -137,12 +138,14 @@ __result__ = "返回的内容"
         ui->textEdit->setPlaceholderText(R"(用户退群时#python开头为 py代码(仅限全量群)
 python:
 UserList = 用户ID列表
+UserNameList = 用户昵称列表 长度和 UserList 一样
 g_appid = 当前事件appid
 api = 和写代码一样的api 有api使用
 __result__ = "返回的内容"
 
-非py代码时可用变量 {id} {数量} {头像} {混合} {群名}
-当开始延迟时 统计 {混合} 排版? 退群后艾特无效
+非py代码时可用变量 {id} {数量} {头像} {混合} {混合x} {群名} {昵称}
+当开始延迟时 统计 {混合} 排版? 退群后艾特无效 {混合x}里面有昵称 请注意违禁词
+ {混合x} 直接显示昵称 {混合}为艾特
 )");
     }
     else if(fieldName=="welcomeMsg")

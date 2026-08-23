@@ -383,6 +383,16 @@ void set::setupUI()
         g_config["cos_host"]= MachineKey::encrypt(g_cos.host, key);
         g_config["cos_e"]= g_cos.e;
         saveConfig();
+        QMessageBox msgBox(this);
+        msgBox.setIcon(QMessageBox::Warning);
+        msgBox.setWindowTitle("设置自动删除");
+        msgBox.setTextFormat(Qt::RichText); // 关键：启用富文本，让链接可点击[reference:2]
+        msgBox.setText("框架里面没有自动删除 上传的文件\n\n"
+                       "请在 <a href=\"https://console.cloud.tencent.com/cos/bucket\">腾讯云COS控制台</a> 设置自动删除规则\n\n"
+                       "否则 容量超限制 可能会造成额外费用\n"
+                       "框架使用优先级 1.cnb 2.cos 3.内部其他");
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.exec();
     });
     connect(m_cos_cs, &QPushButton::clicked, [this](){
         if (!generateUniqueTestImage()) {
@@ -393,6 +403,7 @@ void set::setupUI()
         t.start();
 
         QString url = uploadFileSync_cos("test_64_64.png");
+        qDebug() << url;
         QMessageBox::warning(this,"测试结果COS","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
 
     });

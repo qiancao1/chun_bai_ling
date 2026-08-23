@@ -476,12 +476,12 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
     });
     return success ? resultSeq : 0;
 }
-uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
+uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
 {
-    // ======================== 1. 变量声明（全部提前） ========================
+    // ======================== 1. 变量声明 ========================
     bool isGroup = (ev.type == 0);
-    if(!isGroup) isGroup = (ev.type == 18);
-    // 键（二进制16字节）
+    if (!isGroup) isGroup = (ev.type == 18);
+
     QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
     BinKey userKey;
     memcpy(userKey.data, userKeyBytes.constData(), 16);
@@ -491,15 +491,17 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
         QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
         memcpy(groupKey.data, groupKeyBytes.constData(), 16);
     }
+
+    // 每日消息计数（不变）
     {
         QMutexLocker locker(&m_msgMutex);
-        checkDayChange();   // 检查是否跨天
-        // 用户计数
+        checkDayChange();
         m_userDailyMsg[userKey] = m_userDailyMsg.value(userKey, 0) + 1;
         if (isGroup) {
             m_groupDailyMsg[groupKey] = m_groupDailyMsg.value(groupKey, 0) + 1;
         }
     }
+
     // 缓存相关
     bool userCacheHit = false;
     bool groupCacheHit = false;
@@ -516,6 +518,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
     // 决策变量
     bool needUpdateGroup = false;
     bool needUpdateUser = false;
+    bool needUpdateBitmap = false;          // 🆕 是否需要更新 bitmap 的管理员位
     QString newGroupName;
 
     // 写事务结果
@@ -545,7 +548,6 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
 
     // ======================== 3. 如果缓存命中，基于缓存数据做决策 ========================
     if (userCacheHit) {
-        // 准备 old 数据（直接使用缓存）
         oldUser = cachedUser;
         userExists = true;
         oldSeqId = cachedUser.seq_id;
@@ -555,14 +557,13 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
                 oldGroup = cachedGroup;
                 groupExists = true;
             } else {
-                // 缓存中没有群记录，视为群不存在
                 groupExists = false;
                 memset(&oldGroup, 0, sizeof(oldGroup));
             }
         }
 
         // ----- 决策（群） -----
-        if (isGroup && hc==false) {
+        if (isGroup && hc == false) {
             if (!groupExists) {
                 needUpdateGroup = true;
                 newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
@@ -576,6 +577,14 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             }
         }
 
+        // ----- 🆕 决策（bitmap 管理员位）-----
+        if (isGroup && groupExists && ev.at_you) {
+            bool currentAdmin = (oldGroup.bitmap & BIT_ADMIN) != 0;
+            if (currentAdmin != ev.bot_admin) {
+                needUpdateBitmap = true;
+            }
+        }
+
         // ----- 决策（用户） -----
         if (!ev.nickname.isEmpty()) {
             QByteArray newName = ev.nickname.toUtf8();
@@ -583,16 +592,14 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
                 needUpdateUser = true;
         }
 
-        // 如果两者都不需要更新，直接返回缓存数据（纯内存，无需写事务）
-        if (!needUpdateGroup && !needUpdateUser) {
+        // 如果都不需要更新，直接返回缓存数据
+        if (!needUpdateGroup && !needUpdateUser && !needUpdateBitmap) {
             ev.groupname = isGroup ? QString::fromUtf8(oldGroup.name) : QString();
             ev.nickname = QString::fromUtf8(oldUser.nickname);
             ev.bitmap = isGroup ? oldGroup.bitmap : 0;
             memcpy(ev.qid, oldGroup.qid, sizeof(ev.qid));
             return oldSeqId;
         }
-
-        // 否则，需要更新，走下文的写事务（此时 oldUser/oldGroup 已设置好）
     }
     else {
         // ======================== 4. 缓存未命中：执行 LMDB 只读事务 ========================
@@ -622,7 +629,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
         }
 
         // ----- 决策（群） -----
-        if (isGroup && hc==false) {
+        if (isGroup && hc == false) {
             if (!groupExists) {
                 needUpdateGroup = true;
                 newGroupName = fetchGroupNameFromApi(qqbot, ev.groupId);
@@ -636,6 +643,14 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             }
         }
 
+        // ----- 🆕 决策（bitmap 管理员位）-----
+        if (isGroup && groupExists && ev.at_you) {
+            bool currentAdmin = (oldGroup.bitmap & BIT_ADMIN) != 0;
+            if (currentAdmin != ev.bot_admin) {
+                needUpdateBitmap = true;
+            }
+        }
+
         // ----- 决策（用户） -----
         if (userExists && !ev.nickname.isEmpty()) {
             QByteArray newName = ev.nickname.toUtf8();
@@ -644,10 +659,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
         }
     }
 
-    // ======================== 5. 写事务（仅在需要更新或用户/群不存在时执行） ========================
-    // 注意：如果既不需要更新且缓存命中已经直接返回了，走到这里说明至少需要写入（新用户/新群/更新昵称/群名）
-    // 这里统一处理写事务，oldUser / oldGroup / userExists / groupExists 已在上面分支中正确赋值
-
+    // ======================== 5. 写事务 ========================
     bool success = retryWrite([&](MDB_txn *txn) -> int {
         int finalRc = MDB_SUCCESS;
 
@@ -656,7 +668,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
             if (groupKey.isEmpty()) return -1;
 
-            GroupRecord currentGroup = oldGroup;  // 复制旧数据
+            GroupRecord currentGroup = oldGroup;
             if (!groupExists) {
                 // 新建群
                 memset(&currentGroup, 0, sizeof(currentGroup));
@@ -670,29 +682,48 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
                     currentGroup.name[0] = '\0';
                     currentGroup.ncgx = 0;
                 }
+                // 🆕 新建群时，如果 ev.at_you 为 true，根据 ev.bot_admin 设置管理员位
+                if (ev.at_you) {
+                    if (ev.bot_admin)
+                        currentGroup.bitmap |= BIT_ADMIN;
+                    else
+                        currentGroup.bitmap &= ~BIT_ADMIN;
+                }
                 int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
                 if (rc != MDB_SUCCESS) finalRc = rc;
-            } else if (needUpdateGroup && !newGroupName.isEmpty()) {
-                // 已存在且需要更新
-                size_t copyLen = std::min<size_t>(newGroupName.toUtf8().size(), sizeof(currentGroup.name)-1);
-                memcpy(currentGroup.name, newGroupName.toUtf8().constData(), copyLen);
-                currentGroup.name[copyLen] = '\0';
-                currentGroup.ncgx = time(nullptr);
-                int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
-                if (rc != MDB_SUCCESS) finalRc = rc;
+            } else {
+                // 群已存在，处理各类更新
+                // 更新群名
+                if (needUpdateGroup && !newGroupName.isEmpty()) {
+                    size_t copyLen = std::min<size_t>(newGroupName.toUtf8().size(), sizeof(currentGroup.name)-1);
+                    memcpy(currentGroup.name, newGroupName.toUtf8().constData(), copyLen);
+                    currentGroup.name[copyLen] = '\0';
+                    currentGroup.ncgx = time(nullptr);
+                }
+                // 🆕 更新 bitmap 管理员位
+                if (needUpdateBitmap) {
+                    if (ev.bot_admin)
+                        currentGroup.bitmap |= BIT_ADMIN;
+                    else
+                        currentGroup.bitmap &= ~BIT_ADMIN;
+                }
+                // 只要有任何修改，就写入
+                if (needUpdateGroup || needUpdateBitmap) {
+                    int rc = putRecord(txn, m_dbi_groups, groupKey, &currentGroup, sizeof(currentGroup));
+                    if (rc != MDB_SUCCESS) finalRc = rc;
+                }
             }
-            // 保存最终写入的群记录（用于更新缓存）
+            // 保存最终群记录
             finalGroup = currentGroup;
             finalGroupName = QString::fromUtf8(currentGroup.name, strnlen(currentGroup.name, sizeof(currentGroup.name)));
             finalBitmap = currentGroup.bitmap;
         }
 
-        // 5b. 处理用户记录
+        // 5b. 处理用户记录（保持不变）
         QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
         if (userKey.isEmpty()) return -1;
 
         if (!userExists) {
-            // 新增用户
             UserRecord newRec = {};
             uint32_t newSeq = getNextSeqId(txn);
             if (newSeq == 0) return -1;
@@ -716,7 +747,6 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
                 finalUserNickname = ev.nickname;
             }
         } else {
-            // 已有用户
             UserRecord updatedUser = oldUser;
             if (needUpdateUser) {
                 QByteArray newNameBytes = ev.nickname.toUtf8();
@@ -737,9 +767,8 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
         return finalRc;
     });
 
-    // ======================== 6. 事务成功后，更新内存缓存并填充 ev ========================
+    // ======================== 6. 事务成功后，更新缓存 ========================
     if (success && resultSeq != 0) {
-        // 更新用户缓存
         {
             QMutexLocker locker(&m_cacheMutex);
             m_userCache[userKey] = finalUser;
@@ -751,7 +780,6 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
             ev.bitmap = finalBitmap;
             memcpy(ev.qid, finalGroup.qid, sizeof(ev.qid));
         }
-
         if (ev.nickname.isEmpty()) {
             ev.nickname = finalUserNickname;
         }
@@ -760,7 +788,6 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev,bool hc)
 
     return 0;
 }
-
 bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
 {
     // 只读操作无需扩容，不加锁也可以（但为了安全可以使用读事务）

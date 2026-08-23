@@ -28,7 +28,7 @@ public:
     ~set();
 
     bool 远程服务器=false;
-
+    QCheckBox *m_cnb,*m_cos;
     QString 远程端口=0;
     void set_webui(bool value);
 
@@ -48,7 +48,7 @@ private:
     QTextEdit    *m_admid_deit;
     QPushButton  *m_admin_qr;
     QCheckBox *Ewebhook,*Ews,*ESSL,*Eimg,*loadimg;
-    QCheckBox *m_cnb,*m_cos;
+
     QLineEdit    *m_cnb_repo,*m_cnb_token;
     QPushButton *m_cnb_qr,*m_cnb_cs;
 

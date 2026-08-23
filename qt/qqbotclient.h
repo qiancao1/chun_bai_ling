@@ -70,7 +70,7 @@ struct MessageEvent
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
     bool bot=false;         //true时 为机器人
-
+    bool bot_admin = false; //true时 机器人是管理员 不是就不要多管闲事了
     QString toString() const;
 };
 struct MessageLogContext {
