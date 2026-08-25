@@ -1,5 +1,5 @@
-#include "ApiProcessor.h"
-#include "NetManager.h"   // 假设您已有 NetManager 单例，包含 getAsync/postAsync
+#include "apiprocessor.h"
+#include "netmanager.h"   // 假设您已有 NetManager 单例，包含 getAsync/postAsync
 #include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonObject>

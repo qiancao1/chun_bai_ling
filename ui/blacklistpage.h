@@ -1,4 +1,4 @@
-// BlacklistPage.h
+// blacklistpage.h
 #ifndef BLACKLISTPAGE_H
 #define BLACKLISTPAGE_H
 

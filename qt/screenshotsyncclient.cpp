@@ -18,7 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "ScreenshotSyncClient.h"
+#include "screenshotsyncclient.h"
 #include "cpphighlighter.h"
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>

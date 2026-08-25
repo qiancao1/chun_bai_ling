@@ -21,7 +21,7 @@
 #ifndef BOTDB_H
 #define BOTDB_H
 
-#include "QQBotClient.h"
+#include "qqbotclient.h"
 #include <QString>
 #include <QByteArray>
 #include <QMutex>

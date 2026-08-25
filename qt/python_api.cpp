@@ -20,7 +20,7 @@
 
 #include <pybind11/pybind11.h>
 #include "global.h"
-#include "AiWidget.h"
+#include "aiwidget.h"
 
 namespace pybind11 { namespace detail {
 template <> struct type_caster<QString> {

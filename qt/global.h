@@ -21,14 +21,20 @@
 #ifndef GLOBAL_H
 #define GLOBAL_H
 
-#include "AccountPage.h"
-#include "AiWidget.h"
-#include "BlacklistPage.h"
-#include "HomePage.h"
-#include "PluginPage.h"
-#include "ScheduleConfigWidget.h"
-#include "ScreenshotSyncClient.h"
-#include "SharedMemoryBridge.h"
+#include "accountpage.h"
+#include "aiwidget.h"
+#include "blacklistpage.h"
+#include "homepage.h"
+#include "keywordpunishconfigwidget.h"
+#include "pluginpage.h"
+#include "scheduleconfigwidget.h"
+#include "screenshotsyncclient.h"
+
+#ifdef _WIN32
+#include "sharedmemorybridge.h"
+#endif
+
+#include <QRunnable>
 #include <QMessageBox>
 #include "cardwidget.h"
 #include "chatpage.h"
@@ -36,7 +42,7 @@
 #include "htmltoimagewidget.h"
 #include "keywordmatchconfigwidget.h"
 #include "logdb.h"
-#include "LogPage.h"
+#include "logpage.h"
 #include <QJsonObject>
 #include <qapplication.h>
 #include <qjsondocument.h>
@@ -50,7 +56,7 @@
 #include "sandboxwindow.h"
 #include "set.h"
 #include "websocketserver.h"
-#include "PluginMarketWindow.h"
+#include "pluginmarketwindow.h"
 class Global
 {
 public:
@@ -64,7 +70,8 @@ enum BitMask {
     BIT_SHUA_P = 1<<4,
     BIT_AUTO_JOJI_KG = 1<<5,
     BIT_AUTO_JOJI = 1<<6,
-    BIT_ADMIN= 1<<7
+    BIT_ADMIN= 1<<7,
+    BIT_PUNISH = 1<<8
 };
 
 struct dblog
@@ -110,6 +117,7 @@ extern PluginPage *pluginPage;
 extern ChatPage *chatPage;
 extern SandboxWindow *Sandbox;
 extern KeywordMatchConfigWidget *keyword;
+extern KeywordPunishConfigWidget *keyword_Punish;
 extern set *setA;
 extern QStackedWidget *stackedWidget;
 extern ForbiddenWordPage *forbidden;
@@ -137,7 +145,9 @@ extern cnb_data g_cnb;
 extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 extern WebSocketServer *ws_server;
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
+#ifdef _WIN32
 extern SharedMemoryBridge *bridge;
+#endif
 extern QJsonObject g_config;
 extern QList<PluginInfo> m_pluginList;
 extern QList<std::shared_ptr<AccountInfo>> m_accounts;

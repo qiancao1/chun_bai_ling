@@ -1,4 +1,4 @@
-#include "ScheduleConfigWidget.h"
+#include "scheduleconfigwidget.h"
 #include "global.h"  // extern QList<AccountInfo*> m_accounts;
 
 #include <QVBoxLayout>
@@ -14,7 +14,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
-
+#include <QThreadPool>
 
 
 // ---------- ScheduleConfigWidget ----------

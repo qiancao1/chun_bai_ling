@@ -1,10 +1,9 @@
-#include "HomePage.h"
+#include "homepage.h"
 
 
 #define PSAPI_VERSION 2
 
-#include <windows.h>
-#include <Psapi.h> // 仍然需要这个头文件，用于 PROCESS_MEMORY_COUNTERS 结构体声明
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -15,6 +14,19 @@
 #include <QGraphicsDropShadowEffect>
 #include <QSysInfo>
 #include "global.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <Psapi.h>
+#else
+#include <unistd.h>
+#include <sys/resource.h>
+#include <sys/time.h>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#endif
+
 
 extern QString Homev;
 
@@ -42,17 +54,39 @@ QString formatRate(double bytesPerSec, const QString& prefix) {
 HomePage::HomePage(QWidget *parent)
     : QWidget(parent)
 {
+#ifdef _WIN32
     m_hProcess = GetCurrentProcess();
-    // 初始化磁盘 IO 历史
     IO_COUNTERS ioCounters;
     if (GetProcessIoCounters(m_hProcess, &ioCounters)) {
         m_lastRead = ioCounters.ReadTransferCount;
         m_lastWrite = ioCounters.WriteTransferCount;
     }
     m_lastTime = GetTickCount64();
+#else
+    // Linux 下不需要进程句柄，直接读 /proc/self/io 初始化累计值
+    std::ifstream ioFile("/proc/self/io");
+    std::string line;
+    qint64 readBytes = 0, writeBytes = 0;
+    while (std::getline(ioFile, line)) {
+        if (line.compare(0, 6, "rchar:") == 0) {
+            readBytes = std::stoll(line.substr(6));
+        } else if (line.compare(0, 6, "wchar:") == 0) {
+            writeBytes = std::stoll(line.substr(6));
+        }
+    }
+    m_lastRead = readBytes;
+    m_lastWrite = writeBytes;
+    // 时间戳用 clock_gettime
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    m_lastTime = ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+#endif
+
     setupUI();
     setStyleSheetA();
 }
+
+
 void HomePage::setStyleSheetA()
 {
     setStyleSheet(R"(
@@ -481,98 +515,203 @@ QLabel *HomePage::createStatusLabel(const QString &title, const QString &value)
     label->setProperty("statusTitle", title);
     return label;
 }
-void HomePage::updateProcessStats() {
+
+
+void HomePage::updateProcessStats()
+{
     // ========== 1. 内存占用（带进度条） ==========
+#ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc;
     pmc.cb = sizeof(pmc);
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
         double memMB = pmc.WorkingSetSize / (1024.0 * 1024.0);
-
-        // 获取系统总物理内存（建议在初始化时缓存，避免频繁调用）
         static double totalMemMB = []() {
             MEMORYSTATUSEX memStatus;
             memStatus.dwLength = sizeof(memStatus);
-            if (GlobalMemoryStatusEx(&memStatus)) {
+            if (GlobalMemoryStatusEx(&memStatus))
                 return memStatus.ullTotalPhys / (1024.0 * 1024.0);
-            }
-            return 8192.0; // 降级默认 8GB
+            return 8192.0;
         }();
-
         int memPercent = (totalMemMB > 0) ? static_cast<int>((memMB / totalMemMB) * 100) : 0;
         memPercent = qBound(0, memPercent, 100);
-
         m_ramTextLabel->setText(QString("%1 MB / %2 MB (%3%)")
                                     .arg(memMB, 0, 'f', 1)
                                     .arg(totalMemMB, 0, 'f', 0)
                                     .arg(memPercent));
         m_ramProgressBar->setValue(memPercent);
     }
+#else
+    // Linux: 读取 /proc/self/status 中的 VmRSS
+    long rss = 0;
+    std::ifstream statusFile("/proc/self/status");
+    std::string line;
+    while (std::getline(statusFile, line)) {
+        if (line.compare(0, 6, "VmRSS:") == 0) {
+            std::istringstream iss(line.substr(6));
+            iss >> rss;  // 单位 kB
+            break;
+        }
+    }
+    double memMB = rss / 1024.0;
+    static double totalMemMB = []() {
+        long pages = sysconf(_SC_PHYS_PAGES);
+        long pageSize = sysconf(_SC_PAGE_SIZE);
+        if (pages > 0 && pageSize > 0)
+            return (pages * pageSize) / (1024.0 * 1024.0);
+        return 8192.0;
+    }();
+    int memPercent = (totalMemMB > 0) ? static_cast<int>((memMB / totalMemMB) * 100) : 0;
+    memPercent = qBound(0, memPercent, 100);
+    m_ramTextLabel->setText(QString("%1 MB / %2 MB (%3%)")
+                                .arg(memMB, 0, 'f', 1)
+                                .arg(totalMemMB, 0, 'f', 0)
+                                .arg(memPercent));
+    m_ramProgressBar->setValue(memPercent);
+#endif
 
     // ========== 2. CPU 使用率（带进度条） ==========
-    static int processorCount = []() {
-        SYSTEM_INFO sysInfo;
-        GetSystemInfo(&sysInfo);
-        return (int)sysInfo.dwNumberOfProcessors;
-    }();
+    static bool isFirstCpuSample = true;
+    static unsigned long long lastUser = 0;
+    static unsigned long long lastSystem = 0;
+    static unsigned long long lastTotal = 0;   // Linux 系统总 jiffies
+    static qint64 lastTickMs = 0;
 
-    static ULONGLONG lastTotalCpuTime = 0;
-    static ULONGLONG lastTick = 0;
+    qint64 nowTick = QDateTime::currentMSecsSinceEpoch();
+    double cpuPercent = 0.0;
+
+#ifdef _WIN32
     FILETIME createTime, exitTime, kernelTime, userTime;
     if (GetProcessTimes(GetCurrentProcess(), &createTime, &exitTime, &kernelTime, &userTime)) {
-        ULONGLONG curKernel = ((ULONGLONG)kernelTime.dwHighDateTime << 32) + kernelTime.dwLowDateTime;
-        ULONGLONG curUser   = ((ULONGLONG)userTime.dwHighDateTime << 32) + userTime.dwLowDateTime;
-        ULONGLONG curTotal  = curKernel + curUser;
-        ULONGLONG nowTick   = GetTickCount64();
+        unsigned long long user = ((unsigned long long)userTime.dwHighDateTime << 32) + userTime.dwLowDateTime;
+        unsigned long long system = ((unsigned long long)kernelTime.dwHighDateTime << 32) + kernelTime.dwLowDateTime;
+        static int processorCount = []() {
+            SYSTEM_INFO sysInfo;
+            GetSystemInfo(&sysInfo);
+            return (int)sysInfo.dwNumberOfProcessors;
+        }();
 
-        double cpuPercent = 0.0;
-        if (lastTotalCpuTime != 0 && lastTick != 0 && nowTick > lastTick) {
-            ULONGLONG deltaMs = nowTick - lastTick;
-            ULONGLONG deltaCpu100ns = curTotal - lastTotalCpuTime;
-            double cpuMs = deltaCpu100ns / 10000.0;
-            cpuPercent = (cpuMs / deltaMs) / processorCount * 100.0;
+        if (!isFirstCpuSample && lastTickMs != 0 && nowTick > lastTickMs) {
+            unsigned long long deltaMs = nowTick - lastTickMs;
+            unsigned long long curTotal = user + system;
+            unsigned long long deltaCpuMs = (curTotal - (lastUser + lastSystem)) / 10000;  // 100ns → ms
+            cpuPercent = (double)deltaCpuMs / deltaMs / processorCount * 100.0;
             cpuPercent = qBound(0.0, cpuPercent, 100.0);
         }
-
-        m_cpuTextLabel->setText(QString("CPU消耗: %1%").arg(cpuPercent, 0, 'f', 1));
-        m_cpuProgressBar->setValue(static_cast<int>(cpuPercent));
-
-        lastTotalCpuTime = curTotal;
-        lastTick = nowTick;
+        lastUser = user;
+        lastSystem = system;
     }
+#else
+    // Linux: 读取进程 CPU jiffies
+    unsigned long long user = 0, system = 0;
+    std::ifstream statFile("/proc/self/stat");
+    std::string statLine;
+    if (std::getline(statFile, statLine)) {
+        std::istringstream iss(statLine);
+        std::vector<std::string> fields;
+        std::string field;
+        while (iss >> field)
+            fields.push_back(field);
+        if (fields.size() >= 17) {
+            user = std::stoull(fields[13]);
+            system = std::stoull(fields[14]);
+        }
+    }
+
+    // 读取系统总 CPU jiffies
+    unsigned long long totalCpu = 0;
+    std::ifstream sysStatFile("/proc/stat");
+    std::string cpuLine;
+    if (std::getline(sysStatFile, cpuLine) && cpuLine.compare(0, 3, "cpu") == 0) {
+        std::istringstream cpuIss(cpuLine.substr(3));
+        unsigned long long userTotal, niceTotal, systemTotal, idleTotal, iowaitTotal, irqTotal, softirqTotal, stealTotal;
+        cpuIss >> userTotal >> niceTotal >> systemTotal >> idleTotal >> iowaitTotal >> irqTotal >> softirqTotal >> stealTotal;
+        totalCpu = userTotal + niceTotal + systemTotal + idleTotal + iowaitTotal + irqTotal + softirqTotal + stealTotal;
+    }
+
+    if (!isFirstCpuSample && lastTickMs != 0 && nowTick > lastTickMs) {
+        unsigned long long curTotal = user + system;
+        unsigned long long deltaTotalCpu = totalCpu - lastTotal;
+        unsigned long long deltaProcCpu = curTotal - (lastUser + lastSystem);
+        if (deltaTotalCpu > 0) {
+            cpuPercent = (double)deltaProcCpu / deltaTotalCpu * 100.0;
+        }
+        cpuPercent = qBound(0.0, cpuPercent, 100.0);
+    }
+    lastUser = user;
+    lastSystem = system;
+    lastTotal = totalCpu;
+#endif
+
+    m_cpuTextLabel->setText(QString("CPU消耗: %1%").arg(cpuPercent, 0, 'f', 1));
+    m_cpuProgressBar->setValue(static_cast<int>(cpuPercent));
+    lastTickMs = nowTick;
+    isFirstCpuSample = false;
 
     // ========== 3. 磁盘读写（速率 + 累计） ==========
+    qint64 currentRead = 0, currentWrite = 0;   // 声明在外部，供后续统一处理
+
+#ifdef _WIN32
     IO_COUNTERS io;
     if (GetProcessIoCounters(GetCurrentProcess(), &io)) {
-        qint64 currentRead = io.ReadTransferCount;
-        qint64 currentWrite = io.WriteTransferCount;
-        auto formatBytes = [](qint64 bytes, const QString& prefix) -> QString {
-            const char* units[] = {"B", "KB", "MB", "GB"};
-            int unitIdx = 0;
-            double val = bytes;
-            while (val >= 1024.0 && unitIdx < 3) {
-                val /= 1024.0;
-                unitIdx++;
-            }
-            return QString("%1: %2 %3").arg(prefix).arg(val, 0, 'f', 1).arg(units[unitIdx]);
-        };
-
-        m_diskReadRateLabel->setText(formatBytes(currentRead, "累计读"));
-        m_diskWriteRateLabel->setText(formatBytes(currentWrite, "累计写"));
-
-        qint64 elapsedSec = QDateTime::currentSecsSinceEpoch() - g_totalRuntime;
-        quint64 readDelta = currentRead - m_lastReadBytes;
-        quint64 writeDelta = currentWrite - m_lastWriteBytes;
-
-        double readSpeed = static_cast<double>(readDelta) / static_cast<double>(elapsedSec);
-        double writeSpeed = static_cast<double>(writeDelta) / static_cast<double>(elapsedSec);
-
-        m_diskReadTotalLabel->setText(formatBytes(currentRead/elapsedSec,"平均")+"/s,"+formatBytes(readSpeed, "实时"));
-        m_diskWriteTotalLabel->setText(formatBytes(currentWrite/elapsedSec,"平均")+"/s,"+formatBytes(writeSpeed, "实时"));
-
-        m_lastReadBytes = currentRead;
-        m_lastWriteBytes = currentWrite;
-
+        currentRead = io.ReadTransferCount;
+        currentWrite = io.WriteTransferCount;
     }
+#else
+    // Linux: 读取 /proc/self/io
+    std::ifstream ioFile("/proc/self/io");
+    std::string ioLine;
+    while (std::getline(ioFile, ioLine)) {
+        if (ioLine.compare(0, 6, "rchar:") == 0) {
+            std::istringstream iss(ioLine.substr(6));
+            iss >> currentRead;
+        } else if (ioLine.compare(0, 6, "wchar:") == 0) {
+            std::istringstream iss(ioLine.substr(6));
+            iss >> currentWrite;
+        }
+    }
+#endif
+
+    // 格式化输出函数
+    auto formatBytes = [](qint64 bytes, const QString& prefix) -> QString {
+        const char* units[] = {"B", "KB", "MB", "GB"};
+        int unitIdx = 0;
+        double val = bytes;
+        while (val >= 1024.0 && unitIdx < 3) {
+            val /= 1024.0;
+            unitIdx++;
+        }
+        return QString("%1: %2 %3").arg(prefix).arg(val, 0, 'f', 1).arg(units[unitIdx]);
+    };
+
+    // 累计值显示
+    m_diskReadRateLabel->setText(formatBytes(currentRead, "累计读"));
+    m_diskWriteRateLabel->setText(formatBytes(currentWrite, "累计写"));
+
+    // 计算平均速率（总累计 / 运行秒数）
+    qint64 elapsedSec = QDateTime::currentSecsSinceEpoch() - g_totalRuntime;
+    if (elapsedSec <= 0) elapsedSec = 1;
+    double avgReadSpeed = static_cast<double>(currentRead) / elapsedSec;
+    double avgWriteSpeed = static_cast<double>(currentWrite) / elapsedSec;
+
+    // 实时速率：使用两次采样之间的差值
+    static qint64 lastSampleTime = QDateTime::currentSecsSinceEpoch();
+    qint64 nowSec = QDateTime::currentSecsSinceEpoch();
+    qint64 deltaSec = nowSec - lastSampleTime;
+    if (deltaSec <= 0) deltaSec = 1;
+    quint64 readDelta = currentRead - m_lastReadBytes;
+    quint64 writeDelta = currentWrite - m_lastWriteBytes;
+    double realReadSpeed = static_cast<double>(readDelta) / deltaSec;
+    double realWriteSpeed = static_cast<double>(writeDelta) / deltaSec;
+
+    m_diskReadTotalLabel->setText(formatBytes(static_cast<qint64>(avgReadSpeed), "平均") + "/s, " +
+                                  formatBytes(static_cast<qint64>(realReadSpeed), "实时"));
+    m_diskWriteTotalLabel->setText(formatBytes(static_cast<qint64>(avgWriteSpeed), "平均") + "/s, " +
+                                   formatBytes(static_cast<qint64>(realWriteSpeed), "实时"));
+
+    // 更新保存值
+    m_lastReadBytes = currentRead;
+    m_lastWriteBytes = currentWrite;
+    lastSampleTime = nowSec;
 }
 
 void HomePage::refreshRuntimeStats()

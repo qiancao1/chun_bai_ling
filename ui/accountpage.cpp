@@ -3,7 +3,7 @@
 #include "addaccountdialog.h"
 #include "flowlayout.h"
 #include "global.h"
-#include "HomePage.h"
+#include "homepage.h"
 #include <QVBoxLayout>
 #include <QScrollArea>
 #include <QPushButton>

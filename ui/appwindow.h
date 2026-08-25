@@ -11,6 +11,7 @@
 #include <qjsonobject.h>
 #include <qnetworkreply.h>
 #include <qpainter.h>
+#include <QComboBox>
 
 #include "sandboxwindow.h"
 
@@ -51,6 +52,8 @@ private:
     void init_system(const QString &text);
     void 内置函数(const QString &Nmae,const QString &remark,const QStringList &params);
     void 内置函数();
+    void removeimg();
+    QJsonObject climg(const QString &text);
     QString tools_fun(const QString &tool_name, const QString &args, const QString &model);
     QJsonArray m_fun;
     QLabel *pathLabel;
@@ -67,7 +70,7 @@ private:
     void clearChat();
     QThread* m_execThread = nullptr;
     QTextEdit *messageInput;
-    QPushButton *sendBtn,*sendBtn2;
+    QPushButton *sendimg,*sendBtn,*sendBtn2;
     QPushButton *clearBtn;
     QComboBox *modelCombo;   // 新增模型下拉框
     QString currentFilePath;

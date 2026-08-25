@@ -25,7 +25,7 @@
 #include <QWebSocket>
 #include <QNetworkAccessManager>
 #include <QTimer>
-#include "AccountInfo.h"
+#include "accountinfo.h"
 #include <QColor>
 #include <future>
 #include <qnetworkreply.h>

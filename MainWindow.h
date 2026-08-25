@@ -38,7 +38,10 @@ class AccountPage;
 class LogPage;
 class PluginPage;
 class ChatPage;
+#ifdef _WIN32
 class SharedMemoryBridge;
+#endif
+
 
 class MainWindow : public QMainWindow
 {

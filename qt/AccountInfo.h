@@ -91,8 +91,8 @@ struct AccountInfo {
     QString nickname;  //不需要用户添加
     QString avatarPath; //不需要用户添加
     QString wsAddress;          // WebSocket 地址（默认空 然后是空将连接腾讯的）
-    QList<mdbtn> mdbtn;
-    QList<zdywb> zdywb;
+    QList<mdbtn> mdbtnlist;
+    QList<zdywb> zdywblist;
     int dyindex=0;
     int appid_int=0;
 

@@ -30,6 +30,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QPointer>
 #include <QThread>
+#include <QThreadPool>
 // 声明外部 myCallback 函数（根据您的实际定义）
 extern const char* myCallback(const char* uuid, int api_id, int appid,
                               const char* p1, const char* p2, const char* p3,

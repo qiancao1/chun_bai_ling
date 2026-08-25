@@ -12,7 +12,7 @@
 #include <QSslConfiguration>
 #include <QSslCertificate>
 #include <QSslKey>
-
+#include <QThreadPool>
 QString getBotName(int appid);
 
 

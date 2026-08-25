@@ -6,7 +6,7 @@
 #include <QVBoxLayout>
 #include <qbuttongroup.h>
 #include "global.h"
-
+#include <QThreadPool>
 // 你的渲染函数声明（如果单独头文件，则包含即可）
 QString renderInThread(const QString &htmlContent, int width = 400);
 

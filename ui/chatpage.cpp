@@ -34,7 +34,7 @@
 #include <QInputDialog>
 #include <QDesktopServices>
 #include <QUrl>
-
+#include <QThreadPool>
 static QCache<QString, QPixmap> avatarCache;
 static QCache<QString, QStringList> s_wrapCache; //行数缓存
 static const int WRAP_CACHE_SIZE = 500;

@@ -1,10 +1,10 @@
-#include "AiWidget.h"
+#include "aiwidget.h"
 #include "aifujia.h"
 #include "aisxw.h"
 #include "bqbgl.h"
 
 #include "global.h"
-
+#include <QThreadPool>
 #include <QGridLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>

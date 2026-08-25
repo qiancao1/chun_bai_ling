@@ -12,8 +12,8 @@
 #include <QTextEdit>
 #include <qcheckbox.h>
 #include <qtablewidget.h>
-#include "PlaceholderLineEdit.h"
-#include "PlaceholderTextEdit.h"
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"
 
 #define QLineEdit PlaceholderLineEdit
 #define QTextEdit PlaceholderTextEdit

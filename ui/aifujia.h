@@ -1,7 +1,7 @@
 #ifndef AIFUJIA_H
 #define AIFUJIA_H
 
-#include "AccountInfo.h"
+#include "accountinfo.h"
 
 #include <QWidget>
 #include <qtablewidget.h>

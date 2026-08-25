@@ -1,4 +1,4 @@
-#include "StatusChartWidget.h"
+#include "statuschartwidget.h"
 #include <QPainter>
 #include <qdebug.h>
 

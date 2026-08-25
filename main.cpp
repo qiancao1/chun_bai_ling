@@ -26,13 +26,13 @@
 
 
 #define _CRTDBG_MAP_ALLOC   // 映射 malloc/free 到调试版本，提供更详细信息
-#include <crtdbg.h>
+
 #include <stdlib.h>
 #include <QApplication>
-#include "CnbUploader.h"
-#include "PluginMarketWindow.h"
+#include "cnbuploader.h"
+#include "pluginmarketwindow.h"
 #include "cardwidget.h"
-
+#include <QThreadPool>
 #include "mainwindow.h"
 #include <QFile>
 #include <QJsonObject>
@@ -139,25 +139,81 @@ void initdiv()
     dir.mkpath("plugins");
     dir.mkpath("plugin_data");
 }
+
+
+
+#ifdef _WIN32
+#include <windows.h>
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
+#else
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <time.h>
+#endif
 
+#ifdef _WIN32
+
+// ---------- Windows 崩溃处理 ----------
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 {
-    // 创建 minidump 文件
-    HANDLE hFile = CreateFileA("crash.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    // 生成 minidump
+    HANDLE hFile = CreateFileA("crash.dmp", GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile != INVALID_HANDLE_VALUE) {
         MINIDUMP_EXCEPTION_INFORMATION mei;
         mei.ThreadId = GetCurrentThreadId();
         mei.ExceptionPointers = ep;
         mei.ClientPointers = FALSE;
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mei, NULL, NULL);
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                          hFile, MiniDumpNormal, &mei, NULL, NULL);
         CloseHandle(hFile);
     }
-    QMessageBox::about(NULL,  "Error","程序崩溃，已生成 crash.dmp 如果你是第一次 运行时报错这个 请按照微软运行库 请打开 下崽器 输入1 下载安装");
+    // 弹窗提示（注意：在异常处理中弹窗可能不稳定，但大多数情况下可用）
+    QMessageBox::about(nullptr, "程序崩溃",
+                       "程序崩溃，已生成 crash.dmp 文件。\n"
+                       "如果你是第一次运行报错，请安装微软运行库。");
     return EXCEPTION_EXECUTE_HANDLER; // 终止进程
 }
 
+void setupCrashHandler()
+{
+    SetUnhandledExceptionFilter(CrashHandler);
+}
+
+#else
+// ---------- Linux 崩溃处理 ----------
+static void posixSignalHandler(int sig)
+{
+    // 写入崩溃标记文件（异步安全）
+    int fd = open("/tmp/myapp_crash_marker", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd != -1) {
+        const char* msg = "Crash\n";
+        write(fd, msg, strlen(msg));
+        close(fd);
+    }
+    // 恢复默认处理，重新触发信号以生成 core dump
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void setupCrashHandler()
+{
+    struct sigaction sa;
+    sa.sa_handler = posixSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;  // 让被中断的系统调用自动重启
+    // 捕获常见崩溃信号
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGFPE,  &sa, nullptr);
+    sigaction(SIGILL,  &sa, nullptr);
+    // 可选：SIGBUS, SIGSYS 等
+}
+
+#endif
 void initDBs() {
     for (int i = 0; i < 5; ++i) {
         auto db = std::make_unique<LogDB>(QString("botdb/logdb_%1").arg(i));
@@ -184,7 +240,7 @@ int main(int argc, char *argv[]) {
 
     int ret=0;
     {
-        SetDllDirectoryW(L".\\DLLs");
+
         QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
         QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
         QApplication::setHighDpiScaleFactorRoundingPolicy(
@@ -192,25 +248,37 @@ int main(int argc, char *argv[]) {
             );
 
         //qputenv("QT_DEBUG_PLUGINS", "1");
-        SetUnhandledExceptionFilter(CrashHandler);
+        setupCrashHandler();
         QApplication a(argc, argv);
         qRegisterMetaType<MessageEvent>("MessageEvent");
         g_totalRuntime = QDateTime::currentSecsSinceEpoch();
-        MEMORYSTATUSEX memStatus;
-        memStatus.dwLength = sizeof(memStatus);
-
-        if (GlobalMemoryStatusEx(&memStatus)) {
-            totalMemMB = memStatus.ullTotalPhys / (1024.0 * 1024.0);
-        } else {
-            totalMemMB = 8192.0;
-        }
-
         QUuid uuid = QUuid::createUuid();
         g_keyuuid = uuid.toString(QUuid::WithoutBraces).toStdString();
         int len = g_keyuuid.length();
 
         g_keyuuid2 = new char[len + 1];
-        strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
+        #ifdef _WIN32
+                strcpy_s(g_keyuuid2, len + 1, g_keyuuid.c_str());
+                MEMORYSTATUSEX memStatus;
+                memStatus.dwLength = sizeof(memStatus);
+                if (GlobalMemoryStatusEx(&memStatus))
+                    totalMemMB = memStatus.ullTotalPhys / (1024.0 * 1024.0);
+                else
+                    totalMemMB = 8192.0;
+        #else
+                strcpy(g_keyuuid2, g_keyuuid.c_str());
+                long pages = sysconf(_SC_PHYS_PAGES);
+                long pageSize = sysconf(_SC_PAGE_SIZE);
+                if (pages > 0 && pageSize > 0)
+                    totalMemMB = (pages * pageSize) / (1024.0 * 1024.0);
+                else
+                    totalMemMB = 8192.0;
+        #endif
+
+
+
+
+
         initdiv();
         loadconfig();
         clearPTmpFolder();
@@ -242,12 +310,13 @@ int main(int argc, char *argv[]) {
         py::gil_scoped_release release;
         cache_db = new LmdbKV("botdb/file_db");
         initDBs();
-        if (QFile::exists("miaomiao32.exe")) {
-            bridge = new SharedMemoryBridge;
-            bridge->setCallback(myCallback);
-            if (!bridge->startServer(false)) qCritical("Bridge start failed");
-        }
-
+        #ifdef _WIN32
+            if (QFile::exists("miaomiao32.exe")) {
+                bridge = new SharedMemoryBridge;
+                bridge->setCallback(myCallback);
+                if (!bridge->startServer(false)) qCritical("Bridge start failed");
+            }
+        #endif
         aidb= new LmdbKV("botdb/aidb");
         dsdb = new LmdbKV("botdb/dsdb");
         accdb = new LmdbKV("botdb/accountinfo");
@@ -296,11 +365,13 @@ int main(int argc, char *argv[]) {
         {
             c->stop();
         }
+        #ifdef _WIN32
         if(bridge)
         {
             bridge->writeResponseToBlock(1,"{\"type\":6}");
             bridge->stopServer();
         }
+        #endif
         pluginPage->foruninstall_Plugin();
 
         py::gil_scoped_acquire acquire;
@@ -317,7 +388,11 @@ int main(int argc, char *argv[]) {
         accdb = nullptr;
         a.sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
-        TerminateProcess(GetCurrentProcess(), 0); //防止某些崩溃退出 导致更新无法重启
+        #ifdef _WIN32
+                TerminateProcess(GetCurrentProcess(), 0);
+        #else
+                _exit(0);   // 立刻终止，不调用任何清理函数
+        #endif
     }
     return ret;
 }

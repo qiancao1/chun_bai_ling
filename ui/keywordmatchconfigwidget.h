@@ -24,7 +24,10 @@ struct KeywordMatchRule {
     QStringList forbiddenWords; // 禁止词列表，任一出现则失败
     qint16 cans = 0;//参数数量
     qint16 matchType = 0;          // 0=精确 1=指令头(首个为头,其余必须在剩余部分出现) 2=包含
+    qint16 keywordCount=0;
+    qint16 primaryLen=0;
     bool enabled = true;
+
     QJsonObject toJson() const;
     static KeywordMatchRule fromJson(const QJsonObject &obj);
 };
@@ -50,7 +53,7 @@ public:
     ~KeywordMatchConfigWidget();
 
     // 对外提供的静态匹配接口
-    static QString match(int appid, const QString &msg);
+    QString match(int appid, const QString &msg);
 
     // 重新构建某个机器人的匹配器（规则改变后调用）
     void buildMatcherForRobot(int appid);

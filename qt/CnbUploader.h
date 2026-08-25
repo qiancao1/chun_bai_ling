@@ -11,7 +11,7 @@
 #include <QUrl>
 #include <future>
 #include <qmessageauthenticationcode.h>
-#include "NetManager.h"   // 请替换为实际路径
+#include "netmanager.h"   // 请替换为实际路径
 #include "global.h"
 
 QJsonObject getUploadUrlSync(const QString &fileName, qint64 size)

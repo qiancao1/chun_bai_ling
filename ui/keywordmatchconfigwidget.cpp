@@ -1,4 +1,4 @@
-#include "KeywordMatchConfigWidget.h"
+#include "keywordmatchconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
 
 #include <QVBoxLayout>
@@ -41,6 +41,8 @@ KeywordMatchRule KeywordMatchRule::fromJson(const QJsonObject &obj) {
     rule.forbiddenWords = obj["forbiddenWords"].toString("").split("|||", Qt::SkipEmptyParts);
     rule.cans = obj["cans"].toInt(0);
     rule.err = obj["err"].toString("");
+    rule.keywordCount = rule.keywords.size();
+    rule.primaryLen = rule.keywords.isEmpty() ? 0 : rule.keywords.first().length();
     return rule;
 }
 
@@ -331,7 +333,8 @@ KeywordMatchRule KeywordMatchConfigWidget::getRuleItemFromRow(int row) const {
         rule.matchType = combo->currentData().toInt();
     else
         rule.matchType = text(COL_MATCH_TYPE).toInt();
-
+    rule.keywordCount = rule.keywords.size();
+    rule.primaryLen = rule.keywords.isEmpty() ? 0 : rule.keywords.first().length();
     return rule;
 }
 
@@ -577,50 +580,40 @@ void KeywordMatchConfigWidget::loadAllRulesFromFile(const QString &filePath) {
 }
 void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
     if (!rulesMap.contains(appid)) return;
-    const auto &rules = rulesMap[appid];
+    const auto &rules = rulesMap [appid];
 
-    QList<RuleIndex> ruleList;
+
     QHash<QString, int> exactMap;
     AhoCorasick ac;
 
-    ruleList.reserve(rules.size());
+
     exactMap.reserve(rules.size() * 2);
 
     for (int i = 0; i < rules.size(); ++i) {
-        const auto &rule = rules[i];
+        auto &rule = rules[i];
         if (!rule.enabled) continue;
 
-        RuleIndex ri;
-        ri.ruleIdx = i;
-        ri.isExactMode = rule.matchType;
-        ri.reply = rule.replyContent;              // 浅拷贝（隐式共享）
-        ri.forbiddenWords = rule.forbiddenWords;   // 浅拷贝（重点）
-        ri.keywords = rule.keywords;               // 浅拷贝
-        ri.keywordCount = rule.keywords.size();
-        ri.primaryLen = rule.keywords.isEmpty() ? 0 : rule.keywords.first().length();
-        if(ri.isExactMode==1){
-            ri.cans = rule.cans;
-            ri.err = rule.err;
-        }
-        if (ri.isExactMode == 0) {
+
+
+
+        if (rule.matchType == 0) {
             for (const QString &kw : rule.keywords) {   // 引用，不拷贝
                 if (!exactMap.contains(kw)) {
-                    exactMap[kw] = ruleList.size();
+                    exactMap[kw] = i;
                 }
             }
-            ruleList.append(ri);
             continue;
         }
 
         for (const QString &kw : rule.keywords) {
-            ac.insert(kw, ruleList.size());   // AC 内部可能拷贝，但无法避免
+            ac.insert(kw, i);   // AC 内部可能拷贝，但无法避免
         }
-        ruleList.append(ri);
+
     }
 
     ac.build();
     s_acMatchers[appid] = ac;
-    s_rulesList[appid] = ruleList;
+
     s_exactMaps[appid] = exactMap;
     s_matcherBuilt[appid] = true;
 }
@@ -628,7 +621,7 @@ void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
 QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
     if (!s_matcherBuilt.value(appid, false)) return QString();
     const auto &ac = s_acMatchers[appid];
-    const auto &ruleList = s_rulesList[appid];
+    const auto &ruleList = rulesMap[appid];
     const auto &exactMap = s_exactMaps[appid];
 
     auto it = exactMap.constFind(msg);
@@ -639,7 +632,7 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
         for (const QString &fw : ri.forbiddenWords) {
             if (msg.contains(fw)) { forbidden = true; break; }
         }
-        if (!forbidden) return ri.reply;
+        if (!forbidden) return ri.replyContent;
     }
 
     QSet<int> candidateSet = ac.scan(msg);
@@ -663,7 +656,7 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
 
     for (int idx : std::as_const(candidates)) {
         const auto &ri = ruleList[idx];
-        if (ri.isExactMode == 0) continue;
+        if (ri.matchType == 0) continue;
 
         bool forbidden = false;
         for (const QString &fw : ri.forbiddenWords) {
@@ -671,13 +664,13 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
         }
         if (forbidden) continue;
 
-        if (ri.isExactMode == 2) {
+        if (ri.matchType == 2) {
             bool allHit = true;
             for (const QString &kw : ri.keywords) {
                 if (!msg.contains(kw)) { allHit = false; break; }
             }
-            if (allHit) return ri.reply;
-        } else if(ri.isExactMode == 1) { // 指令头模式
+            if (allHit) return ri.replyContent;
+        } else if(ri.matchType == 1) { // 指令头模式
             if (ri.keywords.isEmpty()) continue;
             QString header = ri.keywords.first();
             if (!msg.startsWith(header)) continue;
@@ -687,9 +680,9 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
                 if (!remaining.contains(ri.keywords[i])) { allSubHit = false; break; }
             }
             if (allSubHit){
-                if(ri.reply.contains("[参数1]"))
+                if(ri.replyContent.contains("[参数1]"))
                 {
-                    QString reply=ri.reply;
+                    QString reply=ri.replyContent;
                     QStringList list = remaining.split(" ");
                     if(ri.cans>list.size()) return ri.err;
                     int i=0;
@@ -701,11 +694,11 @@ QString KeywordMatchConfigWidget::match(int appid, const QString &msg) {
                     return reply;
                 }
 
-                return ri.reply;
+                return ri.replyContent;
             }
         }else{
             if (ri.keywords.isEmpty()) continue;
-            if(ri.keywords[0] == msg) return ri.reply;
+            if(ri.keywords[0] == msg) return ri.replyContent;
         }
     }
     return QString();

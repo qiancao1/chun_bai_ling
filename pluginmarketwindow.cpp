@@ -1,4 +1,4 @@
-#include "PluginMarketWindow.h"
+#include "pluginmarketwindow.h"
 #include "global.h"
 #include <QGridLayout>
 #include <QFrame>

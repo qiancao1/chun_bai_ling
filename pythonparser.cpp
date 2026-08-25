@@ -1,4 +1,4 @@
-#include "PythonParser.h"
+#include "pythonparser.h"
 #include <QFile>
 #include <QTextStream>
 #include <QDebug>

@@ -13,7 +13,7 @@
 #include <QMap>
 #include <qlistwidget.h>
 #include <qradiobutton.h>
-#include "PlaceholderLineEdit.h"
+#include "placeholderlineedit.h"
 #define QLineEdit PlaceholderLineEdit
 class QQBotClient;
 class MovableTableWidget : public QTableWidget

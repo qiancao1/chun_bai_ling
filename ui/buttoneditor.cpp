@@ -1,4 +1,4 @@
-#include "ButtonEditor.h"
+#include "buttoneditor.h"
 #include <QtWidgets>
 #include <QJsonArray>
 #include <QJsonObject>

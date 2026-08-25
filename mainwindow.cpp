@@ -20,17 +20,18 @@
 
 
 
-#include "MainWindow.h"
-#include "AiWidget.h"
-#include "BlacklistPage.h"
-#include "ButtonEditor.h"
-#include "HomePage.h"
-#include "AccountPage.h"
-#include "PluginPage.h"
+#include "mainwindow.h"
+#include "aiwidget.h"
+#include "blacklistpage.h"
+#include "buttoneditor.h"
+#include "homepage.h"
+#include "accountpage.h"
+#include "keywordpunishconfigwidget.h"
+#include "pluginpage.h"
 #include <QGraphicsOpacityEffect>
-#include "LogPage.h"
-#include "ScheduleConfigWidget.h"
-#include "ScreenshotSyncClient.h"
+#include "logpage.h"
+#include "scheduleconfigwidget.h"
+#include "screenshotsyncclient.h"
 #include "botruleconfigwidget.h"
 
 #include "chatpage.h"
@@ -67,16 +68,17 @@
 #include <QProgressDialog>
 #include <qmessagebox.h>
 
-#ifdef Q_OS_WIN
-#include <windows.h>
-#endif
 
 #define APP_VERSION_STR "v1.2.10.50"
 #define APP_BUILD_NUMBER 50
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.10.50 (2026-08-21)
+## v1.2.11.52 (2026-08-24)
+- 增加 分群 违禁词撤回 全局违禁词撤回<-用不到应该
+- 增加 入群验证
+
+## v1.2.10.50 (2026-08-22)
 - 修复 cos图床不可用问题
 - 优化 内网并发上传
 
@@ -259,6 +261,7 @@ ButtonEditor *buttonEditorPage=nullptr;
 BotRuleConfigWidget *RuleConfigWidget=nullptr;
 TextReplaceConfigWidget *TextReplace=nullptr;
 KeywordMatchConfigWidget *keyword=nullptr;
+KeywordPunishConfigWidget *keyword_Punish=nullptr;
 BlacklistPage *Black=nullptr;
 ForbiddenWordPage *forbidden=nullptr;
 ScheduleConfigWidget *schedule=nullptr;
@@ -341,6 +344,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
         processPendingEvents();
         schedule->jiancha();
         if(ss==homePage) homePage->refreshRuntimeStats();
+        #ifdef _WIN32
         if (!bridge) return;
         if (miaomiao32 >= 2)
             AppendEventLog("与加载器通讯失败了.." + QString::number(miaomiao32));
@@ -355,6 +359,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
         }
         if ((miaomiao & 7) == 0)
             pluginPage->syncPluginsTo32();
+        #endif
     });
     m_heartbeatTimer->start();
 
@@ -447,6 +452,8 @@ MainWindow::~MainWindow()
 
     delete keyword;
     keyword = nullptr;
+    delete keyword_Punish;
+    keyword_Punish=nullptr;
     delete TextReplace;
     TextReplace = nullptr;
     delete RuleConfigWidget;
@@ -516,6 +523,7 @@ void MainWindow::setupUi()
     RuleConfigWidget = new BotRuleConfigWidget;
     TextReplace = new TextReplaceConfigWidget;
     keyword = new KeywordMatchConfigWidget;
+    keyword_Punish = new KeywordPunishConfigWidget;
     Black = new BlacklistPage;
     forbidden = new ForbiddenWordPage;
     schedule =new ScheduleConfigWidget;
@@ -553,6 +561,7 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");
     configTabWidget2->addTab(keyword, "关键词回复");
+    configTabWidget2->addTab(keyword_Punish, "关键词撤回");
     configTabWidget2->addTab(schedule, "订阅|定时");
     configTabWidget2->addTab(ai_ui, "Ai");
 
@@ -1225,7 +1234,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 }
 
 void MainWindow::checkUpdate() {
-
+    #ifdef _WIN32
     QUrl url("https://gitee.com/api/v5/repos/linglan2/chun-bai-ling-dang/releases/latest");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
@@ -1267,6 +1276,9 @@ void MainWindow::checkUpdate() {
             QMessageBox::information(this, "检查更新", "当前已经是最新版本");
         }
     });
+    #else
+        QMessageBox::information(this, "检查更新", "在linux 暂时不能使用这个");
+    #endif
 }
 #include "netmanager.h"
 extern bool __cqkj;
@@ -1301,6 +1313,7 @@ QString checkUpdate(const MessageEvent &ev) {
 
 
 QString startDownloadAndReplace() {
+    #ifdef _WIN32
     QString appDir = QCoreApplication::applicationDirPath();
     QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
     if (!QFile::exists(exePath))
@@ -1312,7 +1325,7 @@ QString startDownloadAndReplace() {
 
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi;
-    if (CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE,
+    if (CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, false,
                        CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -1320,6 +1333,8 @@ QString startDownloadAndReplace() {
         return QString();
     }
     return "启动失败（CreateProcess 返回错误）";
+    #endif
+    return "其他系统暂时不支持";
 }
 
 void MainWindow::showUpdateDialog(const QString &version, const QString &releaseNotes) {

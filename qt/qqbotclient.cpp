@@ -18,7 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "QQBotClient.h"
+#include "qqbotclient.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -33,7 +33,7 @@
 #include <qwaitcondition.h>
 #include <QFutureWatcher>
 #include <netmanager.h>
-
+#include <QThreadPool>
 
 
 // 在文件头部包含 WinHttpClient 封装
@@ -1042,14 +1042,15 @@ void QQBotClient::onTextMessageReceived(const QString &message) {
     QThreadPool::globalInstance()->start(task);
 }
 
-
+#ifdef _WIN32
 typedef const char* (__cdecl *GetSignatureFunc)(const char*, const char*, const char*);
 typedef void (__cdecl *FreeSignatureFunc)(const char*);
 
 static GetSignatureFunc pGetSignature = nullptr;
 static FreeSignatureFunc pFreeSignature = nullptr;
-
+#endif
 static bool loadSignatureDll() {
+    #ifdef _WIN32
     if (pGetSignature && pFreeSignature) {
         return true; // 已加载
     }
@@ -1069,11 +1070,12 @@ static bool loadSignatureDll() {
     }
 
     return true;
+    #endif
 }
 
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     // 1. 提取字段
-
+    #ifdef _WIN32
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
     QString event_ts = d.value("event_ts").toString();
@@ -1119,6 +1121,8 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     QString text=  QJsonDocument(res).toJson(QJsonDocument::Compact);
 
     return text;
+    #endif
+    return QString();
 }
 QString QQBotClient::onTextMessage(const QString &message)
 {
@@ -1193,11 +1197,7 @@ QString QQBotClient::onTextMessage(const QByteArray &message)
             });
         }
         break;
-    case 13: // webhook认证
 
-        res = webhook_sig(obj,m_info->secret);
-
-        break;
     default:
         AppendEventLog(QString("未处理的 op=%1").arg(op) ,0xff);
         break;

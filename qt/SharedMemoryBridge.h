@@ -23,12 +23,11 @@
 
 #include <QObject>
 #include <QThread>
-#include <QThreadPool>
+
 #include <QRunnable>
 #include <QString>
 #include <functional>
 #include <windows.h>
-
 class SharedMemoryBridge : public QObject
 {
     Q_OBJECT
@@ -47,9 +46,9 @@ public:
     void setCallback(Callback cb);
     bool startServer(bool debug);
     void stopServer();
-    HANDLE m_hReqEvent = nullptr;   // 易语言 → Qt 通知有请求
-    HANDLE m_hRespEvent = nullptr;  // Qt → 易语言 通知有响应
-    bool restartYiProcess();   // 重启易语言进程
+    HANDLE m_hReqEvent = nullptr;
+    HANDLE m_hRespEvent = nullptr;
+    bool restartYiProcess();
 
 private:
     void workerLoop();

@@ -1,5 +1,5 @@
 #include "addaccountdialog.h"
-#include "PluginPage.h"
+#include "pluginpage.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>

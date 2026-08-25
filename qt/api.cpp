@@ -19,7 +19,7 @@
  */
 
 
-#include "ApiProcessor.h"
+#include "apiprocessor.h"
 #include "netmanager.h"
 #include "qqbotclient.h"
 #include <QRandomGenerator>
@@ -190,7 +190,7 @@ QString convertMarkdownLinksToXml(const QString &input)
             encodedUrl.replace("\"","\\\"");
             if(encodedUrl.isEmpty())
                 encodedUrl=showText;
-            if(url.size()>90)
+            if(url.size()>95)
             {
                 QString xmlTag = QString("[%1](qagent://aio/inlinecmd?command=%2)")
                 .arg(showText,encodedUrl);
@@ -2158,7 +2158,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
 
     Message log2;
     g_logdb[index]->readLog(m_info->appid,openid,log,log2);
-    const QList<mdbtn> &bts = m_info->mdbtn;
+    const QList<mdbtn> &bts = m_info->mdbtnlist;
     for (const mdbtn &bt : bts)
     {
         bool isok=false;
@@ -2233,7 +2233,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
     }
     //小尾巴
 
-    const QList<zdywb> &wb= m_info->zdywb;
+    const QList<zdywb> &wb= m_info->zdywblist;
     for (const zdywb &w : wb)
     {
         bool isok=false;

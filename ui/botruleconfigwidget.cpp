@@ -1,6 +1,6 @@
 
 
-#include "BotRuleConfigWidget.h"
+#include "botruleconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
 
 #include <QVBoxLayout>
@@ -524,7 +524,7 @@ void BotRuleConfigWidget::oninitbot(int appid)
     if (rules.isEmpty()) return;
     for (auto& account : m_accounts) {
         if (account->appid_int != appid) continue;
-        account->mdbtn.clear();
+        account->mdbtnlist.clear();
         for (const auto& rule : rules) {
             QJsonParseError parseError;
             QJsonDocument jsonDoc = QJsonDocument::fromJson(rule.buttonText.toUtf8(), &parseError);
@@ -544,7 +544,7 @@ void BotRuleConfigWidget::oninitbot(int appid)
             else
                 bt.hxc  = rule.candidateWords.split("|||"); //候选词
             bt.pplx = rule.matchType;
-            account->mdbtn.append(bt);
+            account->mdbtnlist.append(bt);
         }
     }
 }

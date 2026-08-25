@@ -12,7 +12,7 @@
 #include <QStyledItemDelegate>
 #include <QListWidget>
 #include <qlabel.h>
-#include "QQBotClient.h"
+#include "qqbotclient.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
 #include <QCache>
 #include <qstandarditemmodel.h>

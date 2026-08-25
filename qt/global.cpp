@@ -25,9 +25,9 @@
 #include "chatpage.h"
 #include "pluginmarket.h"
 #include "netmanager.h"
-#include "MainWindow.h"
+#include "mainwindow.h"
 #include <QHostInfo>
-
+#include <QThreadPool>
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
@@ -963,10 +963,12 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             for (const auto &c : std::as_const(g_botdb)) {
                 c->close();   // 假设 stop 是同步的，会等待数据发送完毕
             }
+            #ifdef _WIN32
             if (bridge) {
                 bridge->writeResponseToBlock(1, "{\"type\":6}");
                 bridge->stopServer();   // 同步停止
             }
+            #endif
             for(const auto &db : std::as_const(g_logdb))
             {
                 db->close();
@@ -976,7 +978,8 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             QString program = QCoreApplication::applicationFilePath();
             QStringList args = QCoreApplication::arguments();
             QProcess::startDetached(program, args);
-            ::TerminateProcess(GetCurrentProcess(), 0);
+
+            qApp->quit();
         }, Qt::QueuedConnection);
 
 
@@ -990,6 +993,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
     }
     if(ev.msg=="#确认更新框架")
     {
+        #ifdef _WIN32
         if(!__cqkj) return "请发送 [#更新框架]() 来检查是否需要更新";
 
             QString appDir = QCoreApplication::applicationDirPath();
@@ -1021,7 +1025,9 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
 
         return "启动失败（CreateProcess 返回错误）";
-
+        #else
+        return "linux 暂时不支持热更新";
+        #endif
     }
     if(ev.msg=="关闭webui")
     {
@@ -1522,7 +1528,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
     ret =ruqunhy(info,ev);
 
-
+    if(ret=="!!!!") return ; //命中违禁词处罚了
 
     if(!ret.isEmpty() && ret!="*")
     {
@@ -1532,8 +1538,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         return;
     }
 
-
-    ret = keyword->match(info->appid_int,ev.msg);
+        ret = keyword->match(info->appid_int,ev.msg);
     if(ret.isEmpty())
         ret = schedule->ppzl(ev,text,info);
     if(ret == "*") return;
@@ -2294,7 +2299,25 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             db->addGroup(ev.groupId, gid);
             return "关闭申请加群提示成功";
         }
-
+        if (ev.msg == "开违禁词检测") {
+            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+            if (ev.bitmap & BIT_PUNISH)  return "当前已经开启 申请加群提示";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap |= BIT_PUNISH;
+            db->addGroup(ev.groupId, gid);
+            return "设置违禁词检测成功";
+        }
+        if (ev.msg == "关违禁词检测") {
+            if (!(ev.bitmap & BIT_PUNISH))  return "当前已经关闭 申请加群提示";
+            auto *db = g_botdb[info->appid_int];
+            GroupRecord gid;
+            db->getGroupInfo(ev.groupId, gid);
+            gid.bitmap &= ~BIT_PUNISH;
+            db->addGroup(ev.groupId, gid);
+            return "关闭违禁词检测成功";
+        }
         if (ev.msg == "开自动同意加群") {
             if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
             if (ev.bitmap & BIT_AUTO_JOJI)  return "当前已经开启 自动同意加群";
@@ -2368,6 +2391,8 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             return "取消退群提示成功 如需打开 请发送 [设置退群提示]()";
         }
         // 其他管理命令不处理，继续往下
+    }else{
+        if(keyword_Punish->match(ev)) return "!!!!";
     }
 
     // ---------- 入群事件（缓存起来，等待主线程合并发送） ----------

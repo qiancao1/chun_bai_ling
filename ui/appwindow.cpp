@@ -1,5 +1,5 @@
-#include "AppWindow.h"
-#include "PythonParser.h"
+#include "appwindow.h"
+#include "pythonparser.h"
 #include "global.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -725,7 +725,7 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
     inputLayout->setContentsMargins(0, 0, 0, 0);
     messageInput = new QTextEdit;
     messageInput->setPlaceholderText("输入消息（Ctrl+Enter发送）...");
-    messageInput->setFixedHeight(70);
+    messageInput->setFixedHeight(100);
     // 核心修正：禁止水平滚动 + 启用 CSS 强制断行
     messageInput->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     messageInput->setLineWrapMode(QTextEdit::WidgetWidth);
@@ -738,6 +738,7 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
         "   word-break: break-all;"  // 关键！让长数字也能换行
         "}"
         );
+    sendimg = new QPushButton("添加图片");
     sendBtn = new QPushButton("发送");
     sendBtn2 = new QPushButton("发送");
     clearBtn = new QPushButton("清空对话");
@@ -753,8 +754,10 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
     sendBtn->setMaximumWidth(100);
     inputLayout0->addWidget(modelCombo);
     nosh = new QCheckBox("不审核");
+
     inputLayout0->addWidget(nosh);
     inputLayout0->addWidget(clearBtn);
+    inputLayout0->addWidget(sendimg);
     inputLayout0->addWidget(sendBtn2);
     inputLayout0->addWidget(sendBtn);
     mainLayout2->addLayout(inputLayout0);
@@ -763,9 +766,18 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
         g_不审核 = nosh->isChecked();
     });
     // 信号连接
+    connect(sendimg, &QPushButton::clicked, this, [=]() {
+
+        QString path = QFileDialog::getOpenFileName(this, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.bmp *.webp *.ico *.gif *.jxr);;所有文件 (*.*)");
+        if (!path.isEmpty()) {
+
+            QString text = QString("<img src=\"%1\" width=\"64\" alt=\"本地图片\" />").arg(path);
+            QTextCursor cursor = messageInput->textCursor();
+            cursor.insertHtml(text);
+        }
+    });
+
     connect(sendBtn, &QPushButton::clicked, this, [=]() {
-
-
         if(sendBtn->text()=="中断"){
             if (m_stream) {
                 m_stream->userAborted = true;
@@ -780,6 +792,14 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
         }
 
         QString text = messageInput->toPlainText().trimmed();
+        QString t2 = messageInput->toHtml();
+        const QStringList list = takeAllTextMiddle(t2,"<img src=\"","\" alt=\"本地图片\" width=\"64\" />",false);
+        for(const auto &t : list)
+        {
+
+            text = subTextReplace(text,"￼","![img]("+t+")",1);
+        }
+
         if (!text.isEmpty()) {
             messageInput->clear();
             onSendMessage_stream(text);
@@ -789,6 +809,15 @@ AppWindow::AppWindow(const QString &path,QWidget *parent) : m_dir(path), QMainWi
     connect(sendBtn2, &QPushButton::clicked, this, [=]() {
 
         QString text = messageInput->toPlainText().trimmed();
+        QString t2 = messageInput->toHtml();
+        const QStringList list = takeAllTextMiddle(t2,"<img src=\"","\" alt=\"本地图片\" width=\"64\" />",false);
+        for(const auto &t : list)
+        {
+
+            text = subTextReplace(text,"￼","![img]("+t+")",1);
+        }
+
+
         if(sendBtn->text()=="中断"){
             if (m_stream) {
                 addmsg+=text+"\n";
@@ -1150,6 +1179,7 @@ void AppWindow::内置函数()
     内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
     内置函数("llwye","浏览网页 返回提取后的文本 当用户发送链接时 可以使用 也可以请求某些api 当用户让你帮我对接api时",QStringList() << "链接 如 https://www.baidu.com");
     内置函数("exec_cmd", "在操作系统命令行中执行一个指令，并返回执行结果 注意 可能无法执行python 指令", {"执行命令 注意已经自动 cd 到 py文件目录 非exe目录"});
+    内置函数("loadimg", "查看某张图片 将某张(多张)图片加载到上下文", {"图片格式 ![img](本地路径) 可以多张"});
 
 }
 
@@ -1506,6 +1536,12 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
         QProcess::startDetached(cmdLine);
         return "由于下载是异步 这里不返回结果 请继续执行 如果你要查看结果 需要 执行 cmd 命令 查看";
     }
+
+    else if(tool_name == "loadimg")
+    {
+        return obj["p1"].toString();
+    }
+
     else {
         result = "错误：未知的工具名称 " + tool_name;
     }
@@ -1638,11 +1674,7 @@ void AppWindow::onSendMessage(const QString &text)
             msgs.append(systemMsg);
         }
 
-        // 2. 再添加用户消息（用独立的 QJsonObject，避免覆盖）
-        QJsonObject userMsg;
-        userMsg["role"] = "user";
-        userMsg["content"] = text;
-        msgs.append(userMsg);
+        msgs.append(climg(text));
 
         sxw["messages"] = msgs;
     }
@@ -1655,7 +1687,7 @@ void AppWindow::onSendMessage(const QString &text)
         sxw.remove("tools");
          addMessage(aiReply, MessageType::AI);
         QMetaObject::invokeMethod(this, [this, aiReply]() {
-
+            removeimg();
             W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
             m_run=false;
             qxzd=false;
@@ -1668,40 +1700,114 @@ void AppWindow::onSendMessage(const QString &text)
 }
 
 
-void AppWindow::init_system(const QString &text)
+
+QJsonObject AppWindow::climg(const QString &text)
+{
+    // 正则匹配所有 ![img](路径)
+    QRegularExpression re(R"(!\[.*?\]\(([^)]+)\))");
+    QRegularExpressionMatchIterator it = re.globalMatch(text);
+
+    QStringList imagePaths;
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        imagePaths.append(match.captured(1)); // 提取路径
+    }
+
+
+
+    // 构建 content 数组
+    QJsonArray content;
+
+    // 添加文本项（若非空）
+    if (!text.isEmpty()) {
+        QJsonObject textItem;
+        textItem["type"] = "text";
+        textItem["text"] = text;
+        content.append(textItem);
+    }
+
+    // 添加图片项（每个路径作为 image_url）
+    for (const QString &path : imagePaths) {
+        QJsonObject imageItem;
+        imageItem["type"] = "image_url";
+        QJsonObject imageUrlObj;
+        QByteArray imageData = R_file(path);
+        QString base64 = QString::fromLatin1(imageData.toBase64());
+        imageUrlObj["url"] = "data:image/png;base64," + base64;
+
+
+
+        imageItem["image_url"] = imageUrlObj;
+        content.append(imageItem);
+    }
+
+    // 组装完整的用户消息对象
+    QJsonObject msgObj;
+    msgObj["role"] = "user";
+    msgObj["content"] = content;
+
+    return msgObj;
+}
+void AppWindow::removeimg()
 {
     QJsonArray msgs = sxw["messages"].toArray();
 
+    // ---- 1. 清理所有历史消息中的图片（只保留文本） ----
+    for (int i = 0; i < msgs.size(); ++i) {
+        QJsonObject msg = msgs[i].toObject();
+        if (msg.contains("content") && msg["content"].isArray()) {
+            QJsonArray content = msg["content"].toArray();
+            QJsonArray newContent;
+            for (const QJsonValue &val : content) {
+                QJsonObject item = val.toObject();
+                if (item["type"].toString() != "image_url") {
+                    newContent.append(item);
+                }
+            }
+            // 若移除图片后内容为空，补充一个空文本项，避免 API 拒绝
+            if (newContent.isEmpty()) {
+                QJsonObject emptyText;
+                emptyText["type"] = "text";
+                emptyText["text"] = "";
+                newContent.append(emptyText);
+            }
+            msg["content"] = newContent;
+            msgs[i] = msg;
+        }
+    }
+    sxw["messages"] = msgs;
+}
+void AppWindow::init_system(const QString &text)
+{
+    if(!text.isEmpty())
+        removeimg();
+    QJsonArray msgs = sxw["messages"].toArray();
+    // ---- 2. 处理 system 消息 ----
     bool systemFound = false;
-
     for (int i = 0; i < msgs.size(); ++i) {
         QJsonObject msg = msgs[i].toObject();
         if (msg["role"].toString() == "system") {
-            // 使用当前最新的目录列表更新 content
             msg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
             msgs[i] = msg;
             systemFound = true;
-            break; // 通常只有一个 system，找到就停
+            break;
         }
     }
-
     if (!systemFound && !g_system.isEmpty()) {
         QJsonObject systemMsg;
         systemMsg["role"] = "system";
         systemMsg["content"] = subTextReplace(g_system, "{{文件目录}}", listDirectoryEntries(m_dir));
-        msgs.insert(0, systemMsg); // 插在最前面
+        msgs.insert(0, systemMsg);
     }
-    if(!text.isEmpty())
-    {
-        QJsonObject userMsg;
-        userMsg["role"] = "user";
-        userMsg["content"] = text;
-        msgs.append(userMsg);
+
+    // ---- 3. 追加当前用户消息（包含图片） ----
+    if (!text.isEmpty()) {
+        msgs.append(climg(text));
         addMessage2(text, MessageType::User);
     }
+
     sxw["messages"] = msgs;
 }
-
 QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
 {
     for(int i=0; i<50; ++i) {
@@ -1786,16 +1892,17 @@ QString AppWindow::Ai_post(const QString &url, const QString &key,QString &err)
                 if(!data.isEmpty())
                 {
                     QJsonArray msgs = sxw["messages"].toArray();
-                    QJsonObject toolMsg;
-                    toolMsg["role"] = "tool";
-                    toolMsg["content"] = data;
-                    toolMsg["tool_call_id"] = callID;
-                    toolMsg["name"] = tool_name;
 
-                    msgs.append(toolMsg);
+                        QJsonObject toolMsg = climg(data);
+                        toolMsg["role"] = "tool";
+                        toolMsg["tool_call_id"] = callID;
+                        toolMsg["name"] = tool_name;
+                        msgs.append(toolMsg);
+
                     sxw["messages"] = msgs;
                     ok = true;
                 }
+
             }
             if (!text.isEmpty()) {
                 addMessage(text,  MessageType::AI);
@@ -2033,6 +2140,7 @@ void AppWindow::startStreamRequest(StreamSession *s, const QString &url, const Q
     obj["prompt_tokens"] =m_prompt_tokens;
     obj["prompt_tokens_details"] =m_prompt_tokens_details;
     sxw["usage"]=obj;
+    removeimg();
     W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
     sxw.remove("usage");
     init_system(addmsg);  // 确保 sxw 正确
@@ -2611,6 +2719,7 @@ void AppWindow::onSendMessage_stream(const QString &text)
         obj["prompt_tokens"] =m_prompt_tokens;
         obj["prompt_tokens_details"] =m_prompt_tokens_details;
         sxw["usage"]=obj;
+        removeimg();
         W_file(m_dir + "/ai对话.json", QJsonDocument(sxw).toJson());
         sendBtn->setText("发送");
     });

@@ -25,9 +25,7 @@
 #include <cstring>
 #include <ctime>
 #include <QTimer>
-#ifdef Q_OS_WIN
-#include <windows.h>
-#endif
+
 
 BotDB::BotDB(const QString& path, size_t initialMapSizeMB)
     : m_path(path), m_initialMapSize(initialMapSizeMB * 1024ULL * 1024ULL),

@@ -18,7 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "SharedMemoryBridge.h"
+#include "sharedmemorybridge.h"
 #include <QCoreApplication>
 #include <QProcess>
 #include <QUuid>
@@ -27,6 +27,7 @@
 #include <QApplication>
 #include <qjsondocument.h>
 #include <qjsonobject.h>
+#include <QThreadPool>
 // 共享内存布局（两边必须一致）
 static const size_t BLOCK_SIZE = 1024 * 1024;           // 1 MB
 static const int    NUM_BLOCKS = 5;

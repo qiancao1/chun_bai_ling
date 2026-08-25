@@ -1,4 +1,4 @@
-#include "TextReplaceConfigWidget.h"
+#include "textreplaceconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
 
 #include <QVBoxLayout>
@@ -405,7 +405,7 @@ void TextReplaceConfigWidget::oninitbot()
     if (rules.isEmpty()) return;
     for (auto& account : m_accounts) {
         if (account->appid_int != g_appid) continue;
-        account->zdywb.clear();
+        account->zdywblist.clear();
         for (const auto& rule : rules) {
             if(rule.remark.isEmpty() || rule.appendText.isEmpty()) continue;
 
@@ -429,7 +429,7 @@ void TextReplaceConfigWidget::oninitbot()
                     zd.thcv.append(doubleBarParts[2]);
                 }
             }
-            account->zdywb.append(zd);
+            account->zdywblist.append(zd);
         }
     }
 }

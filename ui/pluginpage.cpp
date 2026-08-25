@@ -18,9 +18,9 @@
 #include <QProcess>
 #include <QApplication>
 #include <qlibrary.h>
-#include "AppWindow.h"
+#include "appwindow.h"
 
-#include "PluginMarketWindow.h"
+#include "pluginmarketwindow.h"
 #include "global.h"
 #include "node_plugin_manager.h"
 
@@ -841,10 +841,11 @@ void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
             AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: unknown exception" ,0xff);
         }
     }
-
+    #ifdef _WIN32
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
-    else if(msg.at_you && msg.subType==0)
+    #endif
+    if(msg.at_you && msg.subType==0)
         botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
     if(msg.at_you && msg.subType==0) botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
 
@@ -1193,7 +1194,7 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
         err = LoadPlugin_py(info);
     }else if(type==1) {
         err = LoadPlugin_DLL(info);
-        if (err.contains("加载 DLL 失败:"))
+        if (err.contains("加载 DLL|SO 失败:"))
         {
             err = LoadPlugin_DLL32(info);
             info.type=2;
@@ -1559,7 +1560,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     if (!QFile::copy(srcAbsPath, info.loadedDllPath)) return QString("复制 DLL 到临时目录失败: %1 -> %2").arg(info.path, info.loadedDllPath);
     QLibrary* lib = new QLibrary(info.loadedDllPath);
     if (!lib->load()) {
-        QString errorMsg = "加载 DLL 失败: " + lib->errorString();
+        QString errorMsg = "加载 DLL|SO 失败:: " + lib->errorString();
         delete lib;                          // 释放 QLibrary 对象
         QFile::remove(info.loadedDllPath);   // 删除临时文件
         info.loadedDllPath.clear();          // 清除路径（可选）
@@ -1608,7 +1609,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
 {
-
+    #ifdef _WIN32
     QJsonObject reqJson;
     reqJson["type"] = type;                       // 加载插件
     reqJson["path"] = info.loadedDllPath;      // 新路径（临时目录）
@@ -1619,6 +1620,9 @@ QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlis
     if(!bridge->writeResponseToBlock(1, reqData.constData()))
          return "发送加载命令失败（共享内存繁忙）";
     return bridge->processRequestsA(5000);
+#else
+    return QString();
+#endif
 }
 
 QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
@@ -1672,8 +1676,8 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
 
 void PluginPage::syncPluginsTo32()
 {
+    #ifdef _WIN32
     if (!bridge) return;
-
     QJsonObject cmd;
     cmd["type"] = 10;
 
@@ -1695,6 +1699,7 @@ void PluginPage::syncPluginsTo32()
     QString ret =bridge->processRequestsA(5000);
     if(ret.isEmpty()) return;
     AppendEventLog(ret);
+    #endif
 }
 
 QString PluginPage::LoadPlugin_py(PluginInfo &info)

@@ -1,4 +1,4 @@
-#include "LogPage.h"
+#include "logpage.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
@@ -364,7 +364,7 @@ void LogPage::flushPendingRows()
         QModelIndex idx = m_model->index(row, 0);
         QString key = g_logdb[0]->makeKey(QString::number(data.appid), data.groupId, data.seq);
         m_model->setData(idx, key, Qt::UserRole);
-        m_model->setData(idx, data.seq, Qt::UserRole + 1);
+        m_model->setData(idx, static_cast<qulonglong>(data.seq), Qt::UserRole + 1);
     }
 
     // 6. 更新 m_offset

@@ -8,12 +8,13 @@
 #include <qlistwidget.h>
 #include <qpushbutton.h>
 #include <qtablewidget.h>
-#include "AccountInfo.h"
+#include "accountinfo.h"
 #include "aifujia.h"
+#include <QComboBox>
 
 #include "qqbotclient.h"
-#include "PlaceholderLineEdit.h"
-#include "PlaceholderTextEdit.h"
+#include "placeholderlineedit.h"
+#include "placeholdertextedit.h"
 #include "vectormemory.h"
 
 #define QLineEdit PlaceholderLineEdit
