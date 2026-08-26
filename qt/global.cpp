@@ -73,7 +73,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
             if (m_openidTimers.contains(openid)) {
                 QTimer *oldTimer = m_openidTimers[openid];
                 oldTimer->start();  // 重新计时 5 秒
-                qDebug() << "重置定时" << openid;
+                //qDebug() << "重置定时" << openid;
                 return;  // 无需创建新定时器
             }
 
@@ -107,7 +107,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
             m_openidTimers.insert(openid, timer);
             timer->start();
 
-            qDebug() << "添加定时（或重置）" << openid;
+            //qDebug() << "添加定时（或重置）" << openid;
         }, Qt::QueuedConnection);
     }
 
@@ -182,7 +182,7 @@ void cancelTimer(const QString &openid)
         QTimer *timer = m_openidTimers.take(openid);  // 从 map 取出
         timer->stop();
         timer->deleteLater();  // 安全销毁
-        qDebug() << "取消定时" << openid;
+        //qDebug() << "取消定时" << openid;
     }, Qt::QueuedConnection);
 }
 

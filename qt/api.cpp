@@ -3132,7 +3132,7 @@ QString QQBotClient::updateMenu(const QJsonObject& menuData, Callback callbacks)
 // 4. 创建面板 (POST)
 QString QQBotClient::createPanel(const QJsonObject& panelData, Callback callbacks)
 {
-    qDebug() << panelData;
+    //qDebug() << panelData;
     return Post("https://api.bot.qq.com/v2/panels", panelData, QString(), 10000, callbacks);
 }
 
@@ -3154,7 +3154,7 @@ QString QQBotClient::getPanel(const QString& panelId, Callback callbacks)
 // 7. 修改面板 (PATCH)
 QString QQBotClient::updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks)
 {
-    qDebug() << panelData;
+    //qDebug() << panelData;
     return put2("https://api.bot.qq.com/v2/panels/" + panelId, QJsonDocument(panelData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
 }
 

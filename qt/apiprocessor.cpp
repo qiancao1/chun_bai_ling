@@ -7,7 +7,6 @@
 #include <QJsonValue>
 #include <QEventLoop>
 #include <QTimer>
-#include <QDebug>
 
 // ---------- 辅助：从 JSON 中按路径提取值 ----------
 static QString extractJsonValue(const QJsonDocument &doc, const QString &path)

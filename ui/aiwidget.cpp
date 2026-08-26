@@ -2168,7 +2168,7 @@ void AiWidget::trimContextImages(QJsonObject &context, int maxUserMessages)
         if (newContent.size() != content.size()) {
             msg["content"] = newContent;
             messages[i] = msg;
-            qDebug() << "已移除消息索引" << i << "中的图片（非最近3轮对话）";
+            //qDebug() << "已移除消息索引" << i << "中的图片（非最近3轮对话）";
         }
     }
 
@@ -2193,7 +2193,7 @@ void AiWidget::trimToolResponses(QJsonObject &context, int maxToolMessages, int 
     int totalTools = toolIndices.size();
     if (totalTools <= maxToolMessages) {
         // 数量未超限，无需截断
-        qDebug() << "[trimToolResponses] tool消息数量" << totalTools << "未超过限制" << maxToolMessages;
+        //qDebug() << "[trimToolResponses] tool消息数量" << totalTools << "未超过限制" << maxToolMessages;
         return;
     }
 
@@ -2208,14 +2208,14 @@ void AiWidget::trimToolResponses(QJsonObject &context, int maxToolMessages, int 
                 content = content.left(truncateLimit) + "...(truncated)";
                 msg["content"] = content;
                 messages[msgIndex] = msg;
-                qDebug() << "[trimToolResponses] 截断 tool 消息索引" << msgIndex;
+                //qDebug() << "[trimToolResponses] 截断 tool 消息索引" << msgIndex;
             }
         }
     }
 
     context["messages"] = messages;
-    qDebug() << "[trimToolResponses] 共" << totalTools << "条 tool 消息，保留最近"
-             << maxToolMessages << "条完整，其余截断至" << truncateLimit << "字节";
+    //qDebug() << "[trimToolResponses] 共" << totalTools << "条 tool 消息，保留最近"
+    //         << maxToolMessages << "条完整，其余截断至" << truncateLimit << "字节";
 }
 void AiWidget::convertContextImagesToBase64(QJsonObject &context)
 {
@@ -2585,7 +2585,7 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
 
     session.timer->start(delayMs);
     session.dslx=0;
-    qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
+    //qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
 }
 
 
@@ -3003,7 +3003,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
                     double score = results[0].second;
                     if (score <= threshold) {
                         isDuplicate = true;
-                        qDebug() << "跳过重复事实:" << fact << "相似度:" << score;
+                        //qDebug() << "跳过重复事实:" << fact << "相似度:" << score;
                     }
                 }
 
@@ -3011,7 +3011,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
                 if (!isDuplicate) {
                     std::vector<float> floatVec(vec.begin(), vec.end());
                     mem->insert(floatVec, fact.toStdString());
-                    qDebug() << "插入新事实:" << fact;
+                    //qDebug() << "插入新事实:" << fact;
                 }
             }
         });
@@ -3084,7 +3084,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         QString text = obj3["content"].toString().trimmed();
         const QJsonArray arr2 = obj3["tool_calls"].toArray();
         obj3.remove("reasoning_content");
-        qDebug() << "ai回复：" << text << "tool:" << arr2;
+        //qDebug() << "ai回复：" << text << "tool:" << arr2;
         // 将 AI 响应加入上下文
         if (sxw.contains("messages") && sxw["messages"].isArray()) {
             QJsonArray msgs = sxw["messages"].toArray();

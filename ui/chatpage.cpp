@@ -209,11 +209,7 @@ static void downloadAvatarIfNeeded(int appid, const QString &openid) {
                     file.close();
                     qDebug() << "Avatar saved and cropped (32x32):" << avatarPath;
                 }
-            } else {
-                qDebug() << "Failed to decode image data from:" << url;
             }
-        } else {
-            qDebug() << "Download failed:" << url << reply->errorString();
         }
         downloadingSet().remove(url);
         reply->deleteLater();
@@ -1325,7 +1321,7 @@ void ChatPage::updateAllContactLists(int index)
     s_wrapCache.clear(); //聊天记录缓存
     avatarCache.clear(); //头像缓存
     bool sw=false;
-    QElapsedTimer t;
+
     switch (index) {
     case 0: // 全量群
         sw = g_logdb[1]->beginTransaction(true);
@@ -1377,7 +1373,7 @@ void ChatPage::updateAllContactLists(int index)
     case 3: bufferIdx=3;break;// 频道
     case 4: bufferIdx=4;break;// 频道私聊
     case 5:
-        t.start();
+
         contactList->setUpdatesEnabled(false);
         for (auto it = 最近对话.begin(); it != 最近对话.end(); ++it) {
             int appid=0,type=0;
@@ -1396,14 +1392,14 @@ void ChatPage::updateAllContactLists(int index)
 
                     ev.groupId =c.id;
                     ev.user = c.id;
-                    qDebug() << "A" <<t.elapsed();
+
                     g_botdb[appid]->getOrUpdateUser(m_botClients[appid],ev,true);
 
                     if(type==0)
                         c.name = ev.groupname;       // 没有 name，就用 key
                     else
                         c.name = ev.nickname;
-                    qDebug() << "B" <<t.elapsed()<< c.name;
+
                 }
             }
 

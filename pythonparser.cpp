@@ -1,7 +1,7 @@
 #include "pythonparser.h"
 #include <QFile>
 #include <QTextStream>
-#include <QDebug>
+
 #include <QRegularExpression>
 
 QList<PythonFunction> extractFunctions(const QString &filePath)
@@ -9,7 +9,7 @@ QList<PythonFunction> extractFunctions(const QString &filePath)
     QList<PythonFunction> result;
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qDebug() << "无法打开文件:" << filePath;
+        //qDebug() << "无法打开文件:" << filePath;
         return result;
     }
     QString content = QString::fromUtf8(file.readAll());
@@ -204,7 +204,7 @@ QString getFunctionCode(const QString &filePath,
 
 #include <QFile>
 #include <QTextStream>
-#include <QDebug>
+
 #include <QRegularExpression>
 bool replaceFunction(const QString &filePath,
                                    const QString &funcName,

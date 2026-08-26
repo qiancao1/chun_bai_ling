@@ -1,6 +1,6 @@
 #include "statuschartwidget.h"
 #include <QPainter>
-#include <qdebug.h>
+
 
 
 StatusChartWidget::StatusChartWidget(QWidget *parent)

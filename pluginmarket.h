@@ -12,7 +12,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QByteArray>
-#include <QDebug>
+
 #include <QString>
 #include <QList>
 #include "netmanager.h"
