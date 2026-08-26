@@ -288,7 +288,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
 
                 if (ev.bitmap & BIT_AI_BAI) return "本群已在白名单";
                 auto *db = g_botdb[info->appid_int];
-                GroupRecord rec;
+                GroupRecord2 rec;
                 db->getGroupInfo(ev.groupId,rec);
                 rec.bitmap |= BIT_AI_BAI;
                 db->addGroup(ev.groupId,rec);
@@ -310,7 +310,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
         if(p1.size()==32)
         {
             auto *db = g_botdb[info->appid_int];
-            GroupRecord rec;
+            GroupRecord2 rec;
             if(db->getGroupInfo(p1,rec))
             {
                 if(p1!=ev.groupId) return "传递参数1 群id 在数据库 未记录 请检查是否是真实群id 或者将机器人移出 对应群再次邀请";
@@ -348,7 +348,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
 
                 if (!(ev.bitmap & BIT_AI_BAI)) return "本群不在白名单";
                 auto *db = g_botdb[info->appid_int];
-                GroupRecord rec;
+                GroupRecord2 rec;
                 db->getGroupInfo(ev.groupId, rec);
                 rec.bitmap &= ~BIT_AI_BAI;
                 db->addGroup(ev.groupId, rec);
@@ -369,7 +369,7 @@ QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
         if (p1.size() == 32) {
             // 参数为群ID（长ID）
             auto *db = g_botdb[info->appid_int];
-            GroupRecord rec;
+            GroupRecord2 rec;
             if (db->getGroupInfo(p1, rec)) {
                 if (p1 != ev.groupId) return "只能操作当前群";
                 if (!(rec.bitmap & BIT_AI_BAI)) return "该群不在白名单";
@@ -1186,6 +1186,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
     if(!upad){
 
         if(!info->admin.contains(ev.user)){
+            if(!info->cbl) return QString();
             if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
             {
                 return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n\n"
@@ -1193,9 +1194,11 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                         "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
                         "[禁言]() <艾特> <秒> \n>"
                         "[解禁]() <艾特> 解除禁言某个人\n>"
+                        "[免验证]() <艾特> 删除某人的验证\n>"
                         "[一键解禁]() 批量解除\n>"
                         "[禁言列表]() 获取禁言列表\n>"
                         "[本群状态]() 查看开启列表\n>"
+                        "[开入群验证]() | [关入群验证]()\n>"
                         "[获取加群列表]() 获取申请加群列表\n"
                         "[添加本群代管]() | [删除本群代管]()\n>"
                         "[开申请加群提示]() | [关申请加群提示]()\n>"
@@ -1224,9 +1227,11 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
             "[禁言]() <艾特> <秒> \n>"
             "[解禁]() <艾特> 解除禁言某个人\n>"
-            "[一键解禁]() 批量解除\n>"
-            "[禁言列表]() 获取禁言列表\n>"
-            "[本群状态]() 查看开启列表\n>"
+           "[免验证]() <艾特> 删除某人的验证\n>"
+           "[一键解禁]() 批量解除\n>"
+           "[禁言列表]() 获取禁言列表\n>"
+           "[本群状态]() 查看开启列表\n>"
+           "[开入群验证]() | [关入群验证]()\n>"
             "[获取加群列表]() 获取申请加群列表\n"
             "[添加本群代管]() | [删除本群代管]()\n>"
             "[开申请加群提示]() | [关申请加群提示]()\n>"
@@ -1372,7 +1377,8 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
             resu.append("\n\n**移除群成员**\n>");
             resu.append(client->del_members(ev.type,ev.groupId,info->unid));
-
+            resu.append("\n\n**禁言列表**\n>");
+            resu.append(client->getGroupRestrictChatSetting(ev.groupId));
 
         }
         return resu;
@@ -1411,7 +1417,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             auto *db = g_botdb[ev.appid];
             ev.bitmap |= BIT_Ainiren;   // 置位
 
-            GroupRecord gr;
+            GroupRecord2 gr;
             db->getGroupInfo(ev.groupId, gr);
             gr.bitmap = ev.bitmap;
             db->addGroup(ev.groupId, gr);
@@ -1421,7 +1427,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                 return "本群未开启拟人，无需关闭";
             }
             ev.bitmap &= ~BIT_Ainiren;  // 清除位
-            GroupRecord gr;
+            GroupRecord2 gr;
             auto *db = g_botdb[ev.appid];
             db->getGroupInfo(ev.groupId, gr);
             gr.bitmap = ev.bitmap;
@@ -1524,12 +1530,12 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     if(ev.type ==18)
     {
 
-        if(ev.bitmap & BIT_AUTO_JOJI)
+        if(ev.bitmap & BIT_AUTO_JOJN)
         {
             auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
+            GroupRecord2 gid;
             db->getGroupInfo(ev.groupId, gid);
-            QString text = QString::fromUtf8(gid.autoref);
+            QString text = gid.autoref;
             if(text.isEmpty()){
                 QQBotClient *client = m_botClients[info->appid_int];
 
@@ -1556,7 +1562,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             }
 
         }
-        if(ev.bitmap & BIT_AUTO_JOJI_KG){
+        if(ev.bitmap & BIT_AUTO_JOJN_KG){
             if(!info->apply.isEmpty())
             {
                 QString ret = info->apply;
@@ -1919,558 +1925,610 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
-    bool admin=false,admin2=false;
-    for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
-        if (ev.qid[i] == ev.user_int) {
-            admin = true;
-            break;
+    if(info->cbl || g_admin.contains(ev.user) || info->admin.contains(ev.user) ) {
+        bool admin=false,admin2=false;
+        for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
+            if (ev.qid[i] == ev.user_int) {
+                admin = true;
+                break;
+            }
         }
-    }
-    admin2 = ((ev.member_role ==0) || g_admin.contains(ev.user) || info->admin.contains(ev.user) );
-    if(admin2)
-    {
-        if (ev.msg.startsWith("添加本群代管"))
+        admin2 = ((ev.member_role ==0) || g_admin.contains(ev.user) || info->admin.contains(ev.user) );
+        if(admin2)
         {
-            QString QID;
-            int cnt = extractParams(ev.msg, "添加本群代管", 0, QID);
-            if (cnt == -1) return "[添加本群代管] 缺少ID|openid";
-            int id = QID.toInt();
-            if(QID.size()==32)
+            if (ev.msg.startsWith("添加本群代管"))
             {
-                auto *db = g_botdb[info->appid_int];
-
-                QString text ;
-                id =  db->getOrUpdateUser(QID,text);
-            }
-
-            if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
-            for (int i = 0; i < 20; ++i) {
-                if (ev.qid[i] == id) {
-
-                    return QString("该ID:%1 已经添加在代管列表").arg(id);
-                }
-
-            }
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            for (int i = 0; i < 20; ++i) { //懒得记录空位置了
-                if (ev.qid[i] == 0) {
-                    gid.qid[i]=id;
-                    db->addGroup(ev.groupId, gid);
-                    return "添加代管成功 该用户目前可以使用机器人 管理员指令";
-                }
-
-            }
-            return "添加代管失败 代管上线20位 已经达到上限制";
-        }
-        if (ev.msg.startsWith("删除本群代管"))
-        {
-            QString QID;
-            int cnt = extractParams(ev.msg, "删除本群代管", 0, QID);
-            if (cnt == -1) return "[删除本群代管] 缺少id";
-            int id = QID.toInt();
-            if(QID.size()==32)
-            {
-                auto *db = g_botdb[info->appid_int];
-                QString text ;
-                id =  db->getOrUpdateUser(QID,text);
-            }
-
-            if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
-            for (int i = 0; i < 20; ++i) {
-                if (ev.qid[i] == id) {
+                QString QID;
+                int cnt = extractParams(ev.msg, "添加本群代管", 0, QID);
+                if (cnt == -1) return "[添加本群代管] 缺少ID|openid";
+                int id = QID.toInt();
+                if(QID.size()==32)
+                {
                     auto *db = g_botdb[info->appid_int];
-                    GroupRecord gid;
-                    db->getGroupInfo(ev.groupId, gid);
-                    gid.qid[i]=0;
-                    db->addGroup(ev.groupId, gid);
-                    return "删除代管成功";
 
+                    QString text ;
+                    id =  db->getOrUpdateUser(QID,text);
                 }
 
+                if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
+                for (int i = 0; i < 20; ++i) {
+                    if (ev.qid[i] == id) {
+
+                        return QString("该ID:%1 已经添加在代管列表").arg(id);
+                    }
+
+                }
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                for (int i = 0; i < 20; ++i) { //懒得记录空位置了
+                    if (ev.qid[i] == 0) {
+                        gid.qid[i]=id;
+                        db->addGroup(ev.groupId, gid);
+                        return "添加代管成功 该用户目前可以使用机器人 管理员指令";
+                    }
+
+                }
+                return "添加代管失败 代管上线20位 已经达到上限制";
             }
-            return QString("该ID:%1 不存在在代管列表").arg(id);
-        }
-
-    }else if(ev.member_role==1 )
-    {
-
-        if (ev.msg.startsWith("添加本群代管"))  return "添加本群代管 这个指令只有群主才能使用";
-        if (ev.msg.startsWith("删除本群代管")) return "删除本群代管 这个指令只有群主才能使用";
-        admin2 =true;
-    }
-    if (admin2 || admin ) {
-        if (ev.msg == "本群状态")
-        {
-            QString text;
-            text.reserve(256);
-
-            text.append("已开启状态\n>");
-
-            text.append(ev.bitmap & BIT_ruqun ? "❌" : "✅"); //这两个 0是开
-            text.append("入群提示\n>");
-            text.append(ev.bitmap & BIT_tuiqun ? "❌" : "✅");
-            text.append("退群提示\n>");
-            text.append(ev.bitmap & BIT_SHUA_P ? "✅" : "❌");
-            text.append("刷屏检测\n>");
-            text.append(ev.bitmap & BIT_Ainiren ? "✅" : "❌");
-            text.append("AI拟人\n>");
-            text.append(ev.bitmap & BIT_AI_BAI ? "✅" : "❌");
-            text.append("AI白名单\n>");
-
-            text.append(ev.bitmap & BIT_AUTO_JOJI_KG ? "✅" : "❌");
-            text.append("入群申请提示\n>");
-            text.append(ev.bitmap & BIT_AUTO_JOJI ? "✅" : "❌");
-            text.append("自动同意入群..");
-            if(g_botdb.contains(ev.appid)){
-                auto *db = g_botdb[ev.appid];
-                GroupRecord gid;
-                db->getGroupInfo(ev.groupId,gid);
-                text.append(QString::number(strlen(gid.autoref)));
-            }
-
-
-
-            text.append("\n\n关键词撤回 不在计划内");
-            return text;
-        }
-
-        if (ev.msg == "获取加群列表")
-        {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto *c = m_botClients[ev.appid];
-            QString js = c->getjoin_request_list(ev.groupId,30);
-
-            QJsonParseError parseError;
-            QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError) {
-                return "❌ 获取加群列表失败，可能接口超过调用频率";
-            }
-
-            QJsonObject root = doc.object();
-            QJsonArray list = root["list"].toArray();
-            int count = list.size();
-
-            // 构建回复文本（预分配空间）
-            QString text;
-
-            text.reserve(100 + count * 100);
-            if(count == 0 && js.contains("admin"))
+            if (ev.msg.startsWith("删除本群代管"))
             {
-                text = "📋 **加群申请列表**\n非管理员无法获取 或 频率超限 .."+js;
-            }
-            else if (count == 0) {
-                text = "📋 **加群申请列表**\n当前暂无加群申请。";
-            } else {
-                text += "📋 **加群申请列表**\n";
-                for (int i = 0; i < count; ++i) {
-                    QJsonObject item = list[i].toObject();
-                    QString username = item["member_openid"].toString();
-                    QString applyAt = item["apply_at"].toString();
-                    //QString id = item["join_request_id"].toString();
-                    text += QString("> **%1** 申请时间：`%2`\n")
-                                .arg(username, applyAt);
+                QString QID;
+                int cnt = extractParams(ev.msg, "删除本群代管", 0, QID);
+                if (cnt == -1) return "[删除本群代管] 缺少id";
+                int id = QID.toInt();
+                if(QID.size()==32)
+                {
+                    auto *db = g_botdb[info->appid_int];
+                    QString text ;
+                    id =  db->getOrUpdateUser(QID,text);
                 }
-                // 可选：添加下一页游标（如果需要）
-                text.append("\n[一键同意](一键同意加群) 每次处理30个");
-                QString nextCursor = root["next_cursor"].toString();
-                if (!nextCursor.isEmpty()) {
-                    text += QString("\n📌 下一页游标：`%1`").arg(nextCursor);
+
+                if(id<=0) return QString("添加的ID：#1 异常 可能从来没记录该用户 请让该用户发言一次").arg(id);
+                for (int i = 0; i < 20; ++i) {
+                    if (ev.qid[i] == id) {
+                        auto *db = g_botdb[info->appid_int];
+                        GroupRecord2 gid;
+                        db->getGroupInfo(ev.groupId, gid);
+                        gid.qid[i]=0;
+                        db->addGroup(ev.groupId, gid);
+                        return "删除代管成功";
+
+                    }
+
                 }
+                return QString("该ID:%1 不存在在代管列表").arg(id);
             }
 
-            return text;
-        }
-        if (ev.msg == "一键同意加群")
+        }else if(ev.member_role==1 )
         {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto *c = m_botClients[ev.appid];
-            // 获取最多30条加群申请
-            QString js = c->getjoin_request_list(ev.groupId, 40);
 
-            QJsonParseError parseError;
-            QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError) {
-                return "❌ 获取加群列表失败，可能接口超过调用频率";
-            }
-
-            QJsonObject root = doc.object();
-            QJsonArray list = root["list"].toArray();
-            int count = list.size();
-            if(count == 0 && js.contains("admin"))
+            if (ev.msg.startsWith("添加本群代管"))  return "添加本群代管 这个指令只有群主才能使用";
+            if (ev.msg.startsWith("删除本群代管")) return "删除本群代管 这个指令只有群主才能使用";
+            admin2 =true;
+        }
+        if (admin2 || admin ) {
+            if (ev.msg == "本群状态")
             {
-                return "📋 **加群申请列表**\n非管理员无法获取 或 频率超限";
-            }
-            if (count == 0) {
-                return "📋 当前没有待处理的加群申请。";
+                QString text;
+                text.reserve(256);
+
+                text.append("已开启状态\n>");
+
+                text.append(ev.bitmap & BIT_ruqun ? "❌" : "✅"); //这两个 0是开
+                text.append("入群提示\n>");
+                text.append(ev.bitmap & BIT_tuiqun ? "❌" : "✅");
+                text.append("退群提示\n>");
+                text.append(ev.bitmap & BIT_SHUA_P ? "✅" : "❌");
+                text.append("刷屏检测\n>");
+                text.append(ev.bitmap & BIT_Ainiren ? "✅" : "❌");
+                text.append("AI拟人\n>");
+                text.append(ev.bitmap & BIT_AI_BAI ? "✅" : "❌");
+                text.append("AI白名单\n>");
+                text.append(ev.bitmap & BIT_RUQUN_YZ ? "✅" : "❌");
+                text.append("入群验证\n>");
+                text.append(ev.bitmap & BIT_AUTO_JOJN_KG ? "✅" : "❌");
+                text.append("入群申请提示\n>");
+
+
+
+                text.append(ev.bitmap & BIT_AUTO_JOJN ? "✅" : "❌");
+                text.append("自动同意入群..");
+                if(g_botdb.contains(ev.appid)){
+                    auto *db = g_botdb[ev.appid];
+                    GroupRecord2 gid;
+                    db->getGroupInfo(ev.groupId,gid);
+                    text.append(QString::number(gid.autoref.size()));
+                }
+
+
+
+                text.append("\n\n关键词撤回 不在计划内");
+                return text;
             }
 
-            // 遍历所有申请，逐个同意
-            for (const QJsonValue &val : std::as_const(list)) {
-                QJsonObject item = val.toObject();
-                QString joinRequestId = item["join_request_id"].toString();
-                QString memberOpenid = item["member_openid"].toString();
-                QString username = item["username"].toString();
-                c->approveGroupJoinRequest(ev.groupId,memberOpenid,true,joinRequestId,QString(),false,[](auto, auto){ return; });
+            if (ev.msg == "获取加群列表")
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                auto *c = m_botClients[ev.appid];
+                QString js = c->getjoin_request_list(ev.groupId,30);
+
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
+                if (parseError.error != QJsonParseError::NoError) {
+                    return "❌ 获取加群列表失败，可能接口超过调用频率";
+                }
+
+                QJsonObject root = doc.object();
+                QJsonArray list = root["list"].toArray();
+                int count = list.size();
+
+                // 构建回复文本（预分配空间）
+                QString text;
+
+                text.reserve(100 + count * 100);
+                if(count == 0 && js.contains("admin"))
+                {
+                    text = "📋 **加群申请列表**\n非管理员无法获取 或 频率超限 .."+js;
+                }
+                else if (count == 0) {
+                    text = "📋 **加群申请列表**\n当前暂无加群申请。";
+                } else {
+                    text += "📋 **加群申请列表**\n";
+                    for (int i = 0; i < count; ++i) {
+                        QJsonObject item = list[i].toObject();
+                        QString username = item["member_openid"].toString();
+                        QString applyAt = item["apply_at"].toString();
+                        //QString id = item["join_request_id"].toString();
+                        text += QString("> **%1** 申请时间：`%2`\n")
+                                    .arg(username, applyAt);
+                    }
+                    // 可选：添加下一页游标（如果需要）
+                    text.append("\n[一键同意](一键同意加群) 每次处理30个");
+                    QString nextCursor = root["next_cursor"].toString();
+                    if (!nextCursor.isEmpty()) {
+                        text += QString("\n📌 下一页游标：`%1`").arg(nextCursor);
+                    }
+                }
+
+                return text;
             }
+            if (ev.msg == "一键同意加群")
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                auto *c = m_botClients[ev.appid];
+                // 获取最多30条加群申请
+                QString js = c->getjoin_request_list(ev.groupId, 40);
 
-            // 立即回复用户，表示开始处理
-            return QString("✅ 共 %1 条加群申请，已开始逐一同处理，如果没处理代表 接口频率限制 每分钟只处理60个").arg(count);
-        }
-        if (ev.msg.startsWith("同意加群"))
-        {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            QString QID,joinRequestId;
-            QString text = ev.msg;
-            text.remove("同意加群");
-            text = text.trimmed();
-            QStringList list = text.split(" ");
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
+                if (parseError.error != QJsonParseError::NoError) {
+                    return "❌ 获取加群列表失败，可能接口超过调用频率";
+                }
 
-            if(list.size()<2) return "参数不满足 指令 同意加群 userid RequestId";
-            auto *c = m_botClients[ev.appid];
-             c->approveGroupJoinRequest(ev.groupId,list[0],true,list[1],QString(),false,[c,ev](const QString &resp, auto){
-                if(resp!="{}"){
-                    QString text = resp;
+                QJsonObject root = doc.object();
+                QJsonArray list = root["list"].toArray();
+                int count = list.size();
+                if(count == 0 && js.contains("admin"))
+                {
+                    return "📋 **加群申请列表**\n非管理员无法获取 或 频率超限";
+                }
+                if (count == 0) {
+                    return "📋 当前没有待处理的加群申请。";
+                }
+
+                // 遍历所有申请，逐个同意
+                for (const QJsonValue &val : std::as_const(list)) {
+                    QJsonObject item = val.toObject();
+                    QString joinRequestId = item["join_request_id"].toString();
+                    QString memberOpenid = item["member_openid"].toString();
+                    QString username = item["username"].toString();
+                    c->approveGroupJoinRequest(ev.groupId,memberOpenid,true,joinRequestId,QString(),false,[](auto, auto){ return; });
+                }
+
+                // 立即回复用户，表示开始处理
+                return QString("✅ 共 %1 条加群申请，已开始逐一同处理，如果没处理代表 接口频率限制 每分钟只处理60个").arg(count);
+            }
+            if (ev.msg.startsWith("同意加群"))
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                QString QID,joinRequestId;
+                QString text = ev.msg;
+                text.remove("同意加群");
+                text = text.trimmed();
+                QStringList list = text.split(" ");
+
+                if(list.size()<2) return "参数不满足 指令 同意加群 userid RequestId";
+                auto *c = m_botClients[ev.appid];
+                 c->approveGroupJoinRequest(ev.groupId,list[0],true,list[1],QString(),false,[c,ev](const QString &resp, auto){
+                    if(resp!="{}"){
+                        QString text = resp;
+                        c->send_messages(ev.type,ev.groupId,"[同意加群]",text,ev.msgId);
+                        return ;
+                    }
+                    QString text = "同意加群成功";
                     c->send_messages(ev.type,ev.groupId,"[同意加群]",text,ev.msgId);
                     return ;
-                }
-                QString text = "同意加群成功";
-                c->send_messages(ev.type,ev.groupId,"[同意加群]",text,ev.msgId);
-                return ;
-            });
-        }
-        if (ev.msg == "禁言列表")
-        {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto *c = m_botClients[ev.appid];
-            QString js = c->getGroupRestrictChatSetting(ev.groupId);
-            QJsonParseError parseError;
-            QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError) {
-
-                return "❌ 获取禁言列表失败，可能接口超过调用频率";
-            }
-
-            QJsonObject root = doc.object();
-            QJsonObject globalRule = root["global_rule"].toObject();
-            QString mode = globalRule["mode"].toString();
-            const QJsonArray members = root["members"].toArray();
-
-            // 2. 预分配空间（估算）
-            int memberCount = members.size();
-            // 基础文本长度：标题 + 可能的全局禁言行，每个成员约 60~80 字符（含中文）
-            int estimatedSize = 100 + memberCount * 80;
-            QString reply;
-            reply.reserve(estimatedSize);
-
-            // 3. 构建回复文本（不用数组容器）
-            reply += "📋 **禁言列表**\n";
-
-            if (memberCount == 0 && mode == "none") {
-                reply += "当前群组没有禁言成员，也未开启全局禁言。";
-            } else {
-                if (mode != "none") {
-                    reply += "🔒 **全局禁言模式**：`" + mode + "`\n";
-                }
-                if (memberCount > 0) {
-                    reply += "📌 **被禁言成员**：";
-                    for (const QJsonValue &val : members) {
-                        QJsonObject member = val.toObject();
-                        QString member_openid = member["member_openid"].toString();
-                        QString expireAt = member["mute_expire_at"].toString();
-                        reply += "\n>**"+expireAt+"**\n><@"+member_openid+"> | [解禁](解禁 "+member_openid+")";
-                    }
-                }
-            }
-
-            return reply;
-        }
-        if (ev.msg.contains("禁言")) {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto [QID, sj] = parseBanCommand(ev.msg);
-
-            if (QID.isEmpty()) {
-                return "[禁言] 解析失败，请检查格式（需包含32位十六进制ID）";
-            }
-            if (sj == -2) {
-                return "[禁言] 未知的时间单位，支持：秒、分钟、月";
-            }
-
-            auto *c = m_botClients[ev.appid];
-            QString res = c->setGroupRestrictChatSetting(ev.groupId, QID, sj,[c,ev](const QString resp,QNetworkReply::NetworkError err){
-                QString text = (resp == "{}" ? "禁言成功" : "禁言失败，可能无权限.." + resp);
-                c->send_msgAsync(ev.type,ev.groupId,"[禁言某人]",text,ev.msgId);
-
-            });
-            return "*"; //异步 这里不返回消息
-        }
-
-        if (ev.msg.contains("解禁"))
-        {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            QString text = ev.msg;
-            text.remove("解禁");
-            QString QID;
-            int cnt = extractParams(text, "", 0, QID);
-            if (cnt == -1) return "[解除禁言] 缺少被禁言人";
-            auto *c = m_botClients[ev.appid];
-            QString res = c->setGroupRestrictChatSetting(ev.groupId,QID,0);
-            if(res=="{}")
-            {
-                return "解除成功";
-            }
-            return "解除失败可能无权限.."+res;
-        }
-        if (ev.msg == "一键解禁")
-        {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto *c = m_botClients[ev.appid];
-            QString immediateReply = "⏳ 正在执行一键解禁，请稍候...";
-            c->getGroupRestrictChatSetting(ev.groupId, [=](const QString& jsonStr, QNetworkReply::NetworkError err) {
-                if (err != QNetworkReply::NoError) {
-                    QString text = "❌ 获取禁言列表失败（网络错误）";
-                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
-                    return;
-                }
-                QJsonParseError parseError;
-                QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
-                if (parseError.error != QJsonParseError::NoError) {
-                    QString text = "❌ 解析禁言列表失败";
-                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
-                    return;
-                }
-                QJsonObject root = doc.object();
-                QJsonArray members = root["members"].toArray();
-                if (members.isEmpty()) {
-                    QString text = "✅ 当前没有需要解禁的成员";
-                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
-                    return;
-                }
-                // 构造批量解禁的 JSON 数组
-                QJsonArray delMembers;
-                for (const QJsonValue &val : std::as_const(members)) {
-                    QJsonObject member = val.toObject();
-                    QString openid = member["member_openid"].toString();
-                    QJsonObject delItem;
-                    delItem["member_openid"] = openid;
-                    delItem["op"] = "del";
-                    delMembers.append(delItem);
-                }
-                // 异步调用批量解禁接口
-                c->setGroupRestrictChatSetting(ev.groupId, delMembers, [=](const QString& resJson, QNetworkReply::NetworkError err2) {
-                    QString text;
-                    if (err2 != QNetworkReply::NoError) {
-                        text = "❌ 一键解禁失败（网络错误）";
-                    } else if (resJson == "{}") {
-                        text = "✅ 一键解禁成功，已解除 " + QString::number(delMembers.size()) + " 名成员的禁言";
-
-                    } else {
-                        text = "❌ 一键解禁失败，可能无权限或接口错误: " + resJson;
-                    }
-                    c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
                 });
-            });
+            }
+            if (ev.msg == "禁言列表")
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                auto *c = m_botClients[ev.appid];
+                QString js = c->getGroupRestrictChatSetting(ev.groupId);
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(js.toUtf8(), &parseError);
+                if (parseError.error != QJsonParseError::NoError) {
 
-            // 由于是异步处理，这里返回一个占位消息（或空字符串）
-            return immediateReply;   // 或 return "";
-        }
+                    return "❌ 获取禁言列表失败，可能接口超过调用频率";
+                }
 
-        if (ev.msg.startsWith("撤回")) {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            auto [targetId, count] = parseRecallCommand(ev.msg);
-            if (count < 0) {
-                return "[撤回] 解析失败，请使用格式：撤回 [<@ID>] [条数]，如“撤回 <@a1b2...> 5”";
+                QJsonObject root = doc.object();
+                QJsonObject globalRule = root["global_rule"].toObject();
+                QString mode = globalRule["mode"].toString();
+                const QJsonArray members = root["members"].toArray();
+
+
+                int memberCount = members.size();
+
+                int estimatedSize = 100 + memberCount * 80;
+                QString reply;
+                reply.reserve(estimatedSize);
+
+                // 3. 构建回复文本（不用数组容器）
+                reply += "📋 **禁言列表**\n";
+
+                if (memberCount == 0) {
+                    reply += "当前群组没有禁言成员，也未开启全局禁言。";
+                } else if(memberCount == 0 ){
+                    if (mode != "none") {
+                        reply += "🔒 **全局禁言模式**：`" + mode + "`\n";
+                    }
+                    if (memberCount > 0) {
+                        reply += "📌 **被禁言成员**：";
+                        for (const QJsonValue &val : members) {
+                            QJsonObject member = val.toObject();
+                            QString member_openid = member["member_openid"].toString();
+                            QString expireAt = member["mute_expire_at"].toString();
+                            reply += "\n>**"+expireAt+"**\n><@"+member_openid+"> | [解禁](解禁 "+member_openid+")";
+                        }
+                    }
+                }
+
+                return reply;
+            }
+            if (ev.msg.contains("禁言")) {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                auto [QID, sj] = parseBanCommand(ev.msg);
+
+                if (QID.isEmpty()) {
+                    return "[禁言] 解析失败，请检查格式（需要艾特一个人）";
+                }
+                if (sj == -2) {
+                    return "[禁言] 未知的时间单位，支持：秒、分钟、月";
+                }
+
+                auto *c = m_botClients[ev.appid];
+                QString res = c->setGroupRestrictChatSetting(ev.groupId, QID, sj,[c,ev](const QString resp,QNetworkReply::NetworkError err){
+                    QString text = (resp == "{}" ? "禁言成功" : "禁言失败，可能无权限.." + resp);
+                    c->send_msgAsync(ev.type,ev.groupId,"[禁言某人]",text,ev.msgId);
+
+                });
+                return "*"; //异步 这里不返回消息
+            }
+            if (ev.msg.startsWith("免验证")) {
+                QString strid = ev.msg;
+                strid.remove("免验证");
+                QString qid  = strid.trimmed();
+                if (qid.size()!=32) {
+                    return "错误的 id 不是 32字节hex";
+                }
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                QString text;
+
+                int id= db->getOrUpdateUser(qid,text);
+                db->getGroupInfo(ev.groupId, gid);
+                for(int i=0;i<gid.jojnyz.size();++i){
+                    if(gid.jojnyz[i]==id)
+                    {
+                        gid.jojnyz.removeAt(i);
+                        gid.jojntime.removeAt(i);
+                        db->savejojnyzData(ev.groupId,gid.jojnyz,gid.jojntime);
+                        auto *c = m_botClients[ev.appid];
+                        c->setGroupRestrictChatSetting(ev.groupId,qid,0,[](auto,auto){});
+
+                        return "免验证成功";
+                    }
+                }
+                return "免验证失败 该用户不再验证列表 如果需要解除禁言 发送 [解禁]() + 艾特 指令";
+            }
+            if (ev.msg.contains("解禁"))
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                QString text = ev.msg;
+                text.remove("解禁");
+                QString QID;
+                int cnt = extractParams(text, "", 0, QID);
+                if (cnt == -1) return "[解除禁言] 缺少被禁言人";
+                auto *c = m_botClients[ev.appid];
+                QString res = c->setGroupRestrictChatSetting(ev.groupId,QID,0);
+                if(res=="{}")
+                {
+                    return "解除成功";
+                }
+                return "解除失败可能无权限.."+res;
+            }
+            if (ev.msg == "一键解禁")
+            {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                auto *c = m_botClients[ev.appid];
+                QString immediateReply = "⏳ 正在执行一键解禁，请稍候...";
+                c->getGroupRestrictChatSetting(ev.groupId, [=](const QString& jsonStr, QNetworkReply::NetworkError err) {
+                    if (err != QNetworkReply::NoError) {
+                        QString text = "❌ 获取禁言列表失败（网络错误）";
+                        c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                        return;
+                    }
+                    QJsonParseError parseError;
+                    QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+                    if (parseError.error != QJsonParseError::NoError) {
+                        QString text = "❌ 解析禁言列表失败";
+                        c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                        return;
+                    }
+                    QJsonObject root = doc.object();
+                    QJsonArray members = root["members"].toArray();
+                    if (members.isEmpty()) {
+                        QString text = "✅ 当前没有需要解禁的成员";
+                        c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                        return;
+                    }
+                    // 构造批量解禁的 JSON 数组
+                    QJsonArray delMembers;
+                    for (const QJsonValue &val : std::as_const(members)) {
+                        QJsonObject member = val.toObject();
+                        QString openid = member["member_openid"].toString();
+                        QJsonObject delItem;
+                        delItem["member_openid"] = openid;
+                        delItem["op"] = "del";
+                        delMembers.append(delItem);
+                    }
+                    // 异步调用批量解禁接口
+                    c->setGroupRestrictChatSetting(ev.groupId, delMembers, [=](const QString& resJson, QNetworkReply::NetworkError err2) {
+                        QString text;
+                        if (err2 != QNetworkReply::NoError) {
+                            text = "❌ 一键解禁失败（网络错误）";
+                        } else if (resJson == "{}") {
+                            text = "✅ 一键解禁成功，已解除 " + QString::number(delMembers.size()) + " 名成员的禁言";
+
+                        } else {
+                            text = "❌ 一键解禁失败，可能无权限或接口错误: " + resJson;
+                        }
+                        c->send_msgAsync(ev.type, ev.groupId, "[私有指令]", text, ev.msgId);
+                    });
+                });
+
+                // 由于是异步处理，这里返回一个占位消息（或空字符串）
+                return immediateReply;   // 或 return "";
             }
 
-            // 限制最大条数
-            if (count > 30) count = 30;
-            if (count <= 0) count = 1;
-
-            auto *c = m_botClients[ev.appid];
-            // 获取最近200条消息（与原逻辑一致）
-            QList<Message> msgList = g_logdb[1]->getRecentLogs(
-                QString::number(ev.appid), ev.groupId, 2147483636, 200, true
-                );
-
-            int deleted = 0;      // 已撤回数量
-            int failed = 0;       // 失败次数（仅针对指定用户）
-
-            if (targetId.isEmpty()) {
-                // ========== 撤回机器人自己的消息 ==========
-                for (const auto &m : std::as_const(msgList)) {
-                    if (m.plugin_ch.isEmpty()) continue;  // 不是机器人发送的消息
-                    // 撤回（不检查返回，原逻辑如此）
-                    c->delete_messages(0, ev.groupId, m.plugin_ch, [](auto, auto) { return; });
-                    deleted++;
-                    if (deleted >= count) break;
+            if (ev.msg.startsWith("撤回")) {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                auto [targetId, count] = parseRecallCommand(ev.msg);
+                if (count < 0) {
+                    return "[撤回] 解析失败，请使用格式：撤回 [<@ID>] [条数]，如“撤回 <@a1b2...> 5”";
                 }
-                return QString("[撤回] 已撤回机器人自己的 %1 条消息").arg(deleted);
-            } else {
-                // ========== 撤回指定用户的消息 ==========
-                for (const auto &m : std::as_const(msgList)) {
-                    if (m.user != targetId) continue;
 
-                    // 前3次尝试检查权限，后续直接尝试（原逻辑）
-                    if (deleted < 3) {
-                        QString res = c->delete_messages(0, ev.groupId, m.ch);
-                        if (res.contains("权限")) {
-                            return "[撤回] 无撤回权限，请确认是管理员或机器人有管理员权限";
-                        }
-                        if (res != "{}") {
-                            failed++;
-                            if (failed >= 3) {
-                                return "[撤回] 撤回完成，但失败次数超过3次，自动终止";
+                // 限制最大条数
+                if (count > 30) count = 30;
+                if (count <= 0) count = 1;
+
+                auto *c = m_botClients[ev.appid];
+                // 获取最近200条消息（与原逻辑一致）
+                QList<Message> msgList = g_logdb[1]->getRecentLogs(
+                    QString::number(ev.appid), ev.groupId, 2147483636, 200, true
+                    );
+
+                int deleted = 0;      // 已撤回数量
+                int failed = 0;       // 失败次数（仅针对指定用户）
+
+                if (targetId.isEmpty()) {
+                    // ========== 撤回机器人自己的消息 ==========
+                    for (const auto &m : std::as_const(msgList)) {
+                        if (m.plugin_ch.isEmpty()) continue;  // 不是机器人发送的消息
+                        // 撤回（不检查返回，原逻辑如此）
+                        c->delete_messages(0, ev.groupId, m.plugin_ch, [](auto, auto) { return; });
+                        deleted++;
+                        if (deleted >= count) break;
+                    }
+                    return QString("[撤回] 已撤回机器人自己的 %1 条消息").arg(deleted);
+                } else {
+                    // ========== 撤回指定用户的消息 ==========
+                    for (const auto &m : std::as_const(msgList)) {
+                        if (m.user != targetId) continue;
+
+                        // 前3次尝试检查权限，后续直接尝试（原逻辑）
+                        if (deleted < 3) {
+                            QString res = c->delete_messages(0, ev.groupId, m.ch);
+                            if (res.contains("权限")) {
+                                return "[撤回] 无撤回权限，请确认是管理员或机器人有管理员权限";
                             }
+                            if (res != "{}") {
+                                failed++;
+                                if (failed >= 3) {
+                                    return "[撤回] 撤回完成，但失败次数超过3次，自动终止";
+                                }
+                            }
+                        } else {
+                            // 后续消息忽略结果
+                            c->delete_messages(0, ev.groupId, m.ch, [](auto, auto) { return; });
                         }
-                    } else {
-                        // 后续消息忽略结果
-                        c->delete_messages(0, ev.groupId, m.ch, [](auto, auto) { return; });
-                    }
 
-                    deleted++;
-                    if (deleted >= count) {
-                        return QString("[撤回] 已撤回 %1 条 %2 的消息").arg(deleted).arg(targetId);
+                        deleted++;
+                        if (deleted >= count) {
+                            return QString("[撤回] 已撤回 %1 条 %2 的消息").arg(deleted).arg(targetId);
+                        }
                     }
+                    return QString("[撤回] 撤回完成，但可能未达到指定数量（已撤回 %1 条）").arg(deleted);
                 }
-                return QString("[撤回] 撤回完成，但可能未达到指定数量（已撤回 %1 条）").arg(deleted);
             }
-        }
-        if (ev.msg == "设置刷屏检测") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (ev.bitmap & BIT_SHUA_P)  return "当前已经开启 刷屏检测";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_SHUA_P;
-            db->addGroup(ev.groupId, gid);
-            return "设置刷屏检测成功";
-        }
-        if (ev.msg == "取消刷屏检测") {
+            if (ev.msg == "设置刷屏检测") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (ev.bitmap & BIT_SHUA_P)  return "当前已经开启 刷屏检测";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_SHUA_P;
+                db->addGroup(ev.groupId, gid);
+                return "设置刷屏检测成功";
+            }
+            if (ev.msg == "取消刷屏检测") {
 
-            if (!(ev.bitmap & BIT_SHUA_P))  return "当前已经关闭 刷屏检测";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_SHUA_P;
-            db->addGroup(ev.groupId, gid);
-            return "关闭刷屏检测成功";
-        }
-        if (ev.msg == "开申请加群提示") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (ev.bitmap & BIT_AUTO_JOJI_KG)  return "当前已经开启 申请加群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_AUTO_JOJI_KG;
-            db->addGroup(ev.groupId, gid);
-            return "设置申请加群提示成功";
-        }
-        if (ev.msg == "关申请加群提示") {
-            if (!(ev.bitmap & BIT_AUTO_JOJI_KG))  return "当前已经关闭 申请加群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_AUTO_JOJI_KG;
-            db->addGroup(ev.groupId, gid);
-            return "关闭申请加群提示成功";
-        }
-        if (ev.msg == "开违禁词检测") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (ev.bitmap & BIT_PUNISH)  return "当前已经开启 申请加群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_PUNISH;
-            db->addGroup(ev.groupId, gid);
-            return "设置违禁词检测成功";
-        }
-        if (ev.msg == "关违禁词检测") {
-            if (!(ev.bitmap & BIT_PUNISH))  return "当前已经关闭 申请加群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_PUNISH;
-            db->addGroup(ev.groupId, gid);
-            return "关闭违禁词检测成功";
-        }
-        if (ev.msg == "开自动同意加群") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (ev.bitmap & BIT_AUTO_JOJI)  return "当前已经开启 自动同意加群";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_AUTO_JOJI;
-            db->addGroup(ev.groupId, gid);
-            return "设置自动同意加群成功 请使用 [设置自动同意加群答案]() <关键词> 来设置自动同意关键词 如果没设置就全部同意..当前设置的关键词长度(由于并不能查看关键词 请重新设置覆盖).."+QString::number(strlen(gid.autoref));
-        }
-        if (ev.msg == "关自动同意加群") {
-            if (!(ev.bitmap & BIT_AUTO_JOJI))  return "当前已经关闭 自动同意加群";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_AUTO_JOJI;
-            db->addGroup(ev.groupId, gid);
-            return "关闭自动同意加群成功";
-        }
-        if (ev.msg.startsWith("设置自动同意加群答案")) {
-            QString text;
-            int cnt = extractParams(ev.msg, "设置自动同意加群答案", 0, text);
-            if (cnt == -1) return "[设置自动同意加群答案] 缺少关键词";
+                if (!(ev.bitmap & BIT_SHUA_P))  return "当前已经关闭 刷屏检测";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_SHUA_P;
+                db->addGroup(ev.groupId, gid);
+                return "关闭刷屏检测成功";
+            }
+            if (ev.msg == "开申请加群提示") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (ev.bitmap & BIT_AUTO_JOJN_KG)  return "当前已经开启 申请加群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_AUTO_JOJN_KG;
+                db->addGroup(ev.groupId, gid);
+                return "设置申请加群提示成功";
+            }
+            if (ev.msg == "关申请加群提示") {
+                if (!(ev.bitmap & BIT_AUTO_JOJN_KG))  return "当前已经关闭 申请加群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_AUTO_JOJN_KG;
+                db->addGroup(ev.groupId, gid);
+                return "关闭申请加群提示成功";
+            }
+            if (ev.msg == "开违禁词检测") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (ev.bitmap & BIT_PUNISH)  return "当前已经开启 申请加群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_PUNISH;
+                db->addGroup(ev.groupId, gid);
+                return "设置违禁词检测成功";
+            }
+            if (ev.msg == "关违禁词检测") {
+                if (!(ev.bitmap & BIT_PUNISH))  return "当前已经关闭 申请加群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_PUNISH;
+                db->addGroup(ev.groupId, gid);
+                return "关闭违禁词检测成功";
+            }
+            if (ev.msg == "开自动同意加群") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (ev.bitmap & BIT_AUTO_JOJN)  return "当前已经开启 自动同意加群";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_AUTO_JOJN;
+                db->addGroup(ev.groupId, gid);
+                return "设置自动同意加群成功 请使用 [设置自动同意加群答案]() <关键词> 来设置自动同意关键词\n"
+                "如果没设置就全部同意..当前设置的关键词长度(由于并不能查看关键词 请重新设置覆盖).."+QString::number(gid.autoref.size());
+            }
+            if (ev.msg == "关自动同意加群") {
+                if (!(ev.bitmap & BIT_AUTO_JOJN))  return "当前已经关闭 自动同意加群";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_AUTO_JOJN;
+                db->addGroup(ev.groupId, gid);
+                return "关闭自动同意加群成功";
+            }
+            if (ev.msg == "开入群验证") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (ev.bitmap & BIT_RUQUN_YZ)  return "当前已经开启 入群验证";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_RUQUN_YZ;
+                db->addGroup(ev.groupId, gid);
+                return "开入群验证成功，开启后 有人入群将会禁言一个月 直到 单击验证按钮 \n";
+            }
+            if (ev.msg == "关入群验证") {
+                if (!(ev.bitmap & BIT_RUQUN_YZ))  return "当前已经关闭 入群验证";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_RUQUN_YZ;
+                db->addGroup(ev.groupId, gid);
+                return "关入群验证成功成功";
+            }
 
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            QByteArray utf8 = text.toUtf8();
-            if(utf8.size()>=128) return QString("设置的关键词长度不能超128字节 当前%1字节").arg(utf8.size());
-            memcpy(gid.autoref, utf8.constData(), utf8.size());
-            gid.autoref[utf8.size()] = '\0';              // 手动添加终止符
 
-            db->addGroup(ev.groupId, gid);
-            return "设置自动同意加群答案 完成 这里是不显示答案的 最长128直接 相当于42个中文 使用（,） 英文逗号分割多个关键词 可以不设置关键词 会全部通过 然后 没处理可能是 接口跳用超频率";
-        }
-        if (ev.msg == "设置入群提示") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (!(ev.bitmap & BIT_ruqun))  return "当前已经设置 入群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_ruqun;
-            db->addGroup(ev.groupId, gid);
-            return "设置入群提示成功";
-        } else if (ev.msg == "取消入群提示") {
-            if (ev.bitmap & BIT_ruqun)  return "当前没有设置 入群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_ruqun;
-            db->addGroup(ev.groupId, gid);
-            return "取消入群提示成功 如需打开 请发送 [设置入群提示]()";
-        }
+            if (ev.msg.startsWith("设置自动同意加群答案")) {
+                QString text;
+                int cnt = extractParams(ev.msg, "设置自动同意加群答案", 0, text);
+                if (cnt == -1) return "[设置自动同意加群答案] 缺少关键词";
 
-        if (ev.msg == "设置退群提示") {
-            if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-            if (!(ev.bitmap & BIT_tuiqun))  return "当前已经设置 退群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap &= ~BIT_tuiqun;
-            db->addGroup(ev.groupId, gid);
-            return "设置退群提示成功";
-        } else if (ev.msg == "取消退群提示") {
-            if (ev.bitmap & BIT_tuiqun)  return "当前没有设置 退群提示";
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
-            db->getGroupInfo(ev.groupId, gid);
-            gid.bitmap |= BIT_tuiqun;
-            db->addGroup(ev.groupId, gid);
-            return "取消退群提示成功 如需打开 请发送 [设置退群提示]()";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                QByteArray utf8 = text.toUtf8();
+                if(utf8.size()>=128) return QString("设置的关键词长度不能超128字节 当前%1字节").arg(utf8.size());
+                gid.autoref = text;
+                gid.autoref[utf8.size()] = '\0';              // 手动添加终止符
+                db->addGroup(ev.groupId, gid);
+                return "设置自动同意加群答案 完成 这里是不显示答案的 最长128直接 相当于42个中文 使用（,） 英文逗号分割多个关键词 可以不设置关键词 会全部通过 然后 没处理可能是 接口跳用超频率";
+            }
+            if (ev.msg == "设置入群提示") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (!(ev.bitmap & BIT_ruqun))  return "当前已经设置 入群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_ruqun;
+                db->addGroup(ev.groupId, gid);
+                return "设置入群提示成功";
+            } else if (ev.msg == "取消入群提示") {
+                if (ev.bitmap & BIT_ruqun)  return "当前没有设置 入群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_ruqun;
+                db->addGroup(ev.groupId, gid);
+                return "取消入群提示成功 如需打开 请发送 [设置入群提示]()";
+            }
+
+            if (ev.msg == "设置退群提示") {
+                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if (!(ev.bitmap & BIT_tuiqun))  return "当前已经设置 退群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_tuiqun;
+                db->addGroup(ev.groupId, gid);
+                return "设置退群提示成功";
+            } else if (ev.msg == "取消退群提示") {
+                if (ev.bitmap & BIT_tuiqun)  return "当前没有设置 退群提示";
+                auto *db = g_botdb[info->appid_int];
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_tuiqun;
+                db->addGroup(ev.groupId, gid);
+                return "取消退群提示成功 如需打开 请发送 [设置退群提示]()";
+            }
+            // 其他管理命令不处理，继续往下
+        }else{
+            if(keyword_Punish->match(ev)) return "!!!!";
         }
-        // 其他管理命令不处理，继续往下
-    }else{
-        if(keyword_Punish->match(ev)) return "!!!!";
     }
-
     // ---------- 入群事件（缓存起来，等待主线程合并发送） ----------
     if (ev.subType == 2) {
         if (info->rqhy.isEmpty()) return QString(); // 无回复内容则忽略
@@ -2478,7 +2536,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         if (ev.bitmap & BIT_ruqun) return QString(); // 已关闭入群提示
         qint64 now = QDateTime::currentSecsSinceEpoch();
         if (info->fasjg > 0) {
-            GroupRecord gid;
+            GroupRecord2 gid;
             db->getGroupInfo(ev.groupId, gid);
             qint64 lastSend = gid.xychy_time;
             if (now - lastSend < info->fasjg) {
@@ -2521,7 +2579,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         qint64 now = QDateTime::currentSecsSinceEpoch();
         if (info->tq_lq > 0) {
             auto *db = g_botdb[info->appid_int];
-            GroupRecord gid;
+            GroupRecord2 gid;
             db->getGroupInfo(ev.groupId, gid);
             qint64 lastSend = gid.tq_CD;
             if (now - lastSend < info->tq_lq) {

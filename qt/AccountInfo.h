@@ -131,7 +131,7 @@ struct AccountInfo {
     bool pbbot=true;
     bool autoConnect = false;
     bool online = false;
-
+    bool cbl=true; // 群管指令？
     bool markdown=true;
     bool markdown_pd=false;
     bool markdown_pd_mb=false;
@@ -150,6 +150,7 @@ struct AccountInfo {
     QString tqhy;
     QString help,caidan,emptyAt;
     QString apply;// 有人申请加群时
+    QString jojnhf;//入群验证
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;

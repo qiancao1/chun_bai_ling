@@ -2329,7 +2329,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
             }else if(type ==0 || type ==1)
             {
                 auto *db = g_botdb [info->appid_int];
-                GroupRecord gr{};
+                GroupRecord2 gr{};
                 db->getGroupInfo(Gid,gr);
                 if((gr.bitmap & BIT_Ainiren)==1)
                 {
@@ -2395,14 +2395,14 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
     else return QString();
     if(info->e_bai) //白名单
     {
-        auto *db = g_botdb[info->appid_int];
+
         if(ev.type==0)
         {
-            GroupRecord rec;
-            db->getGroupInfo(ev.groupId,rec);
-            if (!(rec.bitmap & BIT_AI_BAI)) return QString();
+
+            if (!(ev.bitmap & BIT_AI_BAI)) return QString();
         }else if(ev.type==2)
         {
+            auto *db = g_botdb[info->appid_int];
             UserRecord rec;
             db->getUserBySeqId(ev.user_int,rec);
             if (!(rec.bitmap & BIT_AI_BAI)) return QString();

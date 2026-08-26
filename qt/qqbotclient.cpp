@@ -503,24 +503,38 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msg = d.value("content").toString();
 
         const QJsonArray array = d["mentions"].toArray();
-        for (const QJsonValue &a : array)
-        {
-            if(a.isObject())
+        if(m_info->unid.isEmpty()){ //获取部分机器没有的unid
+            for (const QJsonValue &a : array)
             {
-                QJsonObject arronj = a.toObject();
-                if(!arronj["is_you"].toBool()) continue;
-                ev.at_you = true;
-                ev.bot_admin = (arronj["member_role"].toString() == "admin");
-                m_info->unid= arronj["id"].toString();
+                if(a.isObject())
+                {
+                    QJsonObject arronj = a.toObject();
+                    if(!arronj["is_you"].toBool()) continue;
+                    ev.at_you = true;
+                    ev.bot_admin = (arronj["member_role"].toString() == "admin");
+                    m_info->unid= arronj["id"].toString();
+                }
+                break;
             }
-            break;
         }
-
 
         if(!m_info->unid.isEmpty() && ev.msg.contains(m_info->unid))
         {
             ev.at_you = true;
             ev.msg.remove("<@"+m_info->unid+">");
+
+            for (const QJsonValue &a : array)//从这里获取机器人是不是管理员
+            {
+                if(a.isObject())
+                {
+                    QJsonObject arronj = a.toObject();
+                    if(!arronj["is_you"].toBool()) continue;
+                    ev.at_you = true;
+                    ev.bot_admin = (arronj["member_role"].toString() == "admin");
+                    m_info->unid= arronj["id"].toString();
+                }
+                break;
+            }
         }
 
     }
@@ -862,8 +876,9 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
 
-    if (g_botdb.contains(ev.appid) && ev.subType<=1)
+    if (g_botdb.contains(ev.appid))
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
+
     ev.bot_admin = ev.bitmap & BIT_ADMIN;
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
@@ -971,6 +986,56 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             }
         }
     }
+
+    if (ev.type == 0 && ev.subType == 2 && (ev.bitmap & BIT_RUQUN_YZ))
+    {
+        setGroupRestrictChatSetting(ev.groupId,ev.user,30*1440*60-1,[this,ev](const QString &resp,auto){
+            if(resp=="{}")
+            {
+                auto *db = g_botdb[ev.appid];
+                GroupRecord2 gid;
+
+                db->getGroupInfo(ev.groupId, gid);
+                gid.jojnyz.append(ev.user_int);
+                gid.jojntime.removeAt(std::time(nullptr) / 60);
+                db->savejojnyzData(ev.groupId,gid.jojnyz,gid.jojntime);
+
+
+                QString text = m_info->jojnhf;
+                if(text.isEmpty())
+                    text = QString("<@%1> 请在1小时内点击下面按钮 完成验证").arg(ev.user);
+                if(text.startsWith("#python")) text =python_code(text,ev);
+                else{
+                    text.replace("{ID}",ev.user);
+                    text.replace("{群昵称}",ev.groupname);
+                    if(text.contains("{头像}"))
+                            text.replace("{头像}", QString(">![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user));
+
+                }
+                text+=R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"入群验证","permission":{"type":2},"type":1,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"点我验证","style":1,"visited_label":"按钮1"}}]},{"buttons":[{"action":{"data":"免验证 %1","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"免验证（需权限） ","style":1,"visited_label":"按钮2"}}]}]}}}#b:#)";
+                text=text.arg(ev.user);
+                send_msgAsync(ev.type,ev.groupId,"[入群验证]",text,ev.msgId);
+            }
+
+        });
+
+    }
+    /*  //让定时器删吧
+    if (ev.type == 0 && ev.subType == 3 && (ev.bitmap & BIT_RUQUN_YZ))
+    {
+        auto *db = g_botdb[ev.appid];
+        GroupRecord2 record;
+        db->getGroupInfo(ev.groupId,record);
+        for(int i=0;i<record.jojnyz.size();++i)
+        {
+            if(record.jojnyz[i]==ev.user_int)
+            {
+                record.jojnyz.removeAt(i);
+                record.jojntime.removeAt(i);
+            }
+        }
+    }
+    */
     if(m_info->pbbot && ev.bot) return;
     if(ev.msg=="菜单")
     {

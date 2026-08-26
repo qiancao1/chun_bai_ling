@@ -24,6 +24,7 @@ QString getFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& f
     if (fieldName == "fallbackReply") return info->fallbackReply;
     if (fieldName == "welcomeMsg") return info->welcomeMsg;
     if (fieldName == "apply") return info->apply;
+    if (fieldName == "jojnyz") return info->jojnhf;
     return QString();
 }
 void qunguan::refreshList() {
@@ -45,9 +46,11 @@ void qunguan::refreshList() {
         {"空艾特时", "emptyAt"},
         {"用户入群", "rqhy"},
         {"用户退群", "tqhy"},
+        {"加群验证", "jojnyz"},
         {"未命中指令", "fallbackReply"},
         {"机器人入群", "welcomeMsg"},
         {"有人申请加群", "apply"}
+
     };
 
     for (const auto &pair : items) {
@@ -77,6 +80,7 @@ void setFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fiel
     else if (fieldName == "fallbackReply") info->fallbackReply = value;
     else if (fieldName == "welcomeMsg") info->welcomeMsg = value;
     else if (fieldName == "apply") info->apply = value;
+    else if (fieldName == "jojnyz") info->jojnhf = value;
 }
 
 
@@ -129,7 +133,7 @@ __result__ = "返回的内容"
 
 
 非py代码时可用变量 {ID} {申请理由} {头像} {昵称} {群昵称} {ReqId}
-没入群没法获取昵称 用的缓存前提框架有记录
+没入群没法获取昵称 用的缓存前提框架有记录 以及部分全局变量
 
 )");
     }
@@ -145,12 +149,37 @@ __result__ = "返回的内容"
 
 非py代码时可用变量 {id} {数量} {头像} {混合} {混合x} {群名} {昵称}
 当开始延迟时 统计 {混合} 排版? 退群后艾特无效 {混合x}里面有昵称 请注意违禁词
- {混合x} 直接显示昵称 {混合}为艾特
+ {混合x} 直接显示昵称 {混合}为艾特 以及部分全局变量
 )");
     }
+    else if(fieldName=="jojnyz")
+    {
+        ui->textEdit->setPlaceholderText(R"(====
+msg.groupid      : 群ID 发送消息无条件使用这个字段 私聊环境也可用传这个参数 包括 频道 和 频道私聊 因为可用让代码同时支持 各种事件来源(字符串)
+msg.user         : 发送者标识 32字节hex(字符串)
+msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还有 语音[audio,name=xx,url=xx] 视频[video,name=xx,url=xx] 文件[file,name=xx,url=xx]等标签 与艾特标签'<@user>' 32字节hex 不需要区分是否艾特了你 取到的必定是其他用户 (字符串)
+msg.appid        : 应用/机器人 ID(整数)
+msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
+msg.nickname     : 发送者昵称
+msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
+msg.raw          : 原始数据（JSON 字符串） (字符串)
+msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
+msg.groupname    : 群昵称
+msg.user2        : 目前已知 用于群聊申请加群时 邀请人
+===
+msg = 事件结构体
+api = 和写代码一样的api 有api使用
+__result__ = "返回的内容"
+
+
+非py代码时可用变量 {ID} {头像} {昵称} {群昵称} {日期}
+没入群没法获取昵称 用的缓存前提框架有记录 以及部分全局变量
+)");
+    }
+
     else if(fieldName=="welcomeMsg")
     {
-        ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为)");
+        ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为python代码 有msg事件)");
     }else
     {
         ui->textEdit->setPlaceholderText("无明显提示呢...");
@@ -185,7 +214,7 @@ void qunguan::on_pushButton_clicked() {
     info->rq_lq = ui->lineEdit_2->text().toInt();
     info->tq_ychf = ui->lineEdit_3->text().toInt();
     info->tq_lq = ui->lineEdit_4->text().toInt();
-
+    info->cbl = ui->checkBox->isChecked();
     // ---- 2. 保存当前编辑的文本内容（如果存在） ----
     if (!m_currentField.isEmpty()) {
         QString newContent = ui->textEdit->toPlainText(); // 假设是纯文本
@@ -218,7 +247,7 @@ void qunguan::列表行被单击()
         auto &info = m_accounts [index];
         ui->time_Edit->setText(QString::number(info->times));
         ui->tiao_Edit->setText(QString::number(info->tiaoshu));
-
+        ui->checkBox->setChecked(info->cbl);
         ui->checkBox_2->setChecked(info->pbbot);
         ui->textEdit->setText(info->admin);
         ui->zdht->setChecked(info->autoht);

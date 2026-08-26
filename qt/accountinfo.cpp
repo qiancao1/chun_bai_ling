@@ -80,6 +80,7 @@ QString AccountInfo::toJson() const {
     obj["fasjg"]=fasjg;
     obj["rqhy"]=rqhy;
     obj["apply"] = apply;
+    obj["jojnhf"] = jojnhf;
     obj["jiam"]=1;
     obj["a_gdts"]=固定条数;
     obj["a_cfgl"]=触发概率;
@@ -96,7 +97,7 @@ QString AccountInfo::toJson() const {
     obj["help"]=help;
     obj["caidan"]=caidan;
     obj["koat"]=emptyAt;
-
+    obj["cbl"]=cbl;
     obj["xiangliang"]=xiangliang;
     obj["Embed_model"]=Embed_model;
     obj["juece"]=juece;
@@ -138,6 +139,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.caidan=obj["caidan"].toString();
     info.emptyAt=obj["koat"].toString();
     info.apply=obj["apply"].toString();
+    info.jojnhf=obj["jojnhf"].toString();
     info.tq_lq = obj["tq_lq"].toInt();
     info.tq_ychf = obj["tq_ychf"].toInt();
     info.tqhy = obj["tqhy"].toString();
@@ -168,7 +170,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
 
     info.times = obj["times"].toInt(5);
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
-
+    info.cbl=obj["cbl"].toBool(); //向量开关
 
     info.pbbot =obj["pbbot"].toBool(true);
     info.tiaoshu = obj["tiaoshu"].toInt(5);

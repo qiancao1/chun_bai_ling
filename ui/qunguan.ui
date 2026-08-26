@@ -57,7 +57,17 @@
       <number>0</number>
      </property>
      <item>
-      <layout class="QHBoxLayout" name="horizontalLayout">
+      <layout class="QHBoxLayout" name="horizontalLayout_4">
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QCheckBox" name="zdht">
+         <property name="text">
+          <string>自动回应回调</string>
+         </property>
+        </widget>
+       </item>
        <item>
         <widget class="QCheckBox" name="checkBox_2">
          <property name="text">
@@ -66,12 +76,23 @@
         </widget>
        </item>
        <item>
-        <widget class="QCheckBox" name="zdht">
+        <widget class="QCheckBox" name="checkBox">
          <property name="text">
-          <string>自动回应回调</string>
+          <string>启用纯白铃指令</string>
          </property>
         </widget>
        </item>
+       <item>
+        <widget class="QPushButton" name="pushButton">
+         <property name="text">
+          <string>保存页面</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout">
        <item>
         <widget class="QLabel" name="label_2">
          <property name="text">
@@ -97,13 +118,6 @@
         <widget class="QLineEdit" name="tiao_Edit">
          <property name="placeholderText">
           <string>5</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="pushButton">
-         <property name="text">
-          <string>保存页面</string>
          </property>
         </widget>
        </item>

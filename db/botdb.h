@@ -48,6 +48,23 @@ struct GroupRecord {
     char autoref[128];
 };
 
+
+struct GroupRecord2 {
+    uint32_t bitmap=0;
+    uint32_t create_time=0; //加群时间
+    uint32_t inviter_seq_id=0; //邀请人id
+    qint64 ncgx=0;   //昵称获取时间 一个月刷新一次
+    qint64 xychy_time=0;
+    qint64 tq_CD=0;
+
+    QString name;
+    QString autoref;
+    uint32_t qid[20];
+    QList<int> jojnyz;//入群验证 id
+    QList<int> jojntime;
+};
+
+
 #include <QHash>
 #include <cstring>
 #include <QDataStream>
@@ -91,7 +108,7 @@ public:
     bool open();
     void close();
     void updateUserCache(const QByteArray &openidBin, const UserRecord &record);
-    void updateGroupCache(const QByteArray &groupIdBin, const GroupRecord &record);
+    void updateGroupCache(const QByteArray &groupIdBin, const GroupRecord2 &record);
     // 订阅（添加）：标记 + 群ID
     bool addSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &data);
     //获取单个配置信息
@@ -110,9 +127,11 @@ public:
     bool updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord);
     bool updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater);
     bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap, const QString &name);
-    bool addGroup(const QString &groupIdHex,const GroupRecord &record);
-    bool getGroupInfo(const QString &groupIdHex, GroupRecord &outRecord);
+    bool addGroup(const QString &groupIdHex,const GroupRecord2 &record);
 
+    bool getGroupInfo(const QString &groupIdHex, GroupRecord2 &outRecord);
+    template<typename Func>
+    void withGroupInfo(const BinKey& key, Func&& func);
     bool getTodayDiff(uint32_t appid, const AccountStats &currentStats, AccountStats &diff);
     bool saveAccountStats(uint32_t appid, uint32_t minuteIndex, const AccountStats &stats);
     bool getAccountStats(uint32_t appid, uint32_t minuteIndex, AccountStats &outStats);
@@ -122,15 +141,18 @@ public:
     bool removeFriend(uint32_t userSeqId);
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
-
+    void cleanExpiredjojnyz(int expireMinutes);
     quint64 getUserTodayMsgCount(const QByteArray &openidBin);
     quint64 getGroupTodayMsgCount(const QByteArray &groupIdBin);
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
-
     bool batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes);
+    bool savejojnyzData(const QString &openid, const QList<int>& ids, const QList<int>& times);
+    bool savejojnyzData(const BinKey &groupKey, const QList<int>& ids, const QList<int>& times);
+    bool addJojiyzRecord(const QString &groupIdHex, int userId);
+
 
     QHash<BinKey, UserRecord> m_userCache;
-    QHash<BinKey, GroupRecord> m_groupCache;
+    QHash<BinKey, GroupRecord2> m_groupCache;
     QHash<BinKey, quint64> m_userDailyMsg;   // 用户今日消息数
     QHash<BinKey, quint64> m_groupDailyMsg;  // 群今日消息数
     QMutex m_msgMutex;
@@ -171,9 +193,12 @@ private:
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
     QTimer *m_cacheTimer;
+    MDB_dbi m_dbi_jojnyz_data = 0;
+    static constexpr const char* jojnyz_DB_NAME = "jojnyz_data";
 
-
-
+    static GroupRecord toGroupRecord(const GroupRecord2& src);
+    static GroupRecord2 toGroupRecord2(const GroupRecord& src);
+    bool loadjojnyzData(const BinKey &groupKey, QList<int>& ids, QList<int>& times) ;
 
     void loadDailyStats();                   // 加载当日统计文件
     void saveDailyStats();                   // 保存当日统计文件

@@ -2302,6 +2302,8 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
     text.replace("{{group}}", openid);
     text.replace("{{user}}", log2.user);
     text.replace("{{msg}}", log2.msg);
+    text.replace("{{昵称}}", log2.name);
+
     text.replace("{{msgid}}", log2.ch);
 
     static QRegularExpression re("\\{\\{([^}]+)\\}\\}");

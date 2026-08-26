@@ -69,8 +69,8 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.10.50"
-#define APP_BUILD_NUMBER 50
+#define APP_VERSION_STR "v1.2.11.52"
+#define APP_BUILD_NUMBER 52
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
@@ -1329,7 +1329,7 @@ QString getLatestDownloadUrl() {
     QJsonObject obj = doc.object();
     QJsonArray assets = obj["assets"].toArray();
 
-    for (const QJsonValue &val : assets) {
+    for (const QJsonValue &val : std::as_const(assets)) {
         QJsonObject asset = val.toObject();
         QString name = asset["name"].toString();
         if (name.contains("linux", Qt::CaseInsensitive) &&

@@ -63,15 +63,16 @@ public:
     Global();
 };
 enum BitMask {
-    BIT_Ainiren = 1 << 0,
-    BIT_ruqun = 1 << 1,
-    BIT_tuiqun = 1 << 2,
-    BIT_AI_BAI = 1 << 3,
-    BIT_SHUA_P = 1<<4,
-    BIT_AUTO_JOJI_KG = 1<<5,
-    BIT_AUTO_JOJI = 1<<6,
-    BIT_ADMIN= 1<<7,
-    BIT_PUNISH = 1<<8
+    BIT_Ainiren = 1 << 0, //ai 拟人
+    BIT_ruqun = 1 << 1, //入群提示 和 入群验证冲突
+    BIT_tuiqun = 1 << 2,// 退群提示
+    BIT_AI_BAI = 1 << 3,  //是ai白名单成员
+    BIT_SHUA_P = 1<<4,  //刷屏检查
+    BIT_AUTO_JOJN_KG = 1<<5,  //有人申请加群提示
+    BIT_AUTO_JOJN = 1<<6,  //自动同意加群
+    BIT_ADMIN= 1<<7,  //机器人是否管理员
+    BIT_PUNISH = 1<<8, //违禁词检测
+    BIT_RUQUN_YZ = 1<<9   //入群验证
 };
 
 struct dblog
