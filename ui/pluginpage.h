@@ -189,7 +189,7 @@ private:
 
 
     void setupUi();
-    void initPython();
+
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
     void LoadPlugin_Python();
@@ -219,9 +219,7 @@ private:
     QPushButton *setBtn;
     int currentSelected_index;
     std::thread m_asyncio_thread; // 改成成员变量
-    py::object m_asyncio_mod;
-    py::object m_run_coro_func;
-    py::object *m_loop_ptr = nullptr; // 改成指针
+
 };
 
 #endif // PLUGINPAGE_H

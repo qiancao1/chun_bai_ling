@@ -1234,7 +1234,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 }
 
 void MainWindow::checkUpdate() {
-    #ifdef _WIN32
+
     QUrl url("https://gitee.com/api/v5/repos/linglan2/chun-bai-ling-dang/releases/latest");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "Qt-UpdateChecker/1.0");
@@ -1276,9 +1276,7 @@ void MainWindow::checkUpdate() {
             QMessageBox::information(this, "检查更新", "当前已经是最新版本");
         }
     });
-    #else
-        QMessageBox::information(this, "检查更新", "在linux 暂时不能使用这个");
-    #endif
+
 }
 #include "netmanager.h"
 extern bool __cqkj;
@@ -1308,9 +1306,40 @@ QString checkUpdate(const MessageEvent &ev) {
     }
     return  "当前已经是最新版本";
 }
+QString getLatestDownloadUrl() {
+    QNetworkAccessManager manager;
+    QNetworkRequest request(QUrl("https://gitee.com/api/v5/repos/linglan2/chun-bai-ling-dang/releases/latest"));
+    QNetworkReply *reply = manager.get(request);
 
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
 
+    if (reply->error() != QNetworkReply::NoError) {
+        reply->deleteLater();
+        return QString();
+    }
 
+    QByteArray data = reply->readAll();
+    reply->deleteLater();
+
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (!doc.isObject()) return QString();
+
+    QJsonObject obj = doc.object();
+    QJsonArray assets = obj["assets"].toArray();
+
+    for (const QJsonValue &val : assets) {
+        QJsonObject asset = val.toObject();
+        QString name = asset["name"].toString();
+        if (name.contains("linux", Qt::CaseInsensitive) &&
+            (name.endsWith(".zip") || name.endsWith(".7z"))) {
+            return asset["browser_download_url"].toString();
+        }
+    }
+
+    return QString();
+}
 
 QString startDownloadAndReplace() {
     #ifdef _WIN32
@@ -1333,6 +1362,71 @@ QString startDownloadAndReplace() {
         return QString();
     }
     return "启动失败（CreateProcess 返回错误）";
+    #else
+    QString unzipTool;
+    if (QProcess::execute("which", QStringList() << "7z") == 0) {
+        unzipTool = "7z";
+    } else if (QProcess::execute("which", QStringList() << "unzip") == 0) {
+        unzipTool = "unzip";
+    } else {
+        return "未找到 7z 或 unzip，请安装 p7zip-full（sudo apt install p7zip-full）";
+    }
+
+    // 2. 获取下载 URL（自动选择包含 "linux" 的压缩包）
+    QString downloadUrl = getLatestDownloadUrl();
+    if (downloadUrl.isEmpty())
+        return "未找到 Linux 版本的更新包";
+
+    // 3. 创建临时 Shell 脚本
+    QString scriptPath = QDir::tempPath() + "/update.sh";
+    QFile script(scriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Text))
+        return "无法创建临时脚本";
+
+    QString appPath = QCoreApplication::applicationFilePath();
+    QString appDir = QCoreApplication::applicationDirPath();
+
+    // 脚本内容（根据检测到的工具生成对应的解压命令）
+    QString unzipCmd;
+    if (unzipTool == "7z") {
+        unzipCmd = "7z x /tmp/update.zip -y -o'%2'";
+    } else {
+        unzipCmd = "unzip -o /tmp/update.zip -d '%2'";
+    }
+
+    QString scriptContent = QString(
+                                "#!/bin/bash\n"
+                                "sleep 2   # 等待主程序完全退出\n"
+                                "echo '下载更新包...'\n"
+                                "wget -O /tmp/update.zip '%1' || curl -L -o /tmp/update.zip '%1'\n"
+                                "if [ $? -ne 0 ]; then echo '下载失败'; exit 1; fi\n"
+                                "echo '解压中...'\n"
+                                "%3\n"
+                                "if [ $? -ne 0 ]; then echo '解压失败'; exit 1; fi\n"
+                                "rm -f /tmp/update.zip\n"
+                                "echo '更新完成，重启程序...'\n"
+                                "exec '%4' &\n"
+                                "exit 0\n"
+                                ).arg(downloadUrl, appDir, unzipCmd, appPath);
+
+    script.write(scriptContent.toUtf8());
+    script.close();
+
+    // 添加执行权限
+    QFile::setPermissions(scriptPath,
+                          QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
+                              QFile::ReadGroup | QFile::ExeGroup |
+                              QFile::ReadOther | QFile::ExeOther);
+
+    // 4. 启动脚本（detach）
+    if (!QProcess::startDetached("/bin/bash", QStringList() << scriptPath)) {
+        QFile::remove(scriptPath);
+        return "无法启动更新脚本";
+    }
+
+    // 5. 主程序退出
+    QCoreApplication::quit();
+    return QString(); // 成功
     #endif
     return "其他系统暂时不支持";
 }

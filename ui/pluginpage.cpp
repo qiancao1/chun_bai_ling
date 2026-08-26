@@ -108,7 +108,7 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
     setupUi();
-    initPython();
+
 
     QTimer::singleShot(0, this, &PluginPage::loadPlugins);
     connect(qApp, &QCoreApplication::aboutToQuit, this, &PluginPage::stopAsyncioThread);
@@ -119,31 +119,6 @@ void PluginPage::stopAsyncioThread() {
         m_asyncio_thread.detach();
     }
     //std::quick_exit(0);
-}
-void PluginPage::initPython() {
-    py::gil_scoped_acquire gil;
-
-    m_asyncio_mod = py::module_::import("asyncio");
-    m_run_coro_func = m_asyncio_mod.attr("run_coroutine_threadsafe");
-
-    std::promise<py::object> loop_promise;
-    std::future<py::object> loop_future = loop_promise.get_future();
-
-    m_asyncio_thread = std::thread([this, loop_promise = std::move(loop_promise)]() mutable {
-
-        py::gil_scoped_acquire acquire;
-        py::object local_loop;
-        local_loop = m_asyncio_mod.attr("new_event_loop")();
-        m_asyncio_mod.attr("set_event_loop")(local_loop);
-        loop_promise.set_value(local_loop);
-
-        local_loop.attr("run_forever")(); // 死循环
-
-    });
-
-    // 注意：这里不要直接 m_loop = ...，而是用 new！
-    py::object loop_obj = loop_future.get();
-    m_loop_ptr = new py::object(loop_obj); // 【关键！】在堆上分配，绝不会在析构时触发 Py_DECREF
 }
 
 
@@ -768,11 +743,9 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
 
         auto process_ret = [&](py::object ret) {
 
-            if (m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
-                m_run_coro_func(ret, m_loop_ptr); // 非阻塞丢入循环
-            }
-            // 如果是同步函数返回的字符串
-            else if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+
+
+            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
                 QString str = QString::fromStdString(py::str(ret).cast<std::string>());
                 if (reply.isEmpty()) reply = str;
                 else reply += "\n" + str;
@@ -1234,19 +1207,35 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
 
 void PluginPage::LoadPlugin_DLL() //按钮
 {
-    QString path=QFileDialog::getOpenFileName(this, tr("选择 DLL 插件"), "", tr("动态链接库 (*.dll)"));
-    if(path.isEmpty()) return;
-    path.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"/");
-    path.remove(QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())+"\\");
+    #ifdef Q_OS_WIN
+        QString filter = tr("动态链接库 (*.dll)");
+    #else
+        QString filter = tr("动态链接库 (*.so)");
+    #endif
+
+    QString path = QFileDialog::getOpenFileName(this, tr("选择插件"), "", filter);
+    if (path.isEmpty()) return;
+
+
+    QString appDir = QCoreApplication::applicationDirPath();
+
+    QString normalizedPath = QDir::fromNativeSeparators(path);
+    QString normalizedAppDir = QDir::fromNativeSeparators(appDir) + "/";
+    if (normalizedPath.startsWith(normalizedAppDir)) {
+        path = normalizedPath.mid(normalizedAppDir.length());
+    } else {
+
+        path = normalizedPath;
+    }
+
     QList<int> empty{};
-    QString err = LoadPlugin(path,1,false,empty);
-    if(!err.isEmpty())
-    {
-        AppendEventLog("[载入插件]"+path+" 错误信息："+err ,0xff);
-        QMessageBox::about(this,"载入插件","[载入插件]"+path+" 错误信息："+err);
+    QString err = LoadPlugin(path, 1, false, empty);
+    if (!err.isEmpty()) {
+        AppendEventLog("[载入插件] " + path + " 错误信息：" + err, 0xff);
+        QMessageBox::about(this, "载入插件", "[载入插件] " + path + " 错误信息：" + err);
         return;
     }
-    AppendEventLog("[载入插件]"+path);
+    AppendEventLog("[载入插件] " + path);
     savePlugins();
 }
 void PluginPage::doLoadPythonPlugin(const QString &dir)
@@ -1310,21 +1299,32 @@ void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
 }
 void PluginPage::LoadPlugin_Python_pip(const QString &dir)
 {
+    // ... 前面的检查（main.py 存在性等）保持不变 ...
 
-    if (!QFile::exists(dir + "/main.py")) {
-        showAutoCloseMessageBox("错误", "所选文件夹中缺少 main.py");
+    // ==================== 获取 Python 可执行文件路径 ====================
+    QString pythonExe;
+#ifdef _WIN32
+    pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
+#else
+    // 优先使用程序目录下的 python3.14t
+    QString bundled = QCoreApplication::applicationDirPath() + "/python3.14t";
+    if (QFile::exists(bundled) && QFileInfo(bundled).isExecutable()) {
+        pythonExe = bundled;
+    } else {
+        pythonExe = QStandardPaths::findExecutable("python3.14t");
+        if (pythonExe.isEmpty()) {
+            QFileInfo info("/usr/local/bin/python3.14t");
+            if (info.exists() && info.isExecutable()) pythonExe = info.absoluteFilePath();
+        }
+    }
+#endif
+
+    if (pythonExe.isEmpty() || !QFile::exists(pythonExe)) {
+        QMessageBox::warning(this, "错误", "未找到 Python 解释器");
         return;
     }
 
-    QFileInfo reqFile(dir + "/requirements.txt");
-    if (!reqFile.exists()) {
-        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
-        doLoadPythonPlugin(relDir);
-        return;
-    }
-    QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
-
-
+    // ==================== 检查 pip ====================
     QProcess checkPip;
     checkPip.start(pythonExe, QStringList() << "-c" << "import pip");
     if (!checkPip.waitForFinished(3000) || checkPip.exitCode() != 0) {
@@ -1332,22 +1332,22 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
         QProcess fixPip;
         fixPip.start(pythonExe, QStringList() << "-m" << "ensurepip" << "--upgrade");
         if (!fixPip.waitForFinished(10000) || fixPip.exitCode() != 0) {
-            QMessageBox::information(this, "提示",  "修复 pip 失败，请手动检查环境。");
-            return ;
+            QMessageBox::information(this, "提示", "修复 pip 失败，请手动检查环境。");
+            return;
         }
         QMessageBox::information(this, "提示", "pip 修复成功。");
     }
 
+    // ==================== 安装目标目录（平台自适应） ====================
+    QString sitePackages;
+#ifdef _WIN32
+    sitePackages = QCoreApplication::applicationDirPath() + "/Lib/site-packages";
+#else
+    sitePackages = QCoreApplication::applicationDirPath() + "/lib/python3.14/site-packages";
+#endif
+    QDir().mkpath(sitePackages);  // 确保目录存在
 
-    if (!QFile::exists(pythonExe)) {
-        QMessageBox::warning(this, "错误", "未找到 Python 解释器：" + pythonExe);
-        // 仍然尝试加载（依赖可能已安装）
-        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
-        doLoadPythonPlugin(relDir);
-        return;
-    }
-
-    // ---------- 创建日志对话框 ----------
+    // ==================== 创建日志对话框 ====================
     m_pipDialog = new QDialog(this);
     m_pipDialog->setWindowTitle("正在安装 Python 依赖 (pip install)");
     m_pipDialog->resize(600, 400);
@@ -1362,19 +1362,15 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
     QPushButton *closeBtn = new QPushButton("关闭", m_pipDialog);
     connect(closeBtn, &QPushButton::clicked, m_pipDialog, &QDialog::close);
     layout->addWidget(closeBtn);
-
-    // 可选：添加“最小化”等，但不需要了
     m_pipDialog->show();
 
-    // ---------- 创建 pip 进程 ----------
+    // ==================== 启动 pip 进程 ====================
     m_pipProcess = new QProcess(this);
     m_pipProcess->setWorkingDirectory(dir);
 
-    // 继承系统环境变量（确保 pip 能找到网络代理等）
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     m_pipProcess->setProcessEnvironment(env);
 
-    // 连接信号
     connect(m_pipProcess, &QProcess::readyReadStandardOutput,
             this, &PluginPage::onPipOutputReady);
     connect(m_pipProcess, &QProcess::readyReadStandardError,
@@ -1382,25 +1378,41 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
     connect(m_pipProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &PluginPage::onPipFinished);
 
-    // 启动 pip install -r requirements.txt（使用清华镜像）
+    // ==================== pip install 参数（平台自适应） ====================
     QStringList args;
     args << "-m" << "pip" << "install" << "-r" << "requirements.txt"
-         << "-i" << "https://pypi.tuna.tsinghua.edu.cn/simple"
-         << "--trusted-host" << "pypi.tuna.tsinghua.edu.cn";
+
+         // 主源：电信镜像
+         << "-i" << "https://mirrors.ctyun.cn/pypi/simple/"
+
+         // 备用源
+         << "--extra-index-url" << "https://mirrors.bfsu.edu.cn/pypi/simple/"
+         << "--extra-index-url" << "https://pypi.tuna.tsinghua.edu.cn/simple"
+         << "--extra-index-url" << "https://pypi.mirrors.ustc.edu.cn/simple/"
+         << "--extra-index-url" << "https://repo.huaweicloud.com/repository/pypi/simple/"
+         << "--extra-index-url" << "https://mirrors.cloud.tencent.com/pypi/simple"
+         << "--extra-index-url" << "https://pypi.doubanio.com/simple/"
+         << "--extra-index-url" << "https://pypi.org/simple"
+
+         // 信任所有源
+         << "--trusted-host" << "mirrors.ctyun.cn"
+         << "--trusted-host" << "mirrors.bfsu.edu.cn"
+         << "--trusted-host" << "pypi.tuna.tsinghua.edu.cn"
+         << "--trusted-host" << "pypi.mirrors.ustc.edu.cn"
+         << "--trusted-host" << "repo.huaweicloud.com"
+         << "--trusted-host" << "mirrors.cloud.tencent.com"
+         << "--trusted-host" << "pypi.doubanio.com"
+         << "--trusted-host" << "pypi.org";
 
     m_pipProcess->start(pythonExe, args);
 
     if (!m_pipProcess->waitForStarted(3000)) {
-        // 启动失败，关闭对话框，提示错误
         m_pipDialog->close();
         QMessageBox::warning(this, "错误", "无法启动 pip 进程，请检查 Python 环境。");
-        // 仍然尝试加载
         QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
         doLoadPythonPlugin(relDir);
     }
-    // 注意：不阻塞，等待 onPipFinished 信号
 }
-
 void PluginPage::LoadPlugin_Python()
 {
     QString dir = QFileDialog::getExistingDirectory(this, "选择 Python 插件文件夹");
@@ -1553,7 +1565,16 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     QString srcAbsPath = originalFile.absoluteFilePath();
     QString baseName = originalFile.completeBaseName();
     QString timestamp = QString::number(QDateTime::currentSecsSinceEpoch());
-    QString newFileName = baseName + "_" + timestamp + ".dll";
+
+    #ifdef Q_OS_WIN
+        QString ext = ".dll";
+    #elif Q_OS_MAC
+        QString ext = ".dylib";
+    #else
+        QString ext = ".so";
+    #endif
+
+    QString newFileName = baseName + "_" + timestamp + ext;
     info.loadedDllPath = tmpDir.filePath(newFileName);
 
 
@@ -1639,7 +1660,14 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
 
     QString baseName = originalFile.completeBaseName();
     QString timestamp = QString::number(QDateTime::currentSecsSinceEpoch());
-    QString newFileName = baseName + "_" + timestamp + ".dll";
+    #ifdef Q_OS_WIN
+        QString ext = ".dll";
+    #elif Q_OS_MAC
+        QString ext = ".dylib";
+    #else
+        QString ext = ".so";
+    #endif
+    QString newFileName = baseName + "_" + timestamp + ext;
     info.loadedDllPath = tmpDir.filePath(newFileName);
 
     if (!QFile::copy(info.path, info.loadedDllPath))

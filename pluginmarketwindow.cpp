@@ -372,12 +372,25 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
     }
 
     // 检查 7za.exe 是否存在
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString sevenZipPath = appDir + "/7za.exe";
-    if (!QFile::exists(sevenZipPath)) {
-        QMessageBox::warning(this, "错误", "解压工具 7za.exe 未找到，请将 7za.exe 放置在程序目录下");
-        return;
-    }
+
+    #ifdef _WIN32
+        QString appDir = QCoreApplication::applicationDirPath();
+        QString sevenZipPath = appDir + "/7za.exe";
+        if (!QFile::exists(sevenZipPath)) {
+            QMessageBox::warning(this, "错误", "解压工具 7za.exe 未找到，请将 7za.exe 放置在程序目录下");
+            return;
+        }
+    #else
+        // Linux 下可以用 QStandardPaths::findExecutable 提前检查
+        QString sevenZipPath = QStandardPaths::findExecutable("7zz");
+        if (sevenZipPath.isEmpty()) {
+            sevenZipPath = QStandardPaths::findExecutable("7z");
+        }
+        if (sevenZipPath.isEmpty()) {
+            QMessageBox::warning(this, "错误", "未找到 7z/7zz，请安装 p7zip-full (sudo apt install p7zip-full)");
+            return;
+        }
+    #endif
     Installed_type=-1;
     if(targetInfo->type=="Python")
     {
@@ -524,35 +537,68 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
     });
 }
 
-void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath, QProgressDialog *progress) {
-    // 检查 7za.exe
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString sevenZipPath = appDir + "/7za.exe";
-    if (!QFile::exists(sevenZipPath)) {
-        QMessageBox::warning(this, "错误", "解压工具 7za.exe 未找到");
+void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath, QProgressDialog *progress)
+{
+
+    QString sevenZipPath;
+#ifdef _WIN32
+    // Windows 保持原样
+    sevenZipPath = QCoreApplication::applicationDirPath() + "/7za.exe";
+
+#else
+    // Linux：按优先级依次探测
+    QStringList candidates;
+    candidates << "7zz"    // 官方新版 7-Zip (推荐)
+               << "7z"     // p7zip-full 或 官方旧版符号链接
+               << "7za";   // p7zip 独立版 (部分旧系统)
+
+    for (const QString &cmd : candidates) {
+        QString path = QStandardPaths::findExecutable(cmd);
+        if (!path.isEmpty()) {
+            sevenZipPath = path;
+            break;
+        }
+    }
+
+    // 如果还没找到，再检查常见固定路径（兜底）
+    if (sevenZipPath.isEmpty()) {
+        QFileInfo possible("/usr/bin/7zz");
+        if (possible.exists() && possible.isExecutable())
+            sevenZipPath = possible.absoluteFilePath();
+        else {
+            QFileInfo possible2("/usr/bin/7z");
+            if (possible2.exists() && possible2.isExecutable())
+                sevenZipPath = possible2.absoluteFilePath();
+        }
+    }
+
+#endif
+
+    // 最终检查是否真的找到了
+    if (sevenZipPath.isEmpty() || !QFileInfo::exists(sevenZipPath)) {
+        QString errMsg = QSysInfo::productType() == "windows" ?
+                             "解压工具 7za.exe 未找到" :
+                             "未找到 7z/7zz/7za 命令，请安装 p7zip-full 或 7zip (sudo apt install p7zip-full)";
+        QMessageBox::warning(this, "错误", errMsg);
         progress->deleteLater();
         return;
     }
-
-    // 设置进度对话框文本
+    // 2. 其余逻辑与原代码完全一致
     progress->setLabelText("正在解压 " + info->name + " ...");
     progress->setValue(0);
 
-    // 目标目录
-    QString targetDir = QCoreApplication::applicationDirPath() + "/plugins/" +info->name+"/";
+    QString targetDir = QCoreApplication::applicationDirPath() + "/plugins/" + info->name + "/";
     QDir().mkpath(targetDir);
 
-    // 构造 7za 参数
     QStringList args;
     args << "x" << zipPath << "-o" + targetDir << "-y" << "-aoa";
 
-    // 启动进程
     QProcess *process = new QProcess(this);
     process->setProgram(sevenZipPath);
     process->setArguments(args);
     process->start();
 
-    // 读取输出，更新进度
+    // 进度读取（与原代码相同）
     connect(process, &QProcess::readyReadStandardOutput, this, [progress, this]() {
         if (!progress) return;
         QProcess *p = qobject_cast<QProcess*>(sender());
@@ -567,13 +613,12 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
         }
     });
 
-    // 解压完成
+    // 完成处理（与原代码基本相同，仅需注意 progress 可能为空）
     connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [=](int exitCode, QProcess::ExitStatus status) {
                 process->deleteLater();
 
                 if (progress->wasCanceled()) {
-                    // 取消解压，清理目录和临时文件
                     QDir targetDirObj(targetDir);
                     targetDirObj.removeRecursively();
                     QFile::remove(zipPath);
@@ -584,7 +629,7 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                 if (exitCode != 0 || status != QProcess::NormalExit) {
                     QByteArray err = process->readAllStandardError();
                     QString errMsg = QString::fromLocal8Bit(err);
-                    QMessageBox::warning(this, "解压失败", QString("7za 解压出错：%1").arg(errMsg));
+                    QMessageBox::warning(this, "解压失败", QString("7z 解压出错：%1").arg(errMsg));
                     QDir targetDirObj(targetDir);
                     targetDirObj.removeRecursively();
                     QFile::remove(zipPath);
@@ -592,32 +637,28 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                     return;
                 }
 
-
-
-
-                if(Installed_type ==0 ){
-
+                // 后续安装逻辑（保持不变）
+                if (Installed_type == 0) {
                     pluginPage->LoadPlugin_Python_pip("plugins/" + info->name);
-                }else if(Installed_type==3){
+                } else if (Installed_type == 3) {
                     pluginPage->npmJSpk("plugins/" + info->name);
-                }
-
-                else{
-                    QMessageBox::information(this, "下载完成", info->name + "\n此类插件 需要手动安装 因为他是dll的 不知道入口");
+                } else {
+                    QMessageBox::information(this, "下载完成", info->name + "\n此类插件需要手动安装（dll 未知入口）");
                 }
                 progress->close();
                 progress->deleteLater();
-                return;
             });
 
-    // 取消解压
+    // 取消响应（不变）
     connect(progress, &QProgressDialog::canceled, this, [=]() {
         if (process->state() == QProcess::Running) {
             process->kill();
         }
-        // 清理在 finished 中处理
     });
 }
+
+
+
 void PluginMarketWindow::onOpenDetail(const QString &url) {
     if (!url.isEmpty()) {
         QDesktopServices::openUrl(QUrl(url));

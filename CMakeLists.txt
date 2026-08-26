@@ -9,16 +9,19 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
-
-#set(CMAKE_PREFIX_PATH "C:\\Aisy\\Qt\\qt-5.15.3-dynamic-msvc2019-x86_64")
-
 
 add_definitions(-DNOMINMAX)
-# ==================== Python 版本选择 ====================# ========== Python 版本选择开关 ==========
-# 使用 t 版：设为 ON
-# 使用标准版：设为 OFF
-set(USE_FREETHREADING_PYTHON ON)   # <--- 改这一行：ON=t版，OFF=标准版
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wno-attributes)
+endif()
+
+# ==================== Python 版本选择（Windows / Linux 自动切换） ====================
+if(WIN32)
+    set(USE_FREETHREADING_PYTHON ON)
+else()
+    set(USE_FREETHREADING_PYTHON OFF)
+endif()
 
 set(KEY_CONTENT "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/key.txt")
@@ -29,16 +32,12 @@ else()
 endif()
 
 if(MSVC)
-    # 移除已有的 /showIncludes 选项
     string(REGEX REPLACE "/showIncludes" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     string(REGEX REPLACE "/showIncludes" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
-    
-    # 或者直接添加 /showIncludes-（如果编译器支持）
-    # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /showIncludes-")
-    # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /showIncludes-")
 endif()
-if(USE_FREETHREADING_PYTHON)
-    # ---------- t 版手动配置 ----------
+
+# ---------- Windows：使用 t 版 Python（手动配置） ----------
+if(WIN32 AND USE_FREETHREADING_PYTHON)
     set(PYTHON_FT_ROOT "C:/Users/Airuan/AppData/Local/Python/pythoncore-3.14t-64"
         CACHE PATH "Path to free-threaded Python installation")
 
@@ -54,11 +53,8 @@ if(USE_FREETHREADING_PYTHON)
     set(Python_Development_FOUND TRUE CACHE INTERNAL "")
     set(Python_FOUND TRUE CACHE INTERNAL "")
 
-    # pybind11 需要的扩展名
     if(WIN32)
         set(PYTHON_MODULE_EXTENSION ".pyd" CACHE STRING "Python module extension")
-    elseif(APPLE)
-        set(PYTHON_MODULE_EXTENSION ".so" CACHE STRING "Python module extension")
     else()
         set(PYTHON_MODULE_EXTENSION ".so" CACHE STRING "Python module extension")
     endif()
@@ -66,12 +62,17 @@ if(USE_FREETHREADING_PYTHON)
     set(PYTHON_IS_DEBUG "0" CACHE STRING "Python is debug build")
     set(PYBIND11_FINDPYTHON ON CACHE BOOL "Use FindPython")
 
-    message(STATUS "Using free-threaded Python (t version)")
+    message(STATUS "Using free-threaded Python (t version) for Windows")
 else()
-    # ---------- 标准 Python：自动查找 ----------
-    find_package(Python 3.14 REQUIRED COMPONENTS Interpreter Development)
-    # 如果你系统里装的是其他版本（比如 3.12），把上面的 3.14 改成 3.12 即可
-    message(STATUS "Using system Python (standard build)")
+    set(Python_EXECUTABLE "/usr/local/bin/python3.14t" CACHE FILEPATH "" FORCE)
+    set(Python_INCLUDE_DIRS "/usr/local/include/python3.14t" CACHE PATH "" FORCE)
+    set(Python_LIBRARIES "/usr/local/lib/libpython3.14t.so" CACHE FILEPATH "" FORCE)
+    set(Python_LIBRARY "${Python_LIBRARIES}" CACHE FILEPATH "" FORCE)
+    set(Python_Interpreter_FOUND TRUE CACHE INTERNAL "")
+    set(Python_Development_FOUND TRUE CACHE INTERNAL "")
+    set(Python_FOUND TRUE CACHE INTERNAL "")
+    # 阻止 pybind11 重新查找 Python
+    set(PYBIND11_FINDPYTHON OFF CACHE BOOL "" FORCE)
 endif()
 
 message(STATUS "Python Configuration:")
@@ -82,20 +83,30 @@ if(USE_FREETHREADING_PYTHON)
     message(STATUS "  Module extension: ${PYTHON_MODULE_EXTENSION}")
 endif()
 
-# ==================== Qt 查找 ====================
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebSockets Network)
+# ==================== Qt 查找（平台自动切换） ====================
+if(WIN32)
+    set(CMAKE_PREFIX_PATH "C:\\Aisy\\Qt\\qt-5.15.3-dynamic-msvc2019-x86_64")
+    find_package(Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
+else()
+    set(Qt5_DIR "/usr/lib/x86_64-linux-gnu/cmake/Qt5")
+    find_package(Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
+endif()
 
-# ==================== pybind11（自动下载） ====================
-include(FetchContent)
-FetchContent_Declare(
-    pybind11
-    GIT_REPOSITORY https://github.com/pybind/pybind11.git
-    GIT_TAG v3.0.4
-)
-FetchContent_MakeAvailable(pybind11)
+# ==================== pybind11（优先使用本地，否则从 Gitee 下载） ====================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/pybind11/CMakeLists.txt")
+    message(STATUS "Using local pybind11 from libs/pybind11")
+    add_subdirectory(libs/pybind11)
+else()
+    include(FetchContent)
+    FetchContent_Declare(
+        pybind11
+        GIT_REPOSITORY https://gitee.com/mirrors/pybind11.git
+        GIT_TAG v3.0.4
+    )
+    FetchContent_MakeAvailable(pybind11)
+endif()
 
-# ==================== 项目源文件列表 ====================
+# ==================== 项目源文件列表（全部小写，与 Windows 文件系统一致） ====================
 set(RESOURCE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc")
 if(EXISTS "${RESOURCE_FILE}")
     set(RESOURCE_SRC resources.qrc)
@@ -109,35 +120,31 @@ set(PROJECT_SOURCES_ALL
     main.cpp
     mainwindow.cpp
     mainwindow.h
-
     ${RESOURCE_SRC}
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h
-
     ui/accountpage.cpp ui/accountpage.h ui/addaccountdialog.cpp ui/addaccountdialog.h
     ui/cardwidget.cpp ui/cardwidget.h ui/chatpage.cpp ui/chatpage.h
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
-    ui/logpage.cpp ui/logpage.h ui/pluginpage.cpp ui/PluginPage.h
+    ui/logpage.cpp ui/logpage.h ui/pluginpage.cpp ui/pluginpage.h
     ui/sandboxwindow.h ui/sandboxwindow.cpp
-
     ui/buttoneditor.h ui/buttoneditor.cpp
     ui/botruleconfigwidget.h ui/botruleconfigwidget.cpp
     ui/textreplaceconfigwidget.h ui/textreplaceconfigwidget.cpp
     ui/set.h ui/set.cpp
     ui/keywordmatchconfigwidget.h ui/keywordmatchconfigwidget.cpp
+    ui/keywordpunishconfigwidget.h ui/keywordpunishconfigwidget.cpp
     ui/blacklistpage.h ui/blacklistpage.cpp
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
     ui/scheduleconfigwidget.h ui/scheduleconfigwidget.cpp
-
-    qt/sharedmemorybridge.cpp qt/SharedMemoryBridge.h
+    qt/sharedmemorybridge.cpp qt/sharedmemorybridge.h
     qt/global.h qt/global.cpp
     qt/api.cpp
     qt/accountinfo.h qt/accountinfo.cpp
     qt/qqbotclient.h qt/qqbotclient.cpp
-    qt/eventtask.cpp qt/eventtask.h
-    qt/accountinfo.cpp qt/AccountInfo.h
+
+    qt/accountinfo.cpp qt/accountinfo.h
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
     qt/python_api.cpp
-
     qt/ahocorasick.h
     qt/ffmpeg_silk.cpp
     qt/node_process.h qt/node_process.cpp
@@ -148,90 +155,69 @@ set(PROJECT_SOURCES_ALL
     ui/htmltoimagewidget.h ui/htmltoimagewidget.cpp
     qt/screenshotsyncclient.h qt/screenshotsyncclient.cpp
     ui/aiwidget.h ui/aiwidget.cpp
-    qt/Role.h
+    qt/role.h
     ui/plts.h ui/plts.cpp ui/plts.ui
     ui/aisxw.h ui/aisxw.cpp ui/aisxw.ui
     ui/bqbgl.h ui/bqbgl.cpp ui/bqbgl.ui
     qt/jjm.h
+    ui/qunguan.h ui/qunguan.cpp ui/qunguan.ui
+    ui/statuschartwidget.h ui/statuschartwidget.cpp
+    clientconnection.h clientconnection.cpp
+    websocketserver.h websocketserver.cpp
+    ui/aifujia.h ui/aifujia.cpp ui/aifujia.ui
+    ui/chatwidget.h
+    ui/appwindow.h ui/appwindow.cpp
+    db/vectormemory.h
+    pythonparser.h pythonparser.cpp
+    pluginmarketwindow.h pluginmarketwindow.cpp
+    netmanager.h netmanager.cpp
+    pluginmarket.h
+    qt/cnbuploader.h
+    ui/menupanelwidget.h ui/menupanelwidget.cpp
+    ui/ui_menupanelwidget.ui
+    qt/apiprocessor.h qt/apiprocessor.cpp
 )
-
-# 或对于 Qt5: qt5_add_ui(myapp ai.ui)
+if(NOT WIN32)
+    # Linux / macOS 下不需要 Windows 独有的共享内存桥接
+    list(REMOVE_ITEM PROJECT_SOURCES_ALL
+        qt/sharedmemorybridge.cpp
+        qt/sharedmemorybridge.h
+    )
+endif()
 # ==================== 构建目标 ====================
-if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
-    qt_add_executable(qiancao
-        MANUAL_FINALIZATION
-        ${PROJECT_SOURCES_ALL}
-    )
+if(WIN32)
+    add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL})
 else()
-    if(ANDROID)
-        add_library(qiancao SHARED ${PROJECT_SOURCES_ALL})
-    else()
-        add_executable(qiancao ${PROJECT_SOURCES_ALL}
-
-            ui/qunguan.h ui/qunguan.cpp ui/qunguan.ui
-            ui/statuschartwidget.h ui/statuschartwidget.cpp
-            clientconnection.h clientconnection.cpp
-            websocketserver.h websocketserver.cpp
-            ui/aifujia.h ui/aifujia.cpp ui/aifujia.ui
-
-            ui/chatwidget.h
-            ui/appwindow.h ui/appwindow.cpp
-
-            db/vectormemory.h
-            pythonparser.h pythonparser.cpp
-            pluginmarketwindow.h pluginmarketwindow.cpp
-            netmanager.h netmanager.cpp
-            pluginmarket.h
-
-            qt/CnbUploader.h
-            ui/menupanelwidget.h ui/menupanelwidget.cpp
-            ui/ui_menupanelwidget.ui
-            qt/apiprocessor.h qt/apiprocessor.cpp
-
-
-
-
-
-
-
-
-
-
-
-
-        )
-    endif()
+    add_executable(qiancao ${PROJECT_SOURCES_ALL})
 endif()
 
-# ==================== 平台特殊处理 ====================
-if(MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG")
-    target_compile_options(qiancao PRIVATE /utf-8)
-    target_compile_definitions(qiancao PRIVATE
-        QT_NO_ACCESSIBILITY
-        _SCL_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_WARNINGS
-        ENCRYPTION_KEY="${KEY_CONTENT}"
-    )
-else()
-
-endif()
-
-
+# Windows 资源文件（仅 Windows）
 if(WIN32)
     target_sources(qiancao PRIVATE app.rc)
 endif()
 
-# ==================== 链接库和包含目录 ====================
-target_link_libraries(qiancao PRIVATE
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::WebSockets
-    Qt${QT_VERSION_MAJOR}::Network
-    ${LMDB_LIB_PATH}
-    pybind11::module
-    ${Python_LIBRARIES}
-)
+# ==================== 链接库和包含目录（平台自动切换） ====================
+if(WIN32)
+    set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
+else()
+    find_library(LMDB_LIB_PATH NAMES lmdb liblmdb PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
+    if(NOT LMDB_LIB_PATH)
+        message(FATAL_ERROR "LMDB library not found. Install with: sudo apt install liblmdb-dev")
+    else()
+        message(STATUS "Found LMDB: ${LMDB_LIB_PATH}")
+    endif()
+endif()
+
+
+    target_link_libraries(qiancao PRIVATE
+        Qt5::Widgets
+        Qt5::WebSockets
+        Qt5::Network
+        ${LMDB_LIB_PATH}
+        pybind11::module
+        ${Python_LIBRARIES}
+    )
+
 
 target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -243,15 +229,34 @@ target_include_directories(qiancao PRIVATE
     ${Python_INCLUDE_DIRS}
 )
 
-# 只有使用 t 版时才需要定义 Py_GIL_DISABLED=1
 if(USE_FREETHREADING_PYTHON)
     target_compile_definitions(qiancao PRIVATE Py_GIL_DISABLED=1)
 endif()
 
-# ==================== macOS / iOS 应用设置 ====================
-if(${QT_VERSION} VERSION_LESS 6.1.0)
-    set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.qiancao)
+# ==================== 平台特定编译选项 ====================
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG")
+    target_compile_options(qiancao PRIVATE /utf-8)
+    target_compile_definitions(qiancao PRIVATE
+        QT_NO_ACCESSIBILITY
+        _SCL_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_WARNINGS
+        ENCRYPTION_KEY="${KEY_CONTENT}"
+    )
+elseif(UNIX)
+
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -g")
+
+    target_compile_definitions(qiancao PRIVATE
+        QT_NO_ACCESSIBILITY
+        ENCRYPTION_KEY="${KEY_CONTENT}"
+    )
 endif()
+
+# ==================== macOS / iOS 应用设置 ====================
+set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.qiancao)
 set_target_properties(qiancao PROPERTIES
     ${BUNDLE_ID_OPTION}
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
@@ -266,7 +271,3 @@ install(TARGETS qiancao
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-
-if(QT_VERSION_MAJOR EQUAL 6)
-    qt_finalize_executable(qiancao)
-endif()

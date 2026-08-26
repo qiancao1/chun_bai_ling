@@ -58,8 +58,8 @@ private:
     void addRowFromRuleItem(const KeywordPunishRule &rule);
     QStringList getTableAsTSV() const;
     void addRowsFromTSV(const QString &tsv);
-    void saveAllRulesToFile(const QString &filePath = "keyword_punish_rules.json");
-    void loadAllRulesFromFile(const QString &filePath = "keyword_punish_rules.json");
+    void saveAllRulesToFile(const QString &filePath = "data/keyword_punish_rules.json");
+    void loadAllRulesFromFile(const QString &filePath = "data/keyword_punish_rules.json");
     void buildMatcherForRobot(int appid);
     void refreshTable();
     void loadRulesForRobot(int robotId);

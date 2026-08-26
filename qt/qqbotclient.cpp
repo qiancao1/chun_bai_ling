@@ -1071,6 +1071,7 @@ static bool loadSignatureDll() {
 
     return true;
     #endif
+    return false;
 }
 
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {

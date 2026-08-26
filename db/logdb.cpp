@@ -765,8 +765,8 @@ bool LogDB::reopenEnv(size_t minSize) {
 
     // 2. 计算目标 mapsize：至少为 minSize，且大于文件大小，留有余量
     size_t targetSize = std::max(minSize, fileSize * 2);          // 翻倍
-    targetSize = std::max(targetSize, fileSize + 10ULL * 1024 * 1024); // 至少多 10MB
-    targetSize = std::min(targetSize, MAX_MAPSIZE);               // 不超过上限
+    targetSize = std::max(targetSize, static_cast<size_t>(fileSize + 10ULL * 1024 * 1024));
+    targetSize = std::min(targetSize, MAX_MAPSIZE);
 
     // 4. 关闭旧环境
     if (m_env) {

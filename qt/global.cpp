@@ -744,7 +744,7 @@ bool extractLoadParams(const QString &cmd, int &type, QString &path) {
     return true;
 }
 QString checkUpdate(const MessageEvent &ev);
-
+QString getLatestDownloadUrl();
 bool __cqkj=false;
 QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
@@ -1026,7 +1026,83 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
         return "启动失败（CreateProcess 返回错误）";
         #else
-        return "linux 暂时不支持热更新";
+        QString unzipTool;
+        if (QProcess::execute("which", QStringList() << "7z") == 0) {
+            unzipTool = "7z";
+        } else if (QProcess::execute("which", QStringList() << "unzip") == 0) {
+            unzipTool = "unzip";
+        } else {
+            return "未找到 7z 或 unzip，请安装 p7zip-full（sudo apt install p7zip-full）";
+        }
+
+        // 获取最新 release 中带 linux 的压缩包下载链接
+        QString downloadUrl = getLatestDownloadUrl();
+        if (downloadUrl.isEmpty()) {
+            return "未找到 Linux 版本的更新包，请检查仓库 release";
+        }
+
+        // 生成临时 Shell 脚本
+        QString scriptPath = QDir::tempPath() + "/update.sh";
+        QFile script(scriptPath);
+        if (!script.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            return "无法创建更新脚本，请检查临时目录权限";
+        }
+
+        QString appPath = QCoreApplication::applicationFilePath();
+        QString appDir = QCoreApplication::applicationDirPath();
+
+        // 根据检测到的解压工具生成对应命令
+        QString unzipCmd;
+        if (unzipTool == "7z") {
+            unzipCmd = QString("7z x /tmp/update.zip -y -o'%1'").arg(appDir);
+        } else {
+            unzipCmd = QString("unzip -o /tmp/update.zip -d '%1'").arg(appDir);
+        }
+
+        // 保存上下文到 g_config（和 Windows 一样）
+        QJsonObject obj;
+        obj["msgid"]  = ev.msgId;
+        obj["type"]   = ev.type;
+        obj["openid"] = ev.groupId;
+        obj["time"]   = QDateTime::currentSecsSinceEpoch();
+        obj["appid"]  = ev.appid;
+        g_config["zdcq"] = obj;
+        saveConfig();   // 必须同步写入磁盘
+
+        // 构建脚本内容
+        QString scriptContent = QString(
+                                    "#!/bin/bash\n"
+                                    "sleep 2   # 等待主程序完全退出\n"
+                                    "echo '下载更新包...'\n"
+                                    "wget -O /tmp/update.zip '%1' || curl -L -o /tmp/update.zip '%1'\n"
+                                    "if [ $? -ne 0 ]; then echo '下载失败'; exit 1; fi\n"
+                                    "echo '解压中...'\n"
+                                    "%2\n"
+                                    "if [ $? -ne 0 ]; then echo '解压失败'; exit 1; fi\n"
+                                    "rm -f /tmp/update.zip\n"
+                                    "echo '更新完成，重启程序...'\n"
+                                    "exec '%3' &\n"
+                                    "exit 0\n"
+                                    ).arg(downloadUrl, unzipCmd, appPath);
+
+        script.write(scriptContent.toUtf8());
+        script.close();
+
+        // 添加执行权限
+        QFile::setPermissions(scriptPath,
+                              QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
+                                  QFile::ReadGroup | QFile::ExeGroup |
+                                  QFile::ReadOther | QFile::ExeOther);
+
+        // 启动脚本（detach）
+        if (!QProcess::startDetached("/bin/bash", QStringList() << scriptPath)) {
+            QFile::remove(scriptPath);
+            return "无法启动更新脚本";
+        }
+
+        // 主程序退出
+        QCoreApplication::quit();
+        return QString(); // 成功
         #endif
     }
     if(ev.msg=="关闭webui")
