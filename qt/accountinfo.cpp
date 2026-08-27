@@ -170,7 +170,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
 
     info.times = obj["times"].toInt(5);
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
-    info.cbl=obj["cbl"].toBool(); //向量开关
+    info.cbl=obj["cbl"].toBool(true);
 
     info.pbbot =obj["pbbot"].toBool(true);
     info.tiaoshu = obj["tiaoshu"].toInt(5);

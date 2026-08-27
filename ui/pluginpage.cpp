@@ -1299,7 +1299,17 @@ void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
 }
 void PluginPage::LoadPlugin_Python_pip(const QString &dir)
 {
-    // ... 前面的检查（main.py 存在性等）保持不变 ...
+    if (!QFile::exists(dir + "/main.py")) {
+        showAutoCloseMessageBox("错误", "所选文件夹中缺少 main.py");
+        return;
+    }
+
+    QFileInfo reqFile(dir + "/requirements.txt");
+    if (!reqFile.exists()) {
+        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
+        doLoadPythonPlugin(relDir);
+        return;
+    }
 
     // ==================== 获取 Python 可执行文件路径 ====================
     QString pythonExe;

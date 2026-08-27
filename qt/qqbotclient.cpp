@@ -1139,9 +1139,14 @@ static bool loadSignatureDll() {
     return false;
 }
 
+
+
+
+#ifdef Q_OS_LINUX
+#include <sodium.h>
+#endif
+
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
-    // 1. 提取字段
-    #ifdef _WIN32
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
     QString event_ts = d.value("event_ts").toString();
@@ -1151,45 +1156,87 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
         return QString();
     }
 
-    // 2. 确保 DLL 已加载
+#ifdef _WIN32
+    // Windows 保持原有 DLL 调用（假定内部已实现相同逻辑）
     if (!loadSignatureDll()) {
         return QString();
     }
-
-    // 3. 转换为 UTF-8 字符串（与 Python 的 encode('utf-8') 一致）
     QByteArray plain_token_utf8 = plain_token.toUtf8();
     QByteArray event_ts_utf8 = event_ts.toUtf8();
     QByteArray secret_utf8 = secret.toUtf8();
-
-    // 4. 调用 GetSignature
-    // 注意参数顺序：plain_token, event_ts, bot_secret
     const char* sig_cstr = pGetSignature(
         plain_token_utf8.constData(),
         event_ts_utf8.constData(),
         secret_utf8.constData()
         );
-
     if (!sig_cstr) {
         qWarning() << "GetSignature returned null";
         return QString();
     }
-
-    // 5. 将结果转为 QString（假设签名是十六进制字符串，UTF-8 编码）
     QString signature = QString::fromUtf8(sig_cstr);
-
-    // 6. 释放内存
     pFreeSignature(sig_cstr);
-
-
     QJsonObject res;
     res["plain_token"] = plain_token;
     res["signature"] = signature;
-    QString text=  QJsonDocument(res).toJson(QJsonDocument::Compact);
+    return QJsonDocument(res).toJson(QJsonDocument::Compact);
 
-    return text;
-    #endif
+#elif defined(Q_OS_LINUX)
+    // ========== Linux 分支：完全对标 Go 官方实现 ==========
+    if (sodium_init() < 0) {
+        qWarning() << "libsodium 初始化失败";
+        return QString();
+    }
+
+    // 1. 种子生成：重复 secret 直到 ≥ 32 字节，截取前 32 字节
+    QByteArray seedBa = secret.toUtf8();
+    while (seedBa.size() < crypto_sign_SEEDBYTES) {
+        seedBa.append(seedBa);   // 复制自身追加
+    }
+    seedBa.truncate(crypto_sign_SEEDBYTES);  // 取前 32 字节
+
+    // 2. 从种子生成 Ed25519 密钥对（公钥+私钥）
+    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+    unsigned char sk[crypto_sign_SECRETKEYBYTES];
+    crypto_sign_seed_keypair(pk, sk,
+                             reinterpret_cast<const unsigned char*>(seedBa.constData()));
+
+    // 3. 拼接消息：event_ts + plain_token（Go 中的顺序）
+    QByteArray message = event_ts.toUtf8() + plain_token.toUtf8();
+
+    // 4. 签名
+    unsigned char signature[crypto_sign_BYTES];
+    unsigned long long siglen;
+    int result = crypto_sign_detached(
+        signature, &siglen,
+        reinterpret_cast<const unsigned char*>(message.constData()),
+        message.size(),
+        sk
+        );
+    if (result != 0 || siglen != crypto_sign_BYTES) {
+        qWarning() << "签名失败";
+        return QString();
+    }
+
+    // 5. 转换为十六进制小写字符串
+    QString signatureHex = QByteArray(
+                               reinterpret_cast<const char*>(signature),
+                               siglen
+                               ).toHex();
+
+    QJsonObject res;
+    res["plain_token"] = plain_token;
+    res["signature"] = signatureHex;
+    return QJsonDocument(res).toJson(QJsonDocument::Compact);
+
+#else
+    // 其他平台未实现
+    qWarning() << "当前平台未实现 Ed25519 签名";
     return QString();
+#endif
 }
+
+
+
 QString QQBotClient::onTextMessage(const QString &message)
 {
     return onTextMessage(message.toUtf8());

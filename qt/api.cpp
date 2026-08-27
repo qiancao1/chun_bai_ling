@@ -264,8 +264,6 @@ QString botlist()
     }
     return QJsonDocument(array).toJson();
 }
-QByteArray convertMp3ToSilk(const QByteArray &mp3Data);
-QString convertAudioToSilk(const QString &srcFilePath);
 
 
 #include <QImageReader>
@@ -1849,6 +1847,63 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 }
 
 
+QString convertAudioToSilk(const QString &srcFilePath)
+{
+    if (!QFile::exists(srcFilePath)) {
+        qWarning() << "源文件不存在:" << srcFilePath;
+        return {};
+    }
+
+    // 去掉“小于1MB直接返回”的捷径（防止视频体积小但无音频的情况）
+    // 无论大小，都走转换流程，确保输出格式统一
+
+#ifdef Q_OS_WIN
+    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
+#else
+    QString ffmpegPath = "ffmpeg";
+#endif
+
+    QString outputFilePath = srcFilePath + ".m4a";
+
+    QStringList ffmpegArgs = {
+        "-y",                      // 覆盖输出
+        "-i", srcFilePath,         // 输入（支持视频/音频）
+        "-map", "0:a:0?",          // 【核心】明确取第一个音频轨，若无音频则跳过不报错
+        "-vn",                     // 剔除视频画面
+        "-c:a", "aac",             // 音频编码AAC
+        "-b:a", "32k",             // 码率
+        "-ar", "24000",            // 采样率
+        "-ac", "1",                // 单声道
+        outputFilePath
+    };
+
+    QProcess ffmpeg;
+    ffmpeg.start(ffmpegPath, ffmpegArgs);
+
+    if (!ffmpeg.waitForStarted()) {
+        AppendEventLog("ffmpeg 启动失败");
+        return srcFilePath;
+    }
+
+    if (!ffmpeg.waitForFinished(30000)) {
+        AppendEventLog("ffmpeg 超时");
+        ffmpeg.kill();
+        return srcFilePath;
+    }
+
+    // 检查执行结果
+    if (ffmpeg.exitCode() != 0) {
+        QString err = ffmpeg.readAllStandardError();
+        // 如果是“没有音频流”，这不是错误，按原文件返回即可
+        if (!err.contains("Output file does not contain any stream")) {
+            AppendEventLog("ffmpeg 转换失败:" + err);
+        }
+        return srcFilePath;
+    }
+
+    // 成功且生成文件
+    return outputFilePath;
+}
 
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext ctx)

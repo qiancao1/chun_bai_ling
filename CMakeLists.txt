@@ -146,7 +146,7 @@ set(PROJECT_SOURCES_ALL
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
     qt/python_api.cpp
     qt/ahocorasick.h
-    qt/ffmpeg_silk.cpp
+
     qt/node_process.h qt/node_process.cpp
     qt/node_plugin_manager.h qt/node_plugin_manager.cpp
     qt/placeholderlineedit.h qt/placeholderlineedit.cpp
@@ -199,16 +199,6 @@ endif()
 # ==================== 链接库和包含目录（平台自动切换） ====================
 if(WIN32)
     set(LMDB_LIB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB/lmdb.lib)
-else()
-    find_library(LMDB_LIB_PATH NAMES lmdb liblmdb PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
-    if(NOT LMDB_LIB_PATH)
-        message(FATAL_ERROR "LMDB library not found. Install with: sudo apt install liblmdb-dev")
-    else()
-        message(STATUS "Found LMDB: ${LMDB_LIB_PATH}")
-    endif()
-endif()
-
-
     target_link_libraries(qiancao PRIVATE
         Qt5::Widgets
         Qt5::WebSockets
@@ -216,7 +206,28 @@ endif()
         ${LMDB_LIB_PATH}
         pybind11::module
         ${Python_LIBRARIES}
+
     )
+else()
+    find_library(LMDB_LIB_PATH NAMES lmdb liblmdb PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
+    if(NOT LMDB_LIB_PATH)
+        message(FATAL_ERROR "LMDB library not found. Install with: sudo apt install liblmdb-dev")
+    else()
+        message(STATUS "Found LMDB: ${LMDB_LIB_PATH}")
+    endif()
+    target_link_libraries(qiancao PRIVATE
+        Qt5::Widgets
+        Qt5::WebSockets
+        Qt5::Network
+        ${LMDB_LIB_PATH}
+        pybind11::module
+        ${Python_LIBRARIES}
+        sodium
+    )
+endif()
+
+
+
 
 
 target_include_directories(qiancao PRIVATE

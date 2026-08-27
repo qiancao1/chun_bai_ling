@@ -668,8 +668,13 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret);
 QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArray &body) {
 
 
-    bool ok;
-    int appid = pathQuery.mid(9).toInt(&ok);
+    QStringList parts = QString::fromUtf8(pathQuery).split('/', Qt::SkipEmptyParts);
+    if (parts.size() < 2) {
+        return "{}";
+    }
+    bool ok=false;
+    int appid = parts[1].toInt(&ok);  // ✅ 这里 parts[1] 就是 "11111111"
+
     if (!ok) return "{}";
 
     QJsonParseError err;
@@ -678,14 +683,16 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
     QJsonObject obj = doc.object();
     int op = obj.value("op").toInt(-1);
     auto it = m_botClients.find(appid);
+
     if (it == m_botClients.end()){
 
         if(op==13){
-            QStringList list = QString::fromUtf8(pathQuery).split("/");
-            if(list.size()>=4){
-                if(list[3].size()>20){
-                    QString text =webhook_sig(obj,list[3]);
-                    AppendEventLog("未存在的账号 "+list[2]+" secret:"+list[3]+" webhook 验证op:13 res:"+text);
+
+
+            if(parts.size()>=3){
+                if(parts[2].size()>=16){
+                    QString text =webhook_sig(obj,parts[2]);
+                    AppendEventLog("未存在的账号 "+parts[1]+" secret:"+parts[2]+" webhook 验证op:13 res:"+text);
                     return text;
                 }
             }
@@ -695,6 +702,7 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
         if(jishu%100==0){
             AppendEventLog(QString("收到不在账号列表的机器人信息：%1 如果不是你的机器人 你可以尝试 更换端口 这里是 每100条只显示一条 内容：%2").arg(appid).arg(QString::fromUtf8(body)));
         }
+
         return "{}";
     }
     auto* client = it.value();

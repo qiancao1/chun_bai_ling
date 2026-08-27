@@ -1095,7 +1095,11 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
     for (auto &t : tasks)
     {
         if(!t.enabled) continue;
-        if(!(t.role == 1 && ev.member_role<=1 || t.role == 2 || t.role == 0 && info->admin.contains(ev.user))) continue;
+
+        if(t.role==1 && ev.member_role<=1 || t.role==2) {} else
+        {
+            if(!g_admin.contains(ev.user) && !info->admin.contains(ev.user)) continue;
+        }
         if(!t.addSubscribeCmd.isEmpty() && ev.msg.startsWith(t.addSubscribeCmd))
         {
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
