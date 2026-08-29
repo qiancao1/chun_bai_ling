@@ -37,11 +37,11 @@ QJsonObject getUploadUrlSync(const QString &fileName, qint64 size)
         if (obj.contains("upload_url")) {
             return obj;
         } else {
-            qWarning() << "响应缺少 upload_url 字段:" << response;
+            //qWarning() << "响应缺少 upload_url 字段:" << response;
             return QJsonObject();
         }
     } catch (const std::exception &e) {
-        qWarning() << "POST 请求异常:" << e.what();
+        //qWarning() << "POST 请求异常:" << e.what();
 
         return QJsonObject();
     }
@@ -85,7 +85,7 @@ void DelFileSync_Cnb()
         AppendEventLog(QString("本次删除Cnb图片：%1张").arg(i));
         return ;
     } catch (const std::exception &e) {
-        qWarning() << "api.cnb.cool 请求异常:" << e.what();
+        //qWarning() << "api.cnb.cool 请求异常:" << e.what();
     }
     return ;
 }
@@ -119,7 +119,7 @@ QString putFile(const QByteArray &fileData, const QJsonObject &uploadInfo)
         try {
             future.get();   // 等待上传完成（成功无异常，失败抛异常）
         } catch (const std::exception &e) {
-            qWarning() << "PUT 请求异常:" << e.what();
+            //qWarning() << "PUT 请求异常:" << e.what();
             return QString();
         }
     }else{
@@ -142,7 +142,7 @@ QString uploadFileSync(const QString &filePath)
     // 1. 读取文件
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "无法打开文件:" << filePath;
+        //qWarning() << "无法打开文件:" << filePath;
         return QString();
     }
     QByteArray fileData = file.readAll();
@@ -593,7 +593,7 @@ QString uploadFileSync_cos(const QString &localPath)
     // 1. 读取文件数据
     QFile file(localPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "Failed to open file:" << localPath;
+        //qWarning() << "Failed to open file:" << localPath;
         return QString();
     }
     QByteArray data = file.readAll();

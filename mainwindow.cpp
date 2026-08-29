@@ -27,6 +27,7 @@
 #include "homepage.h"
 #include "accountpage.h"
 #include "keywordpunishconfigwidget.h"
+#include "nickreviewwidget.h"
 #include "pluginpage.h"
 #include <QGraphicsOpacityEffect>
 #include "logpage.h"
@@ -509,7 +510,6 @@ bool _g_qieh=false;
 void MainWindow::setupUi()
 {
     robotListWidget = new QListWidget;
-
     ScreenA= new ScreenshotSyncClient;
     networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
@@ -531,8 +531,26 @@ void MainWindow::setupUi()
     ai_ui = new AiWidget;
     ui_qunguan = new qunguan;
     ui_MenuPanel = new MenuPanelWidget;
-    //aiContainer = new QWidget(this);          // 容器
-    //aiUi.setupUi(aiContainer);                // 将 UI 加载到容器中
+
+
+    LmdbKV *reviewDb = new LmdbKV("/botdb/reviewdb", this);
+    NickReviewWidget *reviewWidget = new NickReviewWidget(reviewDb, this);
+
+    // 连接通过信号
+    connect(reviewWidget, &NickReviewWidget::approveRequested,
+            this, [this](const QList<QPair<uint32_t, uint32_t>> &idPairs,
+                   const QStringList &newNicknames) {
+                for (int i = 0; i < idPairs.size(); ++i) {
+                    uint32_t appId = idPairs[i].first;
+                    uint32_t userSeqId = idPairs[i].second;
+                    QString newNick = newNicknames[i];
+                    // 调用您的 BotDB 更新昵称（根据 appId 和 userSeqId）
+                    // 例如：botDb->updateNickname(appId, userSeqId, newNick);
+                    qDebug() << "通过：appId=" << appId << " user=" << userSeqId << " nick=" << newNick;
+                }
+            });
+
+
 
 
     plts *myPlts = new plts(this);   // 创建 plts 对象
@@ -557,6 +575,7 @@ void MainWindow::setupUi()
 
     configTabWidget2->addTab(ui_MenuPanel,"面板");
     configTabWidget2->addTab(ui_qunguan,"基础");
+    configTabWidget2->addTab(reviewWidget,"昵称审核");
     configTabWidget2->addTab(myPlts, "批量推送");
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");

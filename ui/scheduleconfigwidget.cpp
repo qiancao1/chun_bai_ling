@@ -246,7 +246,7 @@ void ScheduleConfigWidget::onTableItemChanged(QTableWidgetItem *item)
         QString key = QString("task_%1_%2").arg(g_appid).arg(task.mark);
         QByteArray jsonData = QJsonDocument(task.toJson()).toJson(QJsonDocument::Indented);
         if (!dsdb->put(key, jsonData)) {
-            qWarning() << "Failed to update task" << key << "to LMDB";
+            //qWarning() << "Failed to update task" << key << "to LMDB";
         }
     }
 }
@@ -969,7 +969,7 @@ QString ScheduleConfigWidget::add_byAi(const QString &remark, int appid, const Q
         QString key = QString("task_%1_%2").arg(appid).arg(mark);
         QByteArray jsonData = QJsonDocument(newTask.toJson()).toJson(QJsonDocument::Indented);
         if (!dsdb->put(key, jsonData)) {
-            qWarning() << "Failed to save task" << key << "to LMDB";
+            //qWarning() << "Failed to save task" << key << "to LMDB";
             // 可以回滚内存添加，但为了简单，只记录日志
         }
     }

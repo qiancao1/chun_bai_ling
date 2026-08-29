@@ -68,7 +68,7 @@ bool WebSocketServer::open(quint16 port, const QString &certPath, const QString 
                 chain << cert << caCert;   // 如果有多个中间证书，继续 append
                 sslConfig.setLocalCertificateChain(chain);
             } else {
-                qWarning() << "Failed to load CA certificate";
+                //qWarning() << "Failed to load CA certificate";
             }
         }
     }
@@ -178,9 +178,6 @@ void WebSocketServer::broadcastOnlineCount()
         c->sendMessage(message);
     }
 }
-// 假设您已经有了一个处理 JSON 消息的函数
-
-
 
 class ___wefs : public QRunnable {
 public:
@@ -243,7 +240,7 @@ public:
                 QDir dirPath(dir);
                 if (!dirPath.exists()) {
                     if (!dirPath.mkpath(".")) {
-                        qWarning() << "无法创建目录：" << dir;
+                        //qWarning() << "无法创建目录：" << dir;
                         return QString();
                     }
                 }
@@ -260,7 +257,7 @@ public:
                 // 2. 解码 Base64
                 QByteArray raw = QByteArray::fromBase64(cleanBase64.toLatin1());
                 if (raw.isEmpty()) {
-                    qWarning() << "Base64 解码失败，数据开头：" << cleanBase64.left(30);
+                    //qWarning() << "Base64 解码失败，数据开头：" << cleanBase64.left(30);
                     return QString();
                 }
 
@@ -278,7 +275,7 @@ public:
 
                 QFile file(fullPath);
                 if (!file.open(QIODevice::WriteOnly)) {
-                    qWarning() << "无法写入文件：" << fullPath;
+                    //qWarning() << "无法写入文件：" << fullPath;
                     return QString();
                 }
                 file.write(raw);

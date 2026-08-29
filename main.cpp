@@ -125,7 +125,7 @@ bool clearPTmpFolder()
     return ok;
 }
 
-void initdiv()
+void initdir()
 {
     QDir dir;
     dir.mkpath("tmp/video");
@@ -276,10 +276,7 @@ int main(int argc, char *argv[]) {
         #endif
 
 
-
-
-
-        initdiv();
+        initdir();
         loadconfig();
         clearPTmpFolder();
 

@@ -34,6 +34,7 @@ struct UserRecord {
     uint32_t record_time;
     uint32_t invited_group_count; //邀请请群数
     char nickname[64];
+    char name[64];
 };
 
 struct GroupRecord {

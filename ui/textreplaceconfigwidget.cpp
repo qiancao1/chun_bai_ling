@@ -490,7 +490,7 @@ void TextReplaceConfigWidget::saveAllRulesToFile(const QString &filePath)
     }
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
-        qWarning() << "Cannot save text replace rules to" << filePath;
+        //qWarning() << "Cannot save text replace rules to" << filePath;
         return;
     }
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));

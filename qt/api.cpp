@@ -273,7 +273,7 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
 {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "无法打开文件:" << filePath;
+        //qWarning() << "无法打开文件:" << filePath;
         return false;
     }
 
@@ -282,7 +282,7 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
     file.close();
 
     if (fileData.isEmpty()) {
-        qWarning() << "文件为空或读取失败:" << filePath;
+        //qWarning() << "文件为空或读取失败:" << filePath;
         return false;
     }
 
@@ -295,13 +295,13 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer);
     if (!reader.canRead()) {
-        qWarning() << "无法识别图片格式:" << filePath;
+        //qWarning() << "无法识别图片格式:" << filePath;
         // 宽高保留默认值，但可以返回 false 表示图片格式无效
         return true;
     }
     QSize size = reader.size();
     if (size.isEmpty()) {
-        qWarning() << "无法获取图片尺寸:" << filePath;
+        //qWarning() << "无法获取图片尺寸:" << filePath;
         return false;
     }
     width = size.width();
@@ -1342,7 +1342,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
             try {
                 uploadedUrl = future.get();
             } catch (const std::exception &e) {
-                qWarning() << "uploadimg exception:" << e.what();
+                //qWarning() << "uploadimg exception:" << e.what();
                 uploadedUrl = QString();
             }
 
@@ -1604,7 +1604,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     ok=false;
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "无法打开文件:" << filePath;
+        //qWarning() << "无法打开文件:" << filePath;
         return QString();
     }
     QByteArray fileData = file.readAll();
@@ -1682,7 +1682,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
                     put(presignedUrl, chunk, "application/octet-stream", currentTimeout);
                     success = true;
                 } catch (const std::exception &e) {
-                    qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
+                    //qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
                     retry++;
                     if (retry < MAX_RETRIES) {
                         int sleepMs = 1000 * (1 << (retry - 1));
@@ -1763,8 +1763,8 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
                     }
                     success = true;
                 } catch (const std::exception &e) {
-                    qWarning() << "分片" << finishJsons[j]["part_index"].toInt()
-                        << "上传失败 (尝试" << retry+1 << "):" << e.what();
+                    //qWarning() << "分片" << finishJsons[j]["part_index"].toInt()
+                    //    << "上传失败 (尝试" << retry+1 << "):" << e.what();
                     retry++;
                     if (retry < MAX_RETRIES) {
                         QThread::msleep(1000 * (1 << (retry - 1)));
@@ -1850,7 +1850,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 QString convertAudioToSilk(const QString &srcFilePath)
 {
     if (!QFile::exists(srcFilePath)) {
-        qWarning() << "源文件不存在:" << srcFilePath;
+        //qWarning() << "源文件不存在:" << srcFilePath;
         return {};
     }
 

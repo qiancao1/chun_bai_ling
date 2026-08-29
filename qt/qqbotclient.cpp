@@ -460,6 +460,45 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
 
 }
 
+#include <charconv>   // C++17
+
+// 转义 JSON 字符串（返回转义后的内容，不含外层引号）
+QString escapeJson(const QString& str) {
+    QString escaped;
+    escaped.reserve(str.size() * 2);
+    for (QChar ch : str) {
+        switch (ch.unicode()) {
+        case '\\': escaped.append("\\\\"); break;
+        case '"':  escaped.append("\\\""); break;
+        case '\b': escaped.append("\\b"); break;
+        case '\f': escaped.append("\\f"); break;
+        case '\n': escaped.append("\\n"); break;
+        case '\r': escaped.append("\\r"); break;
+        case '\t': escaped.append("\\t"); break;
+        default:
+            if (ch.unicode() < 0x20) {
+                escaped.append("\\u").append(QString::number(ch.unicode(), 16).rightJustified(4, '0'));
+            } else {
+                escaped.append(ch);
+            }
+            break;
+        }
+    }
+    return escaped;
+}
+
+// 将整数值直接追加到 QString（零堆分配）
+template<typename T>
+void appendInt(QString& out, T value) {
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), value);
+    if (ec == std::errc()) {
+        out.append(QLatin1String(buf, static_cast<int>(ptr - buf)));
+    } else {
+        out.append(QString::number(value)); // fallback（实际不会发生）
+    }
+}
+//在编译状态下 每次执行 耗时0.075ms 75us 测试包括上一级解析耗时 所以当你卡顿时 真的不是这里原因
 void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 {
     MessageEvent ev;
@@ -869,9 +908,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.extra = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
         qDebug() << "Unhandled event type:" << ev.msgType;
     }
+    //2300 +-
     if(!ev.fullType) ev.at_you=true; //
     // 解析附件信息（图片、文件、语音、视频等）
-
+    QString evmsg = ev.msg;
+    QString evmsgid = ev.msgId;
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
@@ -887,7 +928,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     logMessageEvent(m_info->nickname,ev);
 
-    QString tiems=QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    QString tiems = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     Message mes{ev.user,ev.msg,false,tiems,"",ev.replyTo,ev.msgId};
     mes.Gname =ev.groupname;
     if(ev.type<4)
@@ -1064,16 +1105,65 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
     ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
-    if(plugin_n2){
-        d["content"] = ev.msg;
-        d["id"] = ev.msgId;
-        payload["d"] = d;
-        payload["user_id"] = ev.user_int;
-        payload["appid"]=ev.appid;
-        payload["at_you"]=ev.at_you;
-        payload["type"]=ev.type;
-        payload["GroupName"]=ev.groupname;
-        ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+
+    if (plugin_n2) {
+        // 1. 转义所有字符串字段
+        QString escapedMsg   = escapeJson(ev.msg);
+        QString escapedMsgId = escapeJson(ev.msgId);
+        QString escapedGroup = escapeJson(ev.groupname);
+
+        // 2. 替换 d 对象内的 content 和 id
+        //    （假设 JSON 是紧凑的，即 "content":"旧值" 无空格）
+        auto replaceValue = [&](const QString& key, const QString& newVal) {
+            QString pattern = "\"" + key + "\":\"";
+            int pos = ev.raw.indexOf(pattern);
+            if (pos == -1) return;
+            int start = pos + pattern.length();          // 值开始的引号之后
+            int end = start;
+            // 查找结束的引号（跳过转义）
+            while (end < ev.raw.size()) {
+                QChar ch = ev.raw[end];
+                if (ch == '"' && (end == start || ev.raw[end-1] != '\\')) break;
+                ++end;
+            }
+            if (end < ev.raw.size()) {
+                // 替换旧值（含引号）为新值（含引号）
+                ev.raw.replace(start, end - start + 1, "\"" + newVal + "\"");
+            }
+        };
+        replaceValue("content", escapedMsg);
+        replaceValue("id", escapedMsgId);
+
+        // 3. 构造要追加的顶层字段（注意开头逗号）
+        QString newFields;
+        newFields.reserve(128 + escapedGroup.size());
+        newFields.append(',');
+        newFields.append("\"user_id\":");
+        appendInt(newFields, ev.user_int);
+        newFields.append(',');
+        newFields.append("\"appid\":");
+        appendInt(newFields, ev.appid);
+        newFields.append(',');
+        newFields.append("\"at_you\":");
+        newFields.append(ev.at_you ? "true" : "false");
+        newFields.append(',');
+        newFields.append("\"type\":");
+        appendInt(newFields, ev.type);
+        newFields.append(',');
+        newFields.append("\"GroupName\":\"");
+        newFields.append(escapedGroup);
+        newFields.append('"');
+
+        // 4. 在最后一个 } 前插入新字段
+        int bracePos = ev.raw.lastIndexOf('}');
+        if (bracePos != -1) {
+            // 检查原对象是否为空（"{}"），若是则去掉开头的逗号
+            if (bracePos > 0 && ev.raw[bracePos - 1] == '{') {
+                newFields.remove(0, 1);  // 移除第一个逗号
+            }
+            ev.raw.insert(bracePos, newFields);
+        }
     }
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 
@@ -1083,7 +1173,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         if(m_info->autoht) respond_interaction(ev.callbackId,0);
     }
-    return ;
+    return ;//3736 ms
 }
 
 class ___tdxx : public QRunnable {
@@ -1250,6 +1340,7 @@ QString QQBotClient::onTextMessage(const QByteArray &message)
         AppendEventLog("收到非法 JSON: " + message.left(200),0xff);
         return QString();
     }
+    //2012 ms
     QJsonObject obj = doc.object();
     int op = obj.value("op").toInt(-1);
     qint64 s = obj.value("s").toVariant().toLongLong();
@@ -1600,6 +1691,7 @@ QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, 
     } else {
         headers.insert("Content-Type", contentType);
     }
+
     QByteArray jsonbyte = QJsonDocument(jsonData).toJson(QJsonDocument::Compact);
     std::future<QByteArray> future = NetManager::instance()->Patch(url,jsonbyte ,headers, timeoutMs);
     return future.get();
@@ -1644,8 +1736,6 @@ std::future<QByteArray> QQBotClient::put2(const QString &url, const QByteArray &
     } else {
         headers.insert("Content-Type", contentType);
     }
-
-
     return NetManager::instance()->put(url,data ,headers, timeoutMs);
 }
 

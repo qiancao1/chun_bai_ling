@@ -191,6 +191,7 @@ protected:
             // 断开清理
             connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
 
+            //qDebug() << QSslSocket::sslLibraryVersionString();
             sslSocket->startServerEncryption();
 
         } else {
@@ -200,6 +201,7 @@ protected:
                 delete socket;
                 return;
             }
+
             connect(socket, &QTcpSocket::readyRead, this, [socket]() {
                 handleRequest(socket);
             });
@@ -713,8 +715,14 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
         AppendEventLog("webhook 验证op:13 res:"+text);
         return text;
     }
-
-
+    //QElapsedTimer t;
+    //t.start();
+    //auto &m_client = m_botClients[appid];
+    //for(int i=0;i<10000;++i)
+    //{
+    //    m_client->onTextMessage(body);
+    //}
+    //qDebug() <<"time:" << t.elapsed();
 
     client->onTextMessageReceived(QString::fromUtf8(body));
     return "{}";
@@ -878,7 +886,6 @@ void set_ip(const QString &ip)
 {
     g_ip = ip;
 }
-
 
 
 static QString generateBoundary()
