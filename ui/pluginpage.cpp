@@ -1280,13 +1280,13 @@ void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
     QString resultMsg = success ? "pip install 成功完成！" :
                             QString("pip install 失败 (退出码: %1)").arg(exitCode);
     m_pipLog->append("<font color='blue'>" + resultMsg + "</font>");
-
+    QString absDir = m_pipProcess->workingDirectory();
+    QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
+    doLoadPythonPlugin(relDir);
     if (success) {
 
         //m_pipDialog->close();
-        QString absDir = m_pipProcess->workingDirectory();
-        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
-        doLoadPythonPlugin(relDir);
+
 
     } else {
         // 安装失败，提示用户，也可选择不加载
@@ -1295,6 +1295,7 @@ void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
                              "您可以手动执行：pip install -r requirements.txt");
         // 失败后若想继续加载（依赖可能已存在），可调用 doLoadPythonPlugin，但一般不推荐
     }
+
     m_pipLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
 }
 void PluginPage::LoadPlugin_Python_pip(const QString &dir)

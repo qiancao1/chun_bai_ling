@@ -3,65 +3,78 @@
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QCheckBox>
-#include "lmdbkv.h"
+#include <QLabel>
+#include <QComboBox>
+#include <qpushbutton.h>
+#include "botdb.h"
 
-struct ReviewRecord {
-    uint32_t appId;        // 应用ID
-    uint32_t userSeqId;    // 用户序列号
-    uint32_t timestamp;    // 申请时间（Unix 秒）
-    char nickname[64];     // 新昵称（UTF-8）
-
-    QByteArray serialize() const {
-        QByteArray data;
-        data.resize(sizeof(ReviewRecord));
-        memcpy(data.data(), this, sizeof(ReviewRecord));
-        return data;
-    }
-
-    static ReviewRecord deserialize(const QByteArray &data) {
-        ReviewRecord rec;
-        if (data.size() >= sizeof(ReviewRecord))
-            memcpy(&rec, data.constData(), sizeof(ReviewRecord));
-        else
-            memset(&rec, 0, sizeof(ReviewRecord));
-        return rec;
-    }
-};
 class NickReviewWidget : public QWidget {
     Q_OBJECT
 public:
-    explicit NickReviewWidget(LmdbKV *db, QWidget *parent = nullptr);
+    explicit NickReviewWidget(QWidget *parent = nullptr);
     ~NickReviewWidget();
 
-    // 添加/更新审核记录（相同(appid,userSeqId)会覆盖）
-    bool addReview(uint32_t appId, uint32_t userSeqId, const QString &nickname, uint32_t timestamp);
-
-    // 刷新表格
-    void loadReviews();
-
-    // 是否启用审核（开关控制）
-    bool isEnabled() const { return m_enableCheck->isChecked(); }
+    // 切换机器人：传入 appid，自动根据当前模式刷新
+    void setAppId(uint32_t appid);
 
 signals:
-    // 通过审核：发射 (appId, userSeqId) 对列表和新昵称列表，外部执行更新后控件自动删除
-    void approveRequested(const QList<QPair<uint32_t, uint32_t>> &idPairs, const QStringList &newNicknames);
+    // 申请模式：通过信号 (appId, userSeqId) 对 + 新昵称
+    void approveRequested(const QList<QPair<uint32_t, uint32_t>>& idPairs,
+                          const QStringList& newNicknames);
+
+    // 批量模式：通过信号 (用户 seq_id 列表, 新昵称列表)
+    void batchApproveRequested(const QList<uint32_t>& userSeqIds,
+                               const QStringList& newNicknames);
+
+    // 批量模式：拒绝信号 (用户 seq_id 列表)，外部将 name 置空
+    void batchRejectRequested(const QList<uint32_t>& userSeqIds);
+
+    // 批量模式：取消通过信号 (用户 seq_id 列表)，外部将 name 置空
+    void batchCancelRequested(const QList<uint32_t>& userSeqIds);
 
 private slots:
+    void onModeChanged(int index);
     void onApprove();
     void onReject();
+    void onCancel();
     void onSelectAll();
     void onSelectNone();
     void onInvert();
     void onEnableToggled(bool checked);
+    void onLoadPending();
+    void onLoadApproved();
+    void prevPage();
+    void nextPage();
 
 private:
     void setupUI();
-    void removeReviews(const QList<QPair<uint32_t, uint32_t>> &idPairs);
-    static QByteArray makeKey(uint32_t appId, uint32_t userSeqId);
-    static void parseKey(const QByteArray &key, uint32_t &appId, uint32_t &userSeqId);
+    void refresh();
+    void loadFromApplicationDB();
+    void loadFromBotDB();
+    void removeReviews(const QList<QPair<uint32_t, uint32_t>>& idPairs);
+    void updatePageLabel();
+    void updateButtonsVisibility();
 
-    LmdbKV *m_db;
-    QTableView *m_tableView;
-    QStandardItemModel *m_model;
-    QCheckBox *m_enableCheck;
+    enum class Mode { Application, BatchUser };
+    Mode m_mode = Mode::Application;
+    uint32_t m_appid = 0;
+    BotDB* m_botDb = nullptr;
+
+    QTableView* m_tableView;
+    QStandardItemModel* m_model;
+    QCheckBox* m_enableCheck;
+    QComboBox* m_modeCombo;
+
+    // 批量模式的分页
+    int m_currentPage = 0;
+    int m_pageSize = 50;
+    int m_totalCount = 0;
+    bool m_onlyNameEmpty = true;  // true: 显示 name 为空, false: 显示 name 非空
+
+    // 按钮指针
+    QPushButton *m_btnLoadPending, *m_btnLoadApproved;
+    QPushButton *m_btnPrevPage, *m_btnNextPage;
+    QLabel *m_pageLabel;
+    QPushButton *m_btnLoadApp;      // 申请模式专用
+    QPushButton *m_btnCancel;       // 取消通过
 };

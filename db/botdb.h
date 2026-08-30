@@ -129,7 +129,8 @@ public:
     bool updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> updater);
     bool addGroup(const QString &groupIdHex, uint32_t createTimeMinutes, uint32_t inviterSeqId, uint32_t bitmap, const QString &name);
     bool addGroup(const QString &groupIdHex,const GroupRecord2 &record);
-
+    bool getUsersByPage(bool onlyNameEmpty, int offset, int limit,
+                        QList<UserRecord>& outUsers, int& totalCount);
     bool getGroupInfo(const QString &groupIdHex, GroupRecord2 &outRecord);
     template<typename Func>
     void withGroupInfo(const BinKey& key, Func&& func);

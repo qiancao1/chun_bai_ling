@@ -50,6 +50,7 @@ struct MessageEvent
     QString msg;        // 消息内容 (已去除@前缀等)
     QString user2;   //事件可能用到
     QString nickname;       // 发送人昵称
+    QString nickname2;       // 安全昵称 经过审核的昵称 可能是空
     QString groupname;       // 群昵称
     QString guildId;        // 频道id (仅频道消息有效)
     QString msgType;        // 原始事件类型字符串 (如 "GROUP_AT_MESSAGE_CREATE")

@@ -274,6 +274,7 @@ MenuPanelWidget *ui_MenuPanel=nullptr;
 
 QListWidget *robotListWidget=nullptr;
 QTabWidget *configTabWidget2=nullptr;
+NickReviewWidget *m_nickReviewWidget=nullptr;
 
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
@@ -533,24 +534,56 @@ void MainWindow::setupUi()
     ui_MenuPanel = new MenuPanelWidget;
 
 
-    LmdbKV *reviewDb = new LmdbKV("/botdb/reviewdb", this);
-    NickReviewWidget *reviewWidget = new NickReviewWidget(reviewDb, this);
 
-    // 连接通过信号
-    connect(reviewWidget, &NickReviewWidget::approveRequested,
-            this, [this](const QList<QPair<uint32_t, uint32_t>> &idPairs,
-                   const QStringList &newNicknames) {
-                for (int i = 0; i < idPairs.size(); ++i) {
-                    uint32_t appId = idPairs[i].first;
-                    uint32_t userSeqId = idPairs[i].second;
-                    QString newNick = newNicknames[i];
-                    // 调用您的 BotDB 更新昵称（根据 appId 和 userSeqId）
-                    // 例如：botDb->updateNickname(appId, userSeqId, newNick);
-                    qDebug() << "通过：appId=" << appId << " user=" << userSeqId << " nick=" << newNick;
+    m_nickReviewWidget = new NickReviewWidget(this);
+
+    connect(m_nickReviewWidget, &NickReviewWidget::approveRequested,
+            this, [this](const QList<QPair<uint32_t,uint32_t>>& pairs, const QStringList& nicks) {
+                for (int i = 0; i < pairs.size(); ++i) {
+                    uint32_t appId = pairs[i].first;
+                    uint32_t seq = pairs[i].second;
+                    BotDB* db = g_botdb.value(appId);
+                    if (!db) continue;
+                    db->updateUserBySeqId(seq, [&](UserRecord& rec) {
+                        strncpy(rec.name, nicks[i].toUtf8().constData(), sizeof(rec.name)-1);
+                        rec.name[sizeof(rec.name)-1] = '\0';
+                    });
                 }
             });
 
+    connect(m_nickReviewWidget, &NickReviewWidget::batchApproveRequested,
+            this, [this](const QList<uint32_t>& seqIds, const QStringList& nicks) {
+                BotDB* db = g_botdb.value(g_appid);
+                if (!db) return;
+                for (int i = 0; i < seqIds.size(); ++i) {
+                    db->updateUserBySeqId(seqIds[i], [&](UserRecord& rec) {
+                        strncpy(rec.name, nicks[i].toUtf8().constData(), sizeof(rec.name)-1);
+                        rec.name[sizeof(rec.name)-1] = '\0';
+                    });
+                }
+            });
 
+    connect(m_nickReviewWidget, &NickReviewWidget::batchRejectRequested,
+            this, [this](const QList<uint32_t>& seqIds) {
+                BotDB* db = g_botdb.value(g_appid);
+                if (!db) return;
+                for (uint32_t seq : seqIds) {
+                    db->updateUserBySeqId(seq, [&](UserRecord& rec) {
+                        rec.name[0] = '\0';
+                    });
+                }
+            });
+
+    connect(m_nickReviewWidget, &NickReviewWidget::batchCancelRequested,
+            this, [this](const QList<uint32_t>& seqIds) {
+                BotDB* db = g_botdb.value(g_appid);
+                if (!db) return;
+                for (uint32_t seq : seqIds) {
+                    db->updateUserBySeqId(seq, [&](UserRecord& rec) {
+                        rec.name[0] = '\0';
+                    });
+                }
+            });
 
 
     plts *myPlts = new plts(this);   // 创建 plts 对象
@@ -575,7 +608,7 @@ void MainWindow::setupUi()
 
     configTabWidget2->addTab(ui_MenuPanel,"面板");
     configTabWidget2->addTab(ui_qunguan,"基础");
-    configTabWidget2->addTab(reviewWidget,"昵称审核");
+    configTabWidget2->addTab(m_nickReviewWidget,"昵称审核");
     configTabWidget2->addTab(myPlts, "批量推送");
     configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
     configTabWidget2->addTab(TextReplace, "自定义替换");
@@ -725,9 +758,7 @@ void MainWindow::setupUi()
         ai_ui->list_c();
 
         ui_qunguan->列表行被单击();
-
-
-
+        m_nickReviewWidget->setAppId(g_appid);
 
         if(configTabWidget2->currentIndex()==0){
                 ui_MenuPanel->switchBot();

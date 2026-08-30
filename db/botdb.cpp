@@ -629,7 +629,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
     uint32_t resultSeq = 0;
     QString finalGroupName;
     int finalBitmap = 0;
-    QString finalUserNickname;
+    QString finalUserNickname,finalUserNickname2;
     UserRecord finalUser{};
     GroupRecord finalGroup{};
 
@@ -708,6 +708,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             }
             // 用户昵称
             ev.nickname = QString::fromUtf8(oldUser.nickname);
+            ev.nickname2 = QString::fromUtf8(oldUser.name);
             if (!isGroup) {
                 ev.bitmap = 0;
                 memset(ev.qid, 0, sizeof(ev.qid));
@@ -869,6 +870,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             size_t copyLen = std::min<size_t>(nameBytes.size(), sizeof(newRec.nickname)-1);
             memcpy(newRec.nickname, nameBytes.constData(), copyLen);
             newRec.nickname[copyLen] = '\0';
+            newRec.name[0] = '\0';
 
             int rc = putRecord(txn, m_dbi_users, userKey, &newRec, sizeof(newRec));
             if (rc != MDB_SUCCESS) {
@@ -879,6 +881,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                 resultSeq = newSeq;
                 finalUser = newRec;
                 finalUserNickname = ev.nickname;
+
             }
         } else {
             UserRecord updatedUser = oldUser;
@@ -887,6 +890,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                 size_t copyLen = std::min<size_t>(newNameBytes.size(), sizeof(updatedUser.nickname)-1);
                 memcpy(updatedUser.nickname, newNameBytes.constData(), copyLen);
                 updatedUser.nickname[copyLen] = '\0';
+                updatedUser.name[copyLen] = '\0';
                 updatedUser.record_time = nowMinutes();
                 int rc = putRecord(txn, m_dbi_users, userKey, &updatedUser, sizeof(updatedUser));
                 if (rc != MDB_SUCCESS) finalRc = rc;
@@ -895,7 +899,9 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                 resultSeq = oldSeqId;
                 finalUser = updatedUser;
                 finalUserNickname = QString::fromUtf8(updatedUser.nickname);
+                finalUserNickname2 = QString::fromUtf8(updatedUser.name);
             }
+
         }
 
         return finalRc;
@@ -944,6 +950,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
         }
         if (ev.nickname.isEmpty()) {
             ev.nickname = finalUserNickname;
+            ev.nickname2 = finalUserNickname2;
         }
         return resultSeq;
     }
@@ -963,7 +970,7 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
         mdb_txn_abort(txn);
         return false;
     }
-
+    outRecord.name[0] = '\0';
 
     MDB_val key, value;
     key.mv_data = openidBin.data();
@@ -977,6 +984,78 @@ bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
     mdb_txn_abort(txn);
     return false;
 }
+bool BotDB::getUsersByPage(bool onlyNameEmpty, int offset, int limit,
+                           QList<UserRecord>& outUsers, int& totalCount)
+{
+    outUsers.clear();
+    totalCount = 0;
+    if (!m_env) return false;
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return false;
+
+    MDB_cursor *cursor = nullptr;
+    if (mdb_cursor_open(txn, m_dbi_users, &cursor) != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return false;
+    }
+
+    // 定义新旧记录大小
+    const size_t OLD_RECORD_SIZE = 80;   // 无 name 字段
+    const size_t NEW_RECORD_SIZE = sizeof(UserRecord);
+
+    MDB_val key, value;
+    int rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+    int skipped = 0;
+    int collected = 0;
+
+    while (rc == MDB_SUCCESS) {
+        UserRecord rec;
+        bool valid = false;
+
+        // 尝试新格式
+        if (value.mv_size == NEW_RECORD_SIZE) {
+            memcpy(&rec, value.mv_data, NEW_RECORD_SIZE);
+            valid = true;
+        }
+        // 尝试旧格式（无 name 字段）
+        else if (value.mv_size == OLD_RECORD_SIZE) {
+            // 旧格式布局：前 80 字节与 UserRecord 前 80 字节一致（seq_id, bitmap, record_time, invited_group_count, nickname）
+            const char* data = (const char*)value.mv_data;
+            memcpy(&rec.seq_id, data, 4);
+            memcpy(&rec.bitmap, data + 4, 4);
+            memcpy(&rec.record_time, data + 8, 4);
+            memcpy(&rec.invited_group_count, data + 12, 4);
+            memcpy(rec.nickname, data + 16, 64);
+            rec.nickname[63] = '\0';
+            // 新字段 name 置空
+            rec.name[0] = '\0';
+            valid = true;
+        }
+
+        if (valid) {
+            bool nameEmpty = (rec.name[0] == '\0');
+            if(rec.name[0] != '\0' || rec.nickname[0] != '\0')  {
+                if ((onlyNameEmpty && nameEmpty) || (!onlyNameEmpty && !nameEmpty)) {
+                    totalCount++;
+                    if (skipped < offset) {
+                        skipped++;
+                    } else if (collected < limit) {
+                        outUsers.append(rec);
+                        collected++;
+                    }
+                }
+            }
+        }
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
+    return true;
+}
+
 // 更新用户缓存（传入 openid 二进制和 UserRecord）
 void BotDB::updateUserCache(const QByteArray &openidBin, const UserRecord &record) {
     BinKey key;
@@ -1025,13 +1104,36 @@ bool BotDB::updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> 
         key.mv_size = openidBin.size();
         int rc = mdb_get(txn, m_dbi_users, &key, &value);
         if (rc != MDB_SUCCESS) return rc;
-        if (value.mv_size != sizeof(UserRecord)) return -1;
 
         UserRecord record;
-        memcpy(&record, value.mv_data, sizeof(UserRecord));
+        bool valid = false;
+
+        // 尝试新格式（完整记录）
+        if (value.mv_size == sizeof(UserRecord)) {
+            memcpy(&record, value.mv_data, sizeof(UserRecord));
+            valid = true;
+        }
+        // 尝试旧格式（80字节，无 name 字段）
+        else if (value.mv_size == 80) {
+            const char* data = (const char*)value.mv_data;
+            memcpy(&record.seq_id, data, 4);
+            memcpy(&record.bitmap, data + 4, 4);
+            memcpy(&record.record_time, data + 8, 4);
+            memcpy(&record.invited_group_count, data + 12, 4);
+            memcpy(record.nickname, data + 16, 64);
+            record.nickname[63] = '\0';
+            record.name[0] = '\0';   // 旧记录 name 为空
+            valid = true;
+        }
+
+        if (!valid)
+            return -1;
+
+        // 调用 updater 修改记录（可修改 name 等字段）
         updater(record);
         record.record_time = nowMinutes();
 
+        // 以新格式写回（升级为完整记录）
         rc = putRecord(txn, m_dbi_users, openidBin, &record, sizeof(record));
         if (rc == MDB_SUCCESS) {
             finalRecord = record;
@@ -1041,12 +1143,13 @@ bool BotDB::updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> 
         return rc;
     });
 
-    // 事务成功后，更新缓存
     if (success && recordChanged) {
         updateUserCache(finalOpenidBin, finalRecord);
     }
     return success;
 }
+
+
 
 bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
     if (!m_env) return false;

@@ -919,7 +919,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if (g_botdb.contains(ev.appid))
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-
+    qDebug() << "name2" << ev.nickname2;
     ev.bot_admin = ev.bitmap & BIT_ADMIN;
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();

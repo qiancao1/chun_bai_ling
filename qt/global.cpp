@@ -1287,6 +1287,14 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                  info->bai_sr.isEmpty() ? "未设置" : info->bai_sr,
                  info->bai_sc.isEmpty() ? "未设置" : info->bai_sc);
     }
+    if (ev.msg.contains("取")) {
+        QRegularExpression nonChinese("[^\\x{4E00}-\\x{9FA5}]");
+        QString onlyChinese = ev.msg;
+        onlyChinese.remove(nonChinese);  // 移除所有非基本汉字
+        if (onlyChinese == "取") {
+            return "```python\n"+ev.raw+"\n```";
+        }
+    }
     if(!ev.at_you) return QString();
     if (ev.msg == "#插件列表") {
         // 你已有的代码，保持不变
@@ -1317,6 +1325,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         res.append("可用指令：\n[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]()<序号>\n\n**需超管权限**\n>[#重载插件]() <序号>\n>[#启用插件]() <序号>\n>[#禁用插件]() <序号>\n>[#卸载插件]() <序号>\n>[#加载插件]() <路径>\n[#插件市场]()\n[#扫描插件]() 查看现有插件");
         return res;
     }
+
     if (ev.msg.startsWith("#插件启用")) {
 
         QString index_ser;
@@ -2314,7 +2323,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
 
             if (ev.msg.startsWith("撤回")) {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+
                 auto [targetId, count] = parseRecallCommand(ev.msg);
                 if (count < 0) {
                     return "[撤回] 解析失败，请使用格式：撤回 [<@ID>] [条数]，如“撤回 <@a1b2...> 5”";
@@ -2344,6 +2353,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     }
                     return QString("[撤回] 已撤回机器人自己的 %1 条消息").arg(deleted);
                 } else {
+                    if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
                     // ========== 撤回指定用户的消息 ==========
                     for (const auto &m : std::as_const(msgList)) {
                         if (m.user != targetId) continue;
