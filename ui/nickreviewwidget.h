@@ -16,6 +16,9 @@ public:
 
     // 切换机器人：传入 appid，自动根据当前模式刷新
     void setAppId(uint32_t appid);
+    QComboBox* m_aimode; //ai模型列表
+    bool addReview(uint32_t appId, uint32_t userSeqId, const QString &newNickname, uint32_t timestamp);
+
 
 signals:
     // 申请模式：通过信号 (appId, userSeqId) 对 + 新昵称
@@ -35,6 +38,7 @@ signals:
 private slots:
     void onModeChanged(int index);
     void onApprove();
+    void onAiApprove();
     void onReject();
     void onCancel();
     void onSelectAll();
@@ -45,6 +49,7 @@ private slots:
     void onLoadApproved();
     void prevPage();
     void nextPage();
+    //void onSearch();
 
 private:
     void setupUI();
@@ -62,12 +67,12 @@ private:
 
     QTableView* m_tableView;
     QStandardItemModel* m_model;
-    QCheckBox* m_enableCheck;
+    QCheckBox* m_enableCheck,*m_qzsy;
     QComboBox* m_modeCombo;
-
+    QLineEdit *m_ss;
     // 批量模式的分页
     int m_currentPage = 0;
-    int m_pageSize = 50;
+    int m_pageSize = 500;
     int m_totalCount = 0;
     bool m_onlyNameEmpty = true;  // true: 显示 name 为空, false: 显示 name 非空
 

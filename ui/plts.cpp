@@ -3,7 +3,7 @@
 #include "ui_plts.h"
 #include <QMessageBox>
 #include <QThreadPool>
-int 成功数量f=0;
+
 int 成功数量g=0;
 QList<int> ts_m_friendStatus;
 QList<QString> ts_m_groupStatus;
@@ -69,7 +69,7 @@ bool plts::保存() {
 
     int g_len = ts_m_groupStatus.size();
     int f_len = ts_m_friendStatus.size();
-    ui->ts_ztbq->setText(QString("群：%1 / %2 好友： %3 / %4").arg(g_len-pendingGroups.size()).arg(g_len).arg(f_len-pendingFriends.size()).arg(f_len));
+    ui->ts_ztbq->setText(QString("群(正在推送)：%1 / %2 好友： %3 / %4").arg(g_len-pendingGroups.size()).arg(g_len).arg(f_len-pendingFriends.size()).arg(f_len));
     return true;
 }
 void plts::加载()
@@ -90,7 +90,7 @@ void plts::加载()
         gFile.close();
     }
 }
-void plts::on_sctswj_2_clicked(bool checked)
+void plts::on_sctswj_2_clicked()
 {
     if(ts_m_stopPush)
     {
@@ -102,11 +102,22 @@ void plts::on_sctswj_2_clicked(bool checked)
         QMessageBox::warning(this,"生成失败","请登录账号 自动打开数据库后再试试");
         return;
     }
+    if(ui->checkBox_tsq->checkState() == false && ui->checkBox_tsq->checkState() == ui->checkBox_tssl->checkState()) //懒得优化就这样子吧
+    {
+        QMessageBox::warning(this,"生成失败","推送群 或推送好友必须打勾一个");
+        return ;
+    }
     auto *db = g_botdb[g_appid];
     ts_m_friendStatus.clear();
     ts_m_groupStatus.clear();
     if(ui->checkBox_tsq->checkState())
-        ts_m_groupStatus = db->getAllGroupIds();
+    {
+        for (auto it = chatPage->全量群.begin(); it != chatPage->全量群.end(); ++it) {
+            int appid =it.value();
+            if (g_appid != appid) continue;
+            ts_m_groupStatus.append(it.key());
+        }
+    }
     if(ui->checkBox_tssl->checkState())
         ts_m_friendStatus = db->getFriendList();
     if(ts_m_groupStatus.size()==0 && ts_m_friendStatus.size()==0)
@@ -115,7 +126,7 @@ void plts::on_sctswj_2_clicked(bool checked)
         return ;
     }
 
-    if(保存()) QMessageBox::warning(this,"生成完成","点击开始推送进行推送吧");
+    if(保存()) QMessageBox::warning(this,"生成完成","点击开始推送进行推送吧 注意 群 只选了 全量群 其他群没主动能力也不行");
     else QMessageBox::warning(this,"生成失败","写出到文件失败");
 }
 void plts::on_sctswj_clicked(bool checked)
@@ -143,49 +154,59 @@ void plts::on_tzts_clicked(bool checked)
 class ___tsnr_f : public QRunnable {
 public:
     // 通过构造函数把需要的数据传进来（如果有的话）
-    ___tsnr_f(int index):m_index(index) {}
+    ___tsnr_f() {}
 
     void run() override {
         auto *db = g_botdb[g_appid];
         QQBotClient *bot = m_botClients[g_appid];
-        int i2=0;
-        QString pname="[批量推送]";
+
+        QString pname = "[批量推送]";
         int len = ts_m_friendStatus.size();
-        for(int i=m_index;i2<50;i++)
-        {
-            if(i>=len) return;
-            if(!ts_m_stopPush) return;
-            if(ts_m_friendStatus[i]==0) continue;
+        const int maxPerSec = 8;
+        const int minIntervalMs = 1000 / maxPerSec;  // 125ms
+
+        QElapsedTimer timer;
+        timer.start();  // 用于计算每次调用的时间点
+
+        for (int i = 0; i < len; ++i) {
+            if (i >= len) return;
+            if (!ts_m_stopPush) return;
+            if (ts_m_friendStatus[i] == 0) continue;
+
             QString user;
-            db->getOpenIdBySeqId(ts_m_friendStatus[i],user);
-            i2++;
-            QString res = bot->send_messages(0,user,pname,ts_m_text,QString(),true);
-            ts_m_friendStatus[i]=0;
-            if(res.contains("ROBOT")) 成功数量f++; //谁没事解析json啊
+            db->getOpenIdBySeqId(ts_m_friendStatus[i], user);
+
+            // 实际发送消息
+            bot->send_msgAsync(2, user, pname, ts_m_text, QString());
+            ts_m_friendStatus[i] = 0;
+
+            qint64 elapsed = timer.elapsed();
+            if (elapsed < minIntervalMs) {
+                QThread::msleep(minIntervalMs - elapsed);
+            }
+            timer.restart();  // 重置计时器，准备下一次间隔计算
         }
     }
 
 private:
-    int m_index;
+
 };
 class ___tsnr_g : public QRunnable {
 public:
     // 通过构造函数把需要的数据传进来（如果有的话）
-    ___tsnr_g(int index): m_index(index) {}
+    ___tsnr_g() {}
 
     void run() override {
-
         QQBotClient *bot = m_botClients[g_appid];
-        int i2=0;
         QString pname="[批量推送]";
-         int len = ts_m_groupStatus.size();
-        for(int i=m_index;i2<50;i++)
+        int len = ts_m_groupStatus.size();
+        for(int i=0;i<len;i++)
         {
 
             if(!ts_m_stopPush) return;
             if(i>=len) return;
             if(ts_m_groupStatus[i].isEmpty()) continue;
-            i2++;
+
             QString res = bot->send_messages(0,ts_m_groupStatus[i],pname,ts_m_text);
             ts_m_groupStatus[i]=QString();
             if(res.contains("ROBOT")) 成功数量g++;
@@ -193,7 +214,7 @@ public:
     }
 
 private:
-    int m_index;
+
 };
 
 void plts::on_ksts_clicked(bool checked)
@@ -213,26 +234,25 @@ void plts::on_ksts_clicked(bool checked)
         QMessageBox::warning(this,"开始失败","指定appid 机器人没登录");
         return;
     }
+    ts_m_text = ui->textEdit->toPlainText();
+    if(ts_m_text.isEmpty())
+    {
+        QMessageBox::warning(this,"开始失败","要推送内容为空");
+        return;
+    }
     ts_m_stopPush = true;
     加载();
-    ts_m_text = ui->textEdit->toPlainText();
-    int threadCount = (ts_m_friendStatus.size() + 99) / 100; // 向上取整
-    for(int i=0; i<threadCount; ++i)
-    {
-        int start = i * 100;
-        auto *task = new ___tsnr_f(start);
-        QThreadPool::globalInstance()->start(task);
-    }
-    threadCount = (ts_m_groupStatus.size() + 99) / 100; // 向上取整
-    for(int i=0;i<threadCount;++i)
-    {
-        int start = i * 100;
-        auto *task = new ___tsnr_g(start);
-        QThreadPool::globalInstance()->start(task);
-    }
 
+    auto *task = new ___tsnr_f();
+    QThreadPool::globalInstance()->start(task);
+
+    auto *task2 = new ___tsnr_g();
+    QThreadPool::globalInstance()->start(task2);
 
     m_saveTimer->setInterval(3000); // 3秒
     m_saveTimer->start();
 }
+
+
+
 

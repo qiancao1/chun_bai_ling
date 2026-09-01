@@ -41,7 +41,7 @@ private:
     void setupUI();
     void loadConfig();
 
-    QLineEdit  *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook;
+    QLineEdit  *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook,*m_xcs;
     QPushButton  *web_qr;
     QPushButton  *webhook_but,*m_loadbut,*m_test_api;
     QLineEdit    *m_addrEdit,*m_loadport;

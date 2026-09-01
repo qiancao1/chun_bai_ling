@@ -878,13 +878,16 @@ void AiWidget::刷新模型()
 {
     ai_fujia->initmode(modelList);
     emit modelListUpdated(); // 发出通知！告诉所有新开窗口刷新
+
     QString currentText = comboModel->currentText();  // 假设 comboModel 是 QComboBox*
     comboModel->clear();
     combo_xiangliang->clear();
+    m_nickReviewWidget->m_aimode->clear();
     for (const auto &m : std::as_const(modelList))
     {
         combo_xiangliang->addItem(m.name);
         comboModel->addItem(m.name);
+        m_nickReviewWidget->m_aimode->addItem(m.name);
     }
     int index = comboModel->findText(currentText);
     if (index != -1)

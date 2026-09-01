@@ -93,7 +93,7 @@ void QQBotClient::start()
                 if(m_info->type==0)
                 {
                     QNetworkRequest request(wsUrl);
-                    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux;纯白铃铛/1.2.6)");
+                    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux; WorkBuddy/1.2.6)");
                     m_webSocket.open(request);
                 }else{
                     if(is_server())
@@ -919,7 +919,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if (g_botdb.contains(ev.appid))
         ev.user_int = g_botdb [ev.appid]->getOrUpdateUser(this,ev);//先获取id  并且更新或读取id
-    qDebug() << "name2" << ev.nickname2;
+    //qDebug() << "name2" << ev.nickname2;
     ev.bot_admin = ev.bitmap & BIT_ADMIN;
     int tabIndex= mapTypeToTabIndex(ev.type);
     ev.msg = ev.msg.trimmed();
@@ -959,9 +959,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     if(ev.type<=3)
     {
-        m_info->message_received++;
-        m_info->received++;
-        m_info->received_day++;
+
         if(ev.fullType && ev.type==0)
         {
             chatPage->addContact(0,ev,mes.name); //为对话聊天增加 新成员
@@ -1105,33 +1103,33 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
     ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
-
+    auto replaceValue = [&](const QString& key, const QString& newVal) {
+        QString pattern = "\"" + key + "\":\"";
+        int pos = ev.raw.indexOf(pattern);
+        if (pos == -1) return;
+        int start = pos + pattern.length();          // 值开始的引号之后
+        int end = start;
+        // 查找结束的引号（跳过转义）
+        while (end < ev.raw.size()) {
+            QChar ch = ev.raw[end];
+            if (ch == '"' && (end == start || ev.raw[end-1] != '\\')) break;
+            ++end;
+        }
+        if (end < ev.raw.size()) {
+            // 替换旧值（含引号）为新值（含引号）
+            ev.raw.replace(start, end - start + 1, "\"" + newVal + "\"");
+        }
+    };
 
     if (plugin_n2) {
         // 1. 转义所有字符串字段
         QString escapedMsg   = escapeJson(ev.msg);
         QString escapedMsgId = escapeJson(ev.msgId);
         QString escapedGroup = escapeJson(ev.groupname);
-
+        QString escapeduser = escapeJson(ev.nickname2);
         // 2. 替换 d 对象内的 content 和 id
         //    （假设 JSON 是紧凑的，即 "content":"旧值" 无空格）
-        auto replaceValue = [&](const QString& key, const QString& newVal) {
-            QString pattern = "\"" + key + "\":\"";
-            int pos = ev.raw.indexOf(pattern);
-            if (pos == -1) return;
-            int start = pos + pattern.length();          // 值开始的引号之后
-            int end = start;
-            // 查找结束的引号（跳过转义）
-            while (end < ev.raw.size()) {
-                QChar ch = ev.raw[end];
-                if (ch == '"' && (end == start || ev.raw[end-1] != '\\')) break;
-                ++end;
-            }
-            if (end < ev.raw.size()) {
-                // 替换旧值（含引号）为新值（含引号）
-                ev.raw.replace(start, end - start + 1, "\"" + newVal + "\"");
-            }
-        };
+
         replaceValue("content", escapedMsg);
         replaceValue("id", escapedMsgId);
 
@@ -1151,8 +1149,16 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         newFields.append("\"type\":");
         appendInt(newFields, ev.type);
         newFields.append(',');
+
+
+
+
         newFields.append("\"GroupName\":\"");
         newFields.append(escapedGroup);
+        newFields.append('"');
+        newFields.append(',');
+        newFields.append("\"username\":\"");
+        newFields.append(escapeduser);
         newFields.append('"');
 
         // 4. 在最后一个 } 前插入新字段
@@ -1162,9 +1168,21 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             if (bracePos > 0 && ev.raw[bracePos - 1] == '{') {
                 newFields.remove(0, 1);  // 移除第一个逗号
             }
+
             ev.raw.insert(bracePos, newFields);
         }
     }
+    if(强制审核昵称)
+    {
+        QString name=ev.nickname;
+        ev.nickname = ev.nickname2;
+        if(ev.nickname.isEmpty())
+        {
+            ev.nickname = QString::number(ev.user_int);
+        }
+        replaceValue("username",escapeJson(ev.nickname));
+    }
+
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 
     //qDebug() << ev.groupId <<ev.user << ev.msg;

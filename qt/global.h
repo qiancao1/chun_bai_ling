@@ -26,6 +26,7 @@
 #include "blacklistpage.h"
 #include "homepage.h"
 #include "keywordpunishconfigwidget.h"
+#include "nickreviewwidget.h"
 #include "pluginpage.h"
 #include "scheduleconfigwidget.h"
 #include "screenshotsyncclient.h"
@@ -104,7 +105,7 @@ struct cnb_data{
 };
 
 
-
+extern NickReviewWidget *m_nickReviewWidget;
 extern QString g_admin;
 extern QString g_ip;
 extern QListWidget *robotListWidget;
@@ -156,7 +157,7 @@ extern QHash<int, QQBotClient*> m_botClients;
 extern QHash<int, BotDB*> g_botdb;
 extern QHash<int, CardWidget*> g_CW;
 extern QString g_sandboxuuid;
-
+extern bool 强制审核昵称;
 extern double totalMemMB;
 extern qint64 g_totalRuntime;
 extern std::string g_keyuuid;

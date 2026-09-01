@@ -17,10 +17,14 @@ public:
 
 private slots:
     void on_ksts_clicked(bool checked);
-    void on_sctswj_2_clicked(bool checked);
+
     void on_sctswj_clicked(bool checked);
     void on_tzts_clicked(bool checked);
     
+
+
+    void on_sctswj_2_clicked();
+
 
 
 private:

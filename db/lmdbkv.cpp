@@ -23,7 +23,7 @@
 #include <QDir>
 
 LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
-    : QObject(parent), m_env(nullptr), m_dbi(0), m_dbPath(dbPath), m_currentMapSize(10 * 1024 * 1024)
+    : QObject(parent), m_env(nullptr), m_dbi(0), m_dbPath(dbPath), m_currentMapSize(16 * 1024 * 1024)
 {
     QDir dir;
     if (!dir.mkpath(dbPath)) {
@@ -49,7 +49,7 @@ LmdbKV::LmdbKV(const QString &dbPath, QObject *parent)
     }
 
     QByteArray pathBytes = dbPath.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_env_open 失败:" << mdb_strerror(rc);
         mdb_env_close(m_env);
@@ -179,7 +179,52 @@ bool LmdbKV::remove(const QString &key)
 {
     return removeInternal(key.toUtf8());
 }
+bool LmdbKV::removeBatch(const QList<QByteArray>& keys)
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env || keys.isEmpty()) return true;
 
+    const int MAX_RETRIES = 3;
+    for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
+        MDB_txn *txn = nullptr;
+        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+        if (rc != MDB_SUCCESS) {
+            qCritical() << "removeBatch: begin failed" << mdb_strerror(rc);
+            return false;
+        }
+
+        bool ok = true;
+        for (const QByteArray &key : keys) {
+            MDB_val k = { (size_t)key.size(), (void*)key.constData() };
+            rc = mdb_del(txn, m_dbi, &k, nullptr);
+            if (rc != MDB_SUCCESS && rc != MDB_NOTFOUND) {
+                qCritical() << "removeBatch: mdb_del failed for key" << key.toHex() << mdb_strerror(rc);
+                ok = false;
+                break;
+            }
+        }
+
+        if (!ok) {
+            mdb_txn_abort(txn);
+            return false;
+        }
+
+        rc = mdb_txn_commit(txn);
+        if (rc == MDB_SUCCESS) {
+            return true;
+        } else if (rc == MDB_MAP_FULL) {
+            if (!increaseMapSize()) {
+                qCritical() << "removeBatch: 扩容失败";
+                return false;
+            }
+            continue; // 重试
+        } else {
+            qCritical() << "removeBatch: commit failed" << mdb_strerror(rc);
+            return false;
+        }
+    }
+    return false;
+}
 bool LmdbKV::remove(const QByteArray &key)
 {
     return removeInternal(key);
@@ -218,15 +263,35 @@ bool LmdbKV::removeInternal(const QByteArray &key)
 bool LmdbKV::increaseMapSize()
 {
     if (!m_env) return false;
+    size_t newSize = m_currentMapSize * 2; // 翻倍
+    if (newSize > 1024ULL * 1024 * 1024) return false; // 限制1GB
 
-    size_t newSize = m_currentMapSize + 10ULL * 1024 * 1024;
-    int rc = mdb_env_set_mapsize(m_env, newSize);
+    // 关闭当前环境
+    mdb_dbi_close(m_env, m_dbi);
+    mdb_env_close(m_env);
+    m_env = nullptr;
+
+    // 重新创建环境
+    int rc = mdb_env_create(&m_env);
+    if (rc != MDB_SUCCESS) return false;
+    mdb_env_set_mapsize(m_env, newSize);
+    rc = mdb_env_open(m_env, m_dbPath.toUtf8().constData(), MDB_NOMETASYNC, 0664);
     if (rc != MDB_SUCCESS) {
-        qCritical() << "增加 mapsize 失败:" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
+
+    // 重新打开 DBI
+    MDB_txn *txn;
+    rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(m_env); m_env=nullptr; return false; }
+    rc = mdb_dbi_open(txn, nullptr, MDB_CREATE, &m_dbi);
+    mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) { mdb_env_close(m_env); m_env=nullptr; return false; }
+
     m_currentMapSize = newSize;
-    qDebug() << "LMDB mapsize 已增加至" << newSize << "字节";
+    qDebug() << "LMDB mapsize increased to" << newSize;
     return true;
 }
 // 获取所有键（返回 QByteArray 列表）

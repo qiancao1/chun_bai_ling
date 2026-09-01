@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <qclipboard.h>
 #include <qpainter.h>
+#include <qthreadpool.h>
 #include "websocketserver.h"
 #include "jjm.h"
 void stopImageServer();
@@ -77,23 +78,38 @@ bool generateUniqueTestImage() {
 void set::setupUI()
 {
     QVBoxLayout *mainVLayout = new QVBoxLayout(this);
-    mainVLayout->setContentsMargins(4, 4, 4, 4);
-    mainVLayout->setSpacing(8);
+    mainVLayout->setContentsMargins(2, 2, 2, 2);
+    mainVLayout->setSpacing(4);
     mainVLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     // 模式行
     QHBoxLayout *remoteLayout1 = new QHBoxLayout;
     remoteLayout1->setAlignment(Qt::AlignLeft);
-    QLabel *urlLabel1 = new QLabel(tr("ffmpeg路径："), this);
+    remoteLayout1->setContentsMargins(0, 0, 0, 0);
+    remoteLayout1->setSpacing(4);
+
+    QLabel *urlLabel1 = new QLabel(tr("ffmpeg路径"), this);
     m_ffmpegpath = new QLineEdit(this);
     m_ffmpegpath->setPlaceholderText("ffmpeg/");
-    m_ffmpegpath->setMinimumWidth(250);
+    //m_ffmpegpath->setMinimumWidth(150);
 
     QPushButton *bt = new QPushButton(tr("确认"), this);
-    QLabel *urlLabel3 = new QLabel(tr("日志数量"), this);
+    int xc = QThread::idealThreadCount();
+    m_xcs = new QLineEdit(this);
+    m_xcs->setPlaceholderText(QString::number(xc));
+    int xcs= g_config["xc_s"].toInt(xc);
+    if(xcs<=0) xcs=1;
+    if(xcs>500) xcs=500;
+    m_xcs->setText(QString::number(xcs));
+    QThreadPool *pool = QThreadPool::globalInstance();
+    pool->setMaxThreadCount(xcs);
+    m_xcs->setMaximumWidth(70);
+
+
+    QLabel *urlLabel3 = new QLabel(tr("日志数"), this);
     m_日志数量 = new QLineEdit(this);
     m_日志数量->setPlaceholderText("默认10w条 看你电脑配置来 是永久缓存 这样子可用存更多聊天信息");
-    m_日志数量->setText(QString::number(g_config["logs"].toInt(100000)));
-    m_日志数量->setMinimumWidth(100);
+    m_日志数量->setText(QString::number(g_config["logs"].toInt(200000)));
+    m_日志数量->setMaximumWidth(110);
     QPushButton *bt2 = new QPushButton(tr("确认"), this);
 
     Color_0 = g_config["log_Color0"].toInt(0);
@@ -118,12 +134,32 @@ void set::setupUI()
             saveConfig();
         }
     });
+    QPushButton *btn_xc = new QPushButton("确认", this);
+    connect(btn_xc, &QPushButton::clicked, this, [=]() {
 
+        int xcs= m_xcs->text().toInt();
+        if(xcs<=0) xcs=1;
+        if(xcs>500) xcs=500;
+        m_xcs->setText(QString::number(xcs));
+        g_config["xc_s"] = xcs;
+        QThreadPool *pool = QThreadPool::globalInstance();
+        pool->setMaxThreadCount(xcs); // 增加到10
+        saveConfig();
+        QMessageBox::warning(this,"修改完成","修改线程数量完成，注意每条线程将会占用1m内存\n"
+                                               "线程多不代表执行效率高\n减少线程数量(推荐cpu线程数 你的是线程数："+QString::number(QThread::idealThreadCount())+")\n"
+                                                "降低线程数上下文切换频率\n"
+                                                "在什么时候要增加线程数量，插件在执行堵塞型http请求多时\n"
+                                                "需要提高线程数量，但是一般开发者都知道异步\n"
+                                               "但是本线程池是不提供事件循环的，\n\n"
+                                               "如果你只是用户，你可以在日志显示有延迟时(延迟个几秒) 代表你可能要提高线程数量 可能是那个插件的史山发力了");
+    });
 
     remoteLayout1->addWidget(urlLabel1);
     remoteLayout1->addWidget(m_ffmpegpath);
     remoteLayout1->addWidget(bt);
-
+    remoteLayout1->addWidget(new QLabel(tr("线程数"), this));
+    remoteLayout1->addWidget(m_xcs);
+    remoteLayout1->addWidget(btn_xc);
     remoteLayout1->addWidget(urlLabel3);
     remoteLayout1->addWidget(m_日志数量);
     remoteLayout1->addWidget(bt2);
@@ -198,18 +234,21 @@ void set::setupUI()
     lts_but = new QPushButton("复制聊天室链接", this);
 
     QHBoxLayout *remoteLayout2 = new QHBoxLayout;
+
+    remoteLayout2->setContentsMargins(0, 0, 0, 0);
+    remoteLayout2->setSpacing(4);
     remoteLayout2->setAlignment(Qt::AlignLeft);
 
-    remoteLayout2->addWidget(new QLabel("对外链接："));
+    remoteLayout2->addWidget(new QLabel("对外链接"));
     remoteLayout2->addWidget(m_addrEdit);
     remoteLayout2->addWidget(m_startStopBtn);
 
 
-    remoteLayout2->addWidget(new QLabel("webhook端口："));
+    remoteLayout2->addWidget(new QLabel("webhook端口"));
     remoteLayout2->addWidget(webhook);
     remoteLayout2->addWidget(webhook_but);
 
-    remoteLayout2->addWidget(new QLabel("聊天室端口："));
+    remoteLayout2->addWidget(new QLabel("聊天室端口"));
     remoteLayout2->addWidget(webws_port);
     remoteLayout2->addWidget(web_qr);
 
@@ -218,7 +257,8 @@ void set::setupUI()
 
     QHBoxLayout *localLayout = new QHBoxLayout;
     localLayout->setAlignment(Qt::AlignLeft);
-
+    localLayout->setContentsMargins(0, 0, 0, 0);
+    localLayout->setSpacing(4);
 
     Ewebhook = new QCheckBox;
     Ews = new QCheckBox;

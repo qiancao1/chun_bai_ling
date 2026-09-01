@@ -454,8 +454,12 @@ bool BotDB::getRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, void
     key.mv_data = (void*)keyData.constData();
     key.mv_size = keyData.size();
     int rc = mdb_get(txn, dbi, &key, &value);
-    if (rc == MDB_SUCCESS && value.mv_size == size) {
-        memcpy(outData, value.mv_data, size);
+    if (rc == MDB_SUCCESS) {
+        size_t copySize = std::min<size_t>(value.mv_size, size);
+        memcpy(outData, value.mv_data, copySize);
+        if (copySize < size) {
+            memset(static_cast<char*>(outData) + copySize, 0, size - copySize);
+        }
         return true;
     }
     return false;
@@ -604,6 +608,10 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
         if (isGroup) {
             m_groupDailyMsg[groupKey] = m_groupDailyMsg.value(groupKey, 0) + 1;
         }
+        auto *info = qqbot-> m_info;
+        info->message_received++;
+        info->received++;
+        info->received_day++;
     }
 
     // 缓存相关
@@ -957,6 +965,8 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
 
     return 0;
 }
+
+
 bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
 {
     // 只读操作无需扩容，不加锁也可以（但为了安全可以使用读事务）
@@ -1524,10 +1534,11 @@ bool BotDB::addFriend(uint32_t userSeqId, uint32_t addTimeMinutes)
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) return false;
-    bool ok = putRecord(txn, m_dbi_friends, keyData, &addTimeMinutes, sizeof(addTimeMinutes));
-    if (ok) {
+
+    int putRc = putRecord(txn, m_dbi_friends, keyData, &addTimeMinutes, sizeof(addTimeMinutes));
+    if (putRc == MDB_SUCCESS) {
         rc = mdb_txn_commit(txn);
-        return rc == MDB_SUCCESS;
+        return (rc == MDB_SUCCESS);
     } else {
         mdb_txn_abort(txn);
         return false;
@@ -1542,10 +1553,10 @@ bool BotDB::removeFriend(uint32_t userSeqId)
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) return false;
-    bool ok = delRecord(txn, m_dbi_friends, keyData);
-    if (ok) {
+    int putRc = delRecord(txn, m_dbi_friends, keyData);
+    if (putRc == MDB_SUCCESS) {
         rc = mdb_txn_commit(txn);
-        return rc == MDB_SUCCESS;
+        return (rc == MDB_SUCCESS);
     } else {
         mdb_txn_abort(txn);
         return false;
@@ -1567,7 +1578,6 @@ bool BotDB::isFriend(uint32_t userSeqId)
 
 QList<int> BotDB::getFriendList()
 {
-
     QList<int> result;
     if (!m_env) return result;
     MDB_txn *txn = nullptr;

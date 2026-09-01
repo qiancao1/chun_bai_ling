@@ -423,12 +423,12 @@ QString 内置指令(MessageEvent &ev)
             QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
             QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
             auto *db =  g_botdb[ev.appid];
-            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5")
-                       .arg(ev.user_int).arg(ev.user, ev.groupId)
+            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>昵称：%4 [修改昵称]()\n>今日消息统计：%5\n>本群消息统计：%6")
+                       .arg(ev.user_int).arg(ev.user, ev.groupId,ev.nickname2)
                        .arg(db->getUserTodayMsgCount(userKeyBytes)).arg(db->getGroupTodayMsgCount(groupKeyBytes));
 
         }else
-            text = QString("**我的ID**\n>user_id:%1\n个人ID>:%2\n群ID>：%3\n>今日消息统计：%4\n>本群消息统计：%5").arg(ev.user_int).arg(ev.user, ev.groupId);
+            text = QString("**我的ID**\n>user_id:%1\n>个人ID:%2\n群ID>：%3\n>昵称：%4 [修改昵称]()").arg(ev.user_int).arg(ev.user, ev.groupId,ev.nickname2);
     }
     if(ev.msg=="代管列表")
     {
@@ -444,6 +444,18 @@ QString 内置指令(MessageEvent &ev)
         }
 
         text.append("\n\n添加代管后可以使用机器人 禁言撤回 同意加群等指令 如果不知道id可以使用 [添加本群代管]() + 艾特 添加");
+    }
+    if(ev.at_you)
+    {
+        if(ev.msg.startsWith("修改昵称"))
+        {
+            QString newname;
+            int cnt = extractParams(ev.msg, "修改昵称", 0, newname);
+            if (cnt == -1) return "[修改昵称] 缺少新昵称";
+            uint32_t now = QDateTime::currentSecsSinceEpoch();
+            if(m_nickReviewWidget->addReview(ev.appid,ev.user_int,newname,now)) return "提交审核成功 等待通过就可以使用新昵称";
+            return "提交昵称修改失败";
+        }
     }
     return text;
 }
@@ -1189,7 +1201,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             if(!info->cbl) return QString();
             if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
             {
-                return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n\n"
+                return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
                         "**群管理**\n>"
                         "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
                         "[禁言]() <艾特> <秒> \n>"
@@ -1222,7 +1234,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         }
         return
             QString(
-            "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n\n"
+            "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
             "**群管理**\n>"
             "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
             "[禁言]() <艾特> <秒> \n>"

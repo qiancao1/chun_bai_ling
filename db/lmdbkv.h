@@ -44,18 +44,21 @@ public:
     bool remove(const QByteArray &key);
     QList<QByteArray> getAllKeysByteArray() const;
     QStringList getAllKeys() const;
+    bool removeBatch(const QList<QByteArray>& keys);
+    size_t   m_currentMapSize;
+     bool increaseMapSize();
 
 private:
     MDB_env *m_env;
     MDB_dbi  m_dbi;
     QString  m_dbPath;
-    size_t   m_currentMapSize;
+
     mutable QMutex m_mutex;
 
     bool putInternal(const QByteArray &key, const QByteArray &value);
     QByteArray getInternal(const QByteArray &key) const;
     bool removeInternal(const QByteArray &key);
-    bool increaseMapSize();
+
 };
 
 #endif // LMDBKV_H

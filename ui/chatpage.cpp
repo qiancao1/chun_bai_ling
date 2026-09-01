@@ -1484,6 +1484,10 @@ void ChatPage::updateAllContactLists(int index)
 
     contactList->setUpdatesEnabled(true);
     if(sw) g_logdb[bufferIdx]->commitTransaction();
+
+
+
+
     if(bufferIdx==1){
         uint32_t nowMin = BotDB::nowMinutes();   // 获取当前分钟数
         for (auto it = appidGroups.begin(); it != appidGroups.end(); ++it) {

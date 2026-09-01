@@ -348,9 +348,7 @@ int main(int argc, char *argv[]) {
             trayIcon->show();
         }
 
-
         w->show();
-        QThreadPool::globalInstance()->setMaxThreadCount(200); // 根据 CPU 核心和业务耗时调整，建议 50~100
         detectOptimalRegion();
 
         //QString uploadToMhimg(const QString &filePath, QString *errorMsg);

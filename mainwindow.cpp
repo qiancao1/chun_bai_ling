@@ -27,6 +27,7 @@
 #include "homepage.h"
 #include "accountpage.h"
 #include "keywordpunishconfigwidget.h"
+//#include "lmdbbrowserwidget.h"
 #include "nickreviewwidget.h"
 #include "pluginpage.h"
 #include <QGraphicsOpacityEffect>
@@ -70,14 +71,22 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.11.52"
-#define APP_BUILD_NUMBER 52
+#define APP_VERSION_STR "v1.2.12.54"
+#define APP_BUILD_NUMBER 54
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.12.54 (2026-08-24)
+- 增加昵称审核 插件可以使用的 安全昵称?
+- 增加自定义调整线程数量
+- 增加 修改昵称指令
+- 修复 批量推送 以及 添加好友没记录到数据库问题
+- 因为没有啥可以添加的了 画点大饼
+
 ## v1.2.11.52 (2026-08-24)
-- 增加 分群 违禁词撤回 全局违禁词撤回<-用不到应该
+- 增加 分群 违禁词撤回(饼) 全局违禁词撤回<-用不到应该
 - 增加 入群验证
+- 增加 对linux系统的支持
 
 ## v1.2.10.50 (2026-08-22)
 - 修复 cos图床不可用问题
@@ -276,6 +285,7 @@ QListWidget *robotListWidget=nullptr;
 QTabWidget *configTabWidget2=nullptr;
 NickReviewWidget *m_nickReviewWidget=nullptr;
 
+bool 强制审核昵称=false;
 int m_currentBotIndex = -1;
 int 定时检查变量=0;
 extern int ts_m_appid;
@@ -529,13 +539,17 @@ void MainWindow::setupUi()
     forbidden = new ForbiddenWordPage;
     schedule =new ScheduleConfigWidget;
     htmltoimg = new HtmlToImageWidget(this);
-    ai_ui = new AiWidget;
+
+    m_nickReviewWidget = new NickReviewWidget(this);
+
+
+    ai_ui = new AiWidget;//要慢于其他使用ai的功能创建
     ui_qunguan = new qunguan;
     ui_MenuPanel = new MenuPanelWidget;
 
 
 
-    m_nickReviewWidget = new NickReviewWidget(this);
+
 
     connect(m_nickReviewWidget, &NickReviewWidget::approveRequested,
             this, [this](const QList<QPair<uint32_t,uint32_t>>& pairs, const QStringList& nicks) {
@@ -632,6 +646,7 @@ void MainWindow::setupUi()
     hxzsy->addWidget(configTabWidget2);
 
 
+    //LmdbBrowserWidget *dbBrowser = new LmdbBrowserWidget(this);
 
     QTabWidget *configTabWidget = new QTabWidget;           // 选择夹
     configTabWidget->addTab(setA, "基础设置");
@@ -640,7 +655,7 @@ void MainWindow::setupUi()
     configTabWidget->addTab(Black, "黑名单管理");
     configTabWidget->addTab(forbidden, "违禁词过滤");
     configTabWidget->addTab(htmltoimg, "HTML制图");
-
+    //configTabWidget->addTab(dbBrowser, "数据库浏览");
     connect(configTabWidget, &QTabWidget::currentChanged,
             [configTabWidget](){
                 if(框架退出) return ;
