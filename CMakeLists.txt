@@ -176,6 +176,7 @@ set(PROJECT_SOURCES_ALL
     ui/menupanelwidget.h ui/menupanelwidget.cpp
     ui/ui_menupanelwidget.ui
     qt/apiprocessor.h qt/apiprocessor.cpp
+    ui/nickreviewwidget.h ui/nickreviewwidget.cpp
 )
 if(NOT WIN32)
     # Linux / macOS 下不需要 Windows 独有的共享内存桥接
@@ -187,7 +188,7 @@ endif()
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
-        ui/nickreviewwidget.h ui/nickreviewwidget.cpp
+
 
 
     )
