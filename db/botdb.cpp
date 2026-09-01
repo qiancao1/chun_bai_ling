@@ -958,8 +958,13 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
         }
         if (ev.nickname.isEmpty()) {
             ev.nickname = finalUserNickname;
+
+        }
+        if(!finalUserNickname2.isEmpty())
+        {
             ev.nickname2 = finalUserNickname2;
         }
+
         return resultSeq;
     }
 

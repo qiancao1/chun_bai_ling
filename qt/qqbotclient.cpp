@@ -910,9 +910,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     //2300 +-
     if(!ev.fullType) ev.at_you=true; //
-    // 解析附件信息（图片、文件、语音、视频等）
-    QString evmsg = ev.msg;
-    QString evmsgid = ev.msgId;
+
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
@@ -1103,85 +1101,37 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
     ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
-    auto replaceValue = [&](const QString& key, const QString& newVal) {
-        QString pattern = "\"" + key + "\":\"";
-        int pos = ev.raw.indexOf(pattern);
-        if (pos == -1) return;
-        int start = pos + pattern.length();          // 值开始的引号之后
-        int end = start;
-        // 查找结束的引号（跳过转义）
-        while (end < ev.raw.size()) {
-            QChar ch = ev.raw[end];
-            if (ch == '"' && (end == start || ev.raw[end-1] != '\\')) break;
-            ++end;
-        }
-        if (end < ev.raw.size()) {
-            // 替换旧值（含引号）为新值（含引号）
-            ev.raw.replace(start, end - start + 1, "\"" + newVal + "\"");
-        }
-    };
 
-    if (plugin_n2) {
-        // 1. 转义所有字符串字段
-        QString escapedMsg   = escapeJson(ev.msg);
-        QString escapedMsgId = escapeJson(ev.msgId);
-        QString escapedGroup = escapeJson(ev.groupname);
-        QString escapeduser = escapeJson(ev.nickname2);
-        // 2. 替换 d 对象内的 content 和 id
-        //    （假设 JSON 是紧凑的，即 "content":"旧值" 无空格）
-
-        replaceValue("content", escapedMsg);
-        replaceValue("id", escapedMsgId);
-
-        // 3. 构造要追加的顶层字段（注意开头逗号）
-        QString newFields;
-        newFields.reserve(128 + escapedGroup.size());
-        newFields.append(',');
-        newFields.append("\"user_id\":");
-        appendInt(newFields, ev.user_int);
-        newFields.append(',');
-        newFields.append("\"appid\":");
-        appendInt(newFields, ev.appid);
-        newFields.append(',');
-        newFields.append("\"at_you\":");
-        newFields.append(ev.at_you ? "true" : "false");
-        newFields.append(',');
-        newFields.append("\"type\":");
-        appendInt(newFields, ev.type);
-        newFields.append(',');
-
-
-
-
-        newFields.append("\"GroupName\":\"");
-        newFields.append(escapedGroup);
-        newFields.append('"');
-        newFields.append(',');
-        newFields.append("\"username\":\"");
-        newFields.append(escapeduser);
-        newFields.append('"');
-
-        // 4. 在最后一个 } 前插入新字段
-        int bracePos = ev.raw.lastIndexOf('}');
-        if (bracePos != -1) {
-            // 检查原对象是否为空（"{}"），若是则去掉开头的逗号
-            if (bracePos > 0 && ev.raw[bracePos - 1] == '{') {
-                newFields.remove(0, 1);  // 移除第一个逗号
-            }
-
-            ev.raw.insert(bracePos, newFields);
-        }
-    }
+    QString name=ev.nickname;
     if(强制审核昵称)
     {
-        QString name=ev.nickname;
         ev.nickname = ev.nickname2;
         if(ev.nickname.isEmpty())
         {
             ev.nickname = QString::number(ev.user_int);
         }
-        replaceValue("username",escapeJson(ev.nickname));
+
     }
+    if (plugin_n2) {
+
+        d["content"] = ev.msg;
+        d["id"] = ev.msgId;
+
+        payload["d"] = d;
+        payload["user_id"] = ev.user_int;
+        payload["appid"]=ev.appid;
+        payload["at_you"]=ev.at_you;
+        payload["type"]=ev.type;
+        payload["GroupName"]=ev.groupname;
+        payload["username"]=ev.nickname2;
+        ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        if(强制审核昵称)
+        {
+            ev.raw.replace(escapeJson(name),escapeJson(ev.nickname));
+        }
+
+    }
+
 
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
 

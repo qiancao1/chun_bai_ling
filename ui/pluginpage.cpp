@@ -786,6 +786,7 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
 void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
 {
     QByteArray utf8 = text.toUtf8();
+
     int _32=0;
     for (int i = 0; i < m_pluginList.size(); ++i) {
         if (!m_pluginList[i].enabled) continue;
@@ -1485,7 +1486,7 @@ void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
     m_npmLog->append("<font color='blue'>" + resultMsg + "</font>");
 
     if (success) {
-        m_npmDialog->close();  // 或 accept()
+        //m_npmDialog->close();  // 或 accept()
         QString absDir = m_npmProcess->workingDirectory();
         QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
 
@@ -1493,7 +1494,7 @@ void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
     } else {
         QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
     }
-    m_pipLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
+    m_npmLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
 }
 // 主函数
 void PluginPage::LoadPlugin_JS() {
@@ -1553,7 +1554,7 @@ void PluginPage::npmJSpk(const QString &dir){
     connect(m_npmProcess, &QProcess::readyReadStandardError, this, &PluginPage::onNpmErrorReady);
     connect(m_npmProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &PluginPage::onNpmFinished);
-    m_npmProcess->start(npmPath, QStringList() << "install" << "--production" << "--omit=dev");
+    m_npmProcess->start(npmPath, QStringList() << "install");
 
     if (!m_npmProcess->waitForStarted(3000)) {
         m_npmDialog->close();

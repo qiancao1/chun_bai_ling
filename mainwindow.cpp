@@ -71,17 +71,19 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.12.54"
-#define APP_BUILD_NUMBER 54
+#define APP_VERSION_STR "v1.2.12.55"
+#define APP_BUILD_NUMBER 55
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.12.54 (2026-08-24)
+## v1.2.12.55 (2026-09-01)
 - 增加昵称审核 插件可以使用的 安全昵称?
 - 增加自定义调整线程数量
 - 增加 修改昵称指令
 - 修复 批量推送 以及 添加好友没记录到数据库问题
 - 修复 上传富媒体 url 版 提示方法错误
+- 修复 自动安装js库 报错问题
+- 修复 botlist api 对于为登录的机器人 读取信息会报错问题
 - 因为没有啥可以添加的了 画点大饼
 
 ## v1.2.11.52 (2026-08-24)

@@ -217,7 +217,6 @@ void NodeProcess::onRestartTimer() {
     if (!m_autoRestart)
         return;
 
-    // 内部状态已在 start(false) 中清理，这里直接调用自动重启
     if (!start(false)) {
         AppendEventLog("Node进程自动重启失败", 0xff0000);
         // 启动失败不再继续尝试，避免无限循环
