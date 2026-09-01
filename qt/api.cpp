@@ -1576,7 +1576,7 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
     obj["file_type"]=fileType;
     obj["url"]=fileurl;
 
-    QString url = get_url(targetType, openid, "files”");
+    QString url = get_url(targetType, openid, "files");
     QString file_info,response;
     for(int i=0;i<10;i++)
     {
