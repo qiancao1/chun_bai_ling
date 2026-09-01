@@ -225,7 +225,7 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
     });
 }
 
-bool QQBotClient::refreshAccessToken()
+bool QQBotClient::refreshAccessToken(bool qz)
 {
     if(suo)
     {
@@ -233,9 +233,10 @@ bool QQBotClient::refreshAccessToken()
         return true;
     }
     qint64 now = QDateTime::currentSecsSinceEpoch();
-    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
-        return true;
-
+    if(!qz){
+        if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
+            return true;
+    }
     suo = true;
     // 动态获取 token
     if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
@@ -271,8 +272,8 @@ bool QQBotClient::refreshAccessToken()
         suo =false;
         return false;
     }
-
-    m_accessToken = newToken;
+    m_accessToken2=newToken;
+    std::swap(m_accessToken2,m_accessToken); //防止多线程
     int expiresIn = obj.value("expires_in").toInt(7200);
     m_tokenExpireTime = now + expiresIn - 60;
     AppendEventLog(QString("Token 刷新成功，有效期至 %1")
@@ -498,7 +499,7 @@ void appendInt(QString& out, T value) {
         out.append(QString::number(value)); // fallback（实际不会发生）
     }
 }
-//在编译状态下 每次执行 耗时0.075ms 75us 测试包括上一级解析耗时 所以当你卡顿时 真的不是这里原因
+//在编译状态下 每次执行 耗时0.1ms 100us 测试包括上一级解析耗时 所以当你卡顿时 真的不是这里原因 理论秒 1w次
 void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 {
     MessageEvent ev;
@@ -1488,7 +1489,7 @@ QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, co
     std::future<QByteArray> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
     QString resp = future.get();
     if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
-        refreshAccessToken();
+        refreshAccessToken(true);
         headers.insert("Authorization", "QQBot " + m_accessToken);
         future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
         resp = future.get();
@@ -1517,8 +1518,8 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
     QString resp = future.get();
 
     if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
-        m_accessToken.clear();
-        refreshAccessToken();
+
+        refreshAccessToken(true);
         suo =false;
         headers.insert("Authorization", "QQBot " + m_accessToken);
         jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
@@ -1579,8 +1580,10 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
                                       (const QString& response, QNetworkReply::NetworkError error) {
 
                                         if (response.contains("token not exist or expire") || response.contains("AccessToken") && retryCount < 2) {
-                                            m_accessToken.clear();
-                                            refreshAccessToken();  // 刷新
+
+
+                                            refreshAccessToken(true);  // 刷新
+
                                             suo =false;
                                             doPost(url, json, contentType, timeoutMs, finalCallback, retryCount + 1);
                                             return;
@@ -1611,7 +1614,7 @@ void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
                                       [this, url, data, headers, timeoutMs, callbacks]
                                       (const QString &response, QNetworkReply::NetworkError error) {
                                           if (response.contains("token not exist or expire")  || response.contains("AccessToken") ) {
-                                              refreshAccessToken();
+                                              refreshAccessToken(true);
                                               QHash<QString, QString> newHeaders = headers;
                                               newHeaders["Authorization"] = "QQBot " + m_accessToken;
                                               postRawAsync(url, data, newHeaders, timeoutMs, callbacks);

@@ -211,7 +211,7 @@ private:
     // 网关和 token
 
     void fetchGatewayUrl(Callback calls);
-    bool refreshAccessToken();
+    bool refreshAccessToken(bool qz);
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
                        const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
@@ -276,7 +276,7 @@ private:
     QTimer m_reconnectTimer; //重连
     bool 代理=false;
     bool suo=false;
-    QString m_accessToken;              // 运行时 token
+    QString m_accessToken,m_accessToken2;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
     QString m_sessionId;
     qint64 m_seq;                       // 消息序号（用于心跳）
