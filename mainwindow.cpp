@@ -72,8 +72,8 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.12.55"
-#define APP_BUILD_NUMBER 55
+#define APP_VERSION_STR "v1.2.13.56"
+#define APP_BUILD_NUMBER 56
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
