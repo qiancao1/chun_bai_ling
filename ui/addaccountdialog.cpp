@@ -1,5 +1,6 @@
 #include "addaccountdialog.h"
 #include "pluginpage.h"
+#include "qq_bind_login.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -13,9 +14,12 @@
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QRadioButton>
-
+#include <QMessageBox>
+#include <qurlquery.h>
 extern QList<PluginInfo> m_pluginList;
 
+QString m_taskId_login;
+QDialog *m_qrDialog =nullptr;
 AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
     : QDialog(parent) {
     setupUI();
@@ -187,16 +191,7 @@ void AddAccountDialog::setupUI() {
 
     int row = 0;
 
-    // 辅助函数：创建带标签和输入框的一对（用于下面单行）
-    auto addSingleRow = [&](const QString &labelText, QLineEdit *edit) {
-        QLabel *label = new QLabel(labelText);
-        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        label->setFixedHeight(32);   // 与输入框同高
-        edit->setFixedHeight(32);
-        basicLayout->addWidget(label, row, 0);
-        basicLayout->addWidget(edit, row, 1, 1, 5);  // 输入框跨第1~5列
-        row++;
-    };
+
 
     // 第一行：三个标签+三个输入框
     m_appidEdit = new QLineEdit;
@@ -225,13 +220,75 @@ void AddAccountDialog::setupUI() {
     basicLayout->addWidget(m_botqqEdit, row, 3);
     basicLayout->addWidget(labelSecret, row, 4);
     basicLayout->addWidget(m_secretEdit, row, 5);
+
+    QPushButton *Btnlonin = new QPushButton("扫码登录");
+
+    basicLayout->addWidget(Btnlonin, row, 6);
     row++;
 
-    // 后续单行使用 addSingleRow
+
     m_wsAddressEdit = new QLineEdit;
     m_wsAddressEdit->setPlaceholderText("留空则使用腾讯官方地址 可填沙箱地址");
-    addSingleRow("WS 地址:", m_wsAddressEdit);
+    QLabel *label = new QLabel("WS 地址:");
+    label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
+    basicLayout->addWidget(label, row, 0);
+    basicLayout->addWidget(m_wsAddressEdit, row, 1, 1, 5);  // 输入框跨第1~5列
+    row++;
+
+
+    connect(Btnlonin, &QPushButton::clicked, [this](){
+
+        QQBindLogin::instance().start([this](bool ok, const QString& sid, const QString& qrUrl, const QString& err) {
+            if (ok) {
+                m_qrDialog = this;
+                m_taskId_login = sid;
+                QDialog * qrDialog = new QDialog(this);
+                qrDialog->setWindowTitle("扫描二维码登录");
+                qrDialog->setModal(false); // 可改为 true 为模态
+                qrDialog->setAttribute(Qt::WA_DeleteOnClose); // 关闭时自动删除
+                QVBoxLayout *layout = new QVBoxLayout(qrDialog);
+                QLabel *qrLabel = new QLabel;
+                qrLabel->setAlignment(Qt::AlignCenter);
+                qrLabel->setFixedSize(300, 300); // 固定大小，也可自适应
+                layout->addWidget(qrLabel);
+                QUrl url("https://api.2dcode.biz/v1/create-qr-code");
+                QUrlQuery query;
+                query.addQueryItem("data", qrUrl);
+                query.addQueryItem("size", "300x300");
+                url.setQuery(query);
+
+                QNetworkAccessManager *netManager = new QNetworkAccessManager(qrDialog);
+                QNetworkReply *reply = netManager->get(QNetworkRequest(url));
+
+                connect(reply, &QNetworkReply::finished, qrDialog, [qrLabel, reply, netManager]() {
+                    if (reply->error() == QNetworkReply::NoError) {
+                        QByteArray imageData = reply->readAll();
+                        QPixmap pixmap;
+                        if (pixmap.loadFromData(imageData)) {
+                            // 显示二维码，自适应大小
+                            qrLabel->setPixmap(pixmap.scaled(qrLabel->size(), Qt::KeepAspectRatio));
+                        } else {
+                            qrLabel->setText("二维码加载失败");
+                        }
+                    } else {
+                        qrLabel->setText("网络错误: " + reply->errorString());
+                    }
+                    reply->deleteLater();
+                    netManager->deleteLater(); // 网络管理器也回收
+                });
+
+
+                qrDialog->show();
+
+
+            } else {
+                QMessageBox::warning(this, "登录失败", "获取绑定任务失败: " + err);
+            }
+        });
+
+
+    });
 
     // 连接设置（单选按钮，需要单独处理）
     QWidget *typeWidget = new QWidget;
@@ -392,7 +449,10 @@ void AddAccountDialog::getAccountInfo(AccountInfo *info) const {
     info->secret = m_secretEdit->text();
     info->botqq = m_botqqEdit->text();
     info->wsAddress = m_wsAddressEdit->text();
-
+    if(info->nickname.isEmpty())
+    {
+        info->nickname = info->appid;
+    }
 
     info->type = m_wsRadio->isChecked() ? 0 : 1;
 

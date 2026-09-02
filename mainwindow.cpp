@@ -32,6 +32,7 @@
 #include "pluginpage.h"
 #include <QGraphicsOpacityEffect>
 #include "logpage.h"
+#include "qq_bind_login.h"
 #include "scheduleconfigwidget.h"
 #include "screenshotsyncclient.h"
 #include "botruleconfigwidget.h"
@@ -76,6 +77,11 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.13.56 (2026-09-02)
+- 增加 扫码登录
+- 修复 丢失的addbot 指令 增加新的addbot2指令
+- 增加 信息小尾巴开源每条小尾巴添加信息
+
 ## v1.2.12.55 (2026-09-01)
 - 增加昵称审核 插件可以使用的 安全昵称?
 - 增加自定义调整线程数量
@@ -339,7 +345,8 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     m_heartbeatTimer->setInterval(3000);
     connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
         if(框架退出) return;
-
+        QQBindLogin &mgr = QQBindLogin::instance();
+        mgr.poll();
         g_cnb.qcjs++;
         if(logPage->m_active){
             logPage->leiji++;
@@ -523,6 +530,7 @@ MainWindow::~MainWindow()
 bool _g_qieh=false;
 void MainWindow::setupUi()
 {
+
     robotListWidget = new QListWidget;
     ScreenA= new ScreenshotSyncClient;
     networkManager = new QNetworkAccessManager(this);

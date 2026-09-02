@@ -91,7 +91,7 @@ else()
     set(Qt5_DIR "/usr/lib/x86_64-linux-gnu/cmake/Qt5")
     find_package(Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
 endif()
-
+find_package(OpenSSL REQUIRED)
 # ==================== pybind11（优先使用本地，否则从 Gitee 下载） ====================
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/pybind11/CMakeLists.txt")
     message(STATUS "Using local pybind11 from libs/pybind11")
@@ -146,7 +146,7 @@ set(PROJECT_SOURCES_ALL
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
     qt/python_api.cpp
     qt/ahocorasick.h
-
+    qt/qq_bind_login.h
     qt/node_process.h qt/node_process.cpp
     qt/node_plugin_manager.h qt/node_plugin_manager.cpp
     qt/placeholderlineedit.h qt/placeholderlineedit.cpp
@@ -211,6 +211,8 @@ if(WIN32)
         ${LMDB_LIB_PATH}
         pybind11::module
         ${Python_LIBRARIES}
+        OpenSSL::Crypto          # 对应 libcrypto
+        OpenSSL::SSL             # 对应 libssl
 
     )
 else()
@@ -227,6 +229,8 @@ else()
         ${LMDB_LIB_PATH}
         pybind11::module
         ${Python_LIBRARIES}
+        OpenSSL::Crypto          # 对应 libcrypto
+        OpenSSL::SSL             # 对应 libssl
         sodium
     )
 endif()

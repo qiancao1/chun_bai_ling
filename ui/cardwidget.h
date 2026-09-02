@@ -18,6 +18,7 @@ public:
     AccountInfo *m_info;
 public slots:
     void onLoginButton();
+    void onLoginButtonA();
 
 signals:
     void settingClicked(int appid);
@@ -28,7 +29,7 @@ private slots:
 
     void onSettingButton();
     void onDeleteButton();
-    void onLoginButtonA();
+
 
     void onBotLoginSuccess();      // 某个机器人登录成功后的处理
 

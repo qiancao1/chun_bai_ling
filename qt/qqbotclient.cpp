@@ -30,6 +30,8 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QDir>
+#include <openssl/evp.h>
+#include <openssl/ossl_typ.h>
 #include <qwaitcondition.h>
 #include <QFutureWatcher>
 #include <netmanager.h>
@@ -162,6 +164,13 @@ void QQBotClient::start()
 
 void QQBotClient::stop()
 {
+    m_invalidHeartbeatCount = 0;
+    m_seq = 0;
+    m_sessionId.clear();
+    m_reconnectAttempts = 10;
+    int appid = m_info ->appid_int;
+    if(accinfo(appid)==-1) return;
+
     m_info->online = false;
     m_info->autoConnect=false;
     m_isConnecting = false;
@@ -172,11 +181,7 @@ void QQBotClient::stop()
             m_webSocket.close();
     }
 
-    m_invalidHeartbeatCount = 0;
-    m_seq = 0;
-    m_sessionId.clear();
 
-    m_reconnectAttempts = 10;
     AppendEventLog(QString("机器人 %1 已停止").arg(m_info->appid),0xff);
 }
 
@@ -1165,46 +1170,6 @@ void QQBotClient::onTextMessageReceived(const QString &message) {
     auto *task = new ___tdxx(this, message);
     QThreadPool::globalInstance()->start(task);
 }
-
-#ifdef _WIN32
-typedef const char* (__cdecl *GetSignatureFunc)(const char*, const char*, const char*);
-typedef void (__cdecl *FreeSignatureFunc)(const char*);
-
-static GetSignatureFunc pGetSignature = nullptr;
-static FreeSignatureFunc pFreeSignature = nullptr;
-#endif
-static bool loadSignatureDll() {
-    #ifdef _WIN32
-    if (pGetSignature && pFreeSignature) {
-        return true; // 已加载
-    }
-
-    QLibrary lib("GetSignature.dll");
-    if (!lib.load()) {
-        qWarning() << "Failed to load GetSignature.dll:" << lib.errorString();
-        return false;
-    }
-
-    pGetSignature = (GetSignatureFunc)lib.resolve("GetSignature");
-    pFreeSignature = (FreeSignatureFunc)lib.resolve("FreeSignature");
-
-    if (!pGetSignature || !pFreeSignature) {
-        qWarning() << "Failed to resolve GetSignature or FreeSignature";
-        return false;
-    }
-
-    return true;
-    #endif
-    return false;
-}
-
-
-
-
-#ifdef Q_OS_LINUX
-#include <sodium.h>
-#endif
-
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
@@ -1215,85 +1180,67 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
         return QString();
     }
 
-#ifdef _WIN32
-    // Windows 保持原有 DLL 调用（假定内部已实现相同逻辑）
-    if (!loadSignatureDll()) {
-        return QString();
+    // 生成种子：重复 secret 直到 >= 32 字节，截取前 32 字节
+    QByteArray seed = secret.toUtf8();
+    while (seed.size() < 32) {
+        seed.append(seed);
     }
-    QByteArray plain_token_utf8 = plain_token.toUtf8();
-    QByteArray event_ts_utf8 = event_ts.toUtf8();
-    QByteArray secret_utf8 = secret.toUtf8();
-    const char* sig_cstr = pGetSignature(
-        plain_token_utf8.constData(),
-        event_ts_utf8.constData(),
-        secret_utf8.constData()
+    seed.truncate(32);
+
+    // 创建 Ed25519 私钥
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(
+        EVP_PKEY_ED25519,
+        nullptr,
+        reinterpret_cast<const unsigned char*>(seed.constData()),
+        seed.size()
         );
-    if (!sig_cstr) {
-        qWarning() << "GetSignature returned null";
-        return QString();
-    }
-    QString signature = QString::fromUtf8(sig_cstr);
-    pFreeSignature(sig_cstr);
-    QJsonObject res;
-    res["plain_token"] = plain_token;
-    res["signature"] = signature;
-    return QJsonDocument(res).toJson(QJsonDocument::Compact);
-
-#elif defined(Q_OS_LINUX)
-    // ========== Linux 分支：完全对标 Go 官方实现 ==========
-    if (sodium_init() < 0) {
-        qWarning() << "libsodium 初始化失败";
+    if (!pkey) {
+        qWarning() << "创建 Ed25519 私钥失败";
         return QString();
     }
 
-    // 1. 种子生成：重复 secret 直到 ≥ 32 字节，截取前 32 字节
-    QByteArray seedBa = secret.toUtf8();
-    while (seedBa.size() < crypto_sign_SEEDBYTES) {
-        seedBa.append(seedBa);   // 复制自身追加
-    }
-    seedBa.truncate(crypto_sign_SEEDBYTES);  // 取前 32 字节
-
-    // 2. 从种子生成 Ed25519 密钥对（公钥+私钥）
-    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
-    unsigned char sk[crypto_sign_SECRETKEYBYTES];
-    crypto_sign_seed_keypair(pk, sk,
-                             reinterpret_cast<const unsigned char*>(seedBa.constData()));
-
-    // 3. 拼接消息：event_ts + plain_token（Go 中的顺序）
+    // 拼接消息
     QByteArray message = event_ts.toUtf8() + plain_token.toUtf8();
 
-    // 4. 签名
-    unsigned char signature[crypto_sign_BYTES];
-    unsigned long long siglen;
-    int result = crypto_sign_detached(
-        signature, &siglen,
-        reinterpret_cast<const unsigned char*>(message.constData()),
-        message.size(),
-        sk
-        );
-    if (result != 0 || siglen != crypto_sign_BYTES) {
+    // 签名
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, nullptr);
+    if (!ctx) {
+        qWarning() << "创建上下文失败";
+        EVP_PKEY_free(pkey);
+        return QString();
+    }
+    if (EVP_PKEY_sign_init(ctx) <= 0) {
+        qWarning() << "初始化签名失败";
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        return QString();
+    }
+
+    unsigned char signature[64];
+    size_t siglen = sizeof(signature);
+    int ret = EVP_PKEY_sign(ctx,
+                            signature,
+                            &siglen,
+                            reinterpret_cast<const unsigned char*>(message.constData()),
+                            message.size());
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+
+    if (ret != 1 || siglen != 64) {
         qWarning() << "签名失败";
         return QString();
     }
 
-    // 5. 转换为十六进制小写字符串
     QString signatureHex = QByteArray(
                                reinterpret_cast<const char*>(signature),
-                               siglen
+                               static_cast<int>(siglen)
                                ).toHex();
 
     QJsonObject res;
     res["plain_token"] = plain_token;
     res["signature"] = signatureHex;
     return QJsonDocument(res).toJson(QJsonDocument::Compact);
-
-#else
-    // 其他平台未实现
-    qWarning() << "当前平台未实现 Ed25519 签名";
-    return QString();
-#endif
 }
-
 
 
 QString QQBotClient::onTextMessage(const QString &message)

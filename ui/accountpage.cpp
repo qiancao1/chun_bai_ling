@@ -512,7 +512,11 @@ void AccountPage::onDeleteAccount(int appid) {
                 m_flowLayout->removeWidget(card);      // 从布局中移除
                 card->deleteLater();                   // 安全删除（或在当前函数 delete card）
             }
-            // 2. 删除数据层
+            if(m_botClients.contains(appid))
+            {
+                m_botClients.remove(appid);
+                doWork(500); //等待断开
+            }
 
             accdb->remove(m_accounts[i]->appid);
             m_accounts.removeAt(i);

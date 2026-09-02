@@ -124,6 +124,8 @@ void CardWidget::updateBorder() {
 
 void CardWidget::refreshDisplay() {
     // 头像
+    int appid = m_info ->appid_int;
+    if(accinfo(appid)==-1) return;
     QPixmap pix;
     if (!m_info->avatarPath.isEmpty() && QFile::exists(m_info->avatarPath)) {
         pix.load(m_info->avatarPath);

@@ -28,6 +28,7 @@
 #include "mainwindow.h"
 #include <QHostInfo>
 #include <QThreadPool>
+#include "qq_bind_login.h"
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
@@ -112,7 +113,6 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
     }
 
 }
-
 
 
 QString python_code4(const QString &py_code,int appid,const QList<QString> user_list,const QList<QString> user_name_list)
@@ -489,6 +489,9 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
             oldInfoPtr->wsIntents = 1191186432;
         else
             oldInfoPtr->wsIntents = wsIntents;
+        oldInfoPtr->nickname = QString::number(appid);
+        oldInfoPtr->appid=oldInfoPtr->nickname;
+        oldInfoPtr->appid_int = oldInfoPtr->appid.toInt();
         m_accounts.append(oldInfoPtr);
         QMetaObject::invokeMethod(qApp, [=]() {
             accountPage->refreshCards2(oldInfoPtr.get());
@@ -496,7 +499,8 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
         });
 
     } else {
-        auto oldInfoPtr = m_accounts[existingIndex];
+
+        auto &oldInfoPtr = m_accounts[existingIndex];
 
         oldInfoPtr->secret = secret;
         oldInfoPtr->wsAddress = wsAddress;
@@ -1286,7 +1290,8 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 
             ">[boterr]() <appid> 查看最后登录错误\n"
             ">[botlist]() 查看框架机器人列表\n"
-            ">[addbot]() <appid> <secret> {登录类型0 ws|1 webhook} {启用md} {事件订阅}\n\n"
+            ">[addbot]() <appid> <secret> \n"
+            ">[addbot2]() 二维码登录 \n"
             ">[addadmin]() <appid> <ID> 为某个bot添加一个管理员\n"
             ">[deladmin]() <appid> <ID> 删除某个bot一个管理员\n\n"
             "**框架相关**\n"
@@ -1456,7 +1461,41 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             return "拟人已关闭";
         }
     }
-    if(ev.msg.startsWith("login"))
+
+    if(ev.msg=="addbot2")
+    {
+
+        QQBindLogin::instance().start([ev](bool ok, const QString& sid, const QString& qrUrl, const QString& err) {
+            auto *c= m_botClients [ev.appid];
+
+            if (ok) {
+                QString text = R"(<@%1> 请在60秒内点击按钮登录\n然后没有任何反馈 发送 [纯白铃]() 看看？ 前提这个指令是开的#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"%2","permission":{"type":2},"type":0,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"点我登录","style":1,"visited_label":"你已点击"}}]}]}}}#b:#)";
+                text = text.arg(ev.user,qrUrl);
+                c->send_msgAsync(ev.type,ev.groupId,"[ADDBOT]",text,ev.msgId);
+               return;
+            }
+            QString text = "获取登录二维码失败";
+            c->send_msgAsync(ev.type,ev.groupId,"[ADDBOT]",text,ev.msgId);
+            return ;
+        });
+        return "*";
+    }
+    else if(ev.msg.startsWith("addbot"))
+    {
+        //[addbot]() <appid> <secret> "
+        QString appid_str,secret,lonin_type,emd,ev2;
+        int cnt = extractParams(ev.msg, "addbot", 0, appid_str,secret);
+        if (cnt <= 1) return "login 缺少appid参数 secret 不想输入 发送[addbot2]() 扫码登录";
+        int appid = appid_str.toInt();
+
+        if (g_CW.contains(appid))
+        {
+            return "机器人已经存在 不能重复添加";
+        }
+        addbot(appid_str.toInt(),secret,QString(),0,"1",0);
+        return "添加成功";
+    }
+    else if(ev.msg.startsWith("login"))
     {
         QString appid_str;
         int cnt = extractParams(ev.msg, "login", 0, appid_str);
@@ -1616,6 +1655,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     QString ret= 内置指令(ev);
     if(ret.isEmpty())
         ret = admin_zl(info,ev); //机器人管理
+    if(ret=="*") return ;
     QString text;
     if(!ret.isEmpty())
     {
