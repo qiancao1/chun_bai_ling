@@ -214,12 +214,12 @@ public:
         // 0. 先清理超过 600s 的过期会话
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         for (auto it = sessions_.begin(); it != sessions_.end();) {
-            if (now - it.value().createdMs > 600000) {
+            if (now - it.value().createdMs > 120000) {
                 const QString sid = it.key();
                 inflight_.remove(sid);
                 it = sessions_.erase(it);
                 if (onError)
-                    onError(sid, QStringLiteral("二维码已过期(600s), 会话已清理"));
+                    onError(sid, QStringLiteral("二维码已过期(120s), 会话已清理"));
             } else {
                 ++it;
             }

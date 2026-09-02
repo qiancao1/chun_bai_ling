@@ -2060,7 +2060,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     bool ok=false;
     if(index>=0){
 
-        g_logdb[type+1]->setBuffer_255(index,ok);
+        g_logdb[type+1]->setBuffer_250(index,ok);
     }
     if(ok)
         seq_index = 1;
