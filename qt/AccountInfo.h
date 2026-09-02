@@ -151,6 +151,7 @@ struct AccountInfo {
     QString help,caidan,emptyAt;
     QString apply;// 有人申请加群时
     QString jojnhf;//入群验证
+    QString xxwb;
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;

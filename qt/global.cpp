@@ -2355,10 +2355,8 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 int failed = 0;       // 失败次数（仅针对指定用户）
 
                 if (targetId.isEmpty()) {
-                    // ========== 撤回机器人自己的消息 ==========
                     for (const auto &m : std::as_const(msgList)) {
                         if (m.plugin_ch.isEmpty()) continue;  // 不是机器人发送的消息
-                        // 撤回（不检查返回，原逻辑如此）
                         c->delete_messages(0, ev.groupId, m.plugin_ch, [](auto, auto) { return; });
                         deleted++;
                         if (deleted >= count) break;
@@ -2366,11 +2364,8 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     return QString("[撤回] 已撤回机器人自己的 %1 条消息").arg(deleted);
                 } else {
                     if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
-                    // ========== 撤回指定用户的消息 ==========
                     for (const auto &m : std::as_const(msgList)) {
                         if (m.user != targetId) continue;
-
-                        // 前3次尝试检查权限，后续直接尝试（原逻辑）
                         if (deleted < 3) {
                             QString res = c->delete_messages(0, ev.groupId, m.ch);
                             if (res.contains("权限")) {
@@ -2383,7 +2378,6 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                                 }
                             }
                         } else {
-                            // 后续消息忽略结果
                             c->delete_messages(0, ev.groupId, m.ch, [](auto, auto) { return; });
                         }
 

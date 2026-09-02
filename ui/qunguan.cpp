@@ -25,6 +25,7 @@ QString getFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& f
     if (fieldName == "welcomeMsg") return info->welcomeMsg;
     if (fieldName == "apply") return info->apply;
     if (fieldName == "jojnyz") return info->jojnhf;
+    if (fieldName == "xxwb") return info->xxwb;
     return QString();
 }
 void qunguan::refreshList() {
@@ -47,9 +48,11 @@ void qunguan::refreshList() {
         {"用户入群", "rqhy"},
         {"用户退群", "tqhy"},
         {"加群验证", "jojnyz"},
+        {"信息尾巴", "xxwb"},
         {"未命中指令", "fallbackReply"},
         {"机器人入群", "welcomeMsg"},
         {"有人申请加群", "apply"}
+
 
     };
 
@@ -81,6 +84,7 @@ void setFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fiel
     else if (fieldName == "welcomeMsg") info->welcomeMsg = value;
     else if (fieldName == "apply") info->apply = value;
     else if (fieldName == "jojnyz") info->jojnhf = value;
+    else if (fieldName == "xxwb") info->xxwb = value;
 }
 
 
@@ -120,6 +124,7 @@ msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还�
 msg.appid        : 应用/机器人 ID(整数)
 msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
 msg.nickname     : 发送者昵称
+msg.nickname2    : 发送者审核后昵称 可能是空
 msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
 msg.raw          : 原始数据（JSON 字符串） (字符串)
 msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)
@@ -161,6 +166,7 @@ msg.msg          : 消息内容 里面包含[image,name=xxx,url=xxx] 另外还�
 msg.appid        : 应用/机器人 ID(整数)
 msg.type         : 事件类型（如群聊、私聊等）0群聊 1判断 2私聊 3判断私聊(整数)
 msg.nickname     : 发送者昵称
+msg.nickname2    : 发送者审核后昵称 可能是空
 msg.guildId      : 频道/服务器 ID（仅频道消息有效）(字符串)
 msg.raw          : 原始数据（JSON 字符串） (字符串)
 msg.callbackid   : 回调 ID（用于匹配异步回调） (字符串)

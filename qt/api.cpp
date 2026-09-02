@@ -2530,9 +2530,11 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     if(type==18) type =0;
 
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
-
-    QString newtext = text;
-
+    QString newtext;
+    if(m_info->xxwb.isEmpty())
+        newtext = text;
+    else
+        newtext = text+m_info->xxwb;
     if(text.contains("#python"))
     {
         MessageEvent ev;
@@ -2567,7 +2569,11 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
     }
 
-    QString newtext = text;
+    QString newtext;
+    if(m_info->xxwb.isEmpty())
+        newtext = text;
+    else
+        newtext = text+m_info->xxwb;
 
     if(text.contains("#python"))
     {

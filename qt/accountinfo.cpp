@@ -48,6 +48,7 @@ QString AccountInfo::toJson() const {
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
+    obj["xxwb"] = xxwb;
     obj["autoht"] = autoht;
     obj["g_add"]=今日加群数量;
     obj["g_sub"]=今日退群数量;
@@ -140,6 +141,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.emptyAt=obj["koat"].toString();
     info.apply=obj["apply"].toString();
     info.jojnhf=obj["jojnhf"].toString();
+    info.xxwb=obj["xxwb"].toString();
     info.tq_lq = obj["tq_lq"].toInt();
     info.tq_ychf = obj["tq_ychf"].toInt();
     info.tqhy = obj["tqhy"].toString();
