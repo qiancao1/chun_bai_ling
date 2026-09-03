@@ -143,13 +143,12 @@ public:
     bool removeFriend(uint32_t userSeqId);
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
-    void cleanExpiredjojnyz(int expireMinutes);
+
     quint64 getUserTodayMsgCount(const QByteArray &openidBin);
     quint64 getGroupTodayMsgCount(const QByteArray &groupIdBin);
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
     bool batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes);
-    bool savejojnyzData(const QString &openid, const QList<int>& ids, const QList<int>& times);
-    bool savejojnyzData(const BinKey &groupKey, const QList<int>& ids, const QList<int>& times);
+    void cleanExpiredJojiyzCache(int expireMinutes = 5, int appid=0);
     bool addJojiyzRecord(const QString &groupIdHex, int userId);
 
 
@@ -195,12 +194,11 @@ private:
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
     QTimer *m_cacheTimer;
-    MDB_dbi m_dbi_jojnyz_data = 0;
-    static constexpr const char* jojnyz_DB_NAME = "jojnyz_data";
+
 
     static GroupRecord toGroupRecord(const GroupRecord2& src);
     static GroupRecord2 toGroupRecord2(const GroupRecord& src);
-    bool loadjojnyzData(const BinKey &groupKey, QList<int>& ids, QList<int>& times) ;
+
 
     void loadDailyStats();                   // 加载当日统计文件
     void saveDailyStats();                   // 保存当日统计文件

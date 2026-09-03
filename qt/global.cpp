@@ -1391,18 +1391,17 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             resu.append("\n\n**获取用户信息**\n>");
             resu.append( client->get_groups_members(ev.groupId,ev.user));
 
-
             resu.append("\n\n**获取群列表**\n>");
-            resu.append(client->get_groups_list(5,0));
+            resu.append(client->get_groups_list(""));
 
             resu.append("\n\n**获取好友列表**\n>");
-            resu.append(client->get_groups_list(5,0));
+            resu.append(client->get_users_list(""));
 
             resu.append("\n\n**获取群成员列表**\n>");
-            resu.append(client->get_members_list(ev.groupId,5,0));
+            resu.append(client->get_members_list(ev.groupId,QString()));
 
             resu.append("\n\n**移除群成员**\n>");
-            resu.append(client->del_members(ev.type,ev.groupId,info->unid));
+            resu.append(client->del_members(ev.groupId,info->unid));
             resu.append("\n\n**禁言列表**\n>");
             resu.append(client->getGroupRestrictChatSetting(ev.groupId));
 
@@ -2295,7 +2294,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     {
                         gid.jojnyz.removeAt(i);
                         gid.jojntime.removeAt(i);
-                        db->savejojnyzData(ev.groupId,gid.jojnyz,gid.jojntime);
+
                         auto *c = m_botClients[ev.appid];
                         c->setGroupRestrictChatSetting(ev.groupId,qid,0,[](auto,auto){});
 
@@ -2515,7 +2514,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 db->getGroupInfo(ev.groupId, gid);
                 gid.bitmap |= BIT_RUQUN_YZ;
                 db->addGroup(ev.groupId, gid);
-                return "开入群验证成功，开启后 有人入群将会禁言一个月 直到 单击验证按钮 \n";
+                return "开入群验证成功，开启后 有人入群将会限时5分钟验证 直到 单击验证按钮 否则踢出 \n";
             }
             if (ev.msg == "关入群验证") {
                 if (!(ev.bitmap & BIT_RUQUN_YZ))  return "当前已经关闭 入群验证";
@@ -2674,6 +2673,7 @@ void processPendingEvents()
 {
     qint64 now = QDateTime::currentSecsSinceEpoch();
     for (auto &acc : m_accounts){
+
         {
             QMutexLocker locker(&acc->pendingMutex);
             for (auto it = acc->pendingJoin.begin(); it != acc->pendingJoin.end(); ) {

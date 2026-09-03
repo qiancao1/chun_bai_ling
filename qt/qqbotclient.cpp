@@ -1036,17 +1036,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             if(resp=="{}")
             {
                 auto *db = g_botdb[ev.appid];
-                GroupRecord2 gid;
-
-                db->getGroupInfo(ev.groupId, gid);
-                gid.jojnyz.append(ev.user_int);
-                gid.jojntime.removeAt(std::time(nullptr) / 60);
-                db->savejojnyzData(ev.groupId,gid.jojnyz,gid.jojntime);
-
-
+                db->addJojiyzRecord(ev.groupId,ev.user_int);
                 QString text = m_info->jojnhf;
                 if(text.isEmpty())
-                    text = QString("<@%1> 请在1小时内点击下面按钮 完成验证").arg(ev.user);
+                    text = QString("<@%1> 请在5分钟内点击下面按钮 完成验证 超时踢出").arg(ev.user);
                 if(text.startsWith("#python")) text =python_code(text,ev);
                 else{
                     text.replace("{ID}",ev.user);

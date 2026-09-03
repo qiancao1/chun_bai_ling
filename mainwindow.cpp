@@ -347,6 +347,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
         if(框架退出) return;
         QQBindLogin &mgr = QQBindLogin::instance();
         mgr.poll();
+
         g_cnb.qcjs++;
         if(logPage->m_active){
             logPage->leiji++;

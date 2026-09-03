@@ -30,7 +30,9 @@ class QQApi:
     API_ID_GET_JOIN_REQUEST_LIST = 21    # 获取加群请求列表
     API_ID_SET_MUTE_G = 22               # 设置群禁言（批量）
     API_ID_GET_MUTE_LIST_G = 23          # 获取群禁言列表
-    
+    API_ID_REMOV_MEMBER =24;             #//批量移除成员
+    API_ID_GET_GROUP_BLCKLIST=25;        #//获取群黑名单列表
+    API_ID_GROUP_BLCKLIST=26;            #//修改黑名单列表 
     def __init__(self, uuid: str):
         self.uuid = uuid
 
@@ -241,14 +243,14 @@ class QQApi:
         :param uset: 用户id（参数2）
         """
         return self._callback(self.API_ID_GET_MEMBER, appid, openid, uset)     
-    def get_member_list(self,appid: int,  openid : str, limit : int) -> Dict:
+    def get_member_list(self,appid: int,  openid : str, cursor : str) -> Dict:
         """
         获取指定群成员列表 返回json 这个是未开放的api 保留
         :param appid: Bot appid
         :param openid: 群id（参数1）
-        :param limit: 获取数量（参数2）
+        :param cursor: 每次30个 传这个继续获取下一个
         """
-        return self._callback(self.API_ID_GET_MEMBER_LIST, appid, openid, str(limit))    
+        return self._callback(self.API_ID_GET_MEMBER_LIST, appid, openid, cursor)    
     
     def get_groups_info(self, appid: int, group_openid: str) -> Dict:
         """
@@ -320,8 +322,35 @@ class QQApi:
         :return:  {"global_rule":{"mode":"none","schedule_rules":[],"recurring_rules":[]},"members":[{"member_openid":"486EFB457F0FF264FCB457418D962B83","mute_expire_at":"2026-08-11T11:02:12+08:00","username":"云猫猫💐","union_openid":"486EFB457F0FF264FCB457418D962B83"}]} #注意 union_openid 部分机器人可能是空 但是优先使用
         """
         return self._callback(self.API_ID_GET_MUTE_LIST_G, appid, group_openid)
-
- 
+        
+    def remov_members(self, appid: int, group_openid: str,user_list : str,add_to_member_blacklist : bool) -> Dict:
+        """
+        批量移除成员
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param user_list ,被踢出id  英文逗号分割 如a,b,c
+        :param add_to_member_blacklist 添加到黑名单
+        """
+        return self._callback(self.API_ID_REMOV_MEMBER, appid, group_openid,user_list,"true" if add_to_member_blacklist else "false",)    
+        
+    def get_grout_blacklist(self, appid: int, group_openid: str,cursor : str) -> Dict:
+        """
+        查询群黑名单
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param cursor ,查询下标 第一次可空
+        """
+        return self._callback(self.API_ID_GET_GROUP_BLCKLIST, appid, group_openid,cursor)   
+        
+    def get_grout_blacklist(self, appid: int, group_openid: str,user_list : str,op:bool) -> Dict:
+        """
+        设置群黑名单
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param user_list ,用户id列表 英文逗号分割
+        :param op ,True 为添加
+        """
+        return self._callback(self.API_ID_GROUP_BLCKLIST, appid, group_openid,user_list,"true" if op else "false",) 
 
 class ButtonGroup:
     def __init__(self):

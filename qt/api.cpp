@@ -40,31 +40,36 @@
 #include <QRegularExpression>
 #include <QUrl>
 
-const int OUTLOG = 1;
-const int API_ID_SEND_MESSAGES    = 2;
-const int API_ID_SEND_MESSAGES_ARK = 3;
-const int API_ID_DELETE_MESSAGES  = 4;
-const int API_ID_GENERATE_SHARE_LINK = 5;
-const int API_ID_RESPOND_INTERACTION = 6;
-const int API_ID_BOT_LIST = 7;
-const int API_ID_GET_OPENID = 8;
-const int API_ID_GET_USER_NAME=9;
-const int API_ID_PYTHON_HTTP=10;
+const int OUTLOG = 1; //输出日志
+const int API_ID_SEND_MESSAGES    = 2; //发送消息
+const int API_ID_SEND_MESSAGES_ARK = 3; //发送卡片
+const int API_ID_DELETE_MESSAGES  = 4; //撤回消息
+const int API_ID_GENERATE_SHARE_LINK = 5; //获取邀请链接
+const int API_ID_RESPOND_INTERACTION = 6; //响应回调
+const int API_ID_BOT_LIST = 7; //获取机器人列表
+const int API_ID_GET_OPENID = 8; //获取用户openid
+const int API_ID_GET_USER_NAME=9; //获取用户昵称
+const int API_ID_PYTHON_HTTP=10; //弃用
 const int API_ID_GET_USER_ID=11;
 
-const int API_ID_HTMLIMG1=12;
+const int API_ID_HTMLIMG1=12; //html制图
 const int API_ID_HTMLIMG2=13;
-const int API_ID_DS=14;
-const int API_ID_AI=15;
-const int API_ID_GET_MEMBER=16;
-const int API_ID_GET_MEMBER_LIST=17;
-const int API_ID_GET_groups_info=18;
-const int API_ID_GET_groups_bot_state=19;
+const int API_ID_DS=14; //添加定时
+const int API_ID_AI=15; //调用内部AI
+const int API_ID_GET_MEMBER=16;//获取群成员消息
+const int API_ID_GET_MEMBER_LIST=17; //获取群成员列表
+const int API_ID_GET_groups_info=18;//获取群消息
+const int API_ID_GET_groups_bot_state=19; //获取机器人群内状态
 
-const int API_ID_SET_JOIN_REQUEST=20;
-const int API_ID_GET_JOIN_REQUEST_LIST=21;
-const int API_ID_SET_MUTE_G=22;
-const int API_ID_GET_MUTE_LIST_G=23;
+const int API_ID_SET_JOIN_REQUEST=20; //处理加群请求
+const int API_ID_GET_JOIN_REQUEST_LIST=21 ;//获取加群列表
+const int API_ID_SET_MUTE_G=22; //禁言某人
+const int API_ID_GET_MUTE_LIST_G=23; //获取禁言列表
+
+const int API_ID_REMOV_MEMBER =24;//批量移除成员
+const int API_ID_GET_GROUP_BLCKLIST=25; //获取群黑名单列表
+const int API_ID_GROUP_BLCKLIST=26; //修改黑名单列表
+
 
 
 void DelFileSync_Cnb();
@@ -746,10 +751,9 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取群成员列表 参数1 群id不能是空";
             break;
         }
-        int limit = toInt(_2);
-        int index = toInt(_3);
-        if(limit<=0) limit =100;
-        result = client->get_members_list(text,limit,index).toStdString();
+        QString cursor = toQString(_2);
+
+        result = client->get_members_list(text, cursor).toStdString();
         break;
     }
     case API_ID_SET_JOIN_REQUEST: {
@@ -819,6 +823,49 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         result = client->getjoin_request_list(text).toStdString();
         break;
     }
+    case API_ID_GET_GROUP_BLCKLIST: {
+
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="获取群黑名单列表 参数1 群id不能是空";
+            break;
+        }
+        QString cursor = toQString(_1);
+
+        result = client->get_member_blacklist(text,cursor).toStdString();
+        break;
+    }
+    case API_ID_GROUP_BLCKLIST: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="设置群黑名单列表 参数1 群id不能是空";
+            break;
+        }
+        QString user_list = toQString(_1);
+        bool op = toBool(_3);
+        result = client->member_blacklist(text,user_list,op).toStdString();
+        break;
+    }
+    case API_ID_REMOV_MEMBER: {
+        QString text = toQString(_1);
+        if(text.isEmpty())
+        {
+            result ="移除群成员 参数1 群id不能是空";
+            break;
+        }
+        QString user_list = toQString(_1);
+        if(user_list.isEmpty())
+        {
+            result ="移除群成员 参数2 设置的用户不能是空";
+            break;
+        }
+        bool add_blacklist = toBool(_3);
+        result = client->del_members(text,user_list,add_blacklist).toStdString();
+        break;
+    }
+
     default:
         result = R"({"error":"Unknown apiId"})";
         break;
@@ -3007,20 +3054,23 @@ QString QQBotClient::generate_share_link(const QString& callback_data,Callback c
 }
 
 //获取 群成员列表 频道成员列表
-QString QQBotClient::get_members_list(const QString& group,int limit,int index,Callback callbacks)
+QString QQBotClient::get_members_list(const QString& group,const QString &cursor,Callback callbacks)
 {
-    QString url= get_url(0,group,"members");
-    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
+    QString url= get_url(0,group,"members?cursor=",cursor);
+    return Get(url,"", 10000,callbacks);
 }
-QString QQBotClient::get_groups_list(int limit,int index,Callback callbacks)
+
+
+QString QQBotClient::get_groups_list(const QString & cursor,Callback callbacks)
 {
-    QString url="https://api.bot.qq.com/users/@me/groups";
-    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
+    QString url="https://api.bot.qq.com/users/@me/groups?cursor="+cursor;
+    return Get(url,"", 10000,callbacks);
 }
-QString QQBotClient::get_users_list(int limit,int index,Callback callbacks)
+QString QQBotClient::get_users_list(const QString & cursor,Callback callbacks)
 {
-    QString url="https://api.bot.qq.com/users/@me/users";
-    return Get(QString("%1?limit=%2&start_index=%3").arg(url).arg(limit).arg(index),"", 10000,callbacks);
+
+    QString url="https://api.bot.qq.com/users/@me/users?cursor="+cursor;
+    return Get(url,"", 10000,callbacks);
 }
 QString QQBotClient::get_groups_members(const QString& group,const QString &user,Callback callbacks)
 {
@@ -3053,17 +3103,33 @@ QString QQBotClient::get_groups_bot_state(const QString& group,Callback callback
 {
     return Get(get_url(0,group,"bot_state"),QString(), 10000,callbacks);
 }
-QString QQBotClient::del_members (int type,const QString& group,const QString &user,bool add_blacklist,int delete_history_msg_days,Callback callbacks)
+QString QQBotClient::del_members (const QString& group,const QString &user_list,bool add_blacklist,Callback callbacks)
 {
 
-    QString url = get_url(type,group,"members",user);
-    if(add_blacklist || delete_history_msg_days!=0){
-        QJsonObject obj;
-        obj["add_blacklist"] = add_blacklist;
-        obj["delete_history_msg_days"]=delete_history_msg_days;
-        return Delete(url,obj,QString(),10000,callbacks);
-    }
-    return Delete(url,QJsonObject(),QString(),10000,callbacks);
+    QString url = get_url(0,group,"batch_remove_members");
+    QJsonObject obj;
+    QStringList list = user_list.split(",");
+    obj["member_openids"] = QJsonArray::fromStringList(list);
+    obj["add_to_member_blacklist"]=add_blacklist;
+    return Post(url,obj,QString(),300000,callbacks);
+
+}
+
+QString QQBotClient::get_member_blacklist (const QString& group,const QString &cursor,Callback callbacks)
+{
+
+    QString url  = get_url(0,group,"member_blacklist?limit=100&cursor=",cursor);
+    return Get(url,QString(),300000,callbacks);
+}
+QString QQBotClient::member_blacklist (const QString& group,const QString &user_list,bool op,Callback callbacks)
+{
+
+    QString url = get_url(0,group,"batch_remove_members");
+    QJsonObject obj;
+    QStringList list = user_list.split(",");
+    obj["member_openids"] = QJsonArray::fromStringList(list);
+    obj["op"]=op;
+    return Post(url,obj,QString(),300000,callbacks);
 
 }
 

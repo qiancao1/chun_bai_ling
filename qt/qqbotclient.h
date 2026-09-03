@@ -143,17 +143,20 @@ public:
     //上传富媒体(分片)
     QString uploadRichMediaA(int targetType, const QString& groupId,int fileType, const QString& filePath, bool &ok);
     QString uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok);
-    QString del_members (int type, const QString& group, const QString &user, bool add_blacklist = false, int delete_history_msg_days=0, Callback callbacks=Callback());
-    //撤回
+    QString del_members (const QString& group, const QString &user_list, bool add_blacklist = false, Callback callbacks=Callback());
 
+    //获取黑名单
+    QString get_member_blacklist (const QString& group, const QString &cursor, Callback callbacks=Callback());
+    QString member_blacklist (const QString& group,const QString &user_list,bool op,Callback callbacks=Callback()) ;
+    //撤回
     QString delete_messages(int type, const QString &openid, const QString &msgid,Callback callbacks=Callback());
     //获取邀请链接
-    QString get_members_list(const QString& group, int limit, int index,Callback callbacks=Callback());
+    QString get_members_list(const QString& group, const QString &cursor, Callback callbacks=Callback());
     QString get_groups_members(const QString& group,const QString& user,Callback callbacks=Callback());
     QString generate_share_link(const QString& callback_data,Callback callbacks=Callback());
-    QString get_groups_list(int limit, int index,Callback callbacks=Callback());
+    QString get_groups_list(const QString &cursor, Callback callbacks=Callback());
 
-    QString get_users_list(int limit,int index,Callback callbacks=Callback());
+    QString get_users_list(const QString &cursor, Callback callbacks=Callback());
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
     QString get_groups_info(const QString& group,Callback callbacks=Callback());

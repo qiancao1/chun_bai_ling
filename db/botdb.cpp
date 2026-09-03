@@ -77,7 +77,14 @@ void BotDB::cleanUserCache()
 void BotDB::cleanGroupCache()
 {
     QMutexLocker locker(&m_cacheMutex);
-    m_groupCache.clear();
+    for (auto it = m_groupCache.begin(); it != m_groupCache.end(); ) {
+        const GroupRecord2& rec = it.value();
+        if (rec.jojnyz.isEmpty() && rec.jojntime.isEmpty()) {
+            it = m_groupCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 // 在 Windows 上尝试将 data.mdb 设为稀疏文件
 bool BotDB::ensureSparseFile()
@@ -156,8 +163,6 @@ bool BotDB::open()
 
     rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
     if (rc != MDB_SUCCESS) goto fail;
-    rc = mdb_dbi_open(txn, jojnyz_DB_NAME, MDB_CREATE, &m_dbi_jojnyz_data);
-    if (rc != MDB_SUCCESS) goto fail;
 
 
     rc = mdb_txn_commit(txn);
@@ -175,108 +180,9 @@ fail:
     qCritical() << "打开子数据库失败:" << mdb_strerror(rc);
     return false;
 }
-QByteArray serializejojnyz(const QList<int>& ids, const QList<int>& times) {
-    QByteArray data;
-    QDataStream stream(&data, QIODevice::WriteOnly);
-    stream << ids;
-    stream << times;
-    return data;
-}
-
-void deserializejojnyz(const QByteArray& data, QList<int>& ids, QList<int>& times) {
-    QDataStream stream(data);
-    stream >> ids;
-    stream >> times;
-}
-bool BotDB::loadjojnyzData(const BinKey &groupKey, QList<int>& ids, QList<int>& times) {
-    QByteArray key((const char*)groupKey.data, 16);
-    MDB_txn *txn = nullptr;
-    bool exists = false;
-    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) == MDB_SUCCESS) {
-        MDB_val mkey, mval;
-        mkey.mv_data = key.data();
-        mkey.mv_size = key.size();
-        int rc = mdb_get(txn, m_dbi_jojnyz_data, &mkey, &mval);
-        if (rc == MDB_SUCCESS) {
-            QByteArray value((const char*)mval.mv_data, mval.mv_size);
-            deserializejojnyz(value, ids, times);
-            exists = true;
-        }
-        mdb_txn_abort(txn);
-    }
-    return exists;
-}
-bool BotDB::addJojiyzRecord(const QString &groupIdHex, int userId)
-{
-    // 1. 转换群ID为二进制键
-    QByteArray groupKeyBin = QByteArray::fromHex(groupIdHex.toUtf8());
-    if (groupKeyBin.size() != 16) return false;
-    BinKey key;
-    memcpy(key.data, groupKeyBin.constData(), 16);
-
-    // 2. 加锁修改缓存
-    QMutexLocker locker(&m_cacheMutex);
-    auto it = m_groupCache.find(key);
-    if (it == m_groupCache.end()) {
-        // 如果缓存中不存在该群，可选择从数据库加载，或直接返回失败
-        // 简单处理：返回失败（调用者应确保群已存在于缓存）
-        return false;
-    }
-
-    GroupRecord2& rec = it.value();
-    uint32_t nowMin = static_cast<uint32_t>(std::time(nullptr) / 60); // 当前时间（分钟）
-    rec.jojnyz.append(userId);
-    rec.jojntime.append(nowMin);
-
-    // 复制出新列表，以便解锁后调用数据库保存
-    QList<int> newIds = rec.jojnyz;
-    QList<int> newTimes = rec.jojntime;
 
 
-    locker.unlock();
 
-    //此处退锁 可能会导致覆盖
-    return savejojnyzData(key, newIds, newTimes);
-}
-
-bool BotDB::savejojnyzData(const BinKey &groupKey, const QList<int>& ids, const QList<int>& times) {
-    QByteArray key((const char*)groupKey.data, 16);
-    QByteArray value = serializejojnyz(ids, times);
-    bool success = retryWrite([&](MDB_txn *txn) -> int {
-        return putRecord(txn, m_dbi_jojnyz_data, key, value,value.size());
-    });
-    if (success) {
-        // 更新缓存
-        QMutexLocker locker(&m_cacheMutex);
-        auto it = m_groupCache.find(groupKey);
-        if (it != m_groupCache.end()) {
-            it->jojnyz = ids;
-            it->jojntime = times;
-        }
-    }
-    return success;
-}
-
-bool BotDB::savejojnyzData(const QString &openid, const QList<int>& ids, const QList<int>& times) {
-
-    QByteArray key = QByteArray::fromHex(openid.toUtf8());
-
-    QByteArray value = serializejojnyz(ids, times);
-    bool success = retryWrite([&](MDB_txn *txn) -> int {
-        return putRecord(txn, m_dbi_jojnyz_data, key, value.constData(), value.size());
-    });
-    if (success) {
-        BinKey groupKey;
-        memcpy(groupKey.data, key.constData(), 16);
-        QMutexLocker locker(&m_cacheMutex);
-        auto it = m_groupCache.find(groupKey);
-        if (it != m_groupCache.end()) {
-            it->jojnyz = ids;
-            it->jojntime = times;
-        }
-    }
-    return success;
-}
 
 // 关闭环境并释放所有句柄
 void BotDB::close()
@@ -729,7 +635,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                     {
                         cachedGroup.jojnyz.removeAt(i);
                         cachedGroup.jojntime.removeAt(i);
-                        savejojnyzData(ev.groupId,cachedGroup.jojnyz,cachedGroup.jojntime);
+
                         auto *c = m_botClients[ev.appid];
                         c->setGroupRestrictChatSetting(ev.groupId,ev.user,0,[](auto,auto){});
                         QString text = QString("<@%1> 入群验证已通过").arg(ev.user);
@@ -928,10 +834,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             GroupRecord2 cacheRecord = toGroupRecord2(finalGroup);
             // 加载 jojnyz 数据（如果存在）
             QList<int> ids, times;
-            if (loadjojnyzData(groupKey, ids, times)) {
-                cacheRecord.jojnyz = ids;
-                cacheRecord.jojntime = times;
-            }
+
             if(ev.type == 0 && ev.subType==1)
             {
                 for(int i=0;i<cacheRecord.jojnyz.size();++i)
@@ -940,7 +843,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                     {
                         cacheRecord.jojnyz.removeAt(i);
                         cacheRecord.jojntime.removeAt(i);
-                        savejojnyzData(ev.groupId,cacheRecord.jojnyz,cacheRecord.jojntime);
+
                         auto *c = m_botClients[ev.appid];
                         c->setGroupRestrictChatSetting(ev.groupId,ev.user,0,[](auto,auto){});
                          QString text = QString("<@%1> 入群验证已通过").arg(ev.user);
@@ -1258,58 +1161,6 @@ bool BotDB::getTodayDiff(uint32_t appid, const AccountStats &currentStats, Accou
 
     return true;
 }
-void BotDB::cleanExpiredjojnyz(int expireMinutes)
-{
-    QMutexLocker locker(&m_cacheMutex);
-    qint64 nowMinutes = QDateTime::currentSecsSinceEpoch() / 60;
-
-    struct UpdateInfo {
-        BinKey key;
-        QList<int> newIds;
-        QList<int> newTimes;
-    };
-    QList<UpdateInfo> updates;
-
-    // 遍历所有群缓存，计算需要更新的数据
-    for (auto it = m_groupCache.begin(); it != m_groupCache.end(); ++it) {
-        const GroupRecord2& record = it.value();
-        const QList<int>& ids = record.jojnyz;
-        const QList<int>& times = record.jojntime;
-
-        // 复制当前列表
-        QList<int> newIds = ids;
-        QList<int> newTimes = times;
-
-        // 从后往前删除过期项（因为 removeAt 会影响索引）
-        for (int i = times.size() - 1; i >= 0; --i) {
-            if (nowMinutes - static_cast<qint64>(times[i]) > expireMinutes) {
-                newIds.removeAt(i);
-                newTimes.removeAt(i);
-            }
-        }
-
-        // 如果有变化，记录下来
-        if (newIds.size() != ids.size() || newTimes.size() != times.size()) {
-            UpdateInfo info;
-            info.key = it.key();
-            info.newIds = newIds;
-            info.newTimes = newTimes;
-            updates.append(info);
-        }
-    }
-
-    // 释放缓存锁，避免死锁
-    locker.unlock();
-
-    // 逐个更新数据库（每个独立事务），失败跳过
-    for (const auto& upd : updates) {
-        bool ok = savejojnyzData(upd.key, upd.newIds, upd.newTimes);
-        if (!ok) {
-            qWarning() << "cleanExpiredjojnyz: 保存群记录失败，跳过 key:"
-                       << QByteArray((const char*)upd.key.data, 16).toHex();
-        }
-    }
-}
 
 void BotDB::saveDailyStats()
 {
@@ -1335,7 +1186,7 @@ void BotDB::checkDayChange()
         m_userDailyMsg.clear();
         m_groupDailyMsg.clear();
         m_todayDate = now;
-        cleanExpiredjojnyz(60);
+
 
 
     }
@@ -1374,7 +1225,62 @@ GroupRecord BotDB::toGroupRecord(const GroupRecord2& src) {
     // jojnyz 和 jojntime 被忽略
     return dst;
 }
+bool BotDB::addJojiyzRecord(const QString &groupIdHex, int userId) {
+    QByteArray groupKeyBin = QByteArray::fromHex(groupIdHex.toUtf8());
+    if (groupKeyBin.size() != 16) return false;
+    BinKey key;
+    memcpy(key.data, groupKeyBin.constData(), 16);
+    QMutexLocker locker(&m_cacheMutex);  // 确保线程安全
+    auto it = m_groupCache.find(key);
+    if (it != m_groupCache.end()) {
+        it->jojnyz.append(userId);
+        uint32_t nowMin = static_cast<uint32_t>(std::time(nullptr) / 60);
+        it->jojntime.append(nowMin);
+        return true;
+    }
 
+
+    return false;
+}
+
+void BotDB::cleanExpiredJojiyzCache(int expireMinutes,int appid)
+{
+    if(!m_botClients.contains(appid)) return;
+    QMutexLocker locker(&m_cacheMutex);
+    qint64 nowMin = QDateTime::currentSecsSinceEpoch() / 60;
+
+    auto *c = m_botClients[appid];
+    for (auto it = m_groupCache.begin(); it != m_groupCache.end(); ++it) {
+        GroupRecord2& rec = it.value();
+        QList<int>& ids = rec.jojnyz;
+        QList<int>& times = rec.jojntime;
+        if(ids.size()==0) continue;
+        QByteArray byteArray(reinterpret_cast<const char*>(it.key().data), 16);
+
+        // 转为 32 位长度的十六进制字符串（小写）
+        QString hexStr = byteArray.toHex();
+        QString user_list;
+
+        for (int i = times.size() - 1; i >= 0; --i) {
+            if (nowMin - static_cast<qint64>(times[i]) > expireMinutes) {
+
+                QString user;
+                getOpenIdBySeqId(ids[i],user);
+
+                user_list.append(user).append(",");
+                ids.removeAt(i);
+                times.removeAt(i);
+
+            }
+        }
+        if(!user_list.isEmpty()){
+            c->del_members(hexStr,user_list,false,[c,hexStr,user_list](const QString &resp,auto){
+                QString text = QString("入群验证移除 部分未完成验证成员..%1\n结果：%2").arg(user_list,resp);
+                c->send_msgAsync(0,hexStr,"[入群验证]",text,QString());
+            });
+        }
+    }
+}
 GroupRecord2 BotDB::toGroupRecord2(const GroupRecord& src) {
     GroupRecord2 dst{};
     dst.create_time = src.create_time;
@@ -1388,7 +1294,7 @@ GroupRecord2 BotDB::toGroupRecord2(const GroupRecord& src) {
     dst.autoref = QString::fromUtf8(src.autoref, strnlen(src.autoref, sizeof(src.autoref)));
     memcpy(dst.qid, src.qid, sizeof(dst.qid));
 
-    // jojnyz 和 jojntime 保持默认空列表（已由构造函数置空）
+
     return dst;
 }
 quint64 BotDB::getGroupTodayMsgCount(const QByteArray &groupIdBin) {
