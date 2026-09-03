@@ -91,7 +91,7 @@ else()
     set(Qt5_DIR "/usr/lib/x86_64-linux-gnu/cmake/Qt5")
     find_package(Qt5 REQUIRED COMPONENTS Widgets WebSockets Network)
 endif()
-find_package(OpenSSL REQUIRED)
+find_package(OpenSSL REQUIRED) #在win使用的是 1.1.1 linux是 3.0.2
 # ==================== pybind11（优先使用本地，否则从 Gitee 下载） ====================
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/pybind11/CMakeLists.txt")
     message(STATUS "Using local pybind11 from libs/pybind11")
@@ -231,7 +231,7 @@ else()
         ${Python_LIBRARIES}
         OpenSSL::Crypto          # 对应 libcrypto
         OpenSSL::SSL             # 对应 libssl
-        sodium
+
     )
 endif()
 

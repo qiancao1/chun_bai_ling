@@ -418,6 +418,28 @@ void showClickableLicenseInfo() {
     msgBox.setWindowTitle("关于");
     msgBox.setIcon(QMessageBox::Information);
 
+    // --- 根据平台选择 OpenSSL 许可证文本 ---
+#ifdef Q_OS_WIN
+    // Windows 下使用 OpenSSL 1.1.1（OpenSSL + SSLeay 双重许可）
+    const QString opensslLicenseText =
+        "<b>OpenSSL 1.1.1</b>（动态链接）<br>"
+        "Copyright (c) 1998-2023 The OpenSSL Project and others.<br>"
+        "采用 <a href=\"https://www.openssl.org/source/license-openssl-ssleay.txt\">"
+        "OpenSSL License + SSLeay License</a>（BSD 风格）<br>"
+        "许可证要求：分发时需保留版权声明，并在文档中致谢 OpenSSL Project。<br>"
+        "OpenSSL 源代码：<a href=\"https://www.openssl.org/source/\">"
+        "https://www.openssl.org/source/</a><br><br>";
+#else
+    // Linux 下使用 OpenSSL 3.0.2（Apache 2.0）
+    const QString opensslLicenseText =
+        "<b>OpenSSL 3.0.2</b>（动态链接）<br>"
+        "Copyright (c) 1998-2023 The OpenSSL Project and others.<br>"
+        "采用 <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">"
+        "Apache License, Version 2.0</a><br>"
+        "OpenSSL 源代码：<a href=\"https://www.openssl.org/source/\">"
+        "https://www.openssl.org/source/</a><br><br>";
+#endif
+
     QString richText =
         "<h3>纯白铃铛 - QQ 机器人管理平台</h3>"
         "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
@@ -444,6 +466,9 @@ void showClickableLicenseInfo() {
         "<b>hnswlib</b><br>"
         "Copyright (c) 2016 Yury Malkov and contributors.<br>"
         "采用 <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">Apache License, Version 2.0</a><br><br>"
+
+        // --- 插入 OpenSSL 许可证（已根据平台选择不同文本）---
+        + opensslLicenseText +
 
         "<b>📦 关于 DLL 插件（LGPL 合规说明）：</b><br>"
         "本程序支持动态加载第三方 DLL 插件。<br>"

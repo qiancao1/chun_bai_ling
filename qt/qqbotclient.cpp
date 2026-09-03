@@ -31,7 +31,7 @@
 #include <QFile>
 #include <QDir>
 #include <openssl/evp.h>
-#include <openssl/ossl_typ.h>
+
 #include <qwaitcondition.h>
 #include <QFutureWatcher>
 #include <netmanager.h>
