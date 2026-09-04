@@ -141,7 +141,7 @@ public:
     bool disable_Plugin(PluginInfo &info);//禁用
     void savePlugins();
     void loadPlugins();
-    void dispatch_message(const QString &text, const MessageEvent &msg);
+    void dispatch_message(const QString &text, MessageEvent &msg);
     void initPluginList(const QList<PluginInfo> &plugins);
     void appendPlugin(const PluginInfo &info);
     void insertPlugin(int index, const PluginInfo &info);
@@ -198,7 +198,7 @@ private:
     void LoadPlugin_JS();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
-    void onMessageReceived(const MessageEvent &msg,int i);
+    void onMessageReceived(MessageEvent &msg, int i);
     QListWidget *pluginListWidget;
     QPushButton *reloadBtn;
     QPushButton *openDirBtn;

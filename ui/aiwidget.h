@@ -100,11 +100,11 @@ public:
     QString trimContextByMessageCount2(QJsonObject &context, int maxMessages);
 
 public slots:
-    void onNewMessage(AccountInfo* info, MessageEvent ev, bool send, bool notime);
+    void onNewMessage(AccountInfo* info, const MessageEvent &ev, bool send, bool notime);
 
 
 signals:
-    void newMessageArrived(AccountInfo* info, MessageEvent ev, bool send,bool notime);
+    void newMessageArrived(AccountInfo* info,const MessageEvent &ev, bool send,bool notime);
     void asyncReplyReceived(const QString &openid, const QString &reply,
                             const QJsonObject &updatedContext,       // mutableContext（含 AI 回复）
                             int oldMsgCount);

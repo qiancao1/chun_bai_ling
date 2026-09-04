@@ -72,6 +72,7 @@ struct MessageEvent
     bool at_you=false;
     bool bot=false;         //true时 为机器人
     bool bot_admin = false; //true时 机器人是管理员 不是就不要多管闲事了
+    bool op=false; //本条消息是否被处理
     QString toString() const;
 };
 struct MessageLogContext {

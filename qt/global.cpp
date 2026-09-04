@@ -1708,12 +1708,14 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     pluginPage->dispatch_message(ev.raw,ev);
 
     ret = ai_ui->Ai_qx(info,ev);
-    if(ret.isEmpty()){
-        auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
-        if(index<0) return;
-        int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
-        if(n >= 250) return; //255代表被处理了
-        ret = ai_ui->Ai_post(info,ev);
+    if(ret.isEmpty() || !ev.op){
+        if(ev.subType ==0){
+            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+            if(index<0) return;
+            int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
+            if(n >= 250) return; //255代表被处理了
+            ret = ai_ui->Ai_post(info,ev);
+        }
     }
     if(ret=="*") return;
 

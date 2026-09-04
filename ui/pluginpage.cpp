@@ -178,29 +178,27 @@ void PluginPage::safeCall(const py::object &func) {
 
 
 void PluginPage::stopAsyncioThread() {
+
     if (m_loop.is_none()) return;
 
-    // 1. 【关键】使用 call_soon_threadsafe 发送停止信号。
-    // 这个 API 是专为跨线程唤醒设计的，不需要主线程持有 GIL，不会死锁！
+
+    py::gil_scoped_acquire gil;
     try {
+
         py::object stop_func = m_loop.attr("stop");
         m_loop.attr("call_soon_threadsafe")(stop_func);
     } catch (const py::error_already_set& e) {
         qWarning() << "停止循环时发生 Python 异常:" << e.what();
     }
 
-    // 2. 等待后台线程退出（后台线程收到 stop 后，run_forever 退出，GIL/线程状态自动释放）
     if (m_asyncio_thread.joinable()) {
         m_asyncio_thread.join();
     }
 
-    // 3. 后台线程已彻底死亡，此时主线程再拿锁清理对象，绝对安全！
-    {
-        py::gil_scoped_acquire gil;
-        m_loop = py::object();
-        m_asyncio_mod = py::object();
-        m_run_coro_func = py::object();
-    }
+
+   // m_loop = py::object();
+    //m_asyncio_mod = py::object();
+    //m_run_coro_func = py::object();
 
     qDebug() << "异步引擎线程已安全退出";
 }
@@ -819,7 +817,7 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     }
     return false;
 }
-void PluginPage::onMessageReceived(const MessageEvent &msg, int i) {
+void PluginPage::onMessageReceived(MessageEvent &msg, int i) {
     try {
         // 3.14t 下必须持锁，保持原有的 acquire
         py::gil_scoped_acquire gil;
@@ -827,7 +825,7 @@ void PluginPage::onMessageReceived(const MessageEvent &msg, int i) {
         QString reply;
 
         auto process_ret = [&](py::object ret) {
-
+            msg.op=true;
             if (!ret.is_none() && !m_asyncio_mod.is_none() &&
                 m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
                 if (!m_run_coro_func.is_none() && !m_loop.is_none()) {
@@ -868,7 +866,7 @@ void PluginPage::onMessageReceived(const MessageEvent &msg, int i) {
         AppendEventLog("[Python] " + m_pluginList[i].name + " 未知错误", 0xff);
     }
 }
-void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
+void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 {
     QByteArray utf8 = text.toUtf8();
 

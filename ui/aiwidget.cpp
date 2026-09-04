@@ -2515,9 +2515,9 @@ QString AiWidget::trimContextByMessageCount2(QJsonObject &context, int maxMessag
 
     return nonSystem;
 }
-
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 // ========== 主线程处理消息（延迟合并） ==========
-void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool notime)
+void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,bool notime)
 {
     // 计算 openid
     QString openid;
@@ -2535,8 +2535,12 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
         session.sjs = info->触发概率;
         session.timer = new QTimer(this);
         session.timer->setSingleShot(true);
-        connect(session.timer, &QTimer::timeout, this, [this, openid]() {
-
+        connect(session.timer, &QTimer::timeout, this, [this, openid,ev]() {
+            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+            if(index>0) { //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
+                int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
+                if(n >= 250) return; //255代表被处理了
+            }
             QThreadPool::globalInstance()->start([this,openid]() {
                 flushPendingMessages(openid,false);
             });
@@ -2584,11 +2588,11 @@ void AiWidget::onNewMessage(AccountInfo *info, MessageEvent ev,bool send,bool no
         return;
     }
     int delayMs = info->delayReplySeconds * 1000;
-    if (delayMs <= 0) delayMs = 1000;
+    if (delayMs <= 2000) delayMs = 2000;
 
     session.timer->start(delayMs);
     session.dslx=0;
-    //qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
+    qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
 }
 
 
