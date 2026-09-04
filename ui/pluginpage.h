@@ -157,7 +157,8 @@ public:
     QString LoadPlugin_DLL32(PluginInfo &info);
     void syncPluginsTo32();
     QString anzpip(const QString &reqPath);
-    //void safeCall(const py::object &func);
+    void safeCall(const py::object &func);
+
     void LoadPlugin_Python_pip(const QString &dir);
 
 private slots:
@@ -176,7 +177,7 @@ private slots:
 
 private:
     void doLoadPlugin(const QString &dir); // 从 LoadPlugin_JS 中提取加载逻辑
-
+    void initPython();
     QProcess *m_npmProcess = nullptr;
     QDialog *m_npmDialog = nullptr;
     QTextEdit *m_npmLog = nullptr;
@@ -220,6 +221,9 @@ private:
     int currentSelected_index;
     std::thread m_asyncio_thread; // 改成成员变量
 
+    py::object m_asyncio_mod;
+    py::object m_run_coro_func;
+    py::object m_loop;
 };
 
 #endif // PLUGINPAGE_H

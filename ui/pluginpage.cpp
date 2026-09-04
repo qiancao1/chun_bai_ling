@@ -108,18 +108,103 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
     setupUi();
-
+    initPython();
 
     QTimer::singleShot(0, this, &PluginPage::loadPlugins);
     connect(qApp, &QCoreApplication::aboutToQuit, this, &PluginPage::stopAsyncioThread);
+
+}
+// 初始化异步引擎（严格按你的要求：后台线程必须持锁跑 run_forever）
+void PluginPage::initPython() {
+    // 主线程先拿锁绑定线程状态
+    py::gil_scoped_acquire gil;
+
+    m_asyncio_mod = py::module_::import("asyncio");
+    m_run_coro_func = m_asyncio_mod.attr("run_coroutine_threadsafe");
+
+    // 使用 promise/future 安全传递 loop 给主线程
+    std::promise<py::object> loop_promise;
+    std::future<py::object> loop_future = loop_promise.get_future();
+
+    // 启动专属后台线程
+    m_asyncio_thread = std::thread([this, loop_promise = std::move(loop_promise)]() mutable {
+        // 【必须持有 GIL，否则在 3.14t 下直接崩】
+        py::gil_scoped_acquire acquire;
+
+        py::object local_loop = m_asyncio_mod.attr("new_event_loop")();
+        m_asyncio_mod.attr("set_event_loop")(local_loop);
+
+        // 把 loop 传递给外面
+        loop_promise.set_value(local_loop);
+
+        // 死循环（一直持有 GIL，驱动事件调度）
+        local_loop.attr("run_forever")();
+    });
+
+    // 主线程阻塞等待，直到后台线程把 loop 建好
+    m_loop = loop_future.get();
 }
 
-void PluginPage::stopAsyncioThread() {
-    if (m_asyncio_thread.joinable()) {
-        m_asyncio_thread.detach();
+
+// 核心调用函数（解决 “coroutine never awaited” 警告！）
+void PluginPage::safeCall(const py::object &func) {
+    if (func.is_none()) return;
+    if (!py::isinstance<py::function>(func) && !PyCallable_Check(func.ptr())) return;
+
+    try {
+        // 3.14t 下，每次调用 Python API 前必须绑定当前线程状态
+        py::gil_scoped_acquire gil;
+
+        // 判断是不是 async 函数
+        if (m_asyncio_mod.attr("iscoroutinefunction")(func).cast<bool>()) {
+            // 是异步函数：执行拿到协程对象（瞬间返回，不执行内部逻辑）
+            py::object coro = func();
+
+            // 扔给后台执行（防止警告，让它在后台真正被 await）
+            if (!coro.is_none()) {
+                m_run_coro_func(coro, m_loop);
+            }
+        } else {
+            // 普通同步函数：直接执行
+            func();
+        }
+    } catch (const py::error_already_set& e) {
+        qWarning() << "safeCall 执行异常:" << e.what();
+        PyErr_Clear();
+    } catch (...) {
+        qWarning() << "safeCall 未知异常";
     }
-    //std::quick_exit(0);
 }
+
+
+void PluginPage::stopAsyncioThread() {
+    if (m_loop.is_none()) return;
+
+    // 1. 【关键】使用 call_soon_threadsafe 发送停止信号。
+    // 这个 API 是专为跨线程唤醒设计的，不需要主线程持有 GIL，不会死锁！
+    try {
+        py::object stop_func = m_loop.attr("stop");
+        m_loop.attr("call_soon_threadsafe")(stop_func);
+    } catch (const py::error_already_set& e) {
+        qWarning() << "停止循环时发生 Python 异常:" << e.what();
+    }
+
+    // 2. 等待后台线程退出（后台线程收到 stop 后，run_forever 退出，GIL/线程状态自动释放）
+    if (m_asyncio_thread.joinable()) {
+        m_asyncio_thread.join();
+    }
+
+    // 3. 后台线程已彻底死亡，此时主线程再拿锁清理对象，绝对安全！
+    {
+        py::gil_scoped_acquire gil;
+        m_loop = py::object();
+        m_asyncio_mod = py::object();
+        m_run_coro_func = py::object();
+    }
+
+    qDebug() << "异步引擎线程已安全退出";
+}
+
 
 
 // 源文件中实现
@@ -442,7 +527,7 @@ void PluginPage::setupUi()
 
     connect(ai_b_j, &QPushButton::clicked,this, [this]() {
 
-        if(currentSelected_index<0 && currentSelected_index>=m_pluginList.size())
+        if(currentSelected_index<0 || currentSelected_index>=m_pluginList.size())
         {
             QMessageBox::warning(this,"","请选择一个插件");
             return;
@@ -734,17 +819,25 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     }
     return false;
 }
-void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
-
+void PluginPage::onMessageReceived(const MessageEvent &msg, int i) {
     try {
+        // 3.14t 下必须持锁，保持原有的 acquire
         py::gil_scoped_acquire gil;
 
         QString reply;
 
         auto process_ret = [&](py::object ret) {
 
+            if (!ret.is_none() && !m_asyncio_mod.is_none() &&
+                m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
+                if (!m_run_coro_func.is_none() && !m_loop.is_none()) {
+                    m_run_coro_func(ret, m_loop); // 非阻塞，毫秒级返回，不会卡 C++ 线程！
+                }
 
+                return;
+            }
 
+            // 【关键修复 2】只有非协程的同步返回值，才拼接到 reply
             if (!ret.is_none() && py::isinstance<py::str>(ret)) {
                 QString str = QString::fromStdString(py::str(ret).cast<std::string>());
                 if (reply.isEmpty()) reply = str;
@@ -752,37 +845,29 @@ void PluginPage::onMessageReceived(const MessageEvent &msg,int i) {
             }
         };
 
-        // --- 2. 处理 Rule 列表 ---
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
             if (matchRule(rule, msg)) {
-                py::object ret = rule.function(msg);
-
-
+                py::object ret = rule.function(msg); // 如果是async，这里返回协程对象
                 process_ret(ret);
             }
         }
 
-
-
+        // 只有拼出了同步的 reply 才通过 C++ 发送，异步的交给后台自己跑就行了
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
-                QString pname ="["+m_pluginList[i].name+"|%1ms]";
-                client->send_msgAsync(msg.type,msg.groupId,pname,reply,msg.msgId);
+                QString pname = "[" + m_pluginList[i].name + "|%1ms]";
+                client->send_msgAsync(msg.type, msg.groupId, pname, reply, msg.msgId);
             }
-            return ;
+            return;
         }
-
-
 
     } catch (const std::exception &e) {
         AppendEventLog("[Python] " + m_pluginList[i].name + " 错误: " + e.what(), 0xff);
     } catch (...) {
         AppendEventLog("[Python] " + m_pluginList[i].name + " 未知错误", 0xff);
     }
-
 }
-
 void PluginPage::dispatch_message(const QString &text,const MessageEvent &msg)
 {
     QByteArray utf8 = text.toUtf8();
