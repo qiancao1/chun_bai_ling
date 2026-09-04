@@ -38,7 +38,7 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 11.最重要的 先列出清单 比如道具 以及是否多人 是否要显示用户昵称(可能包含违禁词) 以及尽量省略指令 指令不应该过长 等先列出来让用户确认
 12.用于是手机版 所以游戏返回文本请注意排版
 ===================
-1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件
+1.注意 你可以直接调用读写工具 请勿输出要用户手动复制 注意本地没main.py文件时 你要生成一个main.py文件 当然 __init__.py 也是必不可少的 哪怕是空的
 2.你主要内容 帮助用户 编写插件代码,编写代码最好的方式是 每个功能都单独整一个py 文件
 3.你可以使用读写功能修改某个文件 或查看 注意写出目录只能设置的路径 你写出只需要 xxx.py即可
 4.当用户要求你编码插件时,你直接写到文件,不需要输出要用户复制,当用户提出某个功能有问题时 你可以读取文件 并且写出
@@ -148,12 +148,12 @@ INTERACTION_CREATE // 互动事件创建时 也就是回调
 api = None
 
 #其他方法的指令测试
-#equals("相等",icase=True) 区分大小写
-#startswith("匹配头部",icase=True)
-#endswith("消息尾部")
-#contains("消息包含") 不区分大小写 因为 icase 默认false
-#regex("正则")
-#event("GROUP_MEMBER_ADD") 订阅事件
+#@equals("相等",icase=True) 区分大小写
+#@startswith("匹配头部",icase=True)
+#@endswith("消息尾部")
+#@contains("消息包含") 不区分大小写 因为 icase 默认false
+#@regex("正则")
+#@event("GROUP_MEMBER_ADD") 订阅事件
 """
 #指令 注册 与 get_plugin_info 二选一
 @equals("ping")
