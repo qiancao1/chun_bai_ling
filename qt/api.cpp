@@ -612,6 +612,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result = "";
             break;
         }
+        if(!g_botdb.contains(appid)) break ;
         BotDB *db = g_botdb[appid];
         QString user;
         db->getOpenIdBySeqId(toInt(_1),user);
@@ -619,15 +620,28 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         break;
     }
     case API_ID_GET_USER_NAME: {
+
         if(!g_botdb.contains(appid))
         {
             result = "";
             break;
         }
+
+        QString text = toQString(_1);
+        if(!g_botdb.contains(appid)) break ;
+
         BotDB *db = g_botdb[appid];
-        UserRecord user{};
-        db->getUserBySeqId(toInt(_1),user);
-        result =user.nickname;
+
+        if(text.size()==32)
+        {
+            QString name;
+            db->getOrUpdateUser(text,name);
+            result = name.toStdString();
+        }else{
+            UserRecord user{};
+            db->getUserBySeqId(text.toInt(),user);
+            result =user.nickname;
+        }
         break;
     }
     case API_ID_PYTHON_HTTP: {
@@ -2396,10 +2410,12 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
 
     if(text.contains("{{name}}"))
     {
-        auto *db = g_botdb [m_info->appid_int];
-        QString username;
-        db->getOrUpdateUser(openid,username);
-        text.replace("{{name}}", username);
+        if(g_botdb.contains(m_info->appid_int))  {
+            auto *db = g_botdb [m_info->appid_int];
+            QString username;
+            db->getOrUpdateUser(openid,username);
+            text.replace("{{name}}", username);
+        }
 
     }
 

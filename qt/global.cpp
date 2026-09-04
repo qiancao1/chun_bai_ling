@@ -1207,6 +1207,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             {
                 return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
                         "**群管理**\n>"
+                        "[踢]() <艾特> 移除某个成员\n>"
                         "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
                         "[禁言]() <艾特> <秒> \n>"
                         "[解禁]() <艾特> 解除禁言某个人\n>"
@@ -1240,6 +1241,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             QString(
             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
             "**群管理**\n>"
+            "[踢]() <艾特> 移除某个成员\n>"
             "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
             "[禁言]() <艾特> <秒> \n>"
             "[解禁]() <艾特> 解除禁言某个人\n>"
@@ -1404,6 +1406,8 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             resu.append(client->del_members(ev.groupId,info->unid));
             resu.append("\n\n**禁言列表**\n>");
             resu.append(client->getGroupRestrictChatSetting(ev.groupId));
+
+
 
         }
         return resu;
@@ -2257,12 +2261,63 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 
                 return reply;
             }
+            if (ev.msg.contains("踢")) {
+
+                QString trimmed = ev.msg.trimmed();
+
+                static const QRegularExpression re(
+                    "^踢\\s*(?:<@([0-9a-fA-F]{32})>|([0-9a-fA-F]{32}))$"
+                    );
+                QRegularExpressionMatch match = re.match(trimmed);
+                if (!match.hasMatch()) {
+                    return "";
+                }
+                if (!ev.bot_admin) {
+                    return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                }
+
+                QString QID = match.captured(1).isEmpty() ? match.captured(2) : match.captured(1);
+
+
+                return QString("确认移除该成员 发送 [确认移除](#确认移除%1) 移除该成员").arg(QID);
+            }
+
+            // ---------- #确认移除 命令处理 ----------
+            if (ev.msg.startsWith("#确认移除")) {
+
+                if (!ev.bot_admin) {
+                    return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                }
+
+
+                QString trimmed = ev.msg.trimmed();
+                static const QRegularExpression re("^#确认移除\\s*([0-9a-fA-F]{32})$");
+                QRegularExpressionMatch match = re.match(trimmed);
+                if (!match.hasMatch()) {
+                    return "确认移除命令格式错误：请使用“#确认移除”+32位十六进制ID，例如“#确认移除 a1b2c3d4...”";
+                }
+
+                QString QID = match.captured(1);
+
+
+                auto *c = m_botClients[ev.appid];
+
+
+                c->del_members(ev.groupId,QID,false,[c,ev](const QString &resp,auto){
+                    QString text = "移除成功";
+                    if(resp != "{}") text = "移除失败 结果:"+resp;
+
+                    c->send_msgAsync(ev.type,ev.groupId,"[纯白铃]",text,ev.msgId);
+                });
+                return "*";
+            }
+
             if (ev.msg.contains("禁言")) {
                 if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
                 auto [QID, sj] = parseBanCommand(ev.msg);
 
                 if (QID.isEmpty()) {
-                    return "[禁言] 解析失败，请检查格式（需要艾特一个人）";
+                    return "";
                 }
                 if (sj == -2) {
                     return "[禁言] 未知的时间单位，支持：秒、分钟、月";

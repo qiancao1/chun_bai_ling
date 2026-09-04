@@ -72,11 +72,16 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.13.56"
-#define APP_BUILD_NUMBER 56
+#define APP_VERSION_STR "v1.2.14.57"
+#define APP_BUILD_NUMBER 57
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.14.57 (2026-09-03)
+- 增加 批量踢人 修改黑名单 查询黑名单 获取群成员列表 获取群成员消息 等api
+- 修改 内置群管超时5分钟移除成员
+- 增加 踢人 等指令
+
 ## v1.2.13.56 (2026-09-02)
 - 增加 扫码登录
 - 修复 丢失的addbot 指令 增加新的addbot2指令

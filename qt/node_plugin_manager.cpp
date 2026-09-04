@@ -158,11 +158,15 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
     else if (method == "setGroupMute") api_id = 22;
     else if (method == "getMuteList") api_id = 23;
 
+    else if (method == "batchRemoveMembers") api_id = 24;
+    else if (method == "getGroupBlacklist") api_id = 25;
+    else if (method == "modifyGroupBlacklist") api_id = 26;
+
+
     else if (method == "ok") api_id = 10002;
     else {
         return QString("Unknown method: %1").arg(method);
     }
-
 
 
 
