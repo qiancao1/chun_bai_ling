@@ -72,11 +72,15 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.14.57"
-#define APP_BUILD_NUMBER 57
+#define APP_VERSION_STR "v1.2.15.59"
+#define APP_BUILD_NUMBER 59
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.15.59 (2026-09-04)
+- 修复 因挑战ai优先级导致的报错 没判断下标长度 导致访问溢出
+
+
 ## v1.2.15.58 (2026-09-04)
 - 修复 没有自动刷新 token问题 <-实际上是以前是定时器 刷新我为了优化删掉了 然后添加添加新的定时刷新
 - 优化 挑战 ai优先级 但是如果你使用 js 易语言 等插件 会等待1s 如果仍然没有触发指令 就触发ai

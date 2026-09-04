@@ -1709,7 +1709,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
 
     ret = ai_ui->Ai_qx(info,ev);
     if(ret.isEmpty() || !ev.op){
-        if(ev.subType ==0){
+        if(ev.subType ==0 && ev.type<=3){
             auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
             if(index<0) return;
             int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
