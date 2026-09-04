@@ -310,14 +310,10 @@ class QQApi:
     def get_openid(self,appid: int ,user_id:int) -> Dict:
         return self._callback(self.API_GET_USER_OPENID, appid, str(user_id))
 
-    def get_user_name(self,appid:int ,user_id:int) -> Dict:
+    def get_user_name(self,appid:int ,user_id: str) -> Dict:
         return self._callback(self.API_GET_USER_NAME, appid, str(user_id))
     #释放gil 的http
-    def http_request(self, url: str, method: str = "GET", headers: dict = None, body: bytes = None, timeout: int = 30) -> dict:
-        headers_json = json.dumps(headers or {})
-        ...
 
-     # ---------- 补充的 API 封装 ----------
     def get_user_id(self, appid: int, user: str) -> Dict:
         """
         根据用户整数ID获取用户内部ID（或用户信息）
@@ -409,7 +405,52 @@ class QQApi:
         :return: {"global_rule":{"mode":"none","schedule_rules":[],"recurring_rules":[]},"members":[{"member_openid":"xxx","mute_expire_at":"2026-08-11T11:02:12+08:00","username":"云猫猫💐","union_openid":"xxx"}]} #注意 union_openid 部分机器人可能是空 但是优先使用
         """
         ...
+    def remov_members(self, appid: int, group_openid: str,user_list : str,add_to_member_blacklist : bool) -> Dict:
+        """
+        批量移除成员
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param user_list ,被踢出id  英文逗号分割 如a,b,c
+        :param add_to_member_blacklist 添加到黑名单
+        """
+        return self._callback(self.API_ID_REMOV_MEMBER, appid, group_openid,user_list,"true" if add_to_member_blacklist else "false",)
 
+    def get_grout_blacklist(self, appid: int, group_openid: str,cursor : str) -> Dict:
+        """
+        查询群黑名单
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param cursor ,查询下标 第一次可空
+        """
+        return self._callback(self.API_ID_GET_GROUP_BLCKLIST, appid, group_openid,cursor)
+
+    def get_grout_blacklist(self, appid: int, group_openid: str,user_list : str,op:bool) -> Dict:
+        """
+        设置群黑名单
+        :param appid: Bot appid
+        :param group_openid: 群 openid
+        :param user_list ,用户id列表 英文逗号分割
+        :param op ,True 为添加
+        """
+        ...
+
+    def get_member_list(self,appid: int,  openid : str, cursor : str) -> Dict:
+        """
+        获取指定群成员列表 返回json 这个是未开放的api 保留
+        :param appid: Bot appid
+        :param openid: 群id（参数1）
+        :param cursor: 每次30个 传这个继续获取下一个
+        """
+        ...
+
+    def get_member(self,appid: int,  openid : str, uset : str) -> Dict:
+        """
+        查询 某个用户 在群 昵称 身份
+        :param appid: Bot appid
+        :param openid: 群id（参数1）
+        :param uset: 用户id（参数2）
+        """
+        ...
 
 class ButtonGroup:
     def __init__(self):

@@ -162,7 +162,7 @@ public:
     QString get_groups_info(const QString& group,Callback callbacks=Callback());
     QString get_groups_bot_state(const QString& group,Callback callbacks=Callback());
     QString set_mute(const QString& group, const QString &user, qint64 mute_seconds);
-
+    void onRefreshReplyFinished();
 
 
 

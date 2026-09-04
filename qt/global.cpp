@@ -81,7 +81,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
             // 2. 创建新的单次定时器
             QTimer *timer = new QTimer();
             timer->setSingleShot(true);
-            timer->setInterval(10000);
+            timer->setInterval(8000);
 
             // 3. 连接回调（注意 lambda 捕获所有需要的变量）
             QObject::connect(timer, &QTimer::timeout, qApp, [=]() {
@@ -1708,8 +1708,13 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     pluginPage->dispatch_message(ev.raw,ev);
 
     ret = ai_ui->Ai_qx(info,ev);
-    if(ret.isEmpty() )
+    if(ret.isEmpty()){
+        auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+        if(index<0) return;
+        int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
+        if(n >= 250) return; //255代表被处理了
         ret = ai_ui->Ai_post(info,ev);
+    }
     if(ret=="*") return;
 
     if(!ret.isEmpty())

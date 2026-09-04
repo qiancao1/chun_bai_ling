@@ -286,7 +286,54 @@ bool QQBotClient::refreshAccessToken(bool qz)
      suo =false;
     return true;
 }
+//主线程 专属
+void QQBotClient::onRefreshReplyFinished()
+{
+    qint64 now = QDateTime::currentSecsSinceEpoch();
 
+    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
+        return ;
+
+    if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
+        AppendEventLog("缺少 appid 或 secret，无法获取 AccessToken",0xff);
+        m_info->err+="缺少 appid 或 secret，无法获取 AccessToken\n";
+        return ;
+    }
+
+    QJsonObject payload;
+    payload["appId"] = m_info->appid;
+    payload["clientSecret"] = m_info->secret;
+    Post("https://api.bot.qq.com/app/getAppAccessToken",payload,QString(),10000,[this,now](const QString &resp,auto){
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8(), &err);
+
+        if (err.error != QJsonParseError::NoError) {
+            AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+resp,0xff);
+            m_info->err+="解析 token 响应失败: " + err.errorString()+"\n返回内容："+resp;
+            return ;
+        }
+
+        QJsonObject obj = doc.object();
+        QString newToken = obj.value("access_token").toString();
+        if (newToken.isEmpty()) {
+            QString errMsg = obj.value("message").toString();
+            if (errMsg.isEmpty())
+                errMsg = "appid 或 secret 错误（无具体返回信息）";
+            AppendEventLog("获取 token 失败: " + errMsg,0xff);
+            m_info->err+="获取 token 失败: " + errMsg;
+            return ;
+        }
+        m_accessToken2=newToken;
+        std::swap(m_accessToken2,m_accessToken); //防止多线程
+        int expiresIn = obj.value("expires_in").toInt(7200);
+        m_tokenExpireTime = now + expiresIn - 60;
+        AppendEventLog(QString("Token 刷新成功，有效期至 %1")
+                           .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+        return ;
+    });
+
+
+}
 // ---------- WebSocket 事件 ----------
 void QQBotClient::onConnected()
 {
