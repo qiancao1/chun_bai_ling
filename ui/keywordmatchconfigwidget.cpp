@@ -159,8 +159,11 @@ KeywordMatchConfigWidget::~KeywordMatchConfigWidget() {}
 void KeywordMatchConfigWidget::refreshTable()
 {
     if (g_appid == 0) return;
-    if (!rulesMap.contains(g_appid)) return;
-
+    if (!rulesMap.contains(g_appid))
+    {
+        ruleTable->setRowCount(0);
+        return;
+    }
     bool wasBlocked = ruleTable->blockSignals(true);
     const QList<KeywordMatchRule> &rules = rulesMap[g_appid];
     ruleTable->setRowCount(rules.size());
@@ -592,9 +595,6 @@ void KeywordMatchConfigWidget::buildMatcherForRobot(int appid) {
     for (int i = 0; i < rules.size(); ++i) {
         auto &rule = rules[i];
         if (!rule.enabled) continue;
-
-
-
 
         if (rule.matchType == 0) {
             for (const QString &kw : rule.keywords) {   // 引用，不拷贝

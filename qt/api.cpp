@@ -1818,7 +1818,6 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
                         resp = futures[j].get();
 
                     } else {
-                        // 重试：重新发起上传（需要新的 future）
 
                         std::future<QByteArray> newFut = put2(
                             parts[j].toObject()["presigned_url"].toString(), // 直接用索引 j
@@ -2038,7 +2037,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
                 QString cached = cache_db->get(cacheKey);
                 if (!cached.isEmpty()) {
-                    int timeIdx = cached.lastIndexOf(",time=");
+                    qDebug() <<cached;
+                    int timeIdx = cached.lastIndexOf(",Time=");
                     if (timeIdx != -1) {
                         qint64 expire = cached.mid(timeIdx + 6).toLongLong();
                         if (QDateTime::currentSecsSinceEpoch() < expire) {

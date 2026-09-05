@@ -2535,10 +2535,12 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
         session.sjs = info->触发概率;
         session.timer = new QTimer(this);
         session.timer->setSingleShot(true);
-        connect(session.timer, &QTimer::timeout, this, [this, openid,ev]() {
-            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+        connect(session.timer, &QTimer::timeout, this, [this, openid]() {
+            auto &session = m_sessions[openid];
+
+            auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
             if(index>0) { //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
-                int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
+                int n = g_logdb [session.type+1]->getBufferStatus(index);
                 if(n >= 250) return; //255代表被处理了
             }
             QThreadPool::globalInstance()->start([this,openid]() {
@@ -2592,7 +2594,12 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
 
     session.timer->start(delayMs);
     session.dslx=0;
-    qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
+    auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
+    if(index>0) {
+        bool ok=false;
+        g_logdb [session.type+1]->setBuffer_250(index,ok); //设置为250 让未处理 回复 不回复
+    }
+    //qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
 }
 
 

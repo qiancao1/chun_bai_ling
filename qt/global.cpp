@@ -1712,7 +1712,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         if(ev.subType ==0 && ev.type<=3){
             auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
             if(index<0) return;
-            int n = g_logdb [ev.type+1]->incrementBufferStatus(index);
+            int n = g_logdb [ev.type+1]->getBufferStatus(index);
             if(n >= 250) return; //255代表被处理了
             ret = ai_ui->Ai_post(info,ev);
         }

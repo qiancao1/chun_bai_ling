@@ -72,11 +72,16 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.15.59"
-#define APP_BUILD_NUMBER 59
+#define APP_VERSION_STR "v1.2.15.60"
+#define APP_BUILD_NUMBER 60
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.15.60 (2026-09-05)
+- 优化一些 非bug 但是看起来有问题的东西
+- 修复 一个大小写导致的缓存 过期了 还在使用的 bug
+- 修复 webui 发送消息错误的问题
+
 ## v1.2.15.59 (2026-09-04)
 - 修复 因挑战ai优先级导致的报错 没判断下标长度 导致访问溢出
 

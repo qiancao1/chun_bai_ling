@@ -227,7 +227,7 @@ public:
         QStringList fileDataList;
         if (fileDataVal.isArray()) {
             const QJsonArray arr = fileDataVal.toArray();
-            for (auto v : arr) {
+            for (const auto &v : arr) {
                 if (v.isString()) fileDataList.append(v.toString());
             }
         } else if (fileDataVal.isString()) {
@@ -380,11 +380,11 @@ public:
                 }
             }
         }
+        if(type>0) type-=1;
 
-        // ========== 发送消息（使用更新后的 text） ==========
         QString pname = "[web聊天室]";
         QString res = m_botClients[appid]->send_messages(type, groupId, pname, text, msgid, false, true, mark);
-        if (!res.contains("ROBOT")) {
+        if (!res.contains("\"id\"")) {
             res = m_botClients[appid]->send_messages(type, groupId, pname, text, QString(), type == 2, true, mark);
         }
 
