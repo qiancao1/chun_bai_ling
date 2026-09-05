@@ -14,7 +14,7 @@
 #include <qlistwidget.h>
 #include <qradiobutton.h>
 #include "placeholderlineedit.h"
-#define QLineEdit PlaceholderLineEdit
+//#define QLineEdit PlaceholderLineEdit
 class QQBotClient;
 class MovableTableWidget : public QTableWidget
 {

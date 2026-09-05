@@ -51,8 +51,9 @@ QColor PlaceholderTextEdit::placeholderColor() const
 
 void PlaceholderTextEdit::paintEvent(QPaintEvent *event)
 {
-    QTextEdit::paintEvent(event);
 
+    QTextEdit::paintEvent(event);
+     return ;
     if (!m_placeholderText.isEmpty() && toPlainText().isEmpty() && !hasFocus()) {
         QPainter painter(viewport());
         painter.setPen(m_placeholderColor);

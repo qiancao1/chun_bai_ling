@@ -18,8 +18,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef JJM_H
-#define JJM_H
+#ifndef MACHINEKEY_H
+#define MACHINEKEY_H
 
 
 #include <QString>
@@ -81,4 +81,4 @@ inline QString decrypt(const QString &cipherBase64, const QByteArray &key) {
     return encryptDecrypt(cipherBase64, key, false);
 }
 }
-#endif // ACCOUNTINFO_H
+#endif // MACHINEKEY_H

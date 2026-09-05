@@ -11,6 +11,7 @@
 #include <qpushbutton.h>
 #include <qscrollarea.h>
 #include <qtextedit.h>
+#include <QLineEdit>
 
 #include "placeholderlineedit.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换

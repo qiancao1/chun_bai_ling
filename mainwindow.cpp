@@ -582,7 +582,7 @@ void MainWindow::setupUi()
     networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
     accountPage = new AccountPage;
-    logPage = new LogPage;
+    logPage = new LogPage(this);
     pluginPage = new PluginPage;
     chatPage = new ChatPage;
     Sandbox = new SandboxWindow;

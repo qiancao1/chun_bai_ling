@@ -10,6 +10,7 @@
 #include <QListWidget>
 #include <QSyntaxHighlighter>
 #include <QRegularExpression>
+#include <QTextEdit>
 
 #include "placeholderlineedit.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换

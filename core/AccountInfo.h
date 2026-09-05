@@ -199,4 +199,4 @@ struct ToolConfig {
     bool enableCustomLog = false;
     QList<QPair<QString, QString>> tableData; // 键值对
 };
-#endif // JJM_H
+#endif // ACCOUNTINFO_H

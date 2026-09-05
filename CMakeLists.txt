@@ -116,12 +116,13 @@ else()
     message(STATUS "⏭️ resources.qrc not found, skip")
 endif()
 
+
 set(PROJECT_SOURCES_ALL
     main.cpp
     mainwindow.cpp
     mainwindow.h
     ${RESOURCE_SRC}
-    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h
+    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
     ui/accountpage.cpp ui/accountpage.h ui/addaccountdialog.cpp ui/addaccountdialog.h
     ui/cardwidget.cpp ui/cardwidget.h ui/chatpage.cpp ui/chatpage.h
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
@@ -137,29 +138,26 @@ set(PROJECT_SOURCES_ALL
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
     ui/scheduleconfigwidget.h ui/scheduleconfigwidget.cpp
     python/sharedmemorybridge.cpp python/sharedmemorybridge.h
-    qt/global.h qt/global.cpp
-    qt/api.cpp
-    qt/accountinfo.h qt/accountinfo.cpp
-    qt/qqbotclient.h qt/qqbotclient.cpp
-
-    qt/accountinfo.cpp qt/accountinfo.h
-    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
+    core/global.h core/global.cpp
+    core/api.cpp
+    core/accountinfo.h core/accountinfo.cpp
+    core/qqbotclient.h core/qqbotclient.cpp
     python/python_api.cpp
-    qt/ahocorasick.h
-    qt/qq_bind_login.h
+    core/ahocorasick.h
+    core/qq_bind_login.h
     plugin/node_process.h plugin/node_process.cpp
     plugin/node_plugin_manager.h plugin/node_plugin_manager.cpp
-    qt/placeholderlineedit.h qt/placeholderlineedit.cpp
-    qt/placeholdertextedit.h qt/placeholdertextedit.cpp
+    core/placeholderlineedit.h core/placeholderlineedit.cpp
+    core/placeholdertextedit.h core/placeholdertextedit.cpp
     ui/cpphighlighter.h ui/cpphighlighter.cpp
     ui/htmltoimagewidget.h ui/htmltoimagewidget.cpp
     network/screenshotsyncclient.h network/screenshotsyncclient.cpp
     ai/aiwidget.h ai/aiwidget.cpp
-    qt/role.h
+    ai/role.h
     ai/plts.h ai/plts.cpp ai/plts.ui
     ai/aisxw.h ai/aisxw.cpp ai/aisxw.ui
     ai/bqbgl.h ai/bqbgl.cpp ai/bqbgl.ui
-    qt/jjm.h
+    core/machinekey.h
     ai/qunguan.h ai/qunguan.cpp ai/qunguan.ui
     ui/statuschartwidget.h ui/statuschartwidget.cpp
     network/clientconnection.h network/clientconnection.cpp
@@ -172,12 +170,14 @@ set(PROJECT_SOURCES_ALL
     plugin/pluginmarketwindow.h plugin/pluginmarketwindow.cpp
     network/netmanager.h network/netmanager.cpp
     plugin/pluginmarket.h
-    qt/cnbuploader.h
+    core/cnbuploader.h
     ui/menupanelwidget.h ui/menupanelwidget.cpp
     ui/ui_menupanelwidget.ui
-    qt/apiprocessor.h qt/apiprocessor.cpp
+    core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
 )
+
+
 if(NOT WIN32)
     # Linux / macOS 下不需要 Windows 独有的共享内存桥接
     list(REMOVE_ITEM PROJECT_SOURCES_ALL
@@ -243,9 +243,9 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/db
-    ${CMAKE_CURRENT_SOURCE_DIR}/qt
-    ${CMAKE_CURRENT_SOURCE_DIR}/network
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/plugin
+    ${CMAKE_CURRENT_SOURCE_DIR}/network
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     ${CMAKE_CURRENT_SOURCE_DIR}/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB

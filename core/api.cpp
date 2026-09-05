@@ -2422,19 +2422,15 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
 
     text.replace("{{appid}}", m_info->appid);
     text.replace("{{botname}}", m_info->nickname);
-
     text.replace("{{group}}", openid);
     text.replace("{{user}}", log2.user);
     text.replace("{{msg}}", log2.msg);
     text.replace("{{昵称}}", log2.name);
-
     text.replace("{{msgid}}", log2.ch);
-
     static QRegularExpression re("\\{\\{([^}]+)\\}\\}");
     QRegularExpressionMatchIterator it = re.globalMatch(text);
 
-    // 存储匹配项（从后往前替换保证偏移正确）
-    QList<QPair<int, int>> ranges;      // <起始位置, 长度>
+    QList<QPair<int, int>> ranges;
     QStringList replacements;
 
     while (it.hasNext()) {

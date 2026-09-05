@@ -10,8 +10,10 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QTextEdit>
+#include <QLineEdit>
 #include <qcheckbox.h>
 #include <qtablewidget.h>
+
 #include "placeholderlineedit.h"
 #include "placeholdertextedit.h"
 

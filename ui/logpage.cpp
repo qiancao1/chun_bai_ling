@@ -35,6 +35,8 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
                 g_logdb[i]->appendLog("0", "0", mes);
         }
     }
+
+
     setupUi();
     applyStyleSheet();
     m_flushTimer = new QTimer(this);
@@ -532,7 +534,7 @@ void LogPage::setupUi()
     qbload = makeTabBtn("加载这些数量");
     chbox = new QCheckBox("显示完整json");
     btnEventTab->setChecked(true);
-    logs = new QLineEdit();
+    logs = new QLineEdit ;
     logs->setText("10000");
     // ---------- 主布局 ----------
     QVBoxLayout *mainLayout = new QVBoxLayout(this);

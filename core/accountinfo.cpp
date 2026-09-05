@@ -21,7 +21,7 @@
 #include "accountinfo.h"
 #include <QJsonArray>
 #include <qjsondocument.h>
-#include "jjm.h"
+#include "machinekey.h"
 // ============================================================
 
 QString AccountInfo::toJson() const {

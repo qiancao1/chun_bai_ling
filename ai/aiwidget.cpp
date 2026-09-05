@@ -1584,7 +1584,7 @@ void AiWidget::onKeyDelete() {
     keyTable->removeRow(row);
     saveToFile2();
 }
-#include "jjm.h"
+#include "machinekey.h"
 void AiWidget::saveToFile2() {
     QJsonObject root;
     QByteArray keyA = MachineKey::generateKey("000");

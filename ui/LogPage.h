@@ -9,7 +9,7 @@
 #include <QTimer>
 #include <QPushButton>
 #include <qcheckbox.h>
-#include <qlineedit.h>
+
 #include <QStandardItemModel>
 
 

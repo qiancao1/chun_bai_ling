@@ -9,7 +9,7 @@
 #include <qpainter.h>
 #include <qthreadpool.h>
 #include "websocketserver.h"
-#include "jjm.h"
+#include "machinekey.h"
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 QString uploadFileSync_cos(const QString &localPath);

@@ -11,14 +11,16 @@
 #include "accountinfo.h"
 #include "aifujia.h"
 #include <QComboBox>
+#include <QLineEdit>
+#include <QTextEdit>
 
 #include "qqbotclient.h"
 #include "placeholderlineedit.h"
 #include "placeholdertextedit.h"
 #include "vectormemory.h"
 
-#define QLineEdit PlaceholderLineEdit
-#define QTextEdit PlaceholderTextEdit
+//#define QLineEdit PlaceholderLineEdit
+//#define QTextEdit PlaceholderTextEdit
 
 
 
