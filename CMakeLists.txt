@@ -136,7 +136,7 @@ set(PROJECT_SOURCES_ALL
     ui/blacklistpage.h ui/blacklistpage.cpp
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
     ui/scheduleconfigwidget.h ui/scheduleconfigwidget.cpp
-    qt/sharedmemorybridge.cpp qt/sharedmemorybridge.h
+    python/sharedmemorybridge.cpp python/sharedmemorybridge.h
     qt/global.h qt/global.cpp
     qt/api.cpp
     qt/accountinfo.h qt/accountinfo.cpp
@@ -144,45 +144,45 @@ set(PROJECT_SOURCES_ALL
 
     qt/accountinfo.cpp qt/accountinfo.h
     db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
-    qt/python_api.cpp
+    python/python_api.cpp
     qt/ahocorasick.h
     qt/qq_bind_login.h
-    qt/node_process.h qt/node_process.cpp
-    qt/node_plugin_manager.h qt/node_plugin_manager.cpp
+    plugin/node_process.h plugin/node_process.cpp
+    plugin/node_plugin_manager.h plugin/node_plugin_manager.cpp
     qt/placeholderlineedit.h qt/placeholderlineedit.cpp
     qt/placeholdertextedit.h qt/placeholdertextedit.cpp
     ui/cpphighlighter.h ui/cpphighlighter.cpp
     ui/htmltoimagewidget.h ui/htmltoimagewidget.cpp
-    qt/screenshotsyncclient.h qt/screenshotsyncclient.cpp
-    ui/aiwidget.h ui/aiwidget.cpp
+    network/screenshotsyncclient.h network/screenshotsyncclient.cpp
+    ai/aiwidget.h ai/aiwidget.cpp
     qt/role.h
-    ui/plts.h ui/plts.cpp ui/plts.ui
-    ui/aisxw.h ui/aisxw.cpp ui/aisxw.ui
-    ui/bqbgl.h ui/bqbgl.cpp ui/bqbgl.ui
+    ai/plts.h ai/plts.cpp ai/plts.ui
+    ai/aisxw.h ai/aisxw.cpp ai/aisxw.ui
+    ai/bqbgl.h ai/bqbgl.cpp ai/bqbgl.ui
     qt/jjm.h
-    ui/qunguan.h ui/qunguan.cpp ui/qunguan.ui
+    ai/qunguan.h ai/qunguan.cpp ai/qunguan.ui
     ui/statuschartwidget.h ui/statuschartwidget.cpp
-    clientconnection.h clientconnection.cpp
-    websocketserver.h websocketserver.cpp
-    ui/aifujia.h ui/aifujia.cpp ui/aifujia.ui
+    network/clientconnection.h network/clientconnection.cpp
+    network/websocketserver.h network/websocketserver.cpp
+    ai/aifujia.h ai/aifujia.cpp ai/aifujia.ui
     ui/chatwidget.h
     ui/appwindow.h ui/appwindow.cpp
     db/vectormemory.h
-    pythonparser.h pythonparser.cpp
-    pluginmarketwindow.h pluginmarketwindow.cpp
-    netmanager.h netmanager.cpp
-    pluginmarket.h
+    python/pythonparser.h python/pythonparser.cpp
+    plugin/pluginmarketwindow.h plugin/pluginmarketwindow.cpp
+    network/netmanager.h network/netmanager.cpp
+    plugin/pluginmarket.h
     qt/cnbuploader.h
     ui/menupanelwidget.h ui/menupanelwidget.cpp
     ui/ui_menupanelwidget.ui
     qt/apiprocessor.h qt/apiprocessor.cpp
-    ui/nickreviewwidget.h ui/nickreviewwidget.cpp
+    ai/nickreviewwidget.h ai/nickreviewwidget.cpp
 )
 if(NOT WIN32)
     # Linux / macOS 下不需要 Windows 独有的共享内存桥接
     list(REMOVE_ITEM PROJECT_SOURCES_ALL
-        qt/sharedmemorybridge.cpp
-        qt/sharedmemorybridge.h
+        python/sharedmemorybridge.cpp
+        python/sharedmemorybridge.h
     )
 endif()
 # ==================== 构建目标 ====================
@@ -244,6 +244,10 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/db
     ${CMAKE_CURRENT_SOURCE_DIR}/qt
+    ${CMAKE_CURRENT_SOURCE_DIR}/network
+    ${CMAKE_CURRENT_SOURCE_DIR}/plugin
+    ${CMAKE_CURRENT_SOURCE_DIR}/python
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/hnswlib
     ${Python_INCLUDE_DIRS}
