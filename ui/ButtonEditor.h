@@ -38,7 +38,7 @@ struct ButtonData {
     bool enter=true;
     int anchor=0;                  // 0/1 唤起选图器
     QString unsupportTips;
-
+    QString groups; //按钮组
     // ========== 新增字段（模态框）==========
     QString modalContent;        // 弹窗内容，最多40字符
     QString modalConfirmText;    // 确认按钮文本，最多4字符
@@ -93,7 +93,7 @@ private:
     QComboBox *m_styleCombo;
     QComboBox *m_actionTypeCombo;
     QLineEdit *m_dataEdit;
-    QLineEdit *m_unsupportTipsEdit;
+    QLineEdit *m_unsupportTipsEdit,*m_groups;
     QCheckBox *m_replyCheck;
     QCheckBox *m_enterCheck;
     QCheckBox *m_anchorCheck;

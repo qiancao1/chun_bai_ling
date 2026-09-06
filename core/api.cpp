@@ -2182,10 +2182,10 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
 QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     QJsonArray rowsArray;
 
-    // 按行分割
-    const QStringList lines = labelsText.split('\n', Qt::SkipEmptyParts);
+    qDebug() << labelsText;
+    const QStringList lines = labelsText.split('\r', Qt::SkipEmptyParts);
     for (const QString &line : lines) {
-        // 匹配每行中的每个 [ ... ] 块
+
         QRegularExpression re(R"(\[([^\]]*)\])");
         QRegularExpressionMatchIterator it = re.globalMatch(line);
 
@@ -2268,7 +2268,7 @@ QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     result["rows"] = rowsArray;
     return result;
 }
-void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJsonArray &prompt_keyboard,const QString &openid,QString &mb)
+void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJsonArray &prompt_keyboard,const QString &openid,QString &mb)
 {
     QString keyboard_data = extractBetween(text,"#b:#","#b:#");
     if(!keyboard_data.isEmpty())
@@ -2340,17 +2340,24 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonObject &keyboard,QJ
         }
         if(isok) break;
     }
-    if (keyboard.isEmpty())        // 如果当前 keyboard 为空（没有任何键值对）
+
+    if (keyboard.isUndefined() || keyboard.isNull() || (keyboard.isObject() && keyboard.toObject().isEmpty()))
     {
         QJsonParseError error;
         QJsonDocument doc = QJsonDocument::fromJson(keyboard_data.toUtf8(), &error);
-        if (error.error == QJsonParseError::NoError && doc.isObject())
+        if (error.error == QJsonParseError::NoError)
         {
-            keyboard = doc.object();   // 解析成功，赋值给 keyboard
+            if (doc.isObject()) {
+                keyboard = doc.object();
+            } else if (doc.isArray()) {
+                keyboard = doc.array();  // 这就兼容了你说的“实际是数组”的情况
+            } else {
+                keyboard = parseLabelsToKeyboard(keyboard_data);
+            }
         }
         else
         {
-            keyboard =parseLabelsToKeyboard(keyboard_data);
+            keyboard = parseLabelsToKeyboard(keyboard_data);
         }
     }
     //小尾巴
@@ -2605,7 +2612,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     }
     if(text.contains("[get url") || text.contains("[post url")){
         auto [index, realMsgId] = splitWrappedMsgId(msgid);
-        QJsonObject keyboard;
+        QJsonValue keyboard;
         QJsonArray prompt_keyboard;
         QString mb;
         QString textB = normalizeNewlinesToCR(newtext); //处理换行
@@ -2645,7 +2652,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     }
 
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    QJsonObject keyboard;
+    QJsonValue keyboard;
     QJsonArray prompt_keyboard;
     QString message_reference,mb;
 
@@ -2755,7 +2762,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     ctx.openid = openid;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index = index;
-    QJsonObject keyboard;
+    QJsonValue keyboard;
     QJsonArray prompt_keyboard;
     QString message_reference,mb;
     QString textB = normalizeNewlinesToCR(newtext); //处理换行
@@ -2829,7 +2836,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
 }
 QString QQBotClient::send_messagesAsync2(int type, const QString &openid,const QString &pname, QString &text,
                                         const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,const QString &mb2,
-                                         const QJsonArray &prompt_keyboard,const QJsonObject &keyboard)
+                                         const QJsonArray &prompt_keyboard,const QJsonValue  &keyboard)
 {
     QString mb=mb2;
     auto now = std::chrono::steady_clock::now();
@@ -2981,20 +2988,38 @@ QString QQBotClient::send_messages_ark(int type, const QString &openid,const QSt
     }
 }
 
-QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
-                                            const QJsonObject keyboard,const QString &message_reference,
+QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
+                                            const QJsonValue &keyboard,const QString &message_reference,
                                             const QString &msgid,bool is_wakeup,int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     json["msg_type"] = 2;
     json["markdown"] = QJsonObject{{"content", markdown}};
     json["noref"] = noref;
-    if (keyboard.contains("keyboard")){
-        json["keyboard"] = keyboard["keyboard"];
-    }else if(keyboard.contains("content")){
-        json["keyboard"] = keyboard;
-    }else if(keyboard.contains("rows")){
-        json["keyboard"] = QJsonObject{{"content",keyboard}};
+    if (keyboard.isArray()) {
+        QJsonArray arr = keyboard.toArray();
+        // 根据你的完整示例，标准格式是 {"content":{"rows": arr}}
+        json["keyboard"] = QJsonObject{
+            {"content", QJsonObject{{"rows", arr}}}
+        };
+    }
+    // 如果传入的是对象，保留你原来的判断逻辑
+    else if (keyboard.isObject()) {
+        QJsonObject obj = keyboard.toObject();
+        if (obj.contains("keyboard")) {
+            json["keyboard"] = obj["keyboard"];
+        } else if (obj.contains("content")) {
+            json["keyboard"] = obj;
+        } else if (obj.contains("rows")) {
+            json["keyboard"] = QJsonObject{{"content", obj}};
+        } else if (obj.contains("buttons")) {
+            json["keyboard"] = QJsonObject{
+                {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
+            };
+        } else {
+            // 兜底：默认忽略或按原样赋值
+            json["keyboard"] = obj;
+        }
     }
 
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
@@ -3008,8 +3033,8 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
               });
     return QString();
 }
-QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray prompt_keyboard,
-                                            const QJsonObject keyboard,const QString &message_reference,
+QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
+                                            const QJsonValue  &keyboard,const QString &message_reference,
                                             const QString &msgid,bool is_wakeup, int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
@@ -3023,12 +3048,30 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
 
     json["markdown"] = dom.object();
     json["noref"] = noref;
-    if (keyboard.contains("keyboard")){
-        json["keyboard"] = keyboard["keyboard"];
-    }else if(keyboard.contains("content")){
-        json["keyboard"] = keyboard;
-    }else if(keyboard.contains("rows")){
-        json["keyboard"] = QJsonObject{{"content",keyboard}};
+    if (keyboard.isArray()) {
+        QJsonArray arr = keyboard.toArray();
+        // 根据你的完整示例，标准格式是 {"content":{"rows": arr}}
+        json["keyboard"] = QJsonObject{
+            {"content", QJsonObject{{"rows", arr}}}
+        };
+    }
+    // 如果传入的是对象，保留你原来的判断逻辑
+    else if (keyboard.isObject()) {
+        QJsonObject obj = keyboard.toObject();
+        if (obj.contains("keyboard")) {
+            json["keyboard"] = obj["keyboard"];
+        } else if (obj.contains("content")) {
+            json["keyboard"] = obj;
+        } else if (obj.contains("rows")) {
+            json["keyboard"] = QJsonObject{{"content", obj}};
+        } else if (obj.contains("buttons")) {
+            json["keyboard"] = QJsonObject{
+                {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
+            };
+        } else {
+            // 兜底：默认忽略或按原样赋值
+            json["keyboard"] = obj;
+        }
     }
 
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);

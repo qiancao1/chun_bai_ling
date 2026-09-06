@@ -206,8 +206,6 @@ void showAutoCloseMessageBox(const QString &title, const QString &text, int time
     QTimer::singleShot(timeoutMs, msgBox, &QMessageBox::close);
 }
 
-
-
 /**
  * @brief 将字符串中的所有换行序列统一替换为单个 '\r'
  * @param input 原始字符串（可能包含 \r\n, \n, \r 等）

@@ -20,6 +20,7 @@ bool ButtonData::fromJson(const QJsonObject &obj) {
     actionType = action["type"].toInt(0);
     actionData = action["data"].toString();
     unsupportTips = action["unsupport_tips"].toString();
+    groups = action["group_id"].toString();
     reply = action["reply"].toBool(false);
     enter = action["enter"].toBool(false);
     anchor = action["anchor"].toInt(0);
@@ -52,7 +53,16 @@ bool ButtonData::fromJson(const QJsonObject &obj) {
 QJsonObject ButtonData::toJson() const {
     QJsonObject result;
     if (!buttonId.isEmpty()) result["id"] = buttonId;
+    else{
+        QUuid uuid = QUuid::createUuid();
+        result["id"] = uuid.toString(QUuid::WithoutBraces);
+    }
+
+    if (!groups.isEmpty()) result["group_id"] = groups;
+
+
     QJsonObject renderData;
+
     renderData["label"] = label;
     renderData["visited_label"] = visitedLabel;
     renderData["style"] = style;
@@ -178,25 +188,28 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     : QWidget(parent), m_currentButton(nullptr)
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(15);
-
+    mainLayout->setSpacing(4);
+    mainLayout->setContentsMargins(0,0,0,0);
     // 使用 QTabWidget 分组，更美观
     QTabWidget *tabWidget = new QTabWidget(this);
 
     // ========== 基础属性页 ==========
     QWidget *basicPage = new QWidget;
+    QVBoxLayout *mainLay = new QVBoxLayout(basicPage);
+    mainLay->setContentsMargins(0,0,0,0);
     QFormLayout *basicLayout = new QFormLayout(basicPage);
     basicLayout->setSpacing(4);
     basicLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    basicLayout->setContentsMargins(0,0,0,0);
     m_buttonIdEdit = new QLineEdit;
     basicLayout->addRow("按钮ID (id):", m_buttonIdEdit);
 
     m_labelEdit = new QLineEdit;
     basicLayout->addRow("文字 (label):", m_labelEdit);
     m_dataEdit = new QLineEdit;
-    basicLayout->addRow("点击后文字 (action.data):", m_dataEdit);
+    basicLayout->addRow("点击后文字:", m_dataEdit);
     m_visitedLabelEdit = new QLineEdit;
-    basicLayout->addRow("其他标签 (visited_label):", m_visitedLabelEdit);
+    basicLayout->addRow("回调后显示:", m_visitedLabelEdit);
 
     m_styleCombo = new QComboBox;
     m_styleCombo->addItem("灰色线框 (0)", 0);
@@ -206,7 +219,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     m_styleCombo->addItem("蓝低白文本 (4)", 4);
     m_styleCombo->addItem("保留 (5)", 5);
 
-    basicLayout->addRow("按钮样式 (style):", m_styleCombo);
+    basicLayout->addRow("按钮样式:", m_styleCombo);
 
     m_actionTypeCombo = new QComboBox;
     m_actionTypeCombo->addItem("跳转按钮 (0)", 0);
@@ -214,24 +227,33 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     m_actionTypeCombo->addItem("指令按钮 (2)", 2);
     m_actionTypeCombo->addItem("mqqapi (3)", 3);
     m_actionTypeCombo->addItem("订阅 (4)", 4);
-    basicLayout->addRow("操作类型 (action.type):", m_actionTypeCombo);
+    basicLayout->addRow("操作类型:", m_actionTypeCombo);
 
 
 
     m_unsupportTipsEdit = new QLineEdit;
-    basicLayout->addRow("不支持提示 (unsupport_tips):", m_unsupportTipsEdit);
+    m_groups = new QLineEdit;
 
-    m_replyCheck = new QCheckBox("引用回复 (reply)");
-    m_enterCheck = new QCheckBox("自动发送 (enter)");
-    m_anchorCheck = new QCheckBox("唤起选图器 (anchor)");
-    basicLayout->addRow(m_replyCheck,m_enterCheck);
-    basicLayout->addRow(m_anchorCheck);
+    basicLayout->addRow("不支持提示:", m_unsupportTipsEdit);
+    basicLayout->addRow("按钮组ID:", m_groups);
+    m_replyCheck = new QCheckBox("引用回复");
+    m_enterCheck = new QCheckBox("自动发送");
+    m_anchorCheck = new QCheckBox("唤起选图器");
 
+    QHBoxLayout *HbasicLayout = new QHBoxLayout();
+    HbasicLayout->addWidget(m_replyCheck);
+    HbasicLayout->addWidget(m_enterCheck);
+    HbasicLayout->addWidget(m_anchorCheck);
+    HbasicLayout->addStretch();
+    mainLay->addLayout(basicLayout);
+    mainLay->addLayout(HbasicLayout);
     tabWidget->addTab(basicPage, "基础");
 
     // ========== 权限页 ==========
     QWidget *permPage = new QWidget;
     QFormLayout *permLayout = new QFormLayout(permPage);
+    permPage->setContentsMargins(0,0,0,0);
+    permLayout->setContentsMargins(0,0,0,0);
     permLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_permissionTypeCombo = new QComboBox;
     m_permissionTypeCombo->addItem("指定用户 (0)", 0);
@@ -255,6 +277,8 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     // ========== 模态框页 ==========
     QWidget *modalPage = new QWidget;
     QFormLayout *modalLayout = new QFormLayout(modalPage);
+    modalPage->setContentsMargins(0,0,0,0);
+    modalLayout->setContentsMargins(0,0,0,0);
     modalLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_modalContentEdit = new QLineEdit;
     m_modalContentEdit->setPlaceholderText("弹窗内容，最多40字符");
@@ -300,6 +324,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     connectField(m_actionTypeCombo);
     connectField(m_dataEdit);
     connectField(m_unsupportTipsEdit);
+    connectField(m_groups);
     connectField(m_replyCheck);
     connectField(m_enterCheck);
     connectField(m_anchorCheck);
@@ -328,6 +353,7 @@ void ButtonPropertyPanel::clearSelection() {
     m_visitedLabelEdit->clear();
     m_dataEdit->clear();
     m_unsupportTipsEdit->clear();
+    m_groups->clear();
     m_replyCheck->setChecked(false);
     m_enterCheck->setChecked(false);
     m_anchorCheck->setChecked(false);
@@ -350,6 +376,7 @@ void ButtonPropertyPanel::updateUiFromCurrentButton() {
     m_visitedLabelEdit->setText(data.visitedLabel);
     m_dataEdit->setText(data.actionData);
     m_unsupportTipsEdit->setText(data.unsupportTips);
+    m_groups->setText(data.groups);
     m_replyCheck->setChecked(data.reply);
     m_enterCheck->setChecked(data.enter);
     m_anchorCheck->setChecked(data.anchor > 0);
@@ -390,6 +417,7 @@ void ButtonPropertyPanel::emitDataChanged() {
     data.actionType = m_actionTypeCombo->currentData().toInt();
     data.actionData = m_dataEdit->text();
     data.unsupportTips = m_unsupportTipsEdit->text();
+    data.groups = m_groups->text();
     data.reply = m_replyCheck->isChecked();
     data.enter = m_enterCheck->isChecked();
     data.anchor = m_anchorCheck->isChecked() ? 1 : 0;
@@ -424,11 +452,12 @@ ButtonEditor::~ButtonEditor() {}
 
 void ButtonEditor::initUI() {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(5, 5, 5, 5);
-    mainLayout->setSpacing(10);
+    mainLayout->setContentsMargins(2, 2, 2, 2);
+    mainLayout->setSpacing(4);
 
     // 主水平布局（左右分割）
     QHBoxLayout *mainHorizontal = new QHBoxLayout();
+    mainHorizontal->setContentsMargins(0,0,0,0);
     mainLayout->addLayout(mainHorizontal, 1);
 
     // ========== 左侧区域（垂直布局） ==========
@@ -460,7 +489,7 @@ void ButtonEditor::initUI() {
     m_scrollArea->setStyleSheet("QScrollArea { border: 1px solid #cccccc; border-radius: 4px; }");
     m_scrollContent = new QWidget();
     m_rowsLayout = new QVBoxLayout(m_scrollContent);
-    m_rowsLayout->setContentsMargins(2, 2, 2, 2);
+    m_rowsLayout->setContentsMargins(0, 0, 0, 0);
     m_rowsLayout->setSpacing(2);
     m_rowsLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     m_scrollContent->setLayout(m_rowsLayout);
@@ -472,6 +501,7 @@ void ButtonEditor::initUI() {
 
     // ========== 右侧属性面板 ==========
     m_propertyPanel = new ButtonPropertyPanel(this);
+
     m_propertyPanel->setMinimumWidth(400);
     // 不限制最大宽度，让它随窗口拉伸
     mainHorizontal->addWidget(m_propertyPanel, 2);   // 右侧占2份
@@ -479,7 +509,10 @@ void ButtonEditor::initUI() {
     // ========== 底部 JSON 区域（跨左右，放在主垂直布局底部） ==========
     QWidget *bottomWidget = new QWidget(this);
     QVBoxLayout *bottomLayout = new QVBoxLayout(bottomWidget);
+    bottomLayout->setContentsMargins(0,0,0,0);
     QHBoxLayout *jsonBtnLayout = new QHBoxLayout();
+
+    jsonBtnLayout->setContentsMargins(0,0,0,0);
     QPushButton *genBtn = new QPushButton("📋 生成JSON", this);
     QPushButton *genBtn_min = new QPushButton("📋 生成JSON(小按钮)", this);
     QPushButton *loadBtn = new QPushButton("📂 从JSON加载", this);
@@ -751,7 +784,7 @@ ButtonData ButtonEditor::getDefaultButtonData(int id) const {
     data.actionType = 2;
     data.permissionType = 2;
     data.actionData = QString("data_%1").arg(id);
-    data.unsupportTips = "不支持";
+    data.unsupportTips = "QQ版本不支持";
     return data;
 }
 

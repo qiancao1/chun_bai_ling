@@ -117,7 +117,7 @@ public:
 
     QString send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
                                 const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
-                                const QJsonArray &prompt_keyboard, const QJsonObject &keyboard);
+                                const QJsonArray &prompt_keyboard, const QJsonValue &keyboard);
 
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
@@ -129,13 +129,13 @@ public:
 
 
 
-    QString send_messages_markdown(int type, const QString &openid, const QString &markdown, const QJsonArray prompt_keyboard,
-                                   const QJsonObject keyboard, const QString &message_reference,
+    QString send_messages_markdown(int type, const QString &openid, const QString &markdown, const QJsonArray &prompt_keyboard,
+                                   const QJsonValue &keyboard, const QString &message_reference,
                                    const QString &msgid, bool is_wakeup=false, int seq_index=0, const MessageLogContext ctx = MessageLogContext(), bool noref=false);
 
 
-    QString send_messages_mb(int type, const QString &openid, const QString &markdown, const QJsonArray prompt_keyboard,
-                             const QJsonObject keyboard, const QString &message_reference,
+    QString send_messages_mb(int type, const QString &openid, const QString &markdown, const QJsonArray &prompt_keyboard,
+                             const QJsonValue &keyboard, const QString &message_reference,
                              const QString &msgid, bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
 
 
@@ -225,7 +225,7 @@ private:
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
     void addmsglog(const QString &response, int index, const QString &pname, const QString &text, qint64 now_us, int type, const QString &openid);
-    void bianl(int type, int log, QString &text, QJsonObject &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
+    void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();
     void sendHeartbeat();

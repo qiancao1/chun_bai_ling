@@ -150,11 +150,11 @@ void QQBotClient::start()
         }
 
         m_accessToken = newToken;
-        int expiresIn = obj.value("expires_in").toInt(7200);
+        int expiresIn = obj.value("expires_in").toString().toInt();
         qint64 now = QDateTime::currentSecsSinceEpoch();
         m_tokenExpireTime = now + expiresIn - 60;
-        AppendEventLog(QString("Token 刷新成功，有效期至 %1")
-                           .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+        AppendEventLog(QString("%1 Token 刷新->%2")
+                           .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
         calls();
     });
 
@@ -279,10 +279,10 @@ bool QQBotClient::refreshAccessToken(bool qz)
     }
     m_accessToken2=newToken;
     std::swap(m_accessToken2,m_accessToken); //防止多线程
-    int expiresIn = obj.value("expires_in").toInt(7200);
+    int expiresIn = obj.value("expires_in").toString().toInt();
     m_tokenExpireTime = now + expiresIn - 60;
-    AppendEventLog(QString("Token 刷新成功，有效期至 %1")
-                  .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+    AppendEventLog(QString("%1 Token 刷新->%2")
+                       .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
      suo =false;
     return true;
 }
@@ -325,10 +325,10 @@ void QQBotClient::onRefreshReplyFinished()
         }
         m_accessToken2=newToken;
         std::swap(m_accessToken2,m_accessToken); //防止多线程
-        int expiresIn = obj.value("expires_in").toInt(7200);
+        int expiresIn = obj.value("expires_in").toString().toInt();
         m_tokenExpireTime = now + expiresIn - 60;
-        AppendEventLog(QString("Token 刷新成功，有效期至 %1")
-                           .arg(QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
+        AppendEventLog(QString("%1 Token 刷新->%2")
+                           .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
         return ;
     });
 
