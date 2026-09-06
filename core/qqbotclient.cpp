@@ -1788,6 +1788,10 @@ void QQBotClient::fetchSelfInfo()
         QString uid = obj.value("id").toString();
         QString nickname = obj.value("username").toString();
         QString avatarUrl = obj.value("avatar").toString();
+        QString share_url = obj.value("share_url").toString();
+
+        m_info->botqq= extractBetween(share_url,"robot_uin=","&");
+        //qDebug() << obj;
         if (uid.isEmpty()) {
             m_info->nickname = "请检查ip白名单";
             AppendEventLog(QString::fromUtf8(data) ,0xff);

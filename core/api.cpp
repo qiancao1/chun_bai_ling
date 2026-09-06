@@ -199,7 +199,7 @@ QString convertMarkdownLinksToXml(const QString &input)
             {
                 QString xmlTag = QString("[%1](qagent://aio/inlinecmd?command=%2)")
                 .arg(showText,encodedUrl);
-                qDebug() <<xmlTag;
+                //qDebug() <<xmlTag;
                 output.append(xmlTag);
             }else{
 
@@ -2037,7 +2037,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
                 QString cached = cache_db->get(cacheKey);
                 if (!cached.isEmpty()) {
-                    qDebug() <<cached;
+                    //qDebug() <<cached;
                     int timeIdx = cached.lastIndexOf(",Time=");
                     if (timeIdx != -1) {
                         qint64 expire = cached.mid(timeIdx + 6).toLongLong();
@@ -2182,7 +2182,7 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
 QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     QJsonArray rowsArray;
 
-    qDebug() << labelsText;
+    //qDebug() << labelsText;
     const QStringList lines = labelsText.split('\r', Qt::SkipEmptyParts);
     for (const QString &line : lines) {
 

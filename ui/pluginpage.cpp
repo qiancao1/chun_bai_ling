@@ -557,16 +557,23 @@ QString PluginPage::anzpip(const QString &reqPath)
         }
         QMessageBox::information(this, "提示", "pip 修复成功。");
     }
+    // 构造要执行的 pip 安装命令（注意转义内部引号）
+    QString pipCmd = QString(
+                         "\"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
+                         ).arg(pythonExe, reqPath);
 
-    QString cmdLine = QString(
-                          "cmd /c start \"pip install\" cmd /k \"echo 欢迎使用插件依赖安装工具 & echo 提示： "
+    // 构建完整的 cmd /k 命令，/k 会保持窗口打开
+    QString fullCmd = QString(
+                          "echo 欢迎使用插件依赖安装工具 & echo 提示： "
                           "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
                           "& echo   - \"Successfully installed\" 表示新库安装成功 "
-                          "& echo. & \"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口.\""
-                          ).arg(pythonExe, reqPath);
+                          "& echo. & %1 & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口."
+                          ).arg(pipCmd);
 
-
-    return QProcess::startDetached(cmdLine)? "" :"无法启动终端窗口，请检查系统环境！";
+    // 直接启动 cmd.exe，带 /k 参数，让它在新的终端窗口中执行
+    QStringList args;
+    args << "/k" << fullCmd;
+    return QProcess::startDetached("cmd", args) ? "" : "无法启动终端窗口，请检查系统环境！";
 }
 void PluginPage::onPluginRowsMoved(const QModelIndex &parent, int start, int end,
                                    const QModelIndex &destination, int row)
@@ -813,7 +820,7 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     }
     case MatchType::event:
 
-        return ev.type == rule.key;
+        return ev.msgType == rule.key;
     }
     return false;
 }
