@@ -706,18 +706,19 @@ std::future<QString> uploadimg(const QString &filePath)
     ctx->promise = promise;
 
     // 回调链调度器
-    std::function<void(int)> tryNext;
-    tryNext = [ctx, &tryNext](int index) {
+
+    auto tryNext = std::make_shared<std::function<void(int)>>();
+    *tryNext = [ctx, tryNext](int index) {
         if (index >= 6) {
             ctx->promise->set_value(QString());
             return;
         }
 
-        auto onDone = [ctx, &tryNext, index](const QString &result) {
+        auto onDone = [ctx, tryNext, index](const QString &result) {
             if (!result.isEmpty()) {
                 ctx->promise->set_value(result);
             } else {
-                tryNext(index + 1);
+                (*tryNext)(index + 1);
             }
         };
 
@@ -750,7 +751,7 @@ std::future<QString> uploadimg(const QString &filePath)
         }
     };
 
-    tryNext(0);
+    (*tryNext)(0);
     return future;
 }
 

@@ -114,7 +114,7 @@ void QQBotClient::start()
     };
 
     qint64 now = QDateTime::currentSecsSinceEpoch();
-    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
+    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now)
     {
         calls();
         return ;
@@ -152,7 +152,7 @@ void QQBotClient::start()
         m_accessToken = newToken;
         int expiresIn = obj.value("expires_in").toString().toInt();
         qint64 now = QDateTime::currentSecsSinceEpoch();
-        m_tokenExpireTime = now + expiresIn - 60;
+        m_tokenExpireTime = now + expiresIn-50;
         AppendEventLog(QString("%1 Token 刷新->%2")
                            .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
         calls();
@@ -239,7 +239,7 @@ bool QQBotClient::refreshAccessToken(bool qz)
     }
     qint64 now = QDateTime::currentSecsSinceEpoch();
     if(!qz){
-        if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
+        if (!m_accessToken.isEmpty() && m_tokenExpireTime > now)
             return true;
     }
     suo = true;
@@ -280,7 +280,7 @@ bool QQBotClient::refreshAccessToken(bool qz)
     m_accessToken2=newToken;
     std::swap(m_accessToken2,m_accessToken); //防止多线程
     int expiresIn = obj.value("expires_in").toString().toInt();
-    m_tokenExpireTime = now + expiresIn - 60;
+    m_tokenExpireTime = now + expiresIn-50;
     AppendEventLog(QString("%1 Token 刷新->%2")
                        .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
      suo =false;
@@ -291,7 +291,7 @@ void QQBotClient::onRefreshReplyFinished()
 {
     qint64 now = QDateTime::currentSecsSinceEpoch();
 
-    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now + 60)
+    if (!m_accessToken.isEmpty() && m_tokenExpireTime > now)
         return ;
 
     if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
@@ -326,7 +326,7 @@ void QQBotClient::onRefreshReplyFinished()
         m_accessToken2=newToken;
         std::swap(m_accessToken2,m_accessToken); //防止多线程
         int expiresIn = obj.value("expires_in").toString().toInt();
-        m_tokenExpireTime = now + expiresIn - 60;
+        m_tokenExpireTime = now + expiresIn-50;
         AppendEventLog(QString("%1 Token 刷新->%2")
                            .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
         return ;

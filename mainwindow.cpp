@@ -72,11 +72,17 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.15.61"
-#define APP_BUILD_NUMBER 61
+#define APP_VERSION_STR "v1.2.16.62"
+#define APP_BUILD_NUMBER 62
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.16.62 (2026-09-07)
+- 修复 py插件订阅事件
+- 优化 token 获取 日志双击查看完整日志
+- 增加 聊天室菜单 增加踢人 禁言 等菜单
+- 修复 因多线程回调 某指针被释放的问题
+
 ## v1.2.15.61 (2026-09-05)
 - 优化一些 非bug 但是看起来有问题的东西
 - 修复 一个大小写导致的缓存 过期了 还在使用的 bug
@@ -326,6 +332,7 @@ quint32 getLastTimestamp(const UserStat &stat) {
     return stat.buffer[lastIdx];
 }
 quint32 getTimestampMs();
+//刷屏检测
 void cleanInactiveUsers(QHash<int,UserStat> *hash, quint32 now, quint32 expireMs) {
     if (!hash) return;
     QMutableHashIterator<int,UserStat> it(*hash);
@@ -410,10 +417,19 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
         quint32 now = getTimestampMs();
         for(auto &acc : m_accounts)
         {
+            int appid = acc->appid_int;
+            if(g_botdb.contains(appid)){
+                g_botdb[appid]->cleanExpiredJojiyzCache(5,appid);
+            }
+            if(m_botClients.contains(appid)){
+                m_botClients[appid]->onRefreshReplyFinished();
+            }
             cleanInactiveUsers(&acc->stat, now, 30 * 60 * 1000); // 30分钟
         }
+
+
     });
-    cleanTimer->start(60000); // 每60秒检查一次
+    cleanTimer->start(30000); // 每30秒检查一次
 
 }
 

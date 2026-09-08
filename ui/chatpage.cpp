@@ -1629,9 +1629,12 @@ void ChatPage::showMessageContextMenu(const QPoint &pos)
     QAction *at = menu.addAction("艾特他");
     QAction *hf = menu.addAction("回复");
     QAction *ch = menu.addAction("撤回");
-    QAction *sc = menu.addAction("太长了删除");
+    QAction *jy = menu.addAction("禁言");
+    QAction *sc = menu.addAction("删除信息");
     QAction *copyTextAction = menu.addAction("复制文本");
     QAction *copyAllAction = menu.addAction("复制全部内容");
+    menu.addSeparator();
+    QAction *tc = menu.addAction("踢出");
 
     QAction *selectedAction = menu.exec(msgListView->viewport()->mapToGlobal(pos));
     if (selectedAction == copyTextAction) {
@@ -1673,6 +1676,72 @@ void ChatPage::showMessageContextMenu(const QPoint &pos)
        }
    } else if (selectedAction == sc) {
        msgModel->set_sh(index);
+   }else if (selectedAction == tc) {
+       QString content = index.data(MessageListModel::SenderRole).toString();
+       if (content.isEmpty()) {
+           QMessageBox::warning(this, "移出失败", "被移出人id为空");
+           return;
+       }
+
+       if (m_botClients.contains(m_appid)) {
+           bool ok = false;
+           int seconds = QInputDialog::getInt(this,
+                                              "确认踢出",
+                                              "确认踢出 输入1 确认",
+                                              1,    // 默认值
+                                              0,     // 最小值
+                                              86400, // 最大值（可调整）
+                                              1,     // 步长
+                                              &ok);
+           if (!ok || seconds!=1) {
+               return;
+           }
+           QQBotClient* c = m_botClients[m_appid];
+           c->del_members(currentContactId, content, false,
+                                          [](const QString& rsp, auto) {
+
+                                           QMetaObject::invokeMethod(qApp,[rsp](){
+                                               if (rsp == "{}")
+                                                   QMessageBox::warning(nullptr, "移出成功", "移出成功");
+                                               else
+                                                   QMessageBox::warning(nullptr, "移出失败", "移出失败 返回:" + rsp);
+                                           }) ;
+
+                                        });
+       }
+   }else if (selectedAction == jy) {
+       QString content = index.data(MessageListModel::SenderRole).toString();
+       if (content.isEmpty()) {
+           QMessageBox::warning(this, "禁言失败", "被禁言人id为空");
+           return;
+       }
+
+       if (m_botClients.contains(m_appid)) {
+
+           bool ok = false;
+           int seconds = QInputDialog::getInt(this,
+                                              "禁言设置",
+                                              "请输入禁言秒数（0表示解除禁言）：",
+                                              60,    // 默认值
+                                              0,     // 最小值
+                                              86400, // 最大值（可调整）
+                                              1,     // 步长
+                                              &ok);
+           if (!ok) {
+               return;
+           }
+
+           QQBotClient* c = m_botClients[m_appid];
+           c->setGroupRestrictChatSetting(currentContactId, content, seconds,
+                                          [](const QString& rsp, auto) {
+                                            QMetaObject::invokeMethod(qApp,[rsp](){
+                                              if (rsp == "{}")
+                                                  QMessageBox::warning(nullptr, "禁言结果", "禁言成功");
+                                              else
+                                                  QMessageBox::warning(nullptr, "禁言结果", "禁言失败 返回:" + rsp);
+                                            }) ;
+                                          });
+       }
    }
 }
 

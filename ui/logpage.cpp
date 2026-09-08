@@ -598,13 +598,16 @@ void LogPage::setupUi()
         connect(view, &QTableView::doubleClicked,
                 this, [this, view](const QModelIndex &index) {
                     if (!index.isValid()) return;
-                    int row = index.row();
 
-                    QString content = getFieldText(row, Field_Content);
-                    QString direction = getFieldText(row, Field_Direction);
+                    QStringList parts;
+                    for (int col = 0; col < m_model->columnCount(); ++col) {
+                        QModelIndex idx = m_model->index(index.row(), col);
+                        parts << m_model->data(idx, Qt::DisplayRole).toString();
+                    }
 
-                    QString text = content + "\n\n-----------------------------------\n\n" + direction;
-                    QMessageBox::information(this, "消息内容", text);
+
+
+                    QMessageBox::information(this, "消息内容", parts.join("\n----------------\n"));
                 });
 
         // 右键菜单（简化版，因为黑名单等需要额外数据，只保留复制和查看）
@@ -722,10 +725,13 @@ void LogPage::setupUi()
                 }
                 QApplication::clipboard()->setText(parts.join(" | "));
             } else if (selected == viewContent) {
-                QString content = getFieldText(index.row(), Field_Content);
-                QString direction = getFieldText(index.row(), Field_Direction);
-                QString text = content + "\n\n-----------------------------------\n\n" + direction;
-                QMessageBox::information(this, "消息内容", text);
+                QStringList parts;
+                for (int col = 0; col < m_model->columnCount(); ++col) {
+                    QModelIndex idx = m_model->index(index.row(), col);
+                    parts << m_model->data(idx, Qt::DisplayRole).toString();
+                }
+
+                QMessageBox::information(this, "消息内容", parts.join("\n----------------\n"));
             }else if(ch == selected)
             {
                 QModelIndex idx = m_model->index(index.row(), 0);

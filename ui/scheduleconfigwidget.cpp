@@ -896,15 +896,7 @@ void ScheduleConfigWidget::jiancha() {
 
     if (定时检查变量 == dqsj) return;
     定时检查变量 = dqsj;
-    for (auto &acc : m_accounts){
-        int appid = acc->appid_int;
-        if(g_botdb.contains(appid)){
-            g_botdb[appid]->cleanExpiredJojiyzCache(5,appid);
-        }
-        if(m_botClients.contains(appid)){
-            m_botClients[appid]->onRefreshReplyFinished();
-        }
-    }
+
     // 收集所有 appid
     QList<int> appids;
     {

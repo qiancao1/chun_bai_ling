@@ -2714,14 +2714,10 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
         QString textA = forbidden->filterText(newtext);
         response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
-        addmsglog(response,index,pname,newtext,now_us,type,openid);
-        return response;
     }
     if(!mode && m_info->markdown || mode && sendType==1)
     {
-
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-
         QString textA = forbidden->filterText(newtext);
         response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
     }else{
