@@ -1800,7 +1800,7 @@ void AppWindow::removeimg()
         if (msg.contains("content") && msg["content"].isArray()) {
             QJsonArray content = msg["content"].toArray();
             QJsonArray newContent;
-            for (const QJsonValue &val : content) {
+            for (const QJsonValue &val : std::as_const(content)) {
                 QJsonObject item = val.toObject();
                 if (item["type"].toString() != "image_url") {
                     newContent.append(item);

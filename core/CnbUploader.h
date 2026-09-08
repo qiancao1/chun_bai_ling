@@ -744,7 +744,7 @@ std::future<QString> uploadimg(const QString &filePath)
             doRichMediaUpload(ctx->filePath , onDone);
             break;
         case 5: // CDN
-            uploadToMhimgAsync(ctx->fileData, ctx->filePath , onDone);
+            uploadToMhimgAsync(ctx->fileData, ctx->filePath, onDone);
             break;
         default:
             onDone(QString());

@@ -354,6 +354,14 @@ int main(int argc, char *argv[]) {
         //QString uploadToMhimg(const QString &filePath, QString *errorMsg);
         //QString err;
         //qDebug() << uploadToMhimg("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png",&err);
+
+        //void uploadToMhimgAsync(const QByteArray &imageData,
+        //                        const QString &originalFileName,
+        //                        std::function<void(QString)> callback);
+
+        //uploadToMhimgAsync(R_file("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png"),"纳西妲.png",[](const QString& url){
+        //    qDebug() << url;
+        //});
         ret = a.exec();
         框架退出=true;
         for(auto &c :m_botClients)
