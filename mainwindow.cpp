@@ -72,12 +72,12 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.16.62"
-#define APP_BUILD_NUMBER 62
+#define APP_VERSION_STR "v1.2.16.63"
+#define APP_BUILD_NUMBER 63
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.16.62 (2026-09-09)
+## v1.2.16.63 (2026-09-09)
 - 修复 部分数据没传递到json里面
 - 增加 C Go 两种语言的SDK
 

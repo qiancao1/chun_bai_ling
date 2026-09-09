@@ -38,6 +38,7 @@ typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appi
 
 typedef const char* (*GetPluginInfoFunc)(char*,UniversalApiCallback);
 typedef void (*OnMessageFunc)(const char*);
+typedef void (*OnMessageFunc2)(const char*,qint64);
 typedef void (*OnFunc0)();
 
 
@@ -57,7 +58,20 @@ struct Rule {
     bool caseSensitive = true;
     QRegularExpression regex;   // 多线程安全，只读使用
 };
-
+struct Rule_js {
+    MatchType type;
+    QString key;            // 匹配值
+    QString fun;    // 已解析的 Python 可调用对象
+    bool caseSensitive = true;
+    QRegularExpression regex;   // 多线程安全，只读使用
+};
+struct Rule_Dll {
+    MatchType type;
+    QString key;            // 匹配值
+    qint64 fun;    // 已解析的 Python 可调用对象
+    bool caseSensitive = true;
+    QRegularExpression regex;   // 多线程安全，只读使用
+};
 struct PythonPluginobj {
     //py::dict globals;
 
@@ -75,16 +89,19 @@ struct JsPlugin {
     QString entryScript;           // main.js 完整路径
     bool isReady = false;          // 是否已就绪（收到 ready 消息）
     QJsonObject pendingRequest;    // 如果请求响应模式需要，可以暂存
+    QList<Rule_js> rules;      // 所有规则列表（替代原来的 equals hash）
 };
 
 
 struct DLLPluginobj {
     GetPluginInfoFunc getPluginInfo;
     OnMessageFunc onMessage;
+    OnMessageFunc2 onMessage2;
     OnFunc0 onEnable;
     OnFunc0 onDisable;
     OnFunc0 onUnload;
     OnFunc0 onSet;
+    QList<Rule_Dll> rules;      // 所有规则列表（替代原来的 equals hash）
 };
 struct PluginInfo {
     QString id;

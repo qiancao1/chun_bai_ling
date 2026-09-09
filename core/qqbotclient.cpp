@@ -1158,25 +1158,25 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
 
     }
-    if (plugin_n2) {
 
-        d["content"] = ev.msg;
-        d["id"] = ev.msgId;
 
-        payload["d"] = d;
-        payload["user_id"] = ev.user_int;
-        payload["appid"]=ev.appid;
-        payload["at_you"]=ev.at_you;
-        payload["type"]=ev.type;
-        payload["GroupName"]=ev.groupname;
-        payload["username"]=ev.nickname2;
-        ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        if(强制审核昵称)
-        {
-            ev.raw.replace(escapeJson(name),escapeJson(ev.nickname));
-        }
+    d["content"] = ev.msg;
+    d["id"] = ev.msgId;
 
+    payload["d"] = d;
+    payload["user_id"] = ev.user_int;
+    payload["appid"]=ev.appid;
+    payload["at_you"]=ev.at_you;
+    payload["type"]=ev.type;
+    payload["GroupName"]=ev.groupname;
+    payload["username"]=ev.nickname2;
+    ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    if(强制审核昵称)
+    {
+        ev.raw.replace(escapeJson(name),escapeJson(ev.nickname));
     }
+
+
 
 
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);

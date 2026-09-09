@@ -33,15 +33,15 @@ public:
     static NodePluginManager& instance();
 
     // 加载插件：返回元数据，若失败则包含 "error" 字段
-    QVariantMap loadPlugin(const QString& dirPath, const QString& uuid);
+    QJsonObject loadPlugin(const QString& dirPath, const QString& uuid);
     bool unloadPlugin(const QString& uuid);
     bool enablePlugin(const QString& uuid);
     bool disablePlugin(const QString& uuid);
     bool isPluginEnabled(const QString& uuid) const;
 
     // 投递事件（可跨线程，自动转主线程）
-    void postEvent(const QString& uuid, const QString& eventType, const QString &data);
-    void postEventAsync(const QString& uuid, const QString& eventType, const QString &data);
+    void postEvent(const QString& uuid, const QString& eventType, const QString &data, const QString &fun);
+    void postEventAsync(const QString& uuid, const QString& eventType, const QString &data, const QString &fun);
     // 头文件
 public:
     QString processApiRequest(const QString& uuid, const QString& method, const QJsonArray& params);

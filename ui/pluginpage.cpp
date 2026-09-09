@@ -471,45 +471,108 @@ void PluginPage::setupUi()
         text.reserve(4096);
 
         for (const auto &plugin : std::as_const(m_pluginList)) {
-            if (plugin.type != 0)  // 仅处理已启用的插件
-                continue;
-
             text.append(QStringLiteral("插件: %1\n").arg(plugin.name));
+            if (plugin.type == 0)  // 仅处理已启用的插件
+            {
 
-            if (plugin.python.rules.isEmpty()) {
-                text.append("  未注册任何指令\n");
-            } else {
-                // 1. 按类型分组
-                QMap<MatchType, QStringList> groups;
-                for (const auto &rule : plugin.python.rules) {
-                    groups[rule.type].append(rule.key);
-                }
-
-                // 2. 记录类型首次出现的顺序（保持注册顺序）
-                QList<MatchType> typeOrder;
-                for (const auto &rule : plugin.python.rules) {
-                    if (!typeOrder.contains(rule.type))
-                        typeOrder.append(rule.type);
-                }
-
-                // 3. 按顺序输出每组
-                for (auto type : typeOrder) {
-                    const auto &keys = groups[type];
-                    if (keys.isEmpty()) continue;
-
-                    QString typeStr;
-                    switch (type) {
-                    case MatchType::Equals:     typeStr = "等于"; break;
-                    case MatchType::StartsWith: typeStr = "开头"; break;
-                    case MatchType::EndsWith:   typeStr = "结尾"; break;
-                    case MatchType::Contains:   typeStr = "包含"; break;
-                    case MatchType::Regex:      typeStr = "正则"; break;
-                    case MatchType::event:      typeStr = "事件"; break;
+                if (plugin.python.rules.isEmpty()) {
+                    text.append("  未注册任何指令\n");
+                } else {
+                    // 1. 按类型分组
+                    QMap<MatchType, QStringList> groups;
+                    for (const auto &rule : plugin.python.rules) {
+                        groups[rule.type].append(rule.key);
                     }
-                    text.append(QStringLiteral("  %1: %2\n").arg(typeStr, keys.join("，")));
+                    // 2. 记录类型首次出现的顺序（保持注册顺序）
+                    QList<MatchType> typeOrder;
+                    for (const auto &rule : plugin.python.rules) {
+                        if (!typeOrder.contains(rule.type))
+                            typeOrder.append(rule.type);
+                    }
+                    // 3. 按顺序输出每组
+                    for (auto type : typeOrder) {
+                        const auto &keys = groups[type];
+                        if (keys.isEmpty()) continue;
+
+                        QString typeStr;
+                        switch (type) {
+                        case MatchType::Equals:     typeStr = "等于"; break;
+                        case MatchType::StartsWith: typeStr = "开头"; break;
+                        case MatchType::EndsWith:   typeStr = "结尾"; break;
+                        case MatchType::Contains:   typeStr = "包含"; break;
+                        case MatchType::Regex:      typeStr = "正则"; break;
+                        case MatchType::event:      typeStr = "事件"; break;
+                        }
+                        text.append(QStringLiteral("  %1: %2\n").arg(typeStr, keys.join("，")));
+                    }
                 }
+                text.append("\n");  // 插件间空行
+            }else if(plugin.type == 1 || plugin.type==2)
+            {
+                if (plugin.DLL.rules.isEmpty()) {
+                    text.append("  未注册任何指令\n");
+                } else {
+                    QList<MatchType> typeOrder;
+                    QMap<MatchType, QStringList> groups;
+                    for (const auto &rule : plugin.DLL.rules) {
+                        groups[rule.type].append(rule.key);
+                        if (!typeOrder.contains(rule.type))
+                            typeOrder.append(rule.type);
+                    }
+
+
+                    for (auto type : typeOrder) {
+                        const auto &keys = groups[type];
+                        if (keys.isEmpty()) continue;
+
+                        QString typeStr;
+                        switch (type) {
+                        case MatchType::Equals:     typeStr = "等于"; break;
+                        case MatchType::StartsWith: typeStr = "开头"; break;
+                        case MatchType::EndsWith:   typeStr = "结尾"; break;
+                        case MatchType::Contains:   typeStr = "包含"; break;
+                        case MatchType::Regex:      typeStr = "正则"; break;
+                        case MatchType::event:      typeStr = "事件"; break;
+                        }
+                        text.append(QStringLiteral("  %1: %2\n").arg(typeStr, keys.join("，")));
+                    }
+                }
+                text.append("\n");  // 插件间空行
+            }else if(plugin.type == 3)
+            {
+                if (plugin.js.rules.isEmpty()) {
+                    text.append("  未注册任何指令\n");
+                } else {
+                    // 1. 按类型分组
+                    QMap<MatchType, QStringList> groups;
+                    for (const auto &rule : plugin.js.rules) {
+                        groups[rule.type].append(rule.key);
+                    }
+                    // 2. 记录类型首次出现的顺序（保持注册顺序）
+                    QList<MatchType> typeOrder;
+                    for (const auto &rule : plugin.js.rules) {
+                        if (!typeOrder.contains(rule.type))
+                            typeOrder.append(rule.type);
+                    }
+                    // 3. 按顺序输出每组
+                    for (auto type : typeOrder) {
+                        const auto &keys = groups[type];
+                        if (keys.isEmpty()) continue;
+
+                        QString typeStr;
+                        switch (type) {
+                        case MatchType::Equals:     typeStr = "等于"; break;
+                        case MatchType::StartsWith: typeStr = "开头"; break;
+                        case MatchType::EndsWith:   typeStr = "结尾"; break;
+                        case MatchType::Contains:   typeStr = "包含"; break;
+                        case MatchType::Regex:      typeStr = "正则"; break;
+                        case MatchType::event:      typeStr = "事件"; break;
+                        }
+                        text.append(QStringLiteral("  %1: %2\n").arg(typeStr, keys.join("，")));
+                    }
+                }
+                text.append("\n");  // 插件间空行
             }
-            text.append("\n");  // 插件间空行
         }
         QMessageBox::warning(this,"",text);
         // 将结果显示到界面（请根据实际控件名替换）
@@ -761,11 +824,11 @@ int PluginPage::findPluginIndex(const QString &id) const {
 }
 void plug_tji() {
     plugin_n=2;
-    plugin_n2=false;
+
     for (int i = 0; i < m_pluginList.size(); ++i) {
 
-        if (m_pluginList[i].type == 3) plugin_n++;
-        if(m_pluginList[i].type!=0 && m_pluginList[i].enabled) plugin_n2= true;
+        if (m_pluginList[i].type == 3 && m_pluginList[i].js.rules.size()==0) plugin_n++;
+
 
     }
 
@@ -824,6 +887,57 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     }
     return false;
 }
+bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
+    QString msg = ev.msg;
+    switch (rule.type) {
+    case MatchType::Equals:
+        return rule.caseSensitive ? (msg == rule.key)
+                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+    case MatchType::StartsWith:
+        return rule.caseSensitive ? msg.startsWith(rule.key)
+                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::EndsWith:
+        return rule.caseSensitive ? msg.endsWith(rule.key)
+                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::Contains:
+        return rule.caseSensitive ? msg.contains(rule.key)
+                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+    case MatchType::Regex: {
+
+        return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
+    }
+    case MatchType::event:
+
+        return ev.msgType == rule.key;
+    }
+    return false;
+}
+bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
+    QString msg = ev.msg;
+    switch (rule.type) {
+    case MatchType::Equals:
+        return rule.caseSensitive ? (msg == rule.key)
+                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+    case MatchType::StartsWith:
+        return rule.caseSensitive ? msg.startsWith(rule.key)
+                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::EndsWith:
+        return rule.caseSensitive ? msg.endsWith(rule.key)
+                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+    case MatchType::Contains:
+        return rule.caseSensitive ? msg.contains(rule.key)
+                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+    case MatchType::Regex: {
+
+        return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
+    }
+    case MatchType::event:
+
+        return ev.msgType == rule.key;
+    }
+    return false;
+}
+
 void PluginPage::onMessageReceived(MessageEvent &msg, int i) {
     try {
         // 3.14t 下必须持锁，保持原有的 acquire
@@ -890,12 +1004,27 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             _32++;
             continue;
         }else if (m_pluginList[i].type == 3) {
-            NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text);
 
+            for (const Rule_js &rule : std::as_const(m_pluginList[i].js.rules)) {
+                if (matchRule3(rule, msg)) {
+                    NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text,rule.fun);
+                }
+            }
+            if(m_pluginList[i].js.rules.size()==0)
+                NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text,QString());
             continue;
         }
-        if(m_pluginList[i].appid.contains(msg.appid)) continue;
+
+
         try {
+            if (m_pluginList[i].DLL.onMessage2) {
+                for (const Rule_Dll &rule : std::as_const(m_pluginList[i].DLL.rules)) {
+                    if (matchRule2(rule, msg)) {
+                        m_pluginList[i].DLL.onMessage2(utf8.data(),rule.fun);
+                    }
+                }
+            }
+
             if (m_pluginList[i].DLL.onMessage) {
                 m_pluginList[i].DLL.onMessage(utf8.data());
             }
@@ -1707,8 +1836,10 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     info.DLL.onDisable = (OnFunc0)lib->resolve("on_disable");
     info.DLL.onUnload = (OnFunc0)lib->resolve("on_unload");
     info.DLL.onSet = (OnFunc0)lib->resolve("on_set");
+    info.DLL.onMessage2 = (OnMessageFunc2)lib->resolve("onMessagev2");
     if (!info.DLL.getPluginInfo) return info.path + "\n get_plugin_info 函数不存在";
     if (!info.DLL.onMessage) return info.path + "\n on_message 函数不存在";
+    info.DLL.rules.clear();
     QByteArray uuidBytes = info.uuid.toUtf8();
     uuidBytes.append('\0');
     // 假设 info_str 是 DLL 返回的 JSON 字符串
@@ -1726,6 +1857,41 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
             if (obj.contains("id")) info.id = obj["id"].toString();
             if (obj.contains("version2")) info.version_int = obj["version2"].toInt();
 
+            auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
+
+                QJsonArray ruleList = obj[typeKey].toArray();
+                for (const auto & value : std::as_const(ruleList)) {
+                    QJsonObject obj2 = value.toObject();
+                    QString key = obj2["key"].toString();
+                    qint64 fun= obj2["fun"].toDouble();
+                    bool caseSensitive = obj2["case_sensitive"].toBool();
+                    Rule_Dll rule;
+                    rule.type = matchType;
+                    rule.key = key;
+                    rule.fun = fun;
+                    rule.caseSensitive = caseSensitive;
+                    if (matchType == MatchType::Regex) {
+                        QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+                        if (!caseSensitive) {
+                            options |= QRegularExpression::CaseInsensitiveOption;
+                        }
+                        rule.regex = QRegularExpression(key, options);
+                        if (!rule.regex.isValid()) {
+                            qWarning() << "正则表达式无效:" << key << rule.regex.errorString();
+                        }
+                    } else {
+                        rule.regex = QRegularExpression(); // 显式置空
+                    }
+                    info.DLL.rules.append(rule);
+                }
+
+            };
+            parseRuleList("equals", MatchType::Equals);
+            parseRuleList("startswith", MatchType::StartsWith);
+            parseRuleList("endswith", MatchType::EndsWith);
+            parseRuleList("contains", MatchType::Contains);
+            parseRuleList("regex", MatchType::Regex);
+            parseRuleList("event", MatchType::event);
         } else {
             uninstall_Plugin(info);
             return info.path + " get_plugin_info 返回的内容非json 或不是标准json";
@@ -1807,6 +1973,42 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     info.id = obj["id"].toString();
     info.version_int = obj["version2"].toInt();
     info.type=2;
+    info.DLL.rules.clear();
+    auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
+
+        QJsonArray ruleList = obj[typeKey].toArray();
+        for (const auto & value : std::as_const(ruleList)) {
+            QJsonObject obj2 = value.toObject();
+            QString key = obj2["key"].toString();
+            qint64 fun= obj2["fun"].toDouble();
+            bool caseSensitive = obj2["case_sensitive"].toBool();
+            Rule_Dll rule;
+            rule.type = matchType;
+            rule.key = key;
+            rule.fun = fun;
+            rule.caseSensitive = caseSensitive;
+            if (matchType == MatchType::Regex) {
+                QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+                if (!caseSensitive) {
+                    options |= QRegularExpression::CaseInsensitiveOption;
+                }
+                rule.regex = QRegularExpression(key, options);
+                if (!rule.regex.isValid()) {
+                    qWarning() << "正则表达式无效:" << key << rule.regex.errorString();
+                }
+            } else {
+                rule.regex = QRegularExpression(); // 显式置空
+            }
+            info.DLL.rules.append(rule);
+        }
+
+    };
+    parseRuleList("equals", MatchType::Equals);
+    parseRuleList("startswith", MatchType::StartsWith);
+    parseRuleList("endswith", MatchType::EndsWith);
+    parseRuleList("contains", MatchType::Contains);
+    parseRuleList("regex", MatchType::Regex);
+    parseRuleList("event", MatchType::event);
     return QString();   // 成功
 }
 
@@ -1994,12 +2196,33 @@ event = _register_rule("event")
                         qWarning() << "指令/事件函数" << funName << "不存在或不可调用，跳过";
                         continue;
                     }
+
                     bool caseSensitive = true;
                     if (cmd.contains("case_sensitive")) {
                         caseSensitive = cmd["case_sensitive"].cast<bool>();
                     }
-                    info.python.rules.append({matchType, keyStr, funcObj, caseSensitive});
 
+                    // 构造 Rule 对象
+                    Rule rule;
+                    rule.type = matchType;
+                    rule.key = keyStr;
+                    rule.function = funcObj;
+                    rule.caseSensitive = caseSensitive;
+
+                    if (matchType == MatchType::Regex) {
+                        QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+                        if (!caseSensitive) {
+                            options |= QRegularExpression::CaseInsensitiveOption;
+                        }
+                        rule.regex = QRegularExpression(keyStr, options);
+                        if (!rule.regex.isValid()) {
+                            qWarning() << "正则表达式无效:" << keyStr << rule.regex.errorString();
+                        }
+                    } else {
+                        rule.regex = QRegularExpression(); // 显式置空
+                    }
+
+                    info.python.rules.append(rule);
                 }
             };
 
@@ -2043,6 +2266,7 @@ event = _register_rule("event")
                                 continue;
                             }
                             py::dict ruleDict = item.cast<py::dict>();
+
                             QString key;
                             if (ruleDict.contains("key") && !ruleDict["key"].is_none()) {
                                 key = QString::fromStdString(ruleDict["key"].cast<std::string>());
@@ -2050,6 +2274,7 @@ event = _register_rule("event")
                                 qWarning() << typeKey << "规则缺少 key，跳过";
                                 continue;
                             }
+
                             QString funName;
                             if (ruleDict.contains("fun") && !ruleDict["fun"].is_none()) {
                                 funName = QString::fromStdString(ruleDict["fun"].cast<std::string>());
@@ -2057,6 +2282,7 @@ event = _register_rule("event")
                                 qWarning() << typeKey << "规则缺少 fun，跳过";
                                 continue;
                             }
+
                             py::object funcObj;
                             if (plugin_globals.contains(py::str(funName.toStdString()))) {
                                 py::object obj = plugin_globals[py::str(funName.toStdString())];
@@ -2068,15 +2294,40 @@ event = _register_rule("event")
                                 qWarning() << "函数" << funName << "不存在或不可调用，跳过该规则";
                                 continue;
                             }
+
                             bool caseSensitive = true;
                             if (ruleDict.contains("case_sensitive") && !ruleDict["case_sensitive"].is_none()) {
                                 caseSensitive = ruleDict["case_sensitive"].cast<bool>();
                             }
-                            info.python.rules.append({matchType, key, funcObj, caseSensitive});
 
+                            // 构造 Rule 对象
+                            Rule rule;
+                            rule.type = matchType;
+                            rule.key = key;
+                            rule.function = funcObj;
+                            rule.caseSensitive = caseSensitive;
+
+                            // 仅当类型是 Regex 时初始化正则表达式
+                            if (matchType == MatchType::Regex) {
+                                QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+                                if (!caseSensitive) {
+                                    options |= QRegularExpression::CaseInsensitiveOption;
+                                }
+                                rule.regex = QRegularExpression(key, options);
+                                if (!rule.regex.isValid()) {
+                                    qWarning() << "正则表达式无效:" << key << rule.regex.errorString();
+                                }
+                            } else {
+                                // 其他类型保持默认构造（无效），不会使用
+                                rule.regex = QRegularExpression();
+                            }
+
+                            info.python.rules.append(rule);
                         }
                     }
                 };
+
+                // 调用方式不变
                 parseRuleList("equals", MatchType::Equals);
                 parseRuleList("startswith", MatchType::StartsWith);
                 parseRuleList("endswith", MatchType::EndsWith);
@@ -2160,7 +2411,7 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
         info.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
 
-    QVariantMap metadata = NodePluginManager::instance().loadPlugin(fullPath, info.uuid);
+    QJsonObject metadata = NodePluginManager::instance().loadPlugin(fullPath, info.uuid);
     if (metadata.contains("error")) {
         return metadata["error"].toString();
     }
@@ -2173,6 +2424,41 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     info.id = metadata["id"].toString();
     info.version_int = metadata["version2"].toInt();
     info.type = 3;
+    info.js.rules.clear();
+    auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
 
+        QJsonArray ruleList = metadata[typeKey].toArray();
+        for (const auto & value : std::as_const(ruleList)) {
+            QJsonObject obj2 = value.toObject();
+            QString key = obj2["key"].toString();
+            QString funName= obj2["fun"].toString();
+            bool caseSensitive = obj2["case_sensitive"].toBool();
+            Rule_js rule;
+            rule.type = matchType;
+            rule.key = key;
+            rule.fun = funName;
+            rule.caseSensitive = caseSensitive;
+            if (matchType == MatchType::Regex) {
+                QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+                if (!caseSensitive) {
+                    options |= QRegularExpression::CaseInsensitiveOption;
+                }
+                rule.regex = QRegularExpression(key, options);
+                if (!rule.regex.isValid()) {
+                    qWarning() << "正则表达式无效:" << key << rule.regex.errorString();
+                }
+            } else {
+                rule.regex = QRegularExpression(); // 显式置空
+            }
+            info.js.rules.append(rule);
+        }
+
+    };
+    parseRuleList("equals", MatchType::Equals);
+    parseRuleList("startswith", MatchType::StartsWith);
+    parseRuleList("endswith", MatchType::EndsWith);
+    parseRuleList("contains", MatchType::Contains);
+    parseRuleList("regex", MatchType::Regex);
+    parseRuleList("event", MatchType::event);
     return QString();
 }

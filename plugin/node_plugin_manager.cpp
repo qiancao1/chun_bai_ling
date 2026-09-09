@@ -42,7 +42,7 @@ NodePluginManager& NodePluginManager::instance() {
     return mgr;
 }
 
-QVariantMap NodePluginManager::loadPlugin(const QString& dirPath, const QString& uuid) {
+QJsonObject NodePluginManager::loadPlugin(const QString& dirPath, const QString& uuid) {
     if (m_processes.contains(uuid))
         return {{"error", "Already loaded"}};
 
@@ -54,16 +54,12 @@ QVariantMap NodePluginManager::loadPlugin(const QString& dirPath, const QString&
 
     // 主动请求插件信息
     QEventLoop loop;
-    QVariantMap metadata;
+    QJsonObject metadata;
     bool gotInfo = false;
 
     // 发送 get_plugin_info 请求
     proc->sendRequest("get_plugin_info", QJsonArray(), [&](const QJsonObject& result) {
-        metadata["name"] = result["name"].toString();
-        metadata["version"] = result["version"].toString();
-        metadata["author"] = result["author"].toString();
-        metadata["description"] = result["description"].toString();
-        metadata["icon"] = result["icon"].toString();
+        metadata = result;
         gotInfo = true;
         loop.quit();
     });
@@ -115,20 +111,21 @@ bool NodePluginManager::isPluginEnabled(const QString& uuid) const {
     return proc ? proc->isEnabled() : false;
 }
 
-void NodePluginManager::postEvent(const QString& uuid, const QString& eventType, const QString& data) {
+void NodePluginManager::postEvent(const QString& uuid, const QString& eventType, const QString& data,const QString &fun) {
     auto* proc = m_processes.value(uuid);
     if (!proc) return;
     QJsonObject ev;
     ev["type"] = eventType;
     ev["data"] = data;
+    ev["fun"] = fun;
     proc->writeMessage(QJsonDocument(ev).toJson(QJsonDocument::Compact));
 }
 
-void NodePluginManager::postEventAsync(const QString& uuid, const QString& eventType, const QString& data) {
+void NodePluginManager::postEventAsync(const QString& uuid, const QString& eventType, const QString& data,const QString &fun) {
     if (QThread::currentThread() != qApp->thread()) {
-        QMetaObject::invokeMethod(this, [=]() { postEvent(uuid, eventType, data); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [=]() { postEvent(uuid, eventType, data,fun); }, Qt::QueuedConnection);
     } else {
-        postEvent(uuid, eventType, data);
+        postEvent(uuid, eventType, data,fun);
     }
 }
 
