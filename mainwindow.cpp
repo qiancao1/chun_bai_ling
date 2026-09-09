@@ -77,6 +77,10 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.2.16.62 (2026-09-09)
+- 修复 部分数据没传递到json里面
+- 增加 C Go 两种语言的SDK
+
 ## v1.2.16.62 (2026-09-07)
 - 修复 py插件订阅事件
 - 优化 token 获取 日志双击查看完整日志

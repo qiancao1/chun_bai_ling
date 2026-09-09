@@ -1183,7 +1183,13 @@ def clean_plugin(plugin_path):
             info.loadedDllPath.clear();
         }
     } else if (info.type == 2) {
-        return sendData32(4, info) == "true";
+        bool ok = ( sendData32(4, info) == "true");
+
+        if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
+            QFile::remove(info.loadedDllPath);
+            info.loadedDllPath.clear();
+        }
+        return ok;
     } else if (info.type == 3) {
         return NodePluginManager::instance().unloadPlugin(info.uuid);
     }
