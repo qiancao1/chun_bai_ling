@@ -114,7 +114,7 @@ private:
 
             // 存入 LMDB
             putBinary("index_bin", buffer.data(), buffer.size());
-            std::cout << "[INFO] 索引保存成功，大小: " << buffer.size() << " 字节" << std::endl;
+
         } catch (const std::exception& e) {
             std::cerr << "[ERROR] 保存索引失败: " << e.what() << std::endl;
             // 尝试清理临时文件

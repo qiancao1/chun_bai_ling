@@ -72,14 +72,19 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.16.63"
-#define APP_BUILD_NUMBER 63
+#define APP_VERSION_STR "v1.2.16.64"
+#define APP_BUILD_NUMBER 64
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.16.63 (2026-09-09)
+## v1.2.16.64 (2026-09-10)
+- 优化 http 优化复有链接 http池改单线程 回调使用线程池
+- 用户 ai到回调 之前堵塞
+
+## v1.2.16.64 (2026-09-09)
 - 修复 部分数据没传递到json里面
 - 增加 C Go 两种语言的SDK
+- 修改 插件改为注册式减少 cpu消耗 同时支持原旧版类型
 
 ## v1.2.16.62 (2026-09-07)
 - 修复 py插件订阅事件
@@ -952,7 +957,7 @@ void MainWindow::createTitleBar()
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(4);
 
-    int randomIndex = QRandomGenerator::global()->bounded(1, 11);  // 生成 1~23
+    int randomIndex = QRandomGenerator::global()->bounded(1, 6);  // 生成 1~23
     QLabel *iconLabel = new QLabel("🔔");
 
     QString imagePath = QString(":/icons/log (%1).jpg").arg(randomIndex);

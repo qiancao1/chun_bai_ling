@@ -1972,7 +1972,7 @@ QString convertAudioToSilk(const QString &srcFilePath)
 }
 
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
-                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext ctx)
+                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext &ctx)
 {
     // 匹配短标签或全名标签：f/file, a/audio, v/video, flie(笔误)
     static QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
@@ -2087,7 +2087,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 if(ctx.openid.isEmpty())
                     send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
                 else
-                    send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
+                    send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
             }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty()) { //发的链接是没有md5的
                 cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
             }
@@ -2141,6 +2141,8 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
               [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
+                    if(ctx.cb)
+                      ctx.cb(resp,err);
               });
     return "{}";
 }
@@ -2591,7 +2593,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
 QString processText(const QString &text, int timeoutMs = 30000);
 
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
-                              const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
+                              const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
 {
     if(type==18) type =0;
 
@@ -2617,15 +2619,16 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
         QString mb;
         QString textB = normalizeNewlinesToCR(newtext); //处理换行
         bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
-        auto *processor = new AsyncApiProcessor(textB, [this,type,openid,pname,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard](const QString &result) {
+        auto *processor = new AsyncApiProcessor(textB, [this,type,openid,pname,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb](const QString &result) {
             QString text = result;
-            return send_messagesAsync2(type,openid,pname,text,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard);
+            return send_messagesAsync2(type,openid,pname,text,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb);
         });
         processor->start();
         return "{}";
     }
 
-    return send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref);
+    // cb 必须透传下去，否则调用方等不到回调（send_messagesAsync 里才会 ctx.cb = cb）
+    return send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref,cb);
 }
 
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
@@ -2733,7 +2736,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
 }
 
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
+                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
 {
 
     QString newtext = text;
@@ -2756,6 +2759,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     ctx.now_us = now_us;
     ctx.type = type;
     ctx.openid = openid;
+    ctx.cb =cb;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index = index;
     QJsonValue keyboard;
@@ -2830,9 +2834,9 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     }
     return response;
 }
-QString QQBotClient::send_messagesAsync2(int type, const QString &openid,const QString &pname, QString &text,
-                                        const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,const QString &mb2,
-                                         const QJsonArray &prompt_keyboard,const QJsonValue  &keyboard)
+QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
+                                         const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
+                                         const QJsonArray &prompt_keyboard, const QJsonValue  &keyboard, Callback cb)
 {
     QString mb=mb2;
     auto now = std::chrono::steady_clock::now();
@@ -2846,7 +2850,7 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid,const Q
     ctx.openid = openid;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index = index;
-
+    ctx.cb =cb;
     QString message_reference;
     QString newtext2 = sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
     if (text.isEmpty()) return newtext2;
@@ -2935,6 +2939,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
               [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
+                    if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
 }
@@ -2966,11 +2971,12 @@ QString QQBotClient::send_messages_ark(int type, const QString &openid,const QSt
         QString openidCopy = openid;
         PostAsync(url, json, "", 5000,
                   [this, pnameCopy, jsonString, indexCopy, now_us_copy,
-                   typeCopy, openidCopy]
+                   typeCopy, openidCopy,cb = ctx.cb]
                   (const QString &resp, QNetworkReply::NetworkError err) {
                       // 如果担心 this 被销毁，可以用 QPointer 检查（可选）
                       addmsglog(resp, indexCopy, pnameCopy, jsonString,
                                 now_us_copy, typeCopy, openidCopy);
+                      if(cb) cb(resp,err);
                   });
         return QString();   // 立即返回，结果通过回调处理
     }
@@ -3026,6 +3032,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
               [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
+                    if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
 }
@@ -3077,6 +3084,8 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
               [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
+        if(ctx.cb) ctx.cb(resp,err);
+
               });
     return QString();
 }

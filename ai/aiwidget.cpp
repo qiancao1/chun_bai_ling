@@ -330,16 +330,17 @@ AiWidget::AiWidget(QWidget *parent)
 
 AiWidget::~AiWidget()
 {
-    for (auto &session : m_sessions) {
-        delete session.timer;
-        delete session.memory;
-    }
+    m_shuttingDown = true;
+
+    // 注意：不要在这里先 delete timer/memory 再调 clearAllSessions ——
+    // 那样 clearSessionResources 会看到非空的 ctx.timer 再 delete 一次（二次释放直接崩）。
+    // 统一交给 clearAllSessions 处理。
     clearAllSessions();
     if (m_cleanupTimer) {
         m_cleanupTimer->stop();
         delete m_cleanupTimer;
+        m_cleanupTimer = nullptr;
     }
-    m_sessions.clear();
 }
 
 
@@ -1726,79 +1727,7 @@ void AiWidget::onKeyTableCellChanged(int row, int column) {
 }
 
 
-QString _tools(const QString &code,const QString &args,const MessageEvent &ev,const QString &mode)
-{
-    Ai_Fun aifun;
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(args.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError) {
 
-        return "调用函数时 参数错误\n";
-    }
-    QJsonObject obj=doc.object();
-
-    //{"p2":"苹果","p1":"512x512"}
-    aifun.p1=obj["p1"].toString();
-    aifun.p2=obj["p2"].toString();
-    aifun.p3=obj["p3"].toString();
-    aifun.p4=obj["p4"].toString();
-    aifun.p5=obj["p5"].toString();
-    aifun.p6=obj["p6"].toString();
-    aifun.p7=obj["p7"].toString();
-    aifun.p8=obj["p8"].toString();
-
-
-    py::gil_scoped_acquire gil;
-    try {
-        py::module_ qiancao = py::module_::import("qiancao_sdk");
-        py::object api = qiancao.attr("QQApi")(g_keyuuid);
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
-        exec_globals["__builtins__"] = py::module_::import("builtins");
-        exec_globals["msg"] = py::cast(ev);
-        exec_globals["args"] = py::cast(aifun);
-        exec_globals["__model__"] = mode.toStdString();
-        exec_globals["api"] = api;
-        py::exec(code.toStdString(), exec_globals);
-        QString ret;
-        if (exec_globals.contains("__result__"))
-            ret = QString::fromStdString(py::str(exec_globals["__result__"]));
-
-        return ret;
-    } catch (const py::error_already_set &e) {
-        return "[Python] Execute code error: " + QString::fromUtf8(e.what());
-    } catch (const std::exception &e) {
-        return "[Python] Execute code error: " + QString::fromUtf8(e.what());
-    }
-    return QString();
-
-}
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QTextDocumentFragment>
-#include <QTextDocument>
-
-
-// 你的槽函数或普通成员函数
-QString browseWeb(const QString &urlString) {
-
-
-    auto f = NetManager::instance()->get(urlString);
-
-
-    QString html = f.get();
-
-    QTextDocumentFragment fragment = QTextDocumentFragment::fromHtml(html);
-    QString plainText = fragment.toPlainText();
-
-    plainText.replace(QRegularExpression("\\n{3,}"), "\n\n");
-    plainText = plainText.trimmed();
-    const int MAX_LENGTH = 700000;
-    if (plainText.size() > MAX_LENGTH) {
-        plainText = plainText.left(MAX_LENGTH) + "\n\n...(内容过长，已截断)";
-    }
-
-    return plainText;
-}
 
 
 
@@ -1935,103 +1864,6 @@ void AiWidget::内置函数()
 
     funcListTable->selectRow(0);
     onFuncListCurrentCellChanged(0, 0, -1, -1);
-}
-QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const QString &args,const QString &model)
-{
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(args.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError) {
-        return "调用函数时 参数错误\n";
-    }
-    QJsonObject obj=doc.object();
-    QString res;
-    QString p1 = obj["p1"].toString();
-    if(tool_name== "dimg")
-    {
-        QString p2 =  obj["p2"].toString();
-        QString targetPath = "image/" +QString::number(ev.appid)+"/"+p2;
-        if (QFile::exists(targetPath)) return  "目标文件已存在，跳过：" + targetPath;
-        if(p1.startsWith("http"))
-        {
-            QString err;
-            if(downloadFile(p1,targetPath,err)){
-                ai_bqbgl->meiju(QString::number(ev.appid));
-                res = "添加表情包成功";
-            }else res = "添加表情包失败 错误:"+err;
-        }else{
-            if (!QFile::exists(p1))  return "本地源文件不存在：" + p1;
-            if (QFile::copy(p1, targetPath)) {
-                ai_bqbgl->meiju(QString::number(ev.appid));
-                res = "复制成功：" + targetPath;
-            } else res = "复制失败，可能权限不足或磁盘已满";
-        }
-    }else if(tool_name == "rimg"){
-        QFile file("image/" +QString::number(ev.appid)+"/"+p1);
-        ai_bqbgl->meiju(QString::number(ev.appid));
-        res = file.remove() ? "删除成功 上下文可能存在 下回合消失" : "删除失败可能不存在";
-    }else if(tool_name == "llwye") res = browseWeb(p1);
-    else if(tool_name=="dingshy")
-    {
-        QString pycode=QString("code_ai|||%1|||%2|||%3|||%4").arg(ev.user,ev.groupId,p1).arg(ev.type);
-        res = schedule->add_byAi(p1,ev.appid,obj["p2"].toString(),1,pycode);
-    }else if(tool_name=="getdings")
-    {
-        QString pycode;
-        res = schedule->get_aids_list(ev.appid,ev.user);
-    }else if(tool_name=="redings")
-    {
-        res = schedule->remov_ds_byai(ev.appid,p1.toInt());
-    }else if(tool_name == "byss")
-    {
-        int y = obj["p2"].toInt();
-        if(y<=0) y=1;
-        res = browseWeb("https://cn.bing.com/search?q="+ QUrl::toPercentEncoding(p1) +"&first="+QString::number(y*10));
-    }else if(tool_name == "run_python")
-    {
-        QString 设定 =R"(你的主要任务是审核下面python代码，有没有危害系统，恶意删除文件,覆盖某些系统文件,如果执行了 cmd命令 cmd指令有没有危害系统，
-或者尝试下载网络文件 并且执行 等，注意有可能会下载东西 但是不执行就可以
-代码通过 返回 '[通过]'，需要用户确认 返回 '[待确认]+说明可能的危害,因为用户可能也不懂',返回 '[拒绝]+理由\n\n下面是审核的python代码
-
-)";
-        res = ai_ui->Ai_post(model,设定+p1,ev.type);
-        if(res.contains("[通过]"))
-        {
-            res =python_code(p1,ev);
-            if(res.isEmpty())
-                res = "python执行完成 无返回值";
-        }else if(res.contains("[待确认]") || res.contains("[拒绝]"))
-        {}else{
-            res = "[审核异常]" + res;
-        }
-
-    }else if(tool_name =="html_to_img")
-    {
-        QByteArray out;
-        if(p1.startsWith("http"))
-        {
-            out = ScreenA->captureUrlSync(p1);
-        }else{
-            out = ScreenA->captureHtmlSync(p1);
-
-        }
-        if(!out.isEmpty())
-        {
-            QUuid uuid = QUuid::createUuid();
-            res = "tmp/"+uuid.toString(QUuid::WithoutBraces)+".png";
-            if(W_file(res,out))
-            {
-                res = "![]("+res+")";
-            }   else{
-                res.clear();
-            }
-        }
-
-        if(res.isEmpty())
-        {
-            res = "未启动截图接口 请通知用户配置截图程序";
-        }
-    }
-    return res;
 }
 
 QString AiWidget::generateHash(const QString &url)
@@ -2528,6 +2360,8 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
     default: return;
     }
 
+    QMutexLocker lk(&m_sessionsMutex);   // 线程池线程也会读写 m_sessions
+
     auto &session = m_sessions[openid];
     if(!notime)
         session.cflx = ev.at_you ? 1:2;
@@ -2536,13 +2370,17 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
         session.timer = new QTimer(this);
         session.timer->setSingleShot(true);
         connect(session.timer, &QTimer::timeout, this, [this, openid]() {
+            QMutexLocker lk(&m_sessionsMutex);   // 主线程，但和线程池线程共享 m_sessions
             auto &session = m_sessions[openid];
 
             auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
             if(index>0) { //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
                 int n = g_logdb [session.type+1]->getBufferStatus(index);
                 if(n >= 250) return; //255代表被处理了
+                bool ok=false;
+                g_logdb [session.type+1]->setBuffer_250(index,ok); //设置为250 让未处理 回复 不回复
             }
+
             QThreadPool::globalInstance()->start([this,openid]() {
                 flushPendingMessages(openid,false);
             });
@@ -2550,7 +2388,7 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
         if (!session.memory) {
             QString memoryPath = "botdb/memory/" + openid;
             QDir().mkpath(memoryPath);
-            session.memory = new VectorMemory(memoryPath.toStdString(), 384, 100000);
+            session.memory = QSharedPointer<VectorMemory>::create(memoryPath.toStdString(), 384, 100000);
         }
     }
     if(!send)
@@ -2583,7 +2421,6 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
         return ;
     }
     if(notime){
-
         QThreadPool::globalInstance()->start([this,openid,send]() {
             flushPendingMessages(openid,send);
         });
@@ -2594,287 +2431,24 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
 
     session.timer->start(delayMs);
     session.dslx=0;
-    auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
-    if(index>0) {
-        bool ok=false;
-        g_logdb [session.type+1]->setBuffer_250(index,ok); //设置为250 让未处理 回复 不回复
-    }
+
     //qDebug() << "[AiWidget] 定时器已启动，延迟" << delayMs << "ms，openid:" << openid;
 }
 
-
-void AiWidget::flushPendingMessages(const QString &openid,bool send)
-{
-    auto &session = m_sessions[openid];
-
-    AccountInfo* info = session.accountInfo;
-    if (!info) {
-        session.isProcessing = false;
-        return;
-    }
-
-    // 查找模型索引
-    int model_index = -1;
-    for (int i = 0; i < modelList.size(); ++i) {
-        if (modelList[i].name == info->model) {
-            model_index = i;
-            break;
-        }
-    }
-    if (model_index == -1) {
-        session.isProcessing = false;
-        return;
-    }
-    bool juecejg =true;
-    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
-    QJsonObject juece_mode=baseContext;
-    QString fh;
-    if(!send && session.type==0 && info->juece && session.cflx!=1){
-        if (session.pendingMessages.isEmpty())
-            return;
-
-        QString setting;
-        for (const auto &sd : std::as_const(m_globalSettings)) {
-            if (sd.name == info->setting) {
-                setting = sd.content;
-                break;
-            }
-        }
-        trimContextByMessageCount(juece_mode, 24); //限制上下文
-        QJsonArray msgs = juece_mode["messages"].toArray();
-        QJsonObject systemMsg;
-        systemMsg["role"] = "system";
-        systemMsg["content"] = "你是群聊对话中决策AI\n你的任务是查看下面对话 是否有对话提到了你，以及和你的设定相符合的内容，\n"
-                               "1.如你主要扮演原神中的纳西妲，当聊天内容包含原神你就可以返回'【提到】'\n"
-                               "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到"
-                               "3.或者你的上下文正在聊天"
-                               "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他"
-                               "5.不能长期不回复，所以偶尔 决策 【提到】"
-                               "如果提到了 请回复'【提到】'文本 我会判定 你返回的内容有没有这个字符"
-                               "下面是用户给你的角色设定：\n"+setting;
-        msgs[0] = systemMsg;
-        QJsonObject systemMsg2;
-        systemMsg2["role"] = "user";
-        systemMsg2["content"] = "下面是新的对话内容";
-        msgs.append(systemMsg2);
-        juece_mode["messages"] = msgs;
-
-        for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
-            appendPendingMessageToContext(juece_mode, pm);
-        }
-        trimContextImages(juece_mode, 0);//处理图片
-        juece_mode.remove("tools");
-
-        fh = Ai_posts(MessageEvent(),model_index,juece_mode,60000);
-        juecejg = fh.contains("【提到】");
-
-    }
-
-
-    //session.baseContext 改为下面
-
-
-    int oldMsgCount = 0;
-    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
-        oldMsgCount = baseContext["messages"].toArray().size();
-    }
-    if(!send){
-        if (session.pendingMessages.isEmpty())
-            return;
-
-        for (const PendingMessage &pm : std::as_const(session.pendingMessages)) {
-            appendPendingMessageToContext(baseContext, pm);
-        }
-        session.pendingMessages.clear();
-    }
-
-    if(!juecejg) //决策没提到 直接返回
-    {
-
-        Message msg;
-        QDateTime currentDateTime = QDateTime::currentDateTime();
-        msg.timestamp = currentDateTime.toString("yyyy-MM-dd HH:mm:ss");
-        msg.msg = QString("%1(%2) ai决策 不返回内容：%3").arg(info->Ai_nickname,openid,fh);
-        logPage->onNewLogAdded(0,0,0,"",msg);
-
-        baseContext.remove("tools");
-        aidb->put(info->appid+":"+openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
-        return;
-    }
-    trimContextImages(baseContext, 6);//处理图片
-    trimToolResponses(baseContext, 5, 64);
-    if(session.accountInfo->context_len<5)
-        session.accountInfo->context_len=5;
-    trimContextByMessageCount(baseContext, session.accountInfo->context_len); //限制上下文
-    aidb->put(info->appid+":"+openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
-    convertContextImagesToBase64(baseContext);//图片转b64
-
-
-    session.isProcessing = true;
-
-    // 构造空 MessageEvent
-    MessageEvent ev;
-    ev.appid = session.appid;
-    ev.type = session.type;
-    ev.groupId = session.groupId;
-    ev.msgId = session.msgId;
-    ev.user = session.openid;
-    ev.msg = "";
-
-
-
-    if (ev.type==2 && session.accountInfo->xiangliang && !session.accountInfo->Embed_model.isEmpty()) {
-
-        QString lastUserMsg;
-        QJsonArray msgs = baseContext["messages"].toArray();
-        for (int i = msgs.size() - 1; i >= 0; --i) {
-            if (msgs[i].toObject()["role"].toString() == "user") {
-
-                QJsonObject obj =msgs[i].toObject();
-                QJsonArray arr=obj["content"].toArray();
-                QJsonObject obj2 = arr.at(0).toObject();
-                lastUserMsg = obj2["text"].toString();
-                break;
-            }
-        }
-
-        if (!lastUserMsg.isEmpty()) {
-            int index=-1;
-            QVector<double> queryVec;
-            for (int i = 0; i < modelList.size(); ++i) {
-                if (modelList[i].name == info->Embed_model) {
-                    index = i;
-                    break;
-                }
-            }
-            if (index != -1) {
-                for (int i : std::as_const(modelList[index].enabledInterfaceIndices)) {
-                    if (globalInterfaces[i].keys.size() == 0) {
-                        queryVec = getEmbedding(lastUserMsg,
-                                                globalInterfaces[i].url,
-                                                session.accountInfo->Embed_model,
-                                                QString());
-                    } else {
-                        for (const auto &key : std::as_const(globalInterfaces[i].keys)) {
-                            //if (!key.enabled) continue;
-                            queryVec = getEmbedding(lastUserMsg,
-                                                    globalInterfaces[i].url,
-                                                    session.accountInfo->Embed_model,
-                                                    key.key);
-                            if (!queryVec.isEmpty()) break;
-                        }
-                    }
-                    if (!queryVec.isEmpty()) break;
-                }
-            }
-
-
-            if (!queryVec.isEmpty()) {
-
-                std::vector<float> queryFloatVec(queryVec.begin(), queryVec.end());
-                auto results = session.memory->search(queryFloatVec, 3); // 取3条最相似的
-
-                if (!results.empty()) {
-
-                    QString memoryText = "【用户历史信息】\n";
-                    for (const auto &[id, score] : results) {
-
-                        std::string meta = session.memory->getMetadata(id);
-                        if (!meta.empty()) {
-                            memoryText += "- " + QString::fromStdString(meta) + "\n";
-                        }
-                    }
-                    qDebug() <<"向量读取 "<< memoryText;
-
-                    QJsonArray newMsgs = baseContext["messages"].toArray();
-                    QJsonObject sysMsg;
-                    sysMsg["role"] = "system";
-                    sysMsg["content"] = memoryText;
-
-                    if (!newMsgs.isEmpty() && newMsgs[0].toObject()["role"].toString() == "system") {
-                        QJsonObject existing = newMsgs[0].toObject();
-                        existing["content"] = existing["content"].toString() + "\n\n" + memoryText;
-                        newMsgs[0] = existing;
-                    } else {
-                        newMsgs.prepend(sysMsg);
-                    }
-                    baseContext["messages"] = newMsgs;
-                }
-            }
-        }
-    }
-
-    int timeoutMs = 30000;
-    QString reply = Ai_posts(ev, model_index, baseContext, timeoutMs);
-    emit asyncReplyReceived(openid, reply, baseContext, oldMsgCount);
-    if (m_botClients.contains(ev.appid)) {
-        auto *db = g_botdb[ev.appid];
-
-        if(reply.contains("![img]("))
-            reply.replace("![img](","![img](image/"+info->appid+"/");
-        if(reply.contains("![ima]("))
-            reply.replace("![ima](","![img](image/"+info->appid+"/");
-        QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid
-        if(atlist.size()!=0)
-        {
-            for( auto &uid : atlist)
-            {
-                QString user;
-                db->getOpenIdBySeqId(uid.toInt(),user);
-                if(user.isEmpty())
-                {
-                    reply.remove("<@"+uid+">");
-                }else
-                reply.replace("<@"+uid+">","<@"+user+">") ;
-            }
-        }
-        QStringList text = reply.split("|#|#|");
-        QString pname = "[Ai系统]";
-        bool isw=false;
-        if(ev.type==2 && ev.msgId.isEmpty())
-            isw=true;
-        for (auto &res : text)
-        {
-            QString t = res.trimmed();
-            if(t.isEmpty()) continue;
-            QString response =  m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , ev.msgId, false, false);
-            if(response.contains("ROBOT"))
-            {
-                doWork(1000);
-                continue;
-            }
-            response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), false, false);
-            if(response.contains("ROBOT"))
-            {
-                doWork(1000);
-                continue;
-            }
-            if(isw)
-            {
-                response = m_botClients[ev.appid]->send_messages(ev.type, ev.groupId, pname,t , QString(), isw, false);
-                if(response.contains("ROBOT"))
-                {
-                    doWork(1000);
-                    continue;
-                }
-            }
-            return ;//不能发主动 也不能发 召回 直接退出
-        }
-    }
-
-}
 
 
 void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
                             const QJsonObject &updatedContext,      // mutableContext
                             int oldMsgCount)
 {
+    QMutexLocker lk(&m_sessionsMutex);   // 全程持有：session 引用会一直用到函数结束
 
     auto it = m_sessions.find(openid);
     if (it == m_sessions.end())
         return;
 
     auto &session = *it;
+    if (!session.accountInfo) return;
     session.sjs = session.accountInfo->触发概率;
     session.isProcessing = false;
     //session.baseContext 改为下面
@@ -2922,14 +2496,14 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
         pm.imagePaths.clear();
         pm.text="[定时器]本条信息为Ai主动信息 用户在"+QString::number(session.accountInfo->nSecondsNoReply)+"秒内没找你对话触发 请无视本条信息 请参考上下文对话";
         session.pendingMessages.append(pm);
-        session.timer->start(session.accountInfo->nSecondsNoReply*1000);
+        if (session.timer) session.timer->start(session.accountInfo->nSecondsNoReply*1000);
     }else if(session.dslx==1 && session.accountInfo->nMinutesNoReply>0){
         session.dslx=2;
         PendingMessage pm;
         pm.imagePaths.clear();
         pm.text="[定时器]本条信息为Ai主动信息 用户在"+QString::number(session.accountInfo->nSecondsNoReply)+"分钟内没找你对话触发 请无视本条信息 请参考上下文对话";
         session.pendingMessages.append(pm);
-        session.timer->start(session.accountInfo->nMinutesNoReply*60*1000);
+        if (session.timer) session.timer->start(session.accountInfo->nMinutesNoReply*60*1000);
     }
     if(!session.accountInfo->xiangliang) return;
     if (session.duihts % 5 == 0 && !reply.isEmpty()) {
@@ -2957,7 +2531,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
 )" + newMsgs;
 
         AccountInfo* acc = session.accountInfo;
-        VectorMemory* mem = session.memory;
+        QSharedPointer<VectorMemory> mem = session.memory;   // 按值捕获进 lambda：持有副本，对象一定活到任务结束
         QThreadPool::globalInstance()->start([this, acc, mem, prompt, openid]() {
 
             QString response = ai_ui->Ai_post(acc->model, prompt, 60000);
@@ -3033,177 +2607,6 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
 }
 
 
-QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs)
-{
-
-    if (!ev.msg.isEmpty()) {
-        if (sxw.contains("messages") && sxw["messages"].isArray()) {
-            QJsonArray msgs = sxw["messages"].toArray();
-            QJsonObject userMsg;
-            userMsg["role"] = "user";
-            userMsg["content"] = ev.msg;
-            msgs.append(userMsg);
-            sxw["messages"] = msgs;
-        }
-    }
-
-    for(int i=0; i<10; ++i) {
-        QJsonObject obj;
-        for(int i2=0; i2<3; ++i2) {
-
-
-            QByteArray response = Ai_post3(url, key, sxw, timeoutMs);
-            if(response.isEmpty()) {
-                err += "接口返回空\n";
-                return QString();
-            }
-
-            QJsonParseError error;
-            QJsonDocument doc = QJsonDocument::fromJson(response, &error);
-            if (error.error != QJsonParseError::NoError) {
-                err += "接口返回错误json:" + error.errorString()+"\n";
-                if(err.contains(key)) err = subTextReplace(err, key, "...");
-                return QString();
-            }
-            obj = doc.object();
-
-            QJsonObject obj2 = obj["error"].toObject();
-            QString error_mes = obj2["message"].toString();
-            if(error_mes.contains("token")) {
-                if (sxw.contains("messages") && sxw["messages"].isArray()) {
-                    QJsonArray msgs = sxw["messages"].toArray();
-                    if (msgs.size() > 1) {
-                        msgs.removeAt(1);
-                        sxw["messages"] = msgs;
-                    }
-                }
-                continue;
-            }
-            if(!error_mes.isEmpty())
-            {
-                err += error_mes+"\n";
-                return QString();
-            }
-            break;
-        }
-
-        QJsonArray arr = obj["choices"].toArray();
-        if (arr.isEmpty()) {
-
-            err += "返回的 choices 为空 请确认接口是否正确\n";
-            return QString();
-        }
-        QJsonObject obj2 = arr.at(0).toObject();
-        QJsonObject obj3 = obj2["message"].toObject();
-        QString text = obj3["content"].toString().trimmed();
-        const QJsonArray arr2 = obj3["tool_calls"].toArray();
-        obj3.remove("reasoning_content");
-        //qDebug() << "ai回复：" << text << "tool:" << arr2;
-        // 将 AI 响应加入上下文
-        if (sxw.contains("messages") && sxw["messages"].isArray()) {
-            QJsonArray msgs = sxw["messages"].toArray();
-            if(arr2.size()==0)
-                obj3.remove("tool_calls");
-            msgs.append(obj3);
-            sxw["messages"] = msgs;
-        }
-
-        bool ok = false;
-        if (!arr2.isEmpty()) {
-            //不传递appid 也不会传递 函数所以这里是调不到的
-            if (!text.isEmpty() && m_botClients.contains(ev.appid)) {
-                auto &bot = m_botClients[ev.appid];
-
-                if(bot->m_info->niren){
-                   QStringList list = text.split("|#|#|");
-                    for(auto & s : list)
-                    {
-                       if(s.isEmpty()) continue;
-                        bot->send_messages(ev.type, ev.groupId, "[AI系统]", s, ev.msgId, false, false);
-                        doWork(1000);
-                    }
-                }else{
-                    bot->send_messages(ev.type, ev.groupId, "[AI系统]", text, ev.msgId, false, false);
-                }
-
-
-                text = QString();
-            }
-
-            for (const QJsonValue &value : arr2) {
-                QJsonObject a = value.toObject();
-                QJsonObject function = a["function"].toObject();
-                QString tool_name = function["name"].toString();
-                QString args = function["arguments"].toString();
-                QString callID = a["id"].toString();
-
-                QString data = 内置函数处理(ev,tool_name,args,sxw["model"].toString());
-                if(!data.isEmpty())
-                {
-                    AppendEventLog(QString("[%1]执行函数:%2\n参数：%3\n\n结果：%4").arg(ev.appid).arg(tool_name,args,data));
-                    QJsonArray msgs = sxw["messages"].toArray();
-                    QJsonObject toolMsg;
-                    toolMsg["role"] = "tool";
-                    toolMsg["content"] = data;
-                    toolMsg["tool_call_id"] = callID;
-                    toolMsg["name"] = tool_name;
-                    if (tool_name == "run_python" && data.contains("[待确认]"))
-                    {
-                        toolMsg["pycode"]=function;
-                    }
-                    msgs.append(toolMsg);
-                    sxw["messages"] = msgs;
-                    if (tool_name == "run_python" && data.contains("[待确认]"))
-                    {
-                        int index = accinfo(ev.appid);
-                         QString key;
-                        if(index>=0)
-                        {
-                            if (m_accounts[index]->admin.isEmpty()) {
-                                key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
-                            } else {
-                                key = R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意%1","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"同意"}},{"action":{"data":"拒绝%2","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"拒绝","style":1,"visited_label":"拒绝"}}]}]}}}#b:#)";
-                                key = key.arg(ev.user, ev.user);
-                            }
-                        }else{
-                            key = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
-                        }
-
-                        return data + key;  // 返回审核信息 + 键盘
-                    }
-                    ok = true;
-                }else{
-                    for (const auto &fun : std::as_const(functionList)) {
-                        if (fun.funcName != tool_name) continue;
-                        data = _tools(fun.code, args, ev,sxw["model"].toString());
-
-                        if (data.isEmpty()) {
-                            data = "函数返回空";
-                        }
-                        AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
-                        if (sxw.contains("messages") && sxw["messages"].isArray()) {
-                            QJsonArray msgs = sxw["messages"].toArray();
-                            QJsonObject toolMsg;
-                            toolMsg["role"] = "tool";
-                            toolMsg["content"] = data;
-                            toolMsg["tool_call_id"] = callID;
-                            toolMsg["name"] = tool_name;
-                            msgs.append(toolMsg);
-                            sxw["messages"] = msgs;
-                        }
-                        if(fun.interrupt)
-                            return data;
-                        ok = true;
-                        break;
-                    }
-                }
-            }
-            if (ok) continue;
-        }
-        return text;
-    }
-    return QString();
-}
 
 //============
 QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
@@ -3229,57 +2632,7 @@ QString AiWidget::Ai_post(const QString &model,const QString &msg,int timeoutMs)
     return Ai_posts(MessageEvent(),index,obj,timeoutMs);
 }
 
-QString AiWidget::Ai_posts(const MessageEvent &ev,int model_index,QJsonObject &sxw,int timeoutMs) //内部使用请勿公开
-{
-    QString err;
-    int kswz = modelList[model_index].enabledInterfaceIndices.size();
-    for(int n1=0 ;n1<kswz;++n1){
-        int index2 =modelList[model_index].enabledInterfaceIndices[n1];
-        auto &key = globalInterfaces[index2].keys;
-        int len = key.size();
-        for(int i2=0;i2< len;++i2)
-        {
-            int index = globalInterfaces[index2].key_index++;
-            index = index % len;
-            QString text =  Ai_post(ev,globalInterfaces[index2].url,key[index].key,sxw,err,timeoutMs);
-            if(text.isEmpty()) continue;
-            return text;
-        }
-    }
-
-
-    return err;
-}
-
-QByteArray AiWidget::Ai_post3(const QString &url,const QString &key, QJsonObject &sxw,int timeoutMs)
-{
-    /*
-    QJsonArray msgs = sxw["messages"].toArray();
-    QJsonObject sxw2 = sxw;
-    if (!msgs.isEmpty()) {
-        QJsonObject lastMsg = msgs.last().toObject();
-        QString role = lastMsg["role"].toString();
-        if (role == "user") {
-            QString content = lastMsg["content"].toString();
-            content += 附加提示词;
-            lastMsg["content"] = content;
-            msgs[msgs.size() - 1] = lastMsg;
-            sxw2["messages"] = msgs;
-        }
-    }
-    */
-
-    QByteArray jsonData = QJsonDocument(sxw).toJson(QJsonDocument::Compact);
-    QHash<QString, QString> headers;
-    headers.insert("Content-Type", "application/json");
-    headers.insert("Authorization", "Bearer " + key);
-    std::future<QByteArray> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
-
-
-    return future.get();
-}
-
-
+QString _tools(const QString &code,const QString &args,const MessageEvent &ev,const QString &mode);
 
 QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
 {
@@ -3392,7 +2745,16 @@ void AiWidget::startHourlyCleanupTimer()
 
 }
 
-// 清理单个会话的资源
+// 线程安全地改写 isProcessing。AI 请求的回调在线程池线程跑，不能直接碰 m_sessions。
+void AiWidget::setSessionProcessing(const QString &openid, bool processing)
+{
+    QMutexLocker lk(&m_sessionsMutex);
+    auto it = m_sessions.find(openid);
+    if (it != m_sessions.end())
+        it.value().isProcessing = processing;
+}
+
+// 清理单个会话的资源（调用方需已持有 m_sessionsMutex）
 void AiWidget::clearSessionResources(SessionContext &ctx)
 {
     if (ctx.timer) {
@@ -3400,14 +2762,14 @@ void AiWidget::clearSessionResources(SessionContext &ctx)
         delete ctx.timer;
         ctx.timer = nullptr;
     }
-    delete ctx.memory;
-    ctx.memory = nullptr;
+    ctx.memory.reset();     // QSharedPointer：还有人在用就等他用完再释放
     ctx.pendingMessages.clear(); // 若元素含指针，需另行释放
 }
 
 // 清理所有会话（析构时调用）
 void AiWidget::clearAllSessions()
 {
+    QMutexLocker lk(&m_sessionsMutex);
     for (auto &ctx : m_sessions) {
         clearSessionResources(ctx);
     }
@@ -3416,10 +2778,15 @@ void AiWidget::clearAllSessions()
 
 void AiWidget::onCleanupTimer()
 {
+    QMutexLocker lk(&m_sessionsMutex);
     QMap<QString, SessionContext>::iterator it = m_sessions.begin();
     while (it != m_sessions.end()) {
         SessionContext &ctx = it.value();
-        if (ctx.isProcessing || !ctx.pendingMessages.isEmpty()) {
+        // 只回收「空闲」会话：正在等 AI 回复、或还有待发消息的一律不动。
+        // 原来这里写成 (isProcessing || !pendingMessages.isEmpty()) 是反的 ——
+        // 会把正在处理的会话 erase 掉，而线程池里还持有它的 SessionContext&，
+        // 继续写就变成写已释放内存（后面的崩就是这么来的）。
+        if (!ctx.isProcessing && ctx.pendingMessages.isEmpty()) {
             clearSessionResources(ctx);
             it = m_sessions.erase(it);   // 移除并获取下一个迭代器
         } else {

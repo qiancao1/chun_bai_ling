@@ -197,7 +197,10 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     QWidget *basicPage = new QWidget;
     QVBoxLayout *mainLay = new QVBoxLayout(basicPage);
     mainLay->setContentsMargins(0,0,0,0);
-    QFormLayout *basicLayout = new QFormLayout(basicPage);
+    // 不能传 basicPage：basicPage 已经有 mainLay 了，再 new 一个带父的布局，
+    // Qt 会拒绝并打印 "QLayout: Attempting to add QLayout ... which already has a layout"。
+    // basicLayout 是 mainLay 的子布局，下面用 mainLay->addLayout(basicLayout) 收编（同 HbasicLayout）。
+    QFormLayout *basicLayout = new QFormLayout;
     basicLayout->setSpacing(4);
     basicLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     basicLayout->setContentsMargins(0,0,0,0);
@@ -492,7 +495,7 @@ void ButtonEditor::initUI() {
     m_rowsLayout->setContentsMargins(0, 0, 0, 0);
     m_rowsLayout->setSpacing(2);
     m_rowsLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    m_scrollContent->setLayout(m_rowsLayout);
+
     m_scrollArea->setWidget(m_scrollContent);
     leftLayout->addWidget(m_scrollArea, 1);  // 占用剩余空间
 

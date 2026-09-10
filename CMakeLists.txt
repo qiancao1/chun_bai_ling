@@ -189,6 +189,7 @@ endif()
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
+        ai/aiwidget2.cpp
 
 
 

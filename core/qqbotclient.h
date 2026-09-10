@@ -29,7 +29,7 @@
 #include <QColor>
 #include <future>
 #include <qnetworkreply.h>
-
+using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 struct logdb
 {
     QString groupId;     // 群id / 子频道id / 私聊对方的id
@@ -79,14 +79,16 @@ struct MessageLogContext {
     QString openid;
     QString pname;
     QString jsonString;
+    Callback cb;
     qint64 now_us;
     int index;
     int type;
 
 
 };
-using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
 using Callback2 = std::function<void()>;
+
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后
 class QQBotClient : public QObject
 {
@@ -108,16 +110,16 @@ public:
     // 发送消息接口
 
     QString send_msgAsync(int type, const QString &openid, const QString &pname, QString &text,
-                          const QString &msgid, bool is_wakeup=false, bool mode=false, int sendType=0, bool noref=false);
+                          const QString &msgid, bool is_wakeup=false, bool mode=false, int sendType=0, bool noref=false, Callback cb=Callback());
 
     QString send_messages(int type, const QString &openid, const QString &pname, QString &text, const QString &msgid=QString(),
                           bool is_wakeup=false, bool mode=false, int sendType= 0, bool noref=false);
     QString send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int sendType=0,bool noref=false);
+                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int sendType=0,bool noref=false,Callback cb=Callback());
 
     QString send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
                                 const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
-                                const QJsonArray &prompt_keyboard, const QJsonValue &keyboard);
+                                const QJsonArray &prompt_keyboard, const QJsonValue &keyboard,Callback cb=Callback());
 
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
@@ -215,11 +217,11 @@ private:
     // 网关和 token
 
     void fetchGatewayUrl(Callback calls);
-    bool refreshAccessToken(bool qz);
+    // token 刷新已改由主线程定时任务 onRefreshReplyFinished() 统一处理
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
                        const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
-    QString sendOneMedia(int type, const QString &openid,const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext ctx);
+    QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext &ctx);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);

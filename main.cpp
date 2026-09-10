@@ -362,6 +362,7 @@ int main(int argc, char *argv[]) {
         //uploadToMhimgAsync(R_file("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png"),"纳西妲.png",[](const QString& url){
         //    qDebug() << url;
         //});
+        AppendEventLog("接收消息延迟高？ 到设置 提高线程池数量 即可",0xff);
         ret = a.exec();
         框架退出=true;
         for(auto &c :m_botClients)

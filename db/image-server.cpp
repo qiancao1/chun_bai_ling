@@ -25,6 +25,8 @@
 #include "global.h"
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QAbstractSocket>
+#include <QTimer>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -57,6 +59,34 @@
 
 // 全局服务器指针和端口
 static void handleRequest(QTcpSocket *socket);
+static void releaseConnBuffer(QTcpSocket *socket);
+
+// 每个连接的接收缓冲。长连接下不能每条请求后清空，
+// 否则粘包时第二条请求的残留数据会丢。
+static QHash<QTcpSocket *, QByteArray> g_connBuffers;
+
+// 连接断开时回收缓冲，防止客户端异常断线造成泄漏
+static void releaseConnBuffer(QTcpSocket *socket)
+{
+    g_connBuffers.remove(socket);
+}
+
+// 长连接空闲超时：N 毫秒内无数据就踢掉，避免客户端只连不发导致连接无限堆积
+static void setupIdleTimeout(QAbstractSocket *socket, int ms = 30000)
+{
+    QTimer *idle = new QTimer(socket);      // 父对象 = socket，随连接自动回收
+    idle->setSingleShot(true);
+    idle->setInterval(ms);
+    QObject::connect(idle, &QTimer::timeout, socket, [socket]() {
+        socket->disconnectFromHost();
+    });
+    // 注意：必须在 readyRead->handleRequest 之后再 connect，
+    // 保证先处理数据再重置计时
+    QObject::connect(socket, &QAbstractSocket::readyRead, idle, [idle]() {
+        idle->start();
+    });
+    idle->start();
+}
 
 
 class HttpImageServer : public QTcpServer
@@ -176,6 +206,9 @@ protected:
                     handleRequest(sslSocket);
                 });
 
+                // 必须在 readyRead->handleRequest 之后再装，保证先处理数据再重置计时
+                setupIdleTimeout(sslSocket);
+
                 if (sslSocket->bytesAvailable() > 0) {
 
                     handleRequest(sslSocket);
@@ -190,6 +223,9 @@ protected:
 
             // 断开清理
             connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
+            connect(sslSocket, &QSslSocket::disconnected, this, [sslSocket]() {
+                releaseConnBuffer(sslSocket);
+            });
 
             //qDebug() << QSslSocket::sslLibraryVersionString();
             sslSocket->startServerEncryption();
@@ -202,10 +238,19 @@ protected:
                 return;
             }
 
+            // 关闭 Nagle：小请求立即发出，不要等攒包，否则压测时人为引入延迟
+            socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+
             connect(socket, &QTcpSocket::readyRead, this, [socket]() {
                 handleRequest(socket);
             });
+
+            setupIdleTimeout(socket);   // 长连接必须有空闲回收，否则连接只增不减
+
             connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+            connect(socket, &QTcpSocket::disconnected, this, [socket]() {
+                releaseConnBuffer(socket);
+            });
         }
     }
 
@@ -320,25 +365,58 @@ static QByteArray extractFileFromMultipart(const QByteArray &body, const QString
     return fileData;
 }
 
-static void sendResponse(QTcpSocket *socket, int statusCode, const QByteArray &contentType, const QByteArray &body)
+static const char *httpStatusText(int code)
 {
-    QByteArray response;
-    response += QString("HTTP/1.1 %1 OK\r\n").arg(statusCode).toUtf8();
-    response += "Content-Type: " + contentType + "\r\n";
-    response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
-    response += "Access-Control-Allow-Origin: *\r\n";
-    response += "Connection: close\r\n";
-    response += "\r\n";
-    response += body;
-    socket->write(response);
-    socket->flush();
-    socket->disconnectFromHost();
+    switch (code) {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 204: return "No Content";
+    case 301: return "Moved Permanently";
+    case 302: return "Found";
+    case 400: return "Bad Request";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 413: return "Payload Too Large";
+    case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    default:  return "OK";
+    }
 }
 
-static void sendErrorResponse(QTcpSocket *socket, int code, const QString &message)
+// keepAlive = true 时写完即返回，连接留给下一条请求复用（长连接）。
+// 原来无条件 disconnectFromHost()，导致每条请求都新建 TCP 连接，
+// 压测时临时端口被 TIME_WAIT 吃光，客户端报 12029。
+static void sendResponse(QTcpSocket *socket, int statusCode, const QByteArray &contentType,
+                         const QByteArray &body, bool keepAlive = true)
+{
+    QByteArray response;
+    response.reserve(body.size() + 256);
+
+    response += "HTTP/1.1 " + QByteArray::number(statusCode) + " "
+                + httpStatusText(statusCode) + "\r\n";
+    response += "Content-Type: " + contentType + "\r\n";
+    // 必须有 Content-Length：否则客户端只能靠「连接关闭」判断响应体结束，
+    // 那样长连接无从谈起
+    response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
+    response += "Access-Control-Allow-Origin: *\r\n";
+    response += keepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    response += "\r\n";
+    response += body;
+
+    socket->write(response);
+    socket->flush();
+
+    if (!keepAlive)
+        socket->disconnectFromHost();
+}
+
+static void sendErrorResponse(QTcpSocket *socket, int code, const QString &message,
+                              bool keepAlive = true)
 {
     QByteArray body = message.toUtf8();
-    sendResponse(socket, code, "text/plain; charset=utf-8", body);
+    sendResponse(socket, code, "text/plain; charset=utf-8", body, keepAlive);
 }
 
 
@@ -731,74 +809,88 @@ QString webhook(QTcpSocket *socket, const QByteArray &pathQuery, const QByteArra
 static void handleRequest(QTcpSocket *socket)
 {
 
-    static QHash<QTcpSocket*, QByteArray> buffers;
-    buffers[socket].append(socket->readAll());
-    QByteArray &buffer = buffers[socket];
-    int headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd == -1)
-        return;
+    g_connBuffers[socket].append(socket->readAll());
+    QByteArray &buffer = g_connBuffers[socket];
 
-    QByteArray headerPart = buffer.left(headerEnd);
-    int contentLength = getContentLength(headerPart);
-    int totalNeeded = headerEnd + 4 + contentLength;
-    if (buffer.size() < totalNeeded)
-        return;
+    bool keepAlive = true;
 
-    QByteArray requestData = buffer.left(totalNeeded);
-    buffer.remove(0, totalNeeded);
+    // while 而非 if：长连接下客户端可能把多条请求合并进一个 TCP 包
+    while (true) {
+        const int headerEnd = buffer.indexOf("\r\n\r\n");
+        if (headerEnd == -1)
+            break;                       // 请求头没收全，等下一次 readyRead
 
-    QList<QByteArray> lines = requestData.split('\n');
-    if (lines.isEmpty()) {
-        sendErrorResponse(socket, 400, "Bad request");
-        socket->disconnectFromHost();
-        buffers.remove(socket);
-        return;
-    }
+        const QByteArray headerPart = buffer.left(headerEnd);
+        const int contentLength = getContentLength(headerPart);
+        const int totalNeeded = headerEnd + 4 + contentLength;
+        if (buffer.size() < totalNeeded)
+            break;                       // body 没收全，等下一次 readyRead
 
-    QByteArray requestLine = lines[0].trimmed();
-    QList<QByteArray> parts = requestLine.split(' ');
-    if (parts.size() < 2) {
-        sendErrorResponse(socket, 400, "Malformed request line");
-        socket->disconnectFromHost();
-        buffers.remove(socket);
-        return;
-    }
+        const QByteArray requestData = buffer.left(totalNeeded);
+        buffer.remove(0, totalNeeded);
 
-    QByteArray method = parts[0];
-    QByteArray path = parts[1];
-
-    int bodyStart = requestData.indexOf("\r\n\r\n") + 4;
-    QByteArray body;
-    if (bodyStart > 0 && bodyStart < requestData.size())
-        body = requestData.mid(bodyStart);
-
-    if (method == "GET") {
-        if(path.startsWith("/web"))
-            webui(socket, path);
-        else
-            handleGet(socket, path);
-
-    }else if (method == "POST") {
-        if (path.startsWith("/webhook/"))
-        {
-            sendResponse(socket, 200, "application/json",webhook(socket,path,body).toUtf8());
+        const QList<QByteArray> lines = requestData.split('\n');
+        if (lines.isEmpty()) {
+            sendErrorResponse(socket, 400, "Bad request", false);
+            keepAlive = false;
+            break;
         }
 
-        else if (path.startsWith("/upload")) {            // 原有的 /upload 或 /remote_upload
-            handlePost(socket, headerPart, body, path);
-        } else if (path == "/remote_upload" || path == "/remote_upload/") {
-            handleRemotePost(socket, headerPart, body, path);
-        } else if (path == "/upload_by_path" || path == "/upload_by_path/") {
-            handleUploadByPath(socket, headerPart, body, path);   // 新增
+        const QByteArray requestLine = lines[0].trimmed();
+        const QList<QByteArray> parts = requestLine.split(' ');
+        if (parts.size() < 2) {
+            sendErrorResponse(socket, 400, "Malformed request line", false);
+            keepAlive = false;
+            break;
+        }
+
+        const QByteArray method = parts[0];
+        const QByteArray path   = parts[1];
+
+        // 客户端明确要求关闭时，本条处理完就断
+        if (headerPart.toLower().contains("connection: close"))
+            keepAlive = false;
+
+        const int bodyStart = requestData.indexOf("\r\n\r\n") + 4;
+        QByteArray body;
+        if (bodyStart > 0 && bodyStart < requestData.size())
+            body = requestData.mid(bodyStart);
+
+        if (method == "GET") {
+            if (path.startsWith("/web"))
+                webui(socket, path);
+            else
+                handleGet(socket, path);
+
+        } else if (method == "POST") {
+            if (path.startsWith("/webhook/"))
+            {
+                sendResponse(socket, 200, "application/json",
+                             webhook(socket, path, body).toUtf8(), keepAlive);
+            }
+
+            else if (path.startsWith("/upload")) {        // 原有的 /upload 或 /remote_upload
+                handlePost(socket, headerPart, body, path);
+            } else if (path == "/remote_upload" || path == "/remote_upload/") {
+                handleRemotePost(socket, headerPart, body, path);
+            } else if (path == "/upload_by_path" || path == "/upload_by_path/") {
+                handleUploadByPath(socket, headerPart, body, path);   // 新增
+            } else {
+                sendErrorResponse(socket, 404, "Not Found", keepAlive);
+            }
         } else {
-            sendErrorResponse(socket, 404, "Not Found");
+            sendErrorResponse(socket, 404, "Not Found", keepAlive);
         }
-    } else {
-        sendErrorResponse(socket, 404, "Not Found");
+
+        if (!keepAlive)
+            break;
     }
 
-    socket->disconnectFromHost();
-    buffers.remove(socket);
+    if (!keepAlive) {
+        socket->disconnectFromHost();
+        releaseConnBuffer(socket);
+    }
+    // keepAlive 为 true：什么都不做，等下一个 readyRead 复用这条连接
 }
 // 本地直接保存文件的辅助函数（供内部调用）
 QString upload(const QString &path)
@@ -865,6 +957,9 @@ bool startImageServer(quint16 port,
 
         }else g_ssl=true;
     }
+
+    // 默认只有 30，高并发下待处理队列一满新连接就被直接拒绝（客户端表现为 12029）
+    g_server->setMaxPendingConnections(4096);
 
     if (!g_server->listen(QHostAddress::Any, port)) {
         qDebug() << "Failed to start server on port" << port;

@@ -230,62 +230,6 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
     });
 }
 
-bool QQBotClient::refreshAccessToken(bool qz)
-{
-    if(suo)
-    {
-        doWork(500);
-        return true;
-    }
-    qint64 now = QDateTime::currentSecsSinceEpoch();
-    if(!qz){
-        if (!m_accessToken.isEmpty() && m_tokenExpireTime > now)
-            return true;
-    }
-    suo = true;
-    // 动态获取 token
-    if (m_info->appid.isEmpty() || m_info->secret.isEmpty()) {
-        AppendEventLog("缺少 appid 或 secret，无法获取 AccessToken",0xff);
-        m_info->err+="缺少 appid 或 secret，无法获取 AccessToken\n";
-        suo =false;
-        return false;
-    }
-
-    QJsonObject payload;
-    payload["appId"] = m_info->appid;
-    payload["clientSecret"] = m_info->secret;
-    QString data=Post("https://api.bot.qq.com/app/getAppAccessToken",payload,QString(),10000);
-
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(data.toUtf8(), &err);
-
-    if (err.error != QJsonParseError::NoError) {
-        AppendEventLog("解析 token 响应失败: " + err.errorString()+"\n返回内容："+data,0xff);
-        m_info->err+="解析 token 响应失败: " + err.errorString()+"\n返回内容："+data;
-          suo =false;
-        return false;
-    }
-
-    QJsonObject obj = doc.object();
-    QString newToken = obj.value("access_token").toString();
-    if (newToken.isEmpty()) {
-        QString errMsg = obj.value("message").toString();
-        if (errMsg.isEmpty())
-            errMsg = "appid 或 secret 错误（无具体返回信息）";
-        AppendEventLog("获取 token 失败: " + errMsg,0xff);
-        m_info->err+="获取 token 失败: " + errMsg;
-        suo =false;
-        return false;
-    }
-    m_accessToken2=newToken;
-    std::swap(m_accessToken2,m_accessToken); //防止多线程
-    int expiresIn = obj.value("expires_in").toString().toInt();
-    m_tokenExpireTime = now + expiresIn-50;
-    AppendEventLog(QString("%1 Token 刷新->%2")
-                       .arg(m_info->nickname,QDateTime::fromSecsSinceEpoch(m_tokenExpireTime).toString()), Qt::darkGreen);
-     suo =false;
-    return true;
-}
 //主线程 专属
 void QQBotClient::onRefreshReplyFinished()
 {
@@ -1475,13 +1419,7 @@ QString QQBotClient::PostSync(const QString &url, const QByteArray &jsonData, co
     }
     std::future<QByteArray> future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
     QString resp = future.get();
-    if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
-        refreshAccessToken(true);
-        headers.insert("Authorization", "QQBot " + m_accessToken);
-        future = NetManager::instance()->post(url, jsonData, headers, timeoutMs);
-        resp = future.get();
-
-    }
+    // token 刷新改由主线程定时任务（onRefreshReplyFinished）统一处理，这里不再救火重发
     return resp;
 
 }
@@ -1504,16 +1442,7 @@ QString QQBotClient::PostSync(const QString &url, const QJsonObject &jsonData,
     std::future<QByteArray> future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
     QString resp = future.get();
 
-    if (resp.contains("token not exist or expire") || resp.contains("AccessToken")) {
-
-        refreshAccessToken(true);
-        suo =false;
-        headers.insert("Authorization", "QQBot " + m_accessToken);
-        jsonbyte = QJsonDocument(currentJson).toJson(QJsonDocument::Compact);
-        future = NetManager::instance()->post(url, jsonbyte, headers, timeoutMs);
-        resp = future.get();
-        return resp;
-    }
+    // token 刷新改由主线程定时任务（onRefreshReplyFinished）统一处理，这里不再救火重发
 
     if (url.contains("/messages") && resp.contains("被去重")) {
         currentJson["msg_seq"] = m_info->message_sent + m_info->message_received;
@@ -1560,28 +1489,24 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
     }
 
     QByteArray jsonData = QJsonDocument(json).toJson(QJsonDocument::Compact);
-
-    // 发起异步请求（context = this，回调在 this 所在线程执行）
+    int appid = m_info->appid_int;
+    // 发起异步请求（回调丢线程池执行，不在网络线程也不在主线程）
     NetManager::instance()->postAsync(url, jsonData, headers, timeoutMs,
-                                      [this, url, json, contentType, timeoutMs, finalCallback, retryCount]
+                                      [appid,url, json, contentType, timeoutMs, finalCallback, retryCount]
                                       (const QString& response, QNetworkReply::NetworkError error) {
 
-                                        if (response.contains("token not exist or expire") || response.contains("AccessToken") && retryCount < 2) {
-
-
-                                            refreshAccessToken(true);  // 刷新
-
-                                            suo =false;
-                                            doPost(url, json, contentType, timeoutMs, finalCallback, retryCount + 1);
-                                            return;
-                                        }
-
+                                        // token 刷新改由主线程定时任务（onRefreshReplyFinished）统一处理，
+                                        // 这里不再救火刷新重发
 
                                         if (response.contains("被去重") && retryCount < 3) {
                                             if(json["noref"].toBool()) return;
                                             QJsonObject modifiedJson = json;
-                                            modifiedJson["msg_seq"] = m_info->message_sent + m_info->message_received;
-                                            doPost(url, modifiedJson, contentType, timeoutMs, finalCallback, retryCount + 1);
+                                            QQBotClient *c = m_botClients.value(appid);   // 找不到返回 nullptr，不插入
+                                            if (c) {
+                                                QJsonObject modifiedJson = json;
+                                                modifiedJson["msg_seq"] = c->m_info->message_sent + c->m_info->message_received;
+                                                c->doPost(url, modifiedJson, contentType, timeoutMs, finalCallback, retryCount + 1);
+                                            }
                                             return;
                                         }
 
@@ -1592,22 +1517,15 @@ void QQBotClient::doPost(const QString& url, const QJsonObject& json,
                                     });
 }
 
-//    {"message":"token not exist or expire","code":11244,"err_code":11244,"trace_id":"5142e0238bc8314d8aa222dd3bee4949"}
 //频道用
 void QQBotClient::postRawAsync(const QString &url, const QByteArray &data,
                                const QHash<QString, QString> &headers, int timeoutMs,
                                Callback callbacks) {
     NetManager::instance()->postAsync(url, data, headers, timeoutMs,
-                                      [this, url, data, headers, timeoutMs, callbacks]
+                                      [callbacks]
                                       (const QString &response, QNetworkReply::NetworkError error) {
-                                          if (response.contains("token not exist or expire")  || response.contains("AccessToken") ) {
-                                              refreshAccessToken(true);
-                                              QHash<QString, QString> newHeaders = headers;
-                                              newHeaders["Authorization"] = "QQBot " + m_accessToken;
-                                              postRawAsync(url, data, newHeaders, timeoutMs, callbacks);
-                                              return;
-                                          }
-                                          callbacks(response, error);
+                                          if (callbacks)
+                                              callbacks(response, error);
                                       });
 }
 
@@ -1636,7 +1554,7 @@ void QQBotClient::GetAsync(const QString &url, const QString &contentType, int t
     } else {
         headers.insert("Content-Type", contentType);
     }
-    NetManager::instance()->getAsync(url, headers, timeoutMs,callbacks);
+    NetManager::instance()->getAsync(url, headers, timeoutMs, callbacks);
 }
 
 QString QQBotClient::PatchSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs) {

@@ -13,6 +13,11 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <functional>
+#include <memory>
+#include <QMutex>
+#include <QSharedPointer>
+#include <atomic>
 
 #include "qqbotclient.h"
 #include "placeholderlineedit.h"
@@ -58,6 +63,10 @@ struct Ai_Fun {
 
 };
 
+// AI 回复回调：异步请求完成时调用（在线程池线程执行，不是主线程）
+using AiReplyCb = std::function<void(const QString&)>;
+using AiRawCb   = std::function<void(const QByteArray&)>;
+
 
 struct SessionContext {
     QTimer* timer = nullptr;
@@ -70,7 +79,10 @@ struct SessionContext {
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
     int duihts=0;
     int cflx=0;//触发类型 1艾特 2其他
-    VectorMemory* memory = nullptr;
+    // 用 QSharedPointer：AI 请求在线程池线程跑，回调里还会接着用 memory，
+    // 裸指针会被主线程的清理(clearSessionResources)提前 delete → use-after-free。
+    // QSharedPointer 的引用计数是原子的，跨线程拷贝安全，持有副本即可保证对象活着。
+    QSharedPointer<VectorMemory> memory;
     QString groupId;
     QString msgId;
     QString openid;
@@ -91,10 +103,29 @@ public:
     QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
     QByteArray Ai_post3(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);
 
+    // ---- 异步回调版（请求发出后立即返回，不占用调用线程）----
+    // cb 一定会被调用一次；失败时传回空串（同步版是返回空串让 Ai_posts 换下一个 key）
+    void Ai_postsAsync(const MessageEvent &ev, int model_index, const QJsonObject &sxw, int timeoutMs, AiReplyCb cb);
+    void Ai_postAsync(const MessageEvent &ev, const QString &url, const QString &key,
+                      const QJsonObject &sxw, int timeoutMs, AiReplyCb cb);
+    void Ai_post3Async(const QString &url, const QString &key, const QJsonObject &sxw,
+                       int timeoutMs, AiRawCb cb);
+
     QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
     void list_c(); // 切换机器人
+    // 注意：m_sessions 会被线程池线程访问（flushPendingMessages / ...Tail），
+    // 主线程（onNewMessage / onCleanupTimer / onAsyncReply / 析构 / aisxw 界面）也在读写。
+    // 任何一次访问都必须持 m_sessionsMutex，否则 QMap 和 SessionContext 里的
+    // QString(COW) / 裸指针会被并发写坏 —— 表现为后面 delete ctx.timer / stop() 莫名其妙崩。
     QMap<QString, SessionContext> m_sessions;   // 以 openid 为键
+    mutable QRecursiveMutex m_sessionsMutex;
+
+    // 线程安全地改写某个会话的 isProcessing（可在任意线程调用）
+    void setSessionProcessing(const QString &openid, bool processing);
+
+    // 析构中：此时可能还有 AI 回调在线程池里飞，入口先判断它，别再去碰已销毁的成员
+    std::atomic_bool m_shuttingDown{false};
     QList<ModelData> modelList;
     QList<InterfaceData> globalInterfaces;
     void trimToolResponses(QJsonObject &context, int maxToolMessages, int truncateLimit);
@@ -257,10 +288,41 @@ private:
     QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type);
     void flushPendingMessages(const QString& openid,bool send);
 
+    // flushPendingMessages 的后半段：决策结果出来之后（可能是异步回调里）接着走
+    void flushPendingMessagesTail(const QString &openid, AccountInfo *info, int model_index,
+                                  QJsonObject baseContext, int oldMsgCount,
+                                  bool juecejg, const QString &fh,
+                                  const QList<PendingMessage> &pendings, const MessageEvent &ev);
+
+    // 一次 AI 响应的解析结果
+    //  Ok            → obj 可用，继续判断 choices / 工具调用
+    //  TokenOverflow → 上下文超 token，已删一条历史，调用方应重试
+    //  Failed        → 彻底失败（原因已写进 err），换下一个 key
+    enum class AiParseResult { Ok, TokenOverflow, Failed };
+    AiParseResult parseAiResponse(const QByteArray &response, const QString &key,
+                                  QJsonObject &sxw, QString &err, QJsonObject &obj);
+
+    // 一次 AI 响应的处理（追加上下文 + 执行工具调用）。同步/异步两条链路共用这段。
+    struct AiStepResult {
+        bool finished = false;  // true=本轮结束；false=带着新上下文再发一轮
+        bool failed   = false;  // finished 且 failed=失败（err 为原因）
+        QString err;
+        QString text;           // finished 且 !failed=最终回复
+    };
+    AiStepResult handleAiResponse(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw);
+
+    // 异步核心：单次接口上的「重试 + 多轮工具调用」状态机
+    void Ai_postAsyncCore(const MessageEvent &ev, const QString &url, const QString &key,
+                          std::shared_ptr<QJsonObject> sxw, std::shared_ptr<QString> err,
+                          int timeoutMs, AiReplyCb cb);
+    // 同 Ai_postsAsync，但上下文用 shared_ptr 共享：回调里能拿到请求过程中新增的消息
+    void Ai_postsAsyncCore(const MessageEvent &ev, int model_index,
+                           std::shared_ptr<QJsonObject> sxw, int timeoutMs, AiReplyCb cb);
+
 
     QTimer* m_cleanupTimer = nullptr;
     void startHourlyCleanupTimer();
-    void clearSessionResources(SessionContext &ctx);
+    void clearSessionResources(SessionContext &ctx);   // 调用方需已持有 m_sessionsMutex
     void clearAllSessions();
 };
 

@@ -48,7 +48,13 @@ void aisxw::on_pushButton_2_clicked()
 void aisxw::on_pushButton_3_clicked()
 {
     ui->listWidget->clear();
-    for(const auto &sess : std::as_const(ai_ui->m_sessions))
+    // AI 回调在线程池线程也会读写 m_sessions：先在锁内拷一份快照再遍历，
+    // 因为下面 getOrUpdateUser 可能同步发请求，不能占着锁。
+    const QList<SessionContext> snaps = [this] {
+        QMutexLocker lk(&ai_ui->m_sessionsMutex);
+        return ai_ui->m_sessions.values();
+    }();
+    for(const auto &sess : snaps)
     {
         QString name;
         if(sess.type == 0 || sess.type ==2){
@@ -92,6 +98,7 @@ void aisxw::on_pushButton_clicked()
         return ;
     }
     QString openid = m_openid.section(':', -1);
+    QMutexLocker lk(&ai_ui->m_sessionsMutex);
     if(ai_ui->m_sessions.contains(openid))
     {
         auto &sess = ai_ui->m_sessions[openid];
