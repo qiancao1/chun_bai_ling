@@ -1,5 +1,6 @@
 #include "pluginmarketwindow.h"
 #include "global.h"
+#include "plugininstaller.h"   // 解压工具定位（平台差异只在这一处）
 #include <QGridLayout>
 #include <QFrame>
 #include <QMessageBox>
@@ -371,26 +372,16 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
         return;
     }
 
-    // 检查 7za.exe 是否存在
-
-    #ifdef _WIN32
-        QString appDir = QCoreApplication::applicationDirPath();
-        QString sevenZipPath = appDir + "/7za.exe";
-        if (!QFile::exists(sevenZipPath)) {
-            QMessageBox::warning(this, "错误", "解压工具 7za.exe 未找到，请将 7za.exe 放置在程序目录下");
+    // 解压工具预检查
+    // 平台差异统一在 plugin/plugininstaller.h 里的 resolveSevenZip()，
+    // 这条预检查以前只认 7zz/7z，在只装了 7za 的 Linux 上会误拦（下面 finishInstall 却认得 7za）。
+    {
+        QString zipErr;
+        if (PluginInstaller::resolveSevenZip(&zipErr).isEmpty()) {
+            QMessageBox::warning(this, "错误", zipErr);
             return;
         }
-    #else
-        // Linux 下可以用 QStandardPaths::findExecutable 提前检查
-        QString sevenZipPath = QStandardPaths::findExecutable("7zz");
-        if (sevenZipPath.isEmpty()) {
-            sevenZipPath = QStandardPaths::findExecutable("7z");
-        }
-        if (sevenZipPath.isEmpty()) {
-            QMessageBox::warning(this, "错误", "未找到 7z/7zz，请安装 p7zip-full (sudo apt install p7zip-full)");
-            return;
-        }
-    #endif
+    }
     Installed_type=-1;
     if(targetInfo->type=="Python")
     {
@@ -540,46 +531,12 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
 void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath, QProgressDialog *progress)
 {
 
-    QString sevenZipPath;
-#ifdef _WIN32
-    // Windows 保持原样
-    sevenZipPath = QCoreApplication::applicationDirPath() + "/7za.exe";
-
-#else
-    // Linux：按优先级依次探测
-    QStringList candidates;
-    candidates << "7zz"    // 官方新版 7-Zip (推荐)
-               << "7z"     // p7zip-full 或 官方旧版符号链接
-               << "7za";   // p7zip 独立版 (部分旧系统)
-
-    for (const QString &cmd : candidates) {
-        QString path = QStandardPaths::findExecutable(cmd);
-        if (!path.isEmpty()) {
-            sevenZipPath = path;
-            break;
-        }
-    }
-
-    // 如果还没找到，再检查常见固定路径（兜底）
+    // 解压工具定位：平台差异统一在 plugin/plugininstaller.h（Windows 用程序目录的
+    // 7za.exe；Linux/macOS 按 7zz → 7z → 7za 顺序查 PATH 再兜底固定路径）
+    QString zipLocateErr;
+    const QString sevenZipPath = PluginInstaller::resolveSevenZip(&zipLocateErr);
     if (sevenZipPath.isEmpty()) {
-        QFileInfo possible("/usr/bin/7zz");
-        if (possible.exists() && possible.isExecutable())
-            sevenZipPath = possible.absoluteFilePath();
-        else {
-            QFileInfo possible2("/usr/bin/7z");
-            if (possible2.exists() && possible2.isExecutable())
-                sevenZipPath = possible2.absoluteFilePath();
-        }
-    }
-
-#endif
-
-    // 最终检查是否真的找到了
-    if (sevenZipPath.isEmpty() || !QFileInfo::exists(sevenZipPath)) {
-        QString errMsg = QSysInfo::productType() == "windows" ?
-                             "解压工具 7za.exe 未找到" :
-                             "未找到 7z/7zz/7za 命令，请安装 p7zip-full 或 7zip (sudo apt install p7zip-full)";
-        QMessageBox::warning(this, "错误", errMsg);
+        QMessageBox::warning(this, "错误", zipLocateErr);
         progress->deleteLater();
         return;
     }
@@ -637,11 +594,15 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                     return;
                 }
 
-                // 后续安装逻辑（保持不变）
+                // 后续安装逻辑
+                // Python / JS 必须走会补依赖的入口（pip install / npm install），
+                // 裸 LoadPlugin 不补依赖，带 requirements.txt / package.json 的插件会因缺包加载失败。
+                // 传绝对目录 targetDir：这两个函数内部用 QFile::exists(dir + "/main.py") 和
+                // setWorkingDirectory(dir)，相对路径会依赖进程的当前工作目录，不可靠。
                 if (Installed_type == 0) {
-                    pluginPage->LoadPlugin_Python_pip("plugins/" + info->name);
+                    pluginPage->LoadPlugin_Python_pip(targetDir);
                 } else if (Installed_type == 3) {
-                    pluginPage->npmJSpk("plugins/" + info->name);
+                    pluginPage->npmJSpk(targetDir);
                 } else {
                     QMessageBox::information(this, "下载完成", info->name + "\n此类插件需要手动安装（dll 未知入口）");
                 }

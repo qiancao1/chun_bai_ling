@@ -368,4 +368,32 @@ int extractParams(const QString &text, const QString &cmd, int filter, Args&... 
     return params.size(); // 返回实际提取的参数个数
 }
 
+// ---------------------------------------------------------------------------
+// 原生插件动态库的平台差异（Windows .dll / macOS .dylib / Linux .so）
+// 扫描插件目录、判断插件类型时统一走这两个函数，避免各处写死 "*.dll"。
+// ---------------------------------------------------------------------------
+inline QStringList nativePluginFilters()
+{
+#ifdef Q_OS_WIN
+    return QStringList{ QStringLiteral("*.dll") };
+#elif defined(Q_OS_MAC)
+    return QStringList{ QStringLiteral("*.dylib"), QStringLiteral("*.so") };
+#else
+    return QStringList{ QStringLiteral("*.so") };
+#endif
+}
+
+// 传入 info.suffix()（不含点），判断是否是当前平台的原生插件库文件
+inline bool isNativePluginSuffix(const QString &suffix)
+{
+#ifdef Q_OS_WIN
+    return suffix.compare(QLatin1String("dll"), Qt::CaseInsensitive) == 0;
+#elif defined(Q_OS_MAC)
+    return suffix.compare(QLatin1String("dylib"), Qt::CaseInsensitive) == 0
+        || suffix.compare(QLatin1String("so"), Qt::CaseInsensitive) == 0;
+#else
+    return suffix.compare(QLatin1String("so"), Qt::CaseInsensitive) == 0;
+#endif
+}
+
 #endif // GLOBAL_H

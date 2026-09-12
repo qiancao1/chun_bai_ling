@@ -16,6 +16,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
+#include <QPointer>
+#include <QTimer>
 #include <QApplication>
 #include <qlibrary.h>
 #include "appwindow.h"
@@ -1378,11 +1380,19 @@ bool PluginPage::uninstall_Plugin2(int index)
 }
 QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<int> &array)  //运行时调用
 {
-    int index = findPluginIndex(path);
-    if(index!=-1) return path + "\n插件已经 载入请勿重复载入";
+    // Python 插件的 path 必须以分隔符结尾：LoadPlugin_py 用 info.path + "main.py" 拼入口文件，
+    // 少一个分隔符就会拼成 "plugins/xxxmain.py"，直接报「main.py 文件不存在」。
+    // 这里统一规范化，聊天指令 / WebUI / 市场安装器三个入口就不必各自记得补。
+    // （JS 不用管：LoadPlugin_js 走 QDir::absoluteFilePath，cleanPath 会自己归一化）
+    QString normPath = path;
+    if (type == 0 && !normPath.endsWith('/') && !normPath.endsWith('\\'))
+        normPath += '/';
+
+    int index = findPluginIndex(normPath);
+    if(index!=-1) return normPath + "\n插件已经 载入请勿重复载入";
     py::gil_scoped_acquire gil;
     PluginInfo info;
-    info.path=path;
+    info.path=normPath;
     info.type = type;
     info.enabled = enabled;
 
@@ -1510,19 +1520,24 @@ void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
     QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
     doLoadPythonPlugin(relDir);
     if (success) {
-
-        //m_pipDialog->close();
-
-
+        // 成功：延迟 10 秒自动关掉日志窗，留时间让用户看完安装输出。
+        // 用 QPointer 兜住"用户在这 10 秒里自己先把窗口关了"的情况 ——
+        // dialog 是 WA_DeleteOnClose 的裸指针成员，关掉之后裸指针就成了野指针。
+        m_pipLog->append("\n安装已完成，窗口将在 10 秒后自动关闭...");
+        QPointer<QDialog> alive(m_pipDialog);   // 兜住"用户在这 10 秒里提前自己关掉"
+        QTimer::singleShot(10000, this, [this, alive]() {
+            if (alive) alive->close();          // WA_DeleteOnClose → 自动 delete
+            m_pipDialog = nullptr;              // 不管用户有没有提前关，都清掉成员，
+            m_pipLog = nullptr;                 // 否则关过的窗口会在成员里留下野指针
+        });
     } else {
         // 安装失败，提示用户，也可选择不加载
         QMessageBox::warning(this, "安装依赖失败",
                              "pip install 失败，请检查网络或手动安装依赖。\n"
                              "您可以手动执行：pip install -r requirements.txt");
         // 失败后若想继续加载（依赖可能已存在），可调用 doLoadPythonPlugin，但一般不推荐
+        m_pipLog->append("\n安装失败，窗口不会自动关闭，请手动关闭...");
     }
-
-    m_pipLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
 }
 void PluginPage::LoadPlugin_Python_pip(const QString &dir)
 {
@@ -1716,10 +1731,19 @@ void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
         QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
 
         doLoadPlugin(relDir);
+
+        // 成功：延迟 10 秒自动关掉日志窗（和 pip 那个一致）。
+        m_npmLog->append("\n安装已完成，窗口将在 10 秒后自动关闭...");
+        QPointer<QDialog> alive(m_npmDialog);   // 兜住"用户在这 10 秒里提前自己关掉"
+        QTimer::singleShot(10000, this, [this, alive]() {
+            if (alive) alive->close();          // WA_DeleteOnClose → 自动 delete
+            m_npmDialog = nullptr;              // 不管用户有没有提前关，都清掉成员，
+            m_npmLog = nullptr;                 // 否则关过的窗口会在成员里留下野指针
+        });
     } else {
         QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
+        m_npmLog->append("\n安装失败，窗口不会自动关闭，请手动关闭...");
     }
-    m_npmLog->append("\n安装已经结束请手动关闭窗口...\n至于为什么不自动关闭 因为可能有错误");
 }
 // 主函数
 void PluginPage::LoadPlugin_JS() {
@@ -1752,7 +1776,7 @@ void PluginPage::npmJSpk(const QString &dir){
     }
     if (npmPath.isEmpty()) {
         QMessageBox::warning(this, "错误", "未找到 npm，请确保 Node.js 已安装并配置 PATH。 如果你从来没安装node.js 请打开下崽器安装");
-        m_npmDialog->close();
+        // 注意：这里 dialog 还没创建，不能 close()，否则是空指针解引用直接崩
 
         doLoadPlugin(dir);
         return;
@@ -1905,6 +1929,9 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
 {
     #ifdef _WIN32
+    // bridge 只在 miaomiao32.exe 存在时才创建（main.cpp），
+    // 没装 32 位模块时这里必须直接返回，否则解引用空指针会直接崩掉。
+    if (!bridge) return QString();
     QJsonObject reqJson;
     reqJson["type"] = type;                       // 加载插件
     reqJson["path"] = info.loadedDllPath;      // 新路径（临时目录）

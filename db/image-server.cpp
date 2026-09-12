@@ -305,13 +305,18 @@ static bool isTokenValid(const QString &token)
     return g_validTokens.contains(token);
 }
 
+// 返回请求体的字节数。没有 Content-Length（GET/HEAD 等一律没有）就是 0。
+// 注意：这里绝不能返回 -1 —— handleRequest 会把它算进 totalNeeded，
+// 导致少消费 1 个字节、在缓冲区头部留下一个孤立的 '\n'，
+// 于是同一条 keep-alive 连接上的**下一条请求**会被解析成空请求行，
+// 回报 400 "Malformed request line" 并断开连接（浏览器表现为 css/js 随机 400）。
 static int getContentLength(const QByteArray &headers)
 {
-    QRegularExpression re("Content-Length: (\\d+)", QRegularExpression::CaseInsensitiveOption);
+    QRegularExpression re("Content-Length:\\s*(\\d+)", QRegularExpression::CaseInsensitiveOption);
     auto match = re.match(headers);
     if (match.hasMatch())
         return match.captured(1).toInt();
-    return -1;
+    return 0;
 }
 
 static QString getBoundary(const QByteArray &headers)
@@ -482,7 +487,8 @@ static void webui(QTcpSocket *socket, const QByteArray &pathQuery)
     if (mimeType.isEmpty())
         mimeType = "application/octet-stream";
 
-    if (fi.fileName() == "index.html") {
+    if (fi.fileName().endsWith(".html", Qt::CaseInsensitive)) {
+        // 所有 html 页面都做占位符替换（index.html / admin.html 等）
         QString content = QString::fromUtf8(data);
         content.replace("占位符方式",  g_ssl ? "wss" : "ws");
         content.replace("占位符端口", QString::number(g_config["webws_p"].toInt()));

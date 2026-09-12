@@ -163,6 +163,7 @@ set(PROJECT_SOURCES_ALL
     ui/statuschartwidget.h ui/statuschartwidget.cpp
     network/clientconnection.h network/clientconnection.cpp
     network/websocketserver.h network/websocketserver.cpp
+    network/webuiadmin.h network/webuiadmin.cpp
     ai/aifujia.h ai/aifujia.cpp ai/aifujia.ui
     ui/chatwidget.h
     ui/appwindow.h ui/appwindow.cpp

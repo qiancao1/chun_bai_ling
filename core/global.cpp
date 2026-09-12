@@ -24,6 +24,7 @@
 #include <QNetworkReply>
 #include "chatpage.h"
 #include "pluginmarket.h"
+#include "plugininstaller.h"   // 市场安装：下载 + 解压 + 加载
 #include "netmanager.h"
 #include "mainwindow.h"
 #include <QHostInfo>
@@ -491,6 +492,9 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
         oldInfoPtr->appid=oldInfoPtr->nickname;
         oldInfoPtr->appid_int = oldInfoPtr->appid.toInt();
         m_accounts.append(oldInfoPtr);
+        // 新增账号必须落盘：refreshCards2 只画卡片，不写 LMDB，
+        // 否则（含扫码登录）重启后账号就没了。
+        accountPage->saveAccounts(oldInfoPtr.get());
         QMetaObject::invokeMethod(qApp, [=]() {
             accountPage->refreshCards2(oldInfoPtr.get());
 
@@ -743,7 +747,25 @@ QString onMessageReceived(const QString& msg) {
         if (isPluginInstalled(target.id)) {
             return "该插件已安装，无需重复安装。";
         }
-        return "安装插件没写呢";
+
+        // ---------- 下载 + 解压 + 加载 ----------
+        // 统一实现在 plugin/plugininstaller.h：定位 7z → 下载 zip → 解压到
+        // plugins/<名字>/ → 按目录内容识别入口并 LoadPlugin。
+        // 这里是同步阻塞调用（和上面 #插件市场 拉列表一个风格），
+        // 因此会占用当前处理线程，和 fetchPluginListFromUrl 同一约束。
+        QString note;
+        const QString installErr = PluginInstaller::installMarketPlugin(target, note);
+        if (!installErr.isEmpty()) {
+            const QString dispName = target.name.isEmpty() ? target.id : target.name;
+            return QString("❌ 安装「%1」失败：%2").arg(dispName, installErr);
+        }
+
+        QString okName = target.name.isEmpty() ? target.id : target.name;
+        QString okstr = QString("✅ 已安装「%1」").arg(okName);
+        if (!target.versionName.isEmpty()) okstr += QString(" %1").arg(target.versionName);
+        if (!note.isEmpty()) okstr += "\n> " + note;
+        okstr += "\n发送 [#插件列表]() 查看已装插件，或 [#插件市场]() 继续浏览";
+        return okstr;
     }
     return "";
 }
@@ -775,8 +797,8 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         }
         QMetaObject::invokeMethod(qApp, [index]() {
             pluginPage->Enabled_Plugin(m_pluginList[index]); // 假设返回 bool
-
-        }, Qt::BlockingQueuedConnection); // 注意：使用 BlockingQueuedConnection 会阻塞当前线程直到 lambda 执行完毕
+            pluginPage->updatePluginItemInUI(index);
+        }, Qt::QueuedConnection);
         return QString("已启用插件 %1").arg(m_pluginList[index].name);
     }
     // ---------- 禁用插件 ----------
@@ -790,10 +812,12 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         }
         if (QThread::currentThread() == qApp->thread()) {
             pluginPage->disable_Plugin(m_pluginList[index]);
+            pluginPage->updatePluginItemInUI(index);
         } else {
             QMetaObject::invokeMethod(qApp, [index]() {
                 pluginPage->disable_Plugin(m_pluginList[index]);
-            }, Qt::BlockingQueuedConnection);
+                pluginPage->updatePluginItemInUI(index);
+            }, Qt::QueuedConnection);
         }
         return  QString("已禁用插件 %1").arg(m_pluginList[index].name);
     }
@@ -811,7 +835,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         } else {
             QMetaObject::invokeMethod(qApp, [index]() {
                 pluginPage->Reload_Plugin(index);
-            }, Qt::BlockingQueuedConnection);
+            }, Qt::QueuedConnection);
         }
         return QString("已重载插件 %1").arg(m_pluginList[index].name);
     }
@@ -832,7 +856,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             QMetaObject::invokeMethod(qApp, [index]() {
                 pluginPage->uninstall_Plugin2(index);
                 pluginPage->savePlugins();
-            }, Qt::BlockingQueuedConnection);
+            }, Qt::QueuedConnection);
         }
 
         return QString("已卸载插件 %1").arg(name) ;
@@ -854,8 +878,8 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         }
 
         int type = -1;  // 最终确定的类型
-        if (info.isFile() && info.suffix().compare("dll", Qt::CaseInsensitive) == 0) {
-            // DLL 文件，默认以 64 位方式加载（内部自动降级 32 位）
+        if (info.isFile() && isNativePluginSuffix(info.suffix())) {
+            // 原生动态库（Win .dll / macOS .dylib / Linux .so），默认以 64 位方式加载（内部自动降级 32 位）
             type = 1;
         } else if (info.isDir()) {
             // 检查入口文件，优先 Python
@@ -869,7 +893,8 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
                 return QString("错误：文件夹 %1 中没有 main.py 或 main.js，无法加载").arg(path);
             }
         } else {
-            return QString("错误：路径不是 DLL 文件或文件夹 - %1").arg(path);
+            return QString("错误：路径既不是原生插件库文件（%1），也不是插件文件夹 - %2")
+                    .arg(nativePluginFilters().join(" / "), path);
         }
 
         // ----- 执行加载（在主线程）-----
@@ -881,7 +906,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             QMetaObject::invokeMethod(qApp, [path, type, &resultMsg]() {
                 QList<int> dummy;
                 resultMsg = pluginPage->LoadPlugin(path, type, true, dummy);
-            }, Qt::BlockingQueuedConnection);
+            }, Qt::QueuedConnection);
         }
 
         if (!resultMsg.isEmpty())
@@ -907,16 +932,17 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
             result.append(QString("\n**%1** 目录:\n>").arg(dirName));
 
-            const QStringList dllFiles = dir.entryList(QStringList() << "*.dll", QDir::Files, QDir::Name);
+            // 原生动态库后缀随平台变化，不能写死 "*.dll"（见 global.h 的 nativePluginFilters）
+            const QStringList nativeFiles = dir.entryList(nativePluginFilters(), QDir::Files, QDir::Name);
             const QStringList subDirs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
 
-            if (dllFiles.isEmpty() && subDirs.isEmpty()) {
+            if (nativeFiles.isEmpty() && subDirs.isEmpty()) {
                 result.append("  (空)\n");
                 continue;
             }
 
-            // DLL 文件
-            for (const QString &dll : dllFiles) {
+            // 原生动态库文件
+            for (const QString &dll : nativeFiles) {
                 QString fullPath = dirName + "/" + dll;
                 result.append(QString("  `%1` [加载](#加载插件 %2)\n").arg(dll, fullPath));
             }
@@ -1264,7 +1290,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             ">[数据统计]() 查看机器人收发统计\n\n"
             "**插件相关**\n"
             ">JS:%1 | Python:%4\nDLL:%2 | DLL32:%3\n>"
-            "[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]() <序号>\n\n"
+            "[#插件启用]() <序号>\n>[#插件禁用]() <序号>\n>[#插件列表]() | [#插件列表A]()\n\n"
             "**其他**\n"
             ">[开启拟人]() | [关闭拟人]()\n"
             ">[%5]() 启用或取消白名单系统\n"
@@ -1339,7 +1365,36 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             res.append(QString::number(i));
             res.append(")\n");
         }
-        res.append("可用指令：\n[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]()<序号>\n\n**需超管权限**\n>[#重载插件]() <序号>\n>[#启用插件]() <序号>\n>[#禁用插件]() <序号>\n>[#卸载插件]() <序号>\n>[#加载插件]() <路径>\n[#插件市场]()\n[#扫描插件]() 查看现有插件");
+        res.append("可用指令：\n[#插件列表]()\n>[#插件启用]() <序号>\n>[#插件禁用]()<序号>\n\n**需超管权限**\n>[#插件列表A]()\n>[#重载插件]() <序号>\n>[#启用插件]() <序号>\n>[#禁用插件]() <序号>\n>[#卸载插件]() <序号>\n>[#加载插件]() <路径>\n[#插件市场]()\n[#扫描插件]() 查看现有插件");
+        return res;
+    }
+    if (ev.msg == "#插件列表A") {
+        // 你已有的代码，保持不变
+        QString res;
+        res.reserve(1024);
+        res.append("**插件列表**\n");
+        for (int i = 0; i < m_pluginList.size(); ++i) {
+            auto &p = m_pluginList[i];
+            res.append(">");
+            res.append(QString::number(i));
+            res.append(".");
+            if (p.type == 0)  res.append("[Py] ");
+            else if (p.type == 1) res.append("[x64] ");
+            else if (p.type == 2) res.append("[x32] ");
+            else if (p.type == 3) res.append("[JS] ");
+            res.append(p.name);
+
+            if (p.enabled)
+                res.append(" [禁用](#禁用插件");
+            else
+                res.append(" [启用](#启用插件");
+            res.append(QString::number(i));
+            res.append(") ");
+            res.append("[卸载](#卸载插件");
+            res.append(QString::number(i));
+            res.append(")\n");
+        }
+        res.append("可用指令：\n[#插件列表]() {当前bot}\n>[#插件启用]() <序号>\n>[#插件禁用]()<序号>\n\n**需超管权限**\n>[#插件列表A]()\n>[#重载插件]() <序号>\n>[#启用插件]() <序号>\n>[#禁用插件]() <序号>\n>[#卸载插件]() <序号>\n>[#加载插件]() <路径>\n[#插件市场]()\n[#扫描插件]() 查看现有插件");
         return res;
     }
 

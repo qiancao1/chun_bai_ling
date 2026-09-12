@@ -1,5 +1,6 @@
 // websocketserver.cpp
 #include "websocketserver.h"
+#include "webuiadmin.h"
 #include "global.h"
 #include <QUrlQuery>
 #include <QJsonArray>
@@ -652,6 +653,9 @@ void WebSocketServer::onClientMessageReceived(const QJsonObject &request)
         return;  // 函数立即返回，主线程不阻塞
     }
 
+    else if (webuiAdminHandle(action, params, client, reqId)) {
+        // 由 network/webuiadmin.cpp 处理：账号管理 / 插件管理 / 插件市场
+    }
     else {
         sendError(client, "Unknown action: " + action, reqId);
     }
