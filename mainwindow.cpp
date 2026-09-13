@@ -72,14 +72,17 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.2.16.64"
-#define APP_BUILD_NUMBER 64
+#define APP_VERSION_STR "v1.3.0.70"
+#define APP_BUILD_NUMBER 70
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.2.16.64 (2026-09-10)
+## v1.3.0.70 (2026-09-13)
 - 优化 http 优化复有链接 http池改单线程 回调使用线程池
 - 用户 ai到回调 之前堵塞
+- 增加 webui 增加了新的界面
+- 增加 指令 安装插件 部分指令
+- 优化 主动心跳失败 移除自动断开连接
 
 ## v1.2.16.64 (2026-09-09)
 - 修复 部分数据没传递到json里面

@@ -286,7 +286,7 @@ void QQBotClient::onConnected()
 
 void QQBotClient::onDisconnected()
 {
-    AppendEventLog("WebSocket 已断开(30分钟腾讯会强行断开一次...是正常现象)", 0xff);
+    AppendEventLog(m_info->nickname+"WebSocket 已断开(30分钟会强行断开一次)", 0xff);
     stopHeartbeatTimer();
     bool wasOnline = m_info->online;
     m_info->online = false;
@@ -1365,9 +1365,9 @@ void QQBotClient::onHeartbeatTimeout()
     sendHeartbeat();
     if(代理) return;
     m_invalidHeartbeatCount++;
-    if (m_invalidHeartbeatCount >= 3) {
-        AppendEventLog("连续3次心跳无响应，主动断开重连" ,0xff);
-        m_webSocket.close();
+    if (m_invalidHeartbeatCount >= 10) {
+        AppendEventLog("连续10次心跳无响应，" ,0xff);
+        m_invalidHeartbeatCount=0;
     }
 }
 
@@ -1396,6 +1396,7 @@ void QQBotClient::scheduleReconnect(int delaySec)
     }
     m_reconnectAttempts++;
     int wait = delaySec * m_reconnectAttempts;
+    if(wait!=3)
     AppendEventLog(QString("将在 %1 秒后进行第 %2 次重连...").arg(wait).arg(m_reconnectAttempts),0xD891BC);
     m_reconnectTimer.start(wait * 1000);
 }
