@@ -221,7 +221,11 @@ private:
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
                        const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
-    QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, MessageLogContext &ctx);
+    // ctx 只读：函数内部仅取 ctx.openid / ctx.cb，并按值转发给 send_Media。
+    // 必须是 const 引用 —— 否则调用方传临时对象（如 send_messages 传 MessageLogContext()）
+    // 在 GCC/Clang 下报 “cannot bind non-const lvalue reference to an rvalue”，
+    // MSVC 把这个当语言扩展放过了，所以 Windows 能过、Linux 不能。
+    QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, const MessageLogContext &ctx);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);

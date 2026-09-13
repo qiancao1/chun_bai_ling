@@ -154,6 +154,7 @@ set(PROJECT_SOURCES_ALL
     ui/htmltoimagewidget.h ui/htmltoimagewidget.cpp
     network/screenshotsyncclient.h network/screenshotsyncclient.cpp
     ai/aiwidget.h ai/aiwidget.cpp
+    ai/aiwidget2.cpp
     ai/role.h
     ai/plts.h ai/plts.cpp ai/plts.ui
     ai/aisxw.h ai/aisxw.cpp ai/aisxw.ui
@@ -190,7 +191,7 @@ endif()
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
-        ai/aiwidget2.cpp
+
 
 
 

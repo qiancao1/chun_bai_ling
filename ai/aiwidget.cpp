@@ -4,6 +4,7 @@
 #include "bqbgl.h"
 
 #include "global.h"
+#include "ailog.h"   // AI 长期日志（write_log 工具 + 系统提示词注入）
 #include <QThreadPool>
 #include <QGridLayout>
 #include <QVBoxLayout>
@@ -1860,6 +1861,14 @@ void AiWidget::内置函数()
     内置函数("byss","必应搜索",QStringList() << "搜索关键词 如 原神"<<"页码 1开始 如 1");
     内置函数("llwye","浏览网页 返回提取后的文本 当用户发送链接时 可以使用",QStringList() << "链接 如 https://www.baidu.com");
 
+    // 长期日志：记下来的内容会在之后每轮请求里作为系统提示词的一部分带上，
+    // 所以每次都用一句话，别把过程性内容往里塞。存储/裁剪逻辑在 ai/ailog.h。
+    内置函数("write_log",
+             "把需要长期记住的内容写进长期日志 这份日志会在之后每次对话时作为系统提示词的一部分提供给你 "
+             "适合记录称呼 偏好 约定 承诺 群内事实等 有长度上限 超出会自动丢弃最早的记录 "
+             "所以只写精炼的一句话 不要记录过程性内容",
+             QStringList() << "要长期记住的内容 一句话 如 群友张三喜欢原神 聊这个时别扯别的");
+
     //内置函数("html_to_img","截图某个网页 可传入html文本 为用户绘制样式 注意是png",QStringList() << "链接 或 html文本 如 https://www.baidu.com");
 
     funcListTable->selectRow(0);
@@ -2187,6 +2196,18 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
             }
             setting = "[工具使用 你可以随意使用 tool内的函数 你可以有事没事 使用html制图来 表达什么]\n"+sd.content;
             break;
+        }
+    }
+
+    // 长期日志：只有该账号启用了 write_log 才注入。
+    // 没启用的话连读都不读 —— 这份内容是直接进系统提示词的，白给就是白烧上下文。
+    if (info->tools.contains(QStringLiteral("write_log"))) {
+        const QString aiLog = AiLog::readAll(info->appid_int);
+        if (!aiLog.trimmed().isEmpty()) {
+            setting += QStringLiteral("\n\n【长期日志】你自己用 write_log 记下的内容"
+                                      "（上限 %1 字符，超出会自动丢弃最早的）：\n%2")
+                           .arg(AiLog::maxChars())
+                           .arg(aiLog.trimmed());
         }
     }
 

@@ -1972,7 +1972,7 @@ QString convertAudioToSilk(const QString &srcFilePath)
 }
 
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
-                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,MessageLogContext &ctx)
+                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,const MessageLogContext &ctx)
 {
     // 匹配短标签或全名标签：f/file, a/audio, v/video, flie(笔误)
     static QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",

@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include "bqbgl.h"
 #include "global.h"
+#include "ailog.h"   // AI 长期日志（write_log 的后端）
 #include <QTextDocumentFragment>
 
 #include "netmanager.h"
@@ -125,6 +126,21 @@ QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const
         ai_bqbgl->meiju(QString::number(ev.appid));
         res = file.remove() ? "删除成功 上下文可能存在 下回合消失" : "删除失败可能不存在";
     }else if(tool_name == "llwye") res = browseWeb(p1);
+    else if(tool_name=="write_log")
+    {
+        // 长期日志：按账号存一份，超上限自动丢最早的（见 ai/ailog.h）。
+        // 写进去的内容下一轮请求会作为系统提示词的一部分回到 AI 手里，
+        // 所以这里只回一个"写成功+当前占用"，不回灌正文，省上下文。
+        const AiLog::AppendResult ar = AiLog::append(ev.appid, p1);
+        if (!ar.ok) {
+            res = "写入长期日志失败：" + ar.err;
+        } else {
+            res = QString("已写入长期日志（当前 %1/%2 字符，共 %3 条）")
+                      .arg(ar.chars).arg(AiLog::maxChars()).arg(ar.count);
+            if (ar.dropped > 0)
+                res += QString("，因超出上限丢弃了最早的 %1 条").arg(ar.dropped);
+        }
+    }
     else if(tool_name=="dingshy")
     {
         QString pycode=QString("code_ai|||%1|||%2|||%3|||%4").arg(ev.user,ev.groupId,p1).arg(ev.type);
@@ -247,6 +263,7 @@ void AiWidget::Ai_post3Async(const QString &url, const QString &key, const QJson
                              int timeoutMs, AiRawCb cb)
 {
     QByteArray jsonData = QJsonDocument(sxw).toJson(QJsonDocument::Compact);
+
     QHash<QString, QString> headers;
     headers.insert("Content-Type", "application/json");
     headers.insert("Authorization", "Bearer " + key);

@@ -25,6 +25,7 @@
 #include "chatpage.h"
 #include "pluginmarket.h"
 #include "plugininstaller.h"   // 市场安装：下载 + 解压 + 加载
+#include "ailog.h"             // AI 长期日志（#日志长度 / #清空日志）
 #include "netmanager.h"
 #include "mainwindow.h"
 #include <QHostInfo>
@@ -786,6 +787,28 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
 
     if(!g_admin.contains(ev.user)) return QString();
+
+    // ---------- AI 长期日志（没有 UI，用指令调）----------
+    // 日志正文是 AI 自己用 write_log 工具写的，这里只管"上限"和"清空"。
+    if (ev.msg.startsWith("#日志长度")) {
+        const QString num = ev.msg.mid(QStringLiteral("#日志长度").length()).trimmed();
+        if (num.isEmpty()) {
+            return QString("当前 AI 长期日志上限：%1 字符\n发送 [#日志长度 20000]() 可修改（0 = 恢复默认 10000）")
+                    .arg(AiLog::maxChars());
+        }
+        bool ok = false;
+        const int v = num.toInt(&ok);
+        if (!ok || v < 0) return "日志长度必须是不小于 0 的整数（0 = 恢复默认 10000）";
+        const int n = AiLog::setMaxChars(v);   // v <= 0 时按默认值处理
+        saveConfig();
+        return QString("AI 长期日志上限已设为 %1 字符（写满后从最早的记录开始丢）").arg(n);
+    }
+    if (ev.msg.startsWith("#清空日志")) {
+        QString err;
+        if (!AiLog::clear(ev.appid, &err)) return "清空 AI 长期日志失败：" + err;
+        return "已清空本账号的 AI 长期日志";
+    }
+
     // ---------- 启用插件 ----------
     if (ev.msg.startsWith("#启用插件")) {
         QString index_ser;

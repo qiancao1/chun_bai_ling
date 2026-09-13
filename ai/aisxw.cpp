@@ -21,6 +21,10 @@ void aisxw::on_pushButton_2_clicked()
     for(const auto &openid : std::as_const(list))
     {
         QStringList list = openid.split(":");
+        // 非会话键直接跳过（会话键格式是 appid:openid，aidb 里其它键不含冒号）。
+        // ⚠️ AI 长期日志的键是 "ailog_<appid>"（下划线），正是靠这里只 split 出 1 段被排除。
+        //    若把日志键改成带冒号的形式，它就会混进本列表变成一个条目，还能被"保存"按钮
+        //    覆盖掉 —— 也就是把日志清了。见 ai/ailog.h 的 keyOf()。
         if(list.size()<2) continue;
         int appid = list[0].toInt();
         QString name;
