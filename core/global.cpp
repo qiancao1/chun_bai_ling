@@ -1031,6 +1031,9 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             for (const auto &c : std::as_const(g_botdb)) {
                 c->close();   // 假设 stop 是同步的，会等待数据发送完毕
             }
+            // 关闭后必须清空：否则重启期间残留的实例 m_env 已是 nullptr，
+            // 任何 getOrUpdateUser 都会读不到记录而返回 0（表现为用户 ID「丢了」）
+            g_botdb.clear();
             #ifdef _WIN32
             if (bridge) {
                 bridge->writeResponseToBlock(1, "{\"type\":6}");

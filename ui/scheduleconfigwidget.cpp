@@ -15,6 +15,8 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QThreadPool>
+#include <QDebug>
+#include <utility>
 
 
 // ---------- ScheduleConfigWidget ----------
@@ -541,13 +543,28 @@ void ScheduleConfigWidget::onDeleteRow()
     QList<ScheduleTask> &t = tasksMap [g_appid];
     if(!g_botdb.contains(g_appid))
     {
-        BotDB *client = new BotDB(QString("botdb/%1_db").arg(g_appid));
-        client->open();
-        g_botdb[g_appid] = client;
+        // 目录命名必须与 CardWidget::initbotdb 完全一致（都用字符串 appid）。
+        // 否则会对同一账号产生第二个 BotDB / 第二个 LMDB env，
+        // 两个 env 互相看不到对方提交的数据 → 读不到用户记录 → 重复分配 ID。
+        QString appidStr;
+        for (const auto &acc : std::as_const(m_accounts)) {
+            if (acc && acc->appid_int == g_appid) { appidStr = acc->appid; break; }
+        }
+        if (appidStr.isEmpty()) appidStr = QString::number(g_appid);
+
+        BotDB *client = new BotDB(QString("botdb/%1_db").arg(appidStr));
+        if (client->open()) {
+            g_botdb[g_appid] = client;
+        } else {
+            qWarning() << "scheduleconfigwidget: BotDB 打开失败，跳过删除订阅" << appidStr;
+            delete client;
+            return;
+        }
     }
 
     int mark = tasksMap[g_appid][row].mark;
-    auto *db =g_botdb[g_appid];
+    auto *db = g_botdb.value(g_appid, nullptr);
+    if (!db) return;
     db->clearSubscriptionsByMark(QString("t_%1_%2").arg(g_appid).arg(t[row].mark));
     taskTable->removeRow(row);
     tasksMap[g_appid].removeAt(row);

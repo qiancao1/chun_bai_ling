@@ -24,6 +24,7 @@
 #include <QDebug>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 #include <QTimer>
 
 
@@ -145,6 +146,8 @@ bool BotDB::open()
     rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "mdb_txn_begin 失败:" << mdb_strerror(rc);
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
 
@@ -168,6 +171,9 @@ bool BotDB::open()
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
         qCritical() << "提交事务失败:" << mdb_strerror(rc);
+        // commit 失败事务已终止，不能 abort；但必须回收 env，否则句柄泄漏
+        mdb_env_close(m_env);
+        m_env = nullptr;
         return false;
     }
     AppendEventLog( "数据库已打开，目录:" + m_path + "初始mapsize:" + QString::number((m_currentMapSize >> 20)) + "MB");
@@ -178,6 +184,8 @@ bool BotDB::open()
 fail:
     mdb_txn_abort(txn);
     qCritical() << "打开子数据库失败:" << mdb_strerror(rc);
+    mdb_env_close(m_env);
+    m_env = nullptr;
     return false;
 }
 
@@ -188,23 +196,35 @@ fail:
 void BotDB::close()
 {
     if (m_env) {
-        // 关闭所有已打开的 DBI
+        // 关闭所有已打开的 DBI（必须在 mdb_env_close 之前，且此时 m_env 仍有效）
         if (m_dbi_users) mdb_dbi_close(m_env, m_dbi_users);
         if (m_dbi_seq_idx) mdb_dbi_close(m_env, m_dbi_seq_idx);
         if (m_dbi_groups) mdb_dbi_close(m_env, m_dbi_groups);
         if (m_dbi_friends) mdb_dbi_close(m_env, m_dbi_friends);
         if (m_dbi_subscriptions) mdb_dbi_close(m_env, m_dbi_subscriptions);
-        m_dbi_subscriptions = 0;
+        if (m_dbi_account_stats) mdb_dbi_close(m_env, m_dbi_account_stats);
         mdb_env_close(m_env);
         m_env = nullptr;
     }
-    m_dbi_users = m_dbi_seq_idx = m_dbi_groups = m_dbi_friends = 0;
+    // 所有 dbi 句柄统一作废，避免扩容重开后沿用陈旧句柄
+    m_dbi_users = 0;
+    m_dbi_seq_idx = 0;
+    m_dbi_groups = 0;
+    m_dbi_friends = 0;
+    m_dbi_subscriptions = 0;
+    m_dbi_account_stats = 0;
+
     if (m_saveTimer) {
         m_saveTimer->stop();
         saveDailyStats();
     }
 
-    if (m_dbi_account_stats) mdb_dbi_close(m_env, m_dbi_account_stats);
+    // 环境已关闭，缓存全部作废，避免下次读到「库里其实没有」的陈旧记录
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        m_userCache.clear();
+        m_groupCache.clear();
+    }
 }
 
 // 重新打开环境（扩容后调用），保持原有的 m_currentMapSize
@@ -215,6 +235,7 @@ bool BotDB::reopenEnvironment()
     int rc = mdb_env_create(&m_env);
     if (rc != MDB_SUCCESS) return false;
 
+    mdb_env_set_maxdbs(m_env, 10);
     mdb_env_set_mapsize(m_env, m_currentMapSize);
     QByteArray pathBytes = m_path.toUtf8();
     rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
@@ -226,10 +247,14 @@ bool BotDB::reopenEnvironment()
 
     ensureSparseFile();
 
-    // 重新打开所有子数据库
+    // 重新打开所有子数据库（必须与 open() 保持一致，漏开会导致句柄为 0/陈旧）
     MDB_txn *txn = nullptr;
     rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) return false;
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(m_env);
+        m_env = nullptr;
+        return false;
+    }
 
     rc = mdb_dbi_open(txn, nullptr, MDB_CREATE, &m_dbi_users);
     if (rc != MDB_SUCCESS) goto reopen_fail;
@@ -239,15 +264,24 @@ bool BotDB::reopenEnvironment()
     if (rc != MDB_SUCCESS) goto reopen_fail;
     rc = mdb_dbi_open(txn, "friends", MDB_CREATE, &m_dbi_friends);
     if (rc != MDB_SUCCESS) goto reopen_fail;
+    rc = mdb_dbi_open(txn, "subscriptions", MDB_CREATE, &m_dbi_subscriptions);
+    if (rc != MDB_SUCCESS) goto reopen_fail;
+    rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
+    if (rc != MDB_SUCCESS) goto reopen_fail;
 
     rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) goto reopen_fail;
+    if (rc != MDB_SUCCESS) {
+        // commit 失败时事务已终止，不能再 abort，否则是未定义行为
+        txn = nullptr;
+        goto reopen_fail;
+    }
+    txn = nullptr;
 
     qDebug() << "扩容后重新打开环境成功，新 mapsize:" << (m_currentMapSize >> 20) << "MB";
     return true;
 
 reopen_fail:
-    mdb_txn_abort(txn);
+    if (txn) mdb_txn_abort(txn);
     close();
     return false;
 }
@@ -354,12 +388,13 @@ int BotDB::putRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, const
     return mdb_put(txn, dbi, &key, &value, 0);
 }
 
-bool BotDB::getRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, void *outData, size_t size)
+bool BotDB::getRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, void *outData, size_t size, int *outRc)
 {
     MDB_val key, value;
     key.mv_data = (void*)keyData.constData();
     key.mv_size = keyData.size();
     int rc = mdb_get(txn, dbi, &key, &value);
+    if (outRc) *outRc = rc;
     if (rc == MDB_SUCCESS) {
         size_t copySize = std::min<size_t>(value.mv_size, size);
         memcpy(outData, value.mv_data, copySize);
@@ -439,8 +474,9 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
     uint32_t resultSeq = 0;
 
     QByteArray userKeyBytes = QByteArray::fromHex(openid.toUtf8());
-    BinKey userKey;
-    memcpy(userKey.data, userKeyBytes.constData(), 16);
+    BinKey userKey{};
+    memcpy(userKey.data, userKeyBytes.constData(),
+           std::min<size_t>(userKeyBytes.size(), sizeof(userKey.data)));
     {
         QMutexLocker locker(&m_cacheMutex);
         auto itUser = m_userCache.find(userKey);
@@ -465,7 +501,23 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
             return -1;
         } else if (rc == MDB_SUCCESS) {
             UserRecord record;
-            memcpy(&record, value.mv_data, sizeof(UserRecord));
+            // 按实际长度读取：旧格式记录只有 80 字节，直接 memcpy(sizeof(UserRecord))
+            // 会越界读 48 字节垃圾，并把这些垃圾当作正式昵称 name 写回去。
+            memset(&record, 0, sizeof(record));
+            if (value.mv_size == sizeof(UserRecord)) {
+                memcpy(&record, value.mv_data, sizeof(UserRecord));
+            } else if (value.mv_size == 80) {
+                const char *data = static_cast<const char*>(value.mv_data);
+                memcpy(&record.seq_id, data, 4);
+                memcpy(&record.bitmap, data + 4, 4);
+                memcpy(&record.record_time, data + 8, 4);
+                memcpy(&record.invited_group_count, data + 12, 4);
+                memcpy(record.nickname, data + 16, 64);
+                record.nickname[63] = '\0';
+                record.name[0] = '\0';
+            } else {
+                return -1;
+            }
 
             if (name.isEmpty()) {
                 name = QString::fromUtf8(record.nickname);   // 数据库中的 nickname 保证是干净的 UTF-8
@@ -497,13 +549,15 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
     if (!isGroup) isGroup = (ev.type == 18);
 
     QByteArray userKeyBytes = QByteArray::fromHex(ev.user.toUtf8());
-    BinKey userKey;
-    memcpy(userKey.data, userKeyBytes.constData(), 16);
+    BinKey userKey{};   // 零初始化：openid 不足 16 字节时不会留下未初始化字节
+    memcpy(userKey.data, userKeyBytes.constData(),
+           std::min<size_t>(userKeyBytes.size(), sizeof(userKey.data)));
 
-    BinKey groupKey;
+    BinKey groupKey{};
     if (isGroup) {
         QByteArray groupKeyBytes = QByteArray::fromHex(ev.groupId.toUtf8());
-        memcpy(groupKey.data, groupKeyBytes.constData(), 16);
+        memcpy(groupKey.data, groupKeyBytes.constData(),
+               std::min<size_t>(groupKeyBytes.size(), sizeof(groupKey.data)));
     }
 
     // 每日消息计数（不变）
@@ -656,6 +710,10 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
 
     else {
         // ======================== 4. 缓存未命中：执行 LMDB 只读事务 ========================
+        QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
+        int userRc = MDB_NOTFOUND;      // 区分「未找到」与「读取失败」
+        int groupRc = MDB_NOTFOUND;
+
         MDB_txn *txn = nullptr;
         try {
             if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
@@ -663,15 +721,15 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             if (isGroup && !ev.groupId.isEmpty()) {
                 QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
                 if (!groupKey.isEmpty())
-                    groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup));
+                    groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup), &groupRc);
             }
 
-            QByteArray userKey = QByteArray::fromHex(ev.user.toUtf8());
             if (!userKey.isEmpty()) {
-                userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser));
+                userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser), &userRc);
                 if (userExists) oldSeqId = oldUser.seq_id;
             }
             mdb_txn_abort(txn);
+            txn = nullptr;
         } catch (const std::exception &e) {
             qWarning() << "BotDB: 只读事务异常" << e.what();
             if (txn) mdb_txn_abort(txn);
@@ -679,6 +737,23 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
         } catch (...) {
             if (txn) mdb_txn_abort(txn);
             return 0;
+        }
+
+        // 读取失败（不是「记录不存在」）时绝不能继续：
+        // 否则会把已入库的老用户误判成新用户，从而重新分配一个 seq_id。
+        if (!userKey.isEmpty()
+            && userRc != MDB_SUCCESS && userRc != MDB_NOTFOUND) {
+            qCritical() << "BotDB: 读取用户记录失败，跳过本次 ID 分配"
+                        << mdb_strerror(userRc) << "openid=" << ev.user;
+            return 0;
+        }
+        userExists = (userRc == MDB_SUCCESS);
+        if (!userExists) oldSeqId = 0;
+
+        if (isGroup && groupRc != MDB_SUCCESS && groupRc != MDB_NOTFOUND) {
+            // 群记录读失败按「不存在」处理即可，下一轮会重建，不影响 ID 分配
+            qWarning() << "BotDB: 读取群记录失败" << mdb_strerror(groupRc) << "groupId=" << ev.groupId;
+            groupExists = false;
         }
 
         // ----- 决策（群） -----
@@ -715,6 +790,38 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
     // ======================== 5. 写事务 ========================
     bool success = retryWrite([&](MDB_txn *txn) -> int {
         int finalRc = MDB_SUCCESS;
+
+        // 5a0. 并发二次确认（关键）：
+        //      上面的「读缓存 + 只读事务」与这里的写事务之间没有加锁，
+        //      同一用户的多个事件并发进入时，可能都判定为「新用户」，
+        //      于是各自 getNextSeqId() 分配一个 ID → 用户的 ID 被反复重分配。
+        //      写事务本身是排他的，在这里重新读一次即可保证「同一 openid 只分配一次」。
+        if (!userExists) {
+            QByteArray recheckKey = QByteArray::fromHex(ev.user.toUtf8());
+            if (!recheckKey.isEmpty()) {
+                UserRecord recheck{};
+                int recheckRc = MDB_NOTFOUND;
+                if (getRecord(txn, m_dbi_users, recheckKey, &recheck, sizeof(recheck), &recheckRc)) {
+                    // 已被其他线程/事件创建 → 直接复用已有 ID，不再分配新号
+                    userExists = true;
+                    oldUser = recheck;
+                    oldSeqId = recheck.seq_id;
+                    needUpdateUser = false;
+                    if (!ev.nickname.isEmpty()) {
+                        QByteArray n = ev.nickname.toUtf8();
+                        if (strcmp(oldUser.nickname, n.constData()) != 0)
+                            needUpdateUser = true;
+                    }
+                    qDebug() << "BotDB: 写事务内发现用户已存在，复用 seq_id =" << oldSeqId
+                             << "openid=" << ev.user;
+                } else if (recheckRc != MDB_NOTFOUND) {
+                    // 读取失败不能当作「不存在」，否则又会重复分配
+                    qCritical() << "BotDB: 写事务内读取用户记录失败，放弃本次分配"
+                                << mdb_strerror(recheckRc) << "openid=" << ev.user;
+                    return -1;
+                }
+            }
+        }
 
         // 5a. 处理群记录
         if (isGroup) {
@@ -780,6 +887,11 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             newRec.record_time = nowMinutes();
             newRec.invited_group_count = 0;
 
+            // 诊断用：每一次真正的新分配都记一条，若同一 openid 反复出现同一行，
+            // 说明仍有其它路径在丢记录（可据此定位）。
+            qDebug() << "BotDB: 分配新 seq_id =" << newSeq << "openid=" << ev.user
+                     << "type=" << ev.type << "subType=" << ev.subType;
+
             QByteArray nameBytes = ev.nickname.toUtf8();
             size_t copyLen = std::min<size_t>(nameBytes.size(), sizeof(newRec.nickname)-1);
             memcpy(newRec.nickname, nameBytes.constData(), copyLen);
@@ -804,7 +916,10 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                 size_t copyLen = std::min<size_t>(newNameBytes.size(), sizeof(updatedUser.nickname)-1);
                 memcpy(updatedUser.nickname, newNameBytes.constData(), copyLen);
                 updatedUser.nickname[copyLen] = '\0';
-                updatedUser.name[copyLen] = '\0';
+                // 注意：绝不能在这里动 updatedUser.name
+                // name 是「审核后的正式昵称」，与原始昵称 nickname 是两套数据。
+                // 原代码写 updatedUser.name[copyLen]='\0'，会把审核好的正式昵称按原始昵称
+                // 的长度截断/清空，导致审核结果丢失。
                 updatedUser.record_time = nowMinutes();
                 int rc = putRecord(txn, m_dbi_users, userKey, &updatedUser, sizeof(updatedUser));
                 if (rc != MDB_SUCCESS) finalRc = rc;

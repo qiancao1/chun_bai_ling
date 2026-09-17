@@ -25,6 +25,7 @@
 #include "pluginmarketwindow.h"
 #include "global.h"
 #include "node_plugin_manager.h"
+#include "scrolltextdialog.h"   // 可滚动的只读文本弹窗（内容多的提示用它替代 QMessageBox）
 
 #include <QListWidget>
 
@@ -576,10 +577,8 @@ void PluginPage::setupUi()
                 text.append("\n");  // 插件间空行
             }
         }
-        QMessageBox::warning(this,"",text);
-        // 将结果显示到界面（请根据实际控件名替换）
-        // 例如：ui->textEdit->setPlainText(text);
-        // 或 qDebug() << text;
+        // 内容多时 QMessageBox 会被屏幕挤住、显示不全也不能滚动 —— 改用可滚动的文本窗口
+        ScrollTextDialog::show(this, "插件注册指令", text);
     });
 
     connect(ai_c_j, &QPushButton::clicked,this, [this]() {

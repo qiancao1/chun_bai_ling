@@ -129,6 +129,7 @@ set(PROJECT_SOURCES_ALL
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
     ui/logpage.cpp ui/logpage.h ui/pluginpage.cpp ui/pluginpage.h
     ui/sandboxwindow.h ui/sandboxwindow.cpp
+    ui/scrolltextdialog.h
     ui/buttoneditor.h ui/buttoneditor.cpp
     ui/botruleconfigwidget.h ui/botruleconfigwidget.cpp
     ui/textreplaceconfigwidget.h ui/textreplaceconfigwidget.cpp

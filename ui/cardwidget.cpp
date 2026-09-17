@@ -6,6 +6,7 @@
 #include <QRandomGenerator>
 #include <QTimer>
 #include <QDateTime>
+#include <QDebug>
 #include "global.h"
 #include "qqbotclient.h"
 
@@ -192,7 +193,13 @@ void CardWidget::initbotdb(AccountInfo *info)
     if (g_botdb.contains(appid))
         return ;
     BotDB *client = new BotDB(QString("botdb/%1_db").arg(info->appid));
-    client->open();
+    if (!client->open()) {
+        // 打开失败时不要放进 g_botdb：否则后续 getOrUpdateUser 会因为 m_env 为空
+        // 而始终读不到记录，把老用户当成新用户，重复分配 ID
+        qWarning() << "initbotdb: BotDB 打开失败" << info->appid;
+        delete client;
+        return ;
+    }
     g_botdb[appid] = client;
     return ;
 }

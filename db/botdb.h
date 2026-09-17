@@ -161,7 +161,8 @@ private:
     // 内部辅助函数（原有）
     uint32_t getNextSeqId(MDB_txn *txn);
     int putRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, const void *data, size_t size);
-    bool getRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, void *outData, size_t size);
+    // outRc 可选：回传 mdb_get 的原始错误码，便于调用方区分「未找到」与「读取失败」
+    bool getRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, void *outData, size_t size, int *outRc = nullptr);
     int delRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData);
     bool saveSeqToOpenId(MDB_txn *txn, uint32_t seqId, const QByteArray &openidBin);
     bool getOpenIdBySeq(MDB_txn *txn, uint32_t seqId, QByteArray &outOpenidBin);
@@ -180,16 +181,16 @@ private:
     size_t m_initialMapSize;    // 用户指定的初始大小（字节）
     size_t m_currentMapSize;    // 当前生效的 mapsize（字节）
     MDB_env* m_env = nullptr;
-    MDB_dbi  m_dbi_users;
-    MDB_dbi  m_dbi_seq_idx;
-    MDB_dbi  m_dbi_groups;
-    MDB_dbi  m_dbi_friends;
-    MDB_dbi m_dbi_subscriptions;  // 订阅数据库
+    MDB_dbi  m_dbi_users = 0;
+    MDB_dbi  m_dbi_seq_idx = 0;
+    MDB_dbi  m_dbi_groups = 0;
+    MDB_dbi  m_dbi_friends = 0;
+    MDB_dbi m_dbi_subscriptions = 0;  // 订阅数据库
 
     QMutex   m_mutex;
     QMutex m_cacheMutex;  // 如果多线程调用，需要加锁
 
-    MDB_dbi m_dbi_account_stats;
+    MDB_dbi m_dbi_account_stats = 0;
 
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
