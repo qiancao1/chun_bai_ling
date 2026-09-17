@@ -422,19 +422,24 @@ QString addbot(const QJsonObject &params)
     if (existingIndex==-1) { //添加新
         auto oldInfoPtr = std::make_shared<AccountInfo>();
 
+        // appid 必须回填：它是账号在 accdb / botdb 里的主键，也是卡片列表的 key
+        oldInfoPtr->appid = QString::number(appid);
+        oldInfoPtr->appid_int = appid;
+        oldInfoPtr->nickname = QString::number(appid);
         oldInfoPtr->secret = secret;
-        oldInfoPtr->wsAddress = params.value("wsAddress").toString();
+
         oldInfoPtr->type =params.value("type").toInt();
         oldInfoPtr->markdown = params.value("markdown").toBool();
         oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();
         oldInfoPtr->markdown_pd_mb = params.value("markdown_pd_mb").toBool();
         oldInfoPtr->wsIntents =params.value("wsIntents").toInt();
         m_accounts.append(oldInfoPtr);
+        accountPage->saveAccounts(oldInfoPtr.get());
         accountPage->refreshCards2(oldInfoPtr.get());
     } else {
         auto oldInfoPtr = m_accounts[existingIndex];
         oldInfoPtr->secret = secret;
-        oldInfoPtr->wsAddress = params.value("wsAddress").toString();
+
         oldInfoPtr->type =params.value("type").toInt();
         oldInfoPtr->markdown = params.value("markdown").toBool();
         oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();

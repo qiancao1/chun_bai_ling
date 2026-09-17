@@ -15,6 +15,7 @@
 #include <QScrollArea>
 #include <QRadioButton>
 #include <QMessageBox>
+#include <QEvent>
 #include <qurlquery.h>
 extern QList<PluginInfo> m_pluginList;
 
@@ -25,10 +26,20 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
     setupUI();
 
     // 填充数据
+    setAccountInfo(info);
+}
+
+void AddAccountDialog::setAccountInfo(const AccountInfo &info) {
+    if (!m_appidEdit) return;
+
     m_appidEdit->setText(info.appid);
-    m_secretEdit->setText(info.secret);
-    m_botqqEdit->setText(info.botqq);
-    m_wsAddressEdit->setText(info.wsAddress);
+    // Secret 失焦时只显示 ***，真实值单独存（见 refreshSecretDisplay）
+    m_secretReal = info.secret;
+    m_secretMasked = false;
+    m_secretEdit->setText(m_secretReal);
+    // 切换/回填账号时，若 Secret 还停在编辑态，先结束焦点让它回到 *** 显示
+    if (m_secretEdit->hasFocus()) m_secretEdit->clearFocus();
+    refreshSecretDisplay();
 
 
     if (info.type == 0)
@@ -39,13 +50,50 @@ AddAccountDialog::AddAccountDialog(const AccountInfo &info, QWidget *parent)
     m_markdownCheckBox->setChecked(info.markdown);
     m_markdownCheckBox_pd->setChecked(info.markdown_pd);
     m_markdownCheckBox_pd_mb->setChecked(info.markdown_pd_mb);
+    if (m_sandboxCheckBox)
+        m_sandboxCheckBox->setChecked(info.sandbox);
     //m_welcomeEdit->setPlainText(info.welcomeMsg);
     //m_fallbackEdit->setPlainText(info.fallbackReply);
 
-
     setIntentsMask(info.wsIntents);
+}
 
+void AddAccountDialog::focusAppId() {
+    if (m_appidEdit) {
+        m_appidEdit->setFocus();
+        m_appidEdit->selectAll();
+    }
+}
 
+bool AddAccountDialog::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_secretEdit
+        && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)) {
+        refreshSecretDisplay();
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
+void AddAccountDialog::refreshSecretDisplay() {
+    if (!m_secretEdit) return;
+
+    if (m_secretEdit->hasFocus()) {
+        // 获得焦点：把明文还原出来
+        if (m_secretMasked) {
+            m_secretMasked = false;
+            m_secretEdit->setText(m_secretReal);
+        }
+        return;
+    }
+
+    // 失去焦点：用 *** 盖住内容（本来就为空就保持空，不显示 *** 以免看起来像有值）
+    if (m_secretMasked) return;
+
+    const QString cur = m_secretEdit->text();
+    m_secretReal = cur;
+    if (cur.isEmpty()) return;
+
+    m_secretMasked = true;
+    m_secretEdit->setText(QStringLiteral("***"));
 }
 
 void AddAccountDialog::setupUI() {
@@ -83,6 +131,11 @@ void AddAccountDialog::setupUI() {
             padding: 0 8px;
             background: #FFF9F2;
             color: #17202A;
+        }
+        QWidget#plainCard {
+            background: #FFF9F2;
+            border: 1px solid #EEDCCA;
+            border-radius: 12px;
         }
         QLabel {
             background: transparent;
@@ -173,68 +226,51 @@ void AddAccountDialog::setupUI() {
     contentLayout->setContentsMargins(4, 4, 4, 4);
     contentLayout->setSpacing(4);
 
-    // ---------- 基本信息 Group ----------
-    QGroupBox *basicGroup = new QGroupBox("基本信息");
-    QGridLayout *basicLayout = new QGridLayout(basicGroup);
-    basicLayout->setContentsMargins(4, 4, 4, 4);
-    basicLayout->setHorizontalSpacing(4);
-    basicLayout->setVerticalSpacing(4);
+    // ---------- 基本信息（普通 QVBoxLayout 容器，不用分组框标题） ----------
+    QWidget *basicBox = new QWidget;
+    basicBox->setObjectName("plainCard");
+    basicBox->setAttribute(Qt::WA_StyledBackground, true);
+    QVBoxLayout *basicLayout = new QVBoxLayout(basicBox);
+    basicLayout->setContentsMargins(12, 10, 12, 10);
+    basicLayout->setSpacing(6);
 
-    // 定义列宽：列0=标签列(固定118px)，列1=第1个输入框，列2=间隔，列3=第2个输入框，列4=间隔，列5=第3个输入框
-    // 让列1、3、5的宽度比例相同，且与下面单行的输入框对齐（下面单行的输入框会跨越多列）
-    basicLayout->setColumnMinimumWidth(0, 118);
-    basicLayout->setColumnStretch(1, 1);   // 第1个输入框可拉伸
-    basicLayout->setColumnMinimumWidth(2, 8);   // 固定间距
-    basicLayout->setColumnStretch(3, 1);   // 第2个输入框
-    basicLayout->setColumnMinimumWidth(4, 8);
-    basicLayout->setColumnStretch(5, 1);   // 第3个输入框
+    // 一行一个字段：标签（固定宽右对齐）+ 输入框（自适应）+ 可选附加按钮
+    const int labelWidth = 72;
+    const int editHeight = 32;
 
-    int row = 0;
-
-
-
-    // 第一行：三个标签+三个输入框
     m_appidEdit = new QLineEdit;
     m_secretEdit = new QLineEdit;
-    m_botqqEdit = new QLineEdit;
-    const int editHeight = 32;
+
     m_appidEdit->setFixedHeight(editHeight);
     m_secretEdit->setFixedHeight(editHeight);
-    m_botqqEdit->setFixedHeight(editHeight);
-    m_appidEdit->setMaximumWidth(100);
-    m_botqqEdit->setMaximumWidth(100);
-    QLabel *labelAppId = new QLabel("AppID:");
-    labelAppId->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    labelAppId->setFixedHeight(editHeight);
-    QLabel *labelSecret = new QLabel("Secret:");
-    labelSecret->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    labelSecret->setFixedHeight(editHeight);
-    QLabel *labelBotQQ = new QLabel("Bot QQ:");
-    labelBotQQ->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    labelBotQQ->setFixedHeight(editHeight);
-
-    basicLayout->addWidget(labelAppId, row, 0);
-    basicLayout->addWidget(m_appidEdit, row, 1);
-
-    basicLayout->addWidget(labelBotQQ, row, 2);
-    basicLayout->addWidget(m_botqqEdit, row, 3);
-    basicLayout->addWidget(labelSecret, row, 4);
-    basicLayout->addWidget(m_secretEdit, row, 5);
 
     QPushButton *Btnlonin = new QPushButton("扫码登录");
 
-    basicLayout->addWidget(Btnlonin, row, 6);
-    row++;
+    auto addFieldRow = [&](const QString &text, QWidget *field, QWidget *extra = nullptr) {
+        QHBoxLayout *rowLayout = new QHBoxLayout;
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        QLabel *label = new QLabel(text);
+        label->setFixedWidth(labelWidth);
+        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        rowLayout->addWidget(label);
+        rowLayout->addWidget(field, 1);
+        if (extra)
+            rowLayout->addWidget(extra, 0);
+        basicLayout->addLayout(rowLayout);
+    };
 
+    addFieldRow("AppID:", m_appidEdit, Btnlonin);
+    addFieldRow("Secret:", m_secretEdit);
 
-    m_wsAddressEdit = new QLineEdit;
-    m_wsAddressEdit->setPlaceholderText("留空则使用腾讯官方地址 可填沙箱地址");
-    QLabel *label = new QLabel("WS 地址:");
-    label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // Secret：未聚焦时显示 ***，点进去（获得焦点）显示真实明文
+    m_secretEdit->setToolTip("未聚焦时显示 ***，点击进入显示 / 编辑真实值");
+    m_secretEdit->installEventFilter(this);
+    connect(m_secretEdit, &QLineEdit::textEdited, this, [this](const QString &t) {
+        // 只有用户实际编辑时才同步真实值；程序 setText（掩码/回填）不会触发 textEdited
+        if (!m_secretMasked) m_secretReal = t;
+    });
 
-    basicLayout->addWidget(label, row, 0);
-    basicLayout->addWidget(m_wsAddressEdit, row, 1, 1, 5);  // 输入框跨第1~5列
-    row++;
 
 
     connect(Btnlonin, &QPushButton::clicked, [this](){
@@ -290,79 +326,60 @@ void AddAccountDialog::setupUI() {
 
     });
 
-    // 连接设置（单选按钮，需要单独处理）
-    QWidget *typeWidget = new QWidget;
-    QGridLayout *typeLayout = new QGridLayout(typeWidget);
-    typeLayout->setContentsMargins(0, 0, 0, 0);
-    typeLayout->setHorizontalSpacing(16);
+    // 连接设置：第一行 WebSocket | Webhook | 连接沙盒，第二行三个 Markdown 开关
     m_wsRadio = new QRadioButton("WebSocket");
     m_webhookRadio = new QRadioButton("Webhook");
+    m_sandboxCheckBox = new QCheckBox("连接沙盒");
+    m_sandboxCheckBox->setToolTip("勾选后走腾讯沙盒环境连接");
 
-    m_markdownCheckBox = new QCheckBox("启用群Markdown");
-    m_markdownCheckBox_pd = new QCheckBox("启用频道原生Markdown");
-    m_markdownCheckBox_pd_mb = new QCheckBox("启用频道模板");
+    m_markdownCheckBox = new QCheckBox("群Markdown");
+    m_markdownCheckBox_pd = new QCheckBox("频道原生Markdown");
+    m_markdownCheckBox_pd_mb = new QCheckBox("频道模板");
 
     m_wsRadio->setChecked(true);
-    typeLayout->addWidget(m_wsRadio, 0, 0);
-    typeLayout->addWidget(m_webhookRadio, 0, 1);
 
-    typeLayout->addWidget(m_markdownCheckBox, 0, 3);
-    typeLayout->addWidget(m_markdownCheckBox_pd, 0, 4);
-    typeLayout->addWidget(m_markdownCheckBox_pd_mb, 0, 5);
+    QWidget *typeWidget = new QWidget;
+    QVBoxLayout *typeLayout = new QVBoxLayout(typeWidget);
+    typeLayout->setContentsMargins(0, 0, 0, 0);
+    typeLayout->setSpacing(4);
 
-    // typeWidget 需要占满第1~5列
-    basicLayout->addWidget(new QLabel("连接设置:"), row, 0);
-    basicLayout->addWidget(typeWidget, row, 1, 1, 5);
-    row++;
+    QHBoxLayout *typeRow1 = new QHBoxLayout;
+    typeRow1->setContentsMargins(0, 0, 0, 0);
+    typeRow1->setSpacing(16);
+    typeRow1->addWidget(m_wsRadio);
+    typeRow1->addWidget(m_webhookRadio);
+    typeRow1->addWidget(m_sandboxCheckBox);
+    typeRow1->addStretch();
 
+    QHBoxLayout *typeRow2 = new QHBoxLayout;
+    typeRow2->setContentsMargins(0, 0, 0, 0);
+    typeRow2->setSpacing(16);
+    typeRow2->addWidget(m_markdownCheckBox);
+    typeRow2->addWidget(m_markdownCheckBox_pd);
+    typeRow2->addWidget(m_markdownCheckBox_pd_mb);
+    typeRow2->addStretch();
 
-    contentLayout->addWidget(basicGroup);
+    typeLayout->addLayout(typeRow1);
+    typeLayout->addLayout(typeRow2);
 
-    m_wsConfigWidget = new QWidget;
+    // 左侧留出与上面标签等宽的占位，让控件与输入框左对齐
+    QHBoxLayout *typeRow = new QHBoxLayout;
+    typeRow->setContentsMargins(0, 0, 0, 0);
+    typeRow->setSpacing(8);
+    QLabel *typeSpacer = new QLabel;
+    typeSpacer->setFixedWidth(labelWidth);
+    typeRow->addWidget(typeSpacer);
+    typeRow->addWidget(typeWidget, 1);
+    basicLayout->addLayout(typeRow);
+
+    contentLayout->addWidget(basicBox);
     setupWsIntentsGroup();
     contentLayout->addWidget(m_wsIntentsGroup);
-    contentLayout->addWidget(m_wsConfigWidget);
-
-/*
-    QGroupBox *replyGroup = new QGroupBox("回复设置");
-    QGridLayout *replyLayout = new QGridLayout(replyGroup);
-    replyLayout->setContentsMargins(4, 4, 4, 4);
-    replyLayout->setHorizontalSpacing(14);
-    replyLayout->setVerticalSpacing(10);
-    QLabel *welcomeLabel = new QLabel("被添加时欢迎词:");
-    m_welcomeEdit = new QTextEdit;
-    m_welcomeEdit->setMinimumHeight(84);
-    m_welcomeEdit->setMaximumHeight(120);
-    QLabel *fallbackLabel = new QLabel("指令未处理回应:");
-    m_fallbackEdit = new QTextEdit;
-    m_fallbackEdit->setMinimumHeight(84);
-    m_fallbackEdit->setMaximumHeight(120);
-    replyLayout->addWidget(welcomeLabel, 0, 0);
-    replyLayout->addWidget(m_welcomeEdit, 1, 0);
-    replyLayout->addWidget(fallbackLabel, 0, 1);
-    replyLayout->addWidget(m_fallbackEdit, 1, 1);
-    replyLayout->setColumnStretch(0, 1);
-    replyLayout->setColumnStretch(1, 1);
-    contentLayout->addWidget(replyGroup);
-*/
-    contentLayout->addStretch();
-
     formScroll->setWidget(contentWidget);
     outerLayout->addWidget(formScroll, 1);
 
-    QWidget *buttonBar = new QWidget;
-    buttonBar->setObjectName("dialogButtonBar");
-    QHBoxLayout *btnLayout = new QHBoxLayout(buttonBar);
-    btnLayout->setContentsMargins(4, 4, 4, 4);
-    QPushButton *okBtn = new QPushButton("确定");
-    QPushButton *cancelBtn = new QPushButton("取消");
-    btnLayout->addStretch();
-    btnLayout->addWidget(cancelBtn);
-    btnLayout->addWidget(okBtn);
-    outerLayout->addWidget(buttonBar);
 
-    connect(okBtn, &QPushButton::clicked, this, &QDialog::accept);
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+
 }
 
 
@@ -372,31 +389,37 @@ void AddAccountDialog::setEmbeddedMode(bool embedded) {
         setModal(false);
         setMinimumSize(0, 0);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        // 作为子控件时必须自己画背景，否则外层 #accountPage 的底色会盖不住
+        setAttribute(Qt::WA_StyledBackground, true);
+        // 嵌入时不需要 确定/取消 —— 由 AccountPage 的「保存当前账号配置」承担
+        if (m_buttonBar) m_buttonBar->hide();
     }
 
 }
 
 void AddAccountDialog::setupWsIntentsGroup() {
     m_wsIntentsGroup = new QGroupBox("订阅事件 (WebSocket)");
-    m_wsIntentsGroup->setContentsMargins(4, 4, 4, 4);
+    m_wsIntentsGroup->setContentsMargins(2, 2, 2, 2);
     QVBoxLayout *groupLayout = new QVBoxLayout(m_wsIntentsGroup);
-    groupLayout->setContentsMargins(4, 4, 4, 4);
+    groupLayout->setContentsMargins(0, 0, 0, 0);
+    groupLayout->setSpacing(2);
+
     QScrollArea *scroll = new QScrollArea;
 
     scroll->setWidgetResizable(true);
     scroll->setMinimumHeight(150);
-    scroll->setMaximumHeight(220);
+
     QWidget *scrollWidget = new QWidget;
     scrollWidget->setObjectName("softScrollContent");
     QVBoxLayout *scrollLayout = new QVBoxLayout(scrollWidget);
-    scrollLayout->setContentsMargins(4, 4, 4, 4);
-    scrollLayout->setSpacing(6);
+    scrollLayout->setContentsMargins(2, 2, 2, 2);
+    scrollLayout->setSpacing(2);
 
     struct IntentItem { QString name; int mask; };
     QList<IntentItem> intents = {
                                  {"GUILDS(频道事件)", 1<<0},
                                  {"GUILD_MEMBERS(成员加入)", 1<<1},
-                                 {"GUILD_MESSAGES(**私域**无艾特)", 1<<9},
+                                 {"GUILD_MESSAGES(*私域*无艾特)", 1<<9},
                                  {"GUILD_MESSAGE_REACTIONS(添加表情)", 1<<10},
                                  {"DIRECT_MESSAGE(频道私聊事件)", 1<<12},
                                  {"GROUP_MEMBER  (群成员添加退出 申请加群)", 1<<24},
@@ -446,9 +469,9 @@ void AddAccountDialog::getAccountInfo(AccountInfo *info) const {
 
     info->appid = m_appidEdit->text();
     info->appid_int =info->appid.toInt();
-    info->secret = m_secretEdit->text();
-    info->botqq = m_botqqEdit->text();
-    info->wsAddress = m_wsAddressEdit->text();
+    // 掩码状态下输入框里是 ***，真实值要从 m_secretReal 取
+    info->secret = m_secretMasked ? m_secretReal : m_secretEdit->text();
+
     if(info->nickname.isEmpty())
     {
         info->nickname = info->appid;
@@ -459,5 +482,7 @@ void AddAccountDialog::getAccountInfo(AccountInfo *info) const {
     info->markdown = m_markdownCheckBox->isChecked();
     info->markdown_pd = m_markdownCheckBox_pd->isChecked();
     info->markdown_pd_mb = m_markdownCheckBox_pd_mb->isChecked();
+    if (m_sandboxCheckBox)
+        info->sandbox = m_sandboxCheckBox->isChecked();
     info->wsIntents = computeIntentsMask();
 }

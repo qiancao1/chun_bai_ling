@@ -90,7 +90,7 @@ struct AccountInfo {
     QString botsettext; //QQ有个回调设置 打开后会显示这个文本
     QString nickname;  //不需要用户添加
     QString avatarPath; //不需要用户添加
-    QString wsAddress;          // WebSocket 地址（默认空 然后是空将连接腾讯的）
+
     QList<mdbtn> mdbtnlist;
     QList<zdywb> zdywblist;
     int dyindex=0;
@@ -131,6 +131,7 @@ struct AccountInfo {
     bool pbbot=true;
     bool autoConnect = false;
     bool online = false;
+    bool sandbox = false;       // 勾选「连接沙盒」：走腾讯沙盒环境（具体使用见连接逻辑）
     bool cbl=true; // 群管指令？
     bool markdown=true;
     bool markdown_pd=false;

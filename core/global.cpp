@@ -459,7 +459,7 @@ QString 内置指令(MessageEvent &ev)
     }
     return text;
 }
-QString addbot(int appid,const QString &secret,const QString &wsAddress,int type,const QString  &markdown,int wsIntents)
+QString addbot(int appid,const QString &secret,int type,const QString  &markdown,int wsIntents)
 {
     if (appid==0) return "appid 为0";
     if (secret.isEmpty()) return "secret 为空";
@@ -473,7 +473,7 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
     if (existingIndex==-1) { //添加新
         auto oldInfoPtr = std::make_shared<AccountInfo>();
         oldInfoPtr->secret = secret;
-        oldInfoPtr->wsAddress = wsAddress;
+
         oldInfoPtr->type = type;
         int md=0;
         if(markdown.isEmpty())
@@ -506,7 +506,7 @@ QString addbot(int appid,const QString &secret,const QString &wsAddress,int type
         auto &oldInfoPtr = m_accounts[existingIndex];
 
         oldInfoPtr->secret = secret;
-        oldInfoPtr->wsAddress = wsAddress;
+
         oldInfoPtr->type = type;
         int md=0;
         if(markdown.isEmpty())
@@ -1579,7 +1579,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             return "机器人已经存在 不能重复添加";
         }
-        addbot(appid_str.toInt(),secret,QString(),0,"1",0);
+        addbot(appid_str.toInt(),secret,0,"1",0);
         return "添加成功";
     }
     else if(ev.msg.startsWith("login"))

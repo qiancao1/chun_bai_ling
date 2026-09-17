@@ -284,8 +284,7 @@ private:
     QNetworkAccessManager m_nam;
     QTimer m_heartbeatTimer; //心跳
     QTimer m_reconnectTimer; //重连
-    bool 代理=false;
-    bool suo=false;
+
     QString m_accessToken,m_accessToken2;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
     QString m_sessionId;

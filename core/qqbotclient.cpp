@@ -188,11 +188,7 @@ void QQBotClient::stop()
 // ---------- 网络请求 ----------
 void QQBotClient::fetchGatewayUrl(Callback calls)
 {
-    if (!m_info->wsAddress.isEmpty()){
-        代理=1;
-        calls(m_info->wsAddress,QNetworkReply::NetworkError());
-        return ;
-    }
+
 
     Get("https://api.bot.qq.com/gateway",QString(),10000,[this,calls](const QString &resp,QNetworkReply::NetworkError neterr){
 
@@ -1332,14 +1328,7 @@ void QQBotClient::sendIdentify()
     //"QQBotPlugin/9.9.9 (Node/20.11.0; Linux; 自定义显示名称/1.0.19)"
     QString msg = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     m_webSocket.sendTextMessage(msg);
-    if(代理)
-    {
-        m_info->online = true;
-        m_isConnecting = false;
-        resetReconnectAttempts();
-        fetchSelfInfo();
 
-    }
 
 }
 
@@ -1361,7 +1350,7 @@ void QQBotClient::onHeartbeatTimeout()
 {
     if (!m_info->online) return;
     sendHeartbeat();
-    if(代理) return;
+
     m_invalidHeartbeatCount++;
     if (m_invalidHeartbeatCount >= 10) {
         AppendEventLog("连续10次心跳无响应，" ,0xff);

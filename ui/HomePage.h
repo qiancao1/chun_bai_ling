@@ -11,6 +11,7 @@
 #include <QMap>
 #include <QLabel>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QLabel>
 
@@ -34,6 +35,8 @@ private:
     void setupUI();
     void updateProcessStats();
     void refreshPluginList();
+    // 插件发送量 TOP N 榜单：按 SendQuantity 降序，只保留前 6 个
+    void refreshPluginMessageRanking();
     QLabel *createStatusLabel(const QString &title, const QString &value);
 
     QFrame* createHeroPanel();
@@ -72,6 +75,8 @@ private:
     // 记录插件消息数量面板内部容器
     QVBoxLayout *m_pluginMessageLayout = nullptr;
     QMap<QString, QLabel*> m_pluginMessageCounts; // 映射插件名称到其显示的计数标签
+    QStringList m_pluginRankOrder;                // 当前榜单顺序（变了才重建，避免定时刷新闪烁）
+    bool m_pluginRankReady = false;               // 榜单是否已经建过一次（空榜也要建一次显示提示）
     QLabel *m_todayMessageValue = nullptr;
     QLabel *m_onlineAccountValue = nullptr;
     QLabel *m_logCountValue = nullptr;

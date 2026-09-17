@@ -1,12 +1,13 @@
 #include "accountpage.h"
 #include "cardwidget.h"
 #include "addaccountdialog.h"
-#include "flowlayout.h"
 #include "global.h"
 #include "homepage.h"
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QScrollArea>
 #include <QPushButton>
+#include <QLabel>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -112,46 +113,132 @@ AccountPage::AccountPage(QWidget *parent)
 
     QTimer::singleShot(1000, this, &AccountPage::onStatTick);
     setObjectName("accountPage");
+    setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(R"(
         QWidget#accountPage {
             background: #F7EFE5;
         }
-        QScrollArea {
+        QScrollArea#accountCardScroll {
             border: none;
             background: transparent;
         }
-        QScrollArea > QWidget > QWidget {
+        QScrollArea#accountCardScroll > QWidget > QWidget {
             background: transparent;
         }
         QPushButton#addAccountCard {
-            font-size: 36px;
+            font-size: 20px;
             border: 2px dashed #F0B680;
             border-radius: 10px;
             background-color: rgba(255, 253, 249, 220);
             color: #FF914D;
+            font-weight: 800;
         }
         QPushButton#addAccountCard:hover {
             background: #FFF0DE;
             border-color: #FF914D;
         }
+        QLabel#acctEditorHint {
+            color: #7A8798;
+            font-size: 12px;
+            background: transparent;
+        }
+        QPushButton#accountPrimaryBtn {
+            background: #FF914D;
+            color: #FFFFFF;
+            border: none;
+            border-radius: 9px;
+            padding: 6px 16px;
+            min-height: 30px;
+            font-weight: 800;
+        }
+        QPushButton#accountPrimaryBtn:hover {
+            background: #FF7F32;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 10px;
+            margin: 2px;
+        }
+        QScrollBar::handle:vertical {
+            background: #D9C9B8;
+            border-radius: 5px;
+            min-height: 36px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
     )");
 
+    QHBoxLayout *rootLayout = new QHBoxLayout(this);
+    rootLayout->setContentsMargins(6, 6, 6, 6);
+    rootLayout->setSpacing(6);
+
+    // ================= 左列：账号卡片（一列） =================
     m_scrollArea = new QScrollArea(this);
+    m_scrollArea->setObjectName("accountCardScroll");
     m_scrollArea->setWidgetResizable(true);
-    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scrollArea->setFixedWidth(340);
+
     m_containerWidget = new QWidget;
-    m_flowLayout = new FlowLayout(m_containerWidget, 5);
+    m_containerWidget->setObjectName("accountCardContainer");
+    m_cardLayout = new QVBoxLayout(m_containerWidget);
+    m_cardLayout->setContentsMargins(2, 2, 2, 2);
+    m_cardLayout->setSpacing(6);
     m_scrollArea->setWidget(m_containerWidget);
 
-    QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(4, 4, 4, 4);
-    mainLayout->setSpacing(4);
-    mainLayout->addWidget(m_scrollArea, 1);
-    setLayout(mainLayout);
+    // [+] 添加账号（常驻在卡片列表末尾）
+    m_addBtn = new QPushButton("+  添加账号");
+    m_addBtn->setObjectName("addAccountCard");
+    m_addBtn->setFixedHeight(42);
+    m_addBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_addBtn, &QPushButton::clicked, this, &AccountPage::onAddAccount);
+    m_cardLayout->addWidget(m_addBtn);
+    m_cardLayout->addStretch();
+
+    rootLayout->addWidget(m_scrollArea, 0);
+
+    // ================= 右列：账号详细配置 =================
+    QWidget *rightPanel = new QWidget;
+    QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(6);
+
+    m_editor = new AddAccountDialog(AccountInfo(), rightPanel);
+    rightLayout->addWidget(m_editor, 1);
+    // 注意顺序：先入布局再改窗口标志（setWindowFlags 可能把控件隐藏掉）
+    m_editor->setEmbeddedMode(true);
+    m_editor->show();
+
+    QHBoxLayout *btnRow = new QHBoxLayout;
+    btnRow->setContentsMargins(2, 0, 2, 0);
+    btnRow->setSpacing(4);
+
+    m_editorHint = new QLabel("未选择账号");
+    m_editorHint->setObjectName("acctEditorHint");
+    btnRow->addWidget(m_editorHint);
+    btnRow->addStretch();
+
+    m_saveSelBtn = new QPushButton("保存当前账号配置");
+    m_saveSelBtn->setObjectName("accountPrimaryBtn");
+    m_saveSelBtn->setCursor(Qt::PointingHandCursor);
+
+    btnRow->addWidget(m_saveSelBtn);
+
+    rightLayout->addLayout(btnRow);
+    rootLayout->addWidget(rightPanel, 1);
+
+    connect(m_saveSelBtn, &QPushButton::clicked, this, &AccountPage::onSaveSelected);
 
     loadAccounts();
     refreshCards();
+
+    // 默认选中第一个账号
+    if (!m_accounts.isEmpty())
+        selectAccount(m_accounts.first()->appid_int);
+    else
+        clearEditor();
 
     QTimer::singleShot(500, this, &AccountPage::autoConnectBots);
 
@@ -166,7 +253,8 @@ AccountPage::AccountPage(QWidget *parent)
 }
 
 AccountPage::~AccountPage() {
-
+    // 卡片控件随本对象一起销毁，这里把全局映射清掉避免留下野指针
+    g_CW.clear();
 }
 void AccountPage::onStatTick()
 {
@@ -351,156 +439,213 @@ void AccountPage::saveAccounts(const AccountInfo *info) {
 
     accdb->put(info->appid,info->toJson());
 }
-void AccountPage::refreshCards2(AccountInfo *info) {
-    // 1. 添加新卡片（不影响已有卡片）
+
+// 在左侧卡片列中插入一张账号卡片（插在 [+] 之前）
+CardWidget *AccountPage::addCardFor(AccountInfo *info) {
     CardWidget *card = new CardWidget(info);
-    connect(card, &CardWidget::settingClicked, this, &AccountPage::onEditAccount);
+    connect(card, &CardWidget::clicked, this, &AccountPage::onCardClicked);
     connect(card, &CardWidget::deleteClicked, this, &AccountPage::onDeleteAccount);
 
-    m_flowLayout->addWidget(card);
-    g_CW.insert(info->appid_int, card);
-    QListWidgetItem *item = new QListWidgetItem;
-    if(info->nickname.isEmpty())
-        item->setText(info->appid);
+    int idx = m_cardLayout->indexOf(m_addBtn);
+    if (idx < 0)
+        m_cardLayout->addWidget(card);
     else
-        item->setText(info->nickname);
-    item->setData(Qt::UserRole,info->appid_int);
-    robotListWidget->addItem(item);
+        m_cardLayout->insertWidget(idx, card);
 
-
-    QPushButton *addBtn = nullptr;
-
-    for (int i = 0; i < m_flowLayout->count(); ++i) {
-        QWidget *w = m_flowLayout->itemAt(i)->widget();
-        if (w && w->objectName() == "addAccountCard") {
-            addBtn = qobject_cast<QPushButton*>(w);
-            break;
-        }
-    }
-
-    if (!addBtn) {
-        // 不存在则创建
-        addBtn = new QPushButton("+");
-        addBtn->setObjectName("addAccountCard");
-        addBtn->setFixedSize(110, 110);
-        addBtn->setCursor(Qt::PointingHandCursor);
-        connect(addBtn, &QPushButton::clicked, this, &AccountPage::onAddAccount);
-        m_flowLayout->addWidget(addBtn);
-    } else {
-        // 已存在：将其移到末尾（先移除再添加）
-        m_flowLayout->removeWidget(addBtn);
-        m_flowLayout->addWidget(addBtn);
-    }
+    g_CW.insert(info->appid_int, card);
+    return card;
 }
+
+void AccountPage::refreshCards2(AccountInfo *info) {
+    if (!info) return;
+
+    CardWidget *card = g_CW.value(info->appid_int, nullptr);
+    if (card) {
+        card->refreshDisplay();
+    } else {
+        addCardFor(info);
+
+        QListWidgetItem *item = new QListWidgetItem;
+        item->setText(info->nickname.isEmpty() ? info->appid : info->nickname);
+        item->setData(Qt::UserRole, info->appid_int);
+        robotListWidget->addItem(item);
+    }
+
+    // 新增/外部变更的账号直接选中，右侧立即显示它的配置
+    selectAccount(info->appid_int);
+}
+
 void AccountPage::refreshCards() {
+    // 只清掉卡片，[+] 按钮保留（它也在 m_cardLayout 里）
     QLayoutItem *child;
-    while ((child = m_flowLayout->takeAt(0)) != nullptr) {
-        delete child->widget();
+    while ((child = m_cardLayout->takeAt(0)) != nullptr) {
+        QWidget *w = child->widget();
+        if (w && w != m_addBtn)
+            delete w;
         delete child;
     }
     g_CW.clear();
-    for (const auto& infoPtr : std::as_const(m_accounts)) {
-        CardWidget *card = new CardWidget(infoPtr.get());
-        connect(card, &CardWidget::settingClicked, this, &AccountPage::onEditAccount);
-        connect(card, &CardWidget::deleteClicked, this, &AccountPage::onDeleteAccount);
+    robotListWidget->clear();
 
+    for (const auto& infoPtr : std::as_const(m_accounts)) {
+        addCardFor(infoPtr.get());
 
         QListWidgetItem *item = new QListWidgetItem;
-        item->setText(infoPtr->nickname);
-        item->setData(Qt::UserRole,infoPtr->appid_int);
+        item->setText(infoPtr->nickname.isEmpty() ? infoPtr->appid : infoPtr->nickname);
+        item->setData(Qt::UserRole, infoPtr->appid_int);
         robotListWidget->addItem(item);
-        m_flowLayout->addWidget(card);
-        g_CW.insert(infoPtr->appid_int,card);
-
     }
 
-
-
-    m_addBtn = new QPushButton("+");
-    m_addBtn->setObjectName("addAccountCard");
-    m_addBtn->setFixedSize(110, 110);
-    m_addBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_addBtn, &QPushButton::clicked, this, &AccountPage::onAddAccount);
-    m_flowLayout->addWidget(m_addBtn);
-
-
+    m_cardLayout->addWidget(m_addBtn);
+    m_cardLayout->addStretch();
 }
 
-void AccountPage::openAccountEditor(const AccountInfo &info, bool editMode) {
-    AddAccountDialog dialog(info, this);
-    dialog.setWindowTitle(editMode ? "编辑机器人账号" : "添加机器人账号");
-    if (dialog.exec() != QDialog::Accepted) return;
+// 选中某个账号：右侧显示它的配置
+void AccountPage::selectAccount(int appid) {
+    AccountInfo *ai = findAccount(appid);
+    if (!ai) {
+        clearEditor();
+        return;
+    }
+    m_newMode = false;
+    m_selectedAppid = appid;
+    m_editor->setAccountInfo(*ai);
+    updateSelectionStyle();
+    updateActionState();
+}
 
+// 清空编辑器（没有账号 / 删除完最后一个账号）
+void AccountPage::clearEditor() {
+    m_newMode = false;
+    m_selectedAppid = 0;
+    m_editor->setAccountInfo(AccountInfo());
+    updateSelectionStyle();
+    updateActionState();
+}
 
-    auto newInfo = std::make_shared<AccountInfo>();
-    dialog.getAccountInfo(newInfo.get());
+void AccountPage::updateSelectionStyle() {
+    for (CardWidget *card : std::as_const(g_CW)) {
+        if (!card || !card->m_info) continue;
+        card->setSelected(card->m_info->appid_int == m_selectedAppid && m_selectedAppid != 0);
+    }
+}
 
-    if (newInfo->appid_int==0) {   // 假设 appid 是 QString，用 isEmpty() 判断
-        QMessageBox::warning(this, "提示", "AppID 不能为空");
+void AccountPage::updateActionState() {
+    if (!m_editorHint) return;
+
+    if (m_newMode) {
+        m_editorHint->setText("新建账号 —— 填写后点击「保存当前账号配置」");
+        return;
+    }
+    if (m_selectedAppid == 0) {
+        m_editorHint->setText("未选择账号");
+        return;
+    }
+    AccountInfo *ai = findAccount(m_selectedAppid);
+    if (!ai) {
+        m_editorHint->setText("未选择账号");
+        return;
+    }
+    m_editorHint->setText(QString("当前账号：%1（AppID %2）")
+                              .arg(ai->nickname.isEmpty() ? ai->appid : ai->nickname, ai->appid));
+}
+
+// [+] ：进入“新建账号”状态，右侧表单清空待填
+void AccountPage::onAddAccount() {
+    m_newMode = true;
+    m_selectedAppid = 0;
+    m_editor->setAccountInfo(AccountInfo());
+    updateSelectionStyle();
+    updateActionState();
+    m_editor->focusAppId();
+}
+
+void AccountPage::onCardClicked(int appid) {
+    if (appid == 0) return;
+    selectAccount(appid);
+}
+
+void AccountPage::onSaveSelected() {
+    if (!m_editor) return;
+
+    AccountInfo tmp;
+    m_editor->getAccountInfo(&tmp);
+
+    if (tmp.appid.trimmed().isEmpty() || tmp.appid_int == 0) {
+        QMessageBox::warning(this, "提示", "AppID 不能为空，且必须是数字");
         return;
     }
 
-    int existingIndex = -1;
-    for (int i = 0; i < m_accounts.size(); ++i) {
-        if (m_accounts[i]->appid_int == newInfo->appid_int) {
-            existingIndex = i;
+    // ---------- 新增 ----------
+    if (m_newMode) {
+        if (findAccount(tmp.appid_int)) {
+            QMessageBox::warning(this, "重复", "AppID 已存在");
+            return;
+        }
+
+        auto np = std::make_shared<AccountInfo>();
+        m_editor->getAccountInfo(np.get());
+
+        m_accounts.append(np);
+        saveAccounts(np.get());
+        refreshCards2(np.get());   // 插入卡片并选中
+
+        m_newMode = false;
+        m_selectedAppid = np->appid_int;
+        updateSelectionStyle();
+        updateActionState();
+        AppendEventLog(QString("新增账号 %1").arg(np->appid), 0x2E9E5B);
+        return;
+    }
+
+    // ---------- 修改 ----------
+    if (m_selectedAppid == 0) {
+        QMessageBox::warning(this, "提示", "请先在左侧选择一个账号，或点击「+ 添加账号」新建");
+        return;
+    }
+
+    AccountInfo *ai = findAccount(m_selectedAppid);
+    if (!ai) {
+        QMessageBox::warning(this, "提示", "选中的账号已不存在");
+        updateActionState();
+        return;
+    }
+
+    if (tmp.appid_int != ai->appid_int) {
+        // AppID 同时是 LMDB 的 key 和 botdb 目录名，这里不做重命名
+        QMessageBox::information(this, "提示",
+                                 QString("AppID 不可修改，已保留原 AppID：%1").arg(ai->appid));
+    }
+
+    ai->secret = tmp.secret;
+    ai->botqq = tmp.botqq;
+
+    ai->type = tmp.type;
+    ai->markdown = tmp.markdown;
+    ai->markdown_pd = tmp.markdown_pd;
+    ai->markdown_pd_mb = tmp.markdown_pd_mb;
+    ai->wsIntents = tmp.wsIntents;
+    ai->sandbox = tmp.sandbox;
+    // 注意：botsettext 由 QQ 回调写入，表单里没有对应控件，这里保持原值不清空
+
+    saveAccounts(ai);
+
+    if (g_CW.contains(ai->appid_int) && g_CW[ai->appid_int])
+        g_CW[ai->appid_int]->refreshDisplay();
+
+    for (int i = 0; i < robotListWidget->count(); ++i) {
+        auto *item = robotListWidget->item(i);
+        if (item->data(Qt::UserRole).toInt() == ai->appid_int) {
+            item->setText(ai->nickname.isEmpty() ? ai->appid : ai->nickname);
             break;
         }
     }
 
-    if (!editMode) {
-        if (existingIndex != -1) {
-            QMessageBox::warning(this, "重复", "AppID 已存在");
-            return;
-        }
+    // 让表单回显落库后的真实值（例如 AppID 被拒绝修改的情况）
+    m_editor->setAccountInfo(*ai);
 
-        m_accounts.append(newInfo);
-        refreshCards2(newInfo.get());
-
-    } else {
-
-        int oldIndex = -1;
-        for (int i = 0; i < m_accounts.size(); ++i) {
-            if (m_accounts[i]->appid_int == info.appid_int) {
-                oldIndex = i;
-                break;
-            }
-        }
-        if (oldIndex == -1) return;
-
-        if (newInfo->appid_int != info.appid_int && existingIndex != -1) {
-            QMessageBox::warning(this, "重复", "AppID 已存在");
-            return;
-        }
-
-        auto oldInfoPtr = m_accounts[oldIndex];
-
-        oldInfoPtr->secret = newInfo->secret;
-        oldInfoPtr->botqq =   newInfo->botqq;
-        oldInfoPtr->wsAddress = newInfo->wsAddress;
-        oldInfoPtr->botsettext = newInfo->botsettext;
-        oldInfoPtr->type =newInfo->type;
-
-        oldInfoPtr->markdown = newInfo->markdown;
-        oldInfoPtr->markdown_pd = newInfo->markdown_pd;
-        oldInfoPtr->markdown_pd_mb = newInfo->markdown_pd_mb;
-        oldInfoPtr->wsIntents = newInfo->wsIntents;
-
-        saveAccounts(oldInfoPtr.get());
-    }
-
-
-}
-
-void AccountPage::onAddAccount() {
-    openAccountEditor(AccountInfo(), false);
-}
-
-
-void AccountPage::onEditAccount(int appid) {
-    AccountInfo *info = findAccount(appid);
-    if (!info) return;
-    openAccountEditor(*info, true);
+    updateActionState();
+    AppendEventLog(QString("已保存账号配置 %1").arg(ai->appid), 0x2E9E5B);
 }
 
 void AccountPage::onDeleteAccount(int appid) {
@@ -509,7 +654,7 @@ void AccountPage::onDeleteAccount(int appid) {
             // 1. 删除界面上的卡片控件
             if (g_CW.contains(appid)) {
                 CardWidget *card = g_CW.take(appid);   // 从映射中取出
-                m_flowLayout->removeWidget(card);      // 从布局中移除
+                m_cardLayout->removeWidget(card);      // 从布局中移除
                 card->deleteLater();                   // 安全删除（或在当前函数 delete card）
             }
             if(m_botClients.contains(appid))
@@ -521,21 +666,30 @@ void AccountPage::onDeleteAccount(int appid) {
             accdb->remove(m_accounts[i]->appid);
             m_accounts.removeAt(i);
 
-            for(int i=0 ;i<robotListWidget->count();++i)
+            for(int j = 0; j < robotListWidget->count(); ++j)
             {
-                auto *item = robotListWidget->item(i);
-                if(item->data(Qt::UserRole)==appid)
+                auto *item = robotListWidget->item(j);
+                if(item->data(Qt::UserRole).toInt() == appid)
                 {
-                    robotListWidget->takeItem(i);
+                    robotListWidget->takeItem(j);
+                    delete item;
                     break;
                 }
+            }
+
+            // 删掉的正好是选中项：自动切到第一个剩余账号
+            if (m_selectedAppid == appid) {
+                m_selectedAppid = 0;
+                m_newMode = false;
+                if (!m_accounts.isEmpty())
+                    selectAccount(m_accounts.first()->appid_int);
+                else
+                    clearEditor();
             }
 
             break;
         }
     }
-
-
 }
 
 

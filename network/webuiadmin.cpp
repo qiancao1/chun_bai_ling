@@ -225,7 +225,7 @@ QJsonObject accountToJson(const AccountInfo *a, bool withSecret)
     o["pduid"]        = a->pduid;
     o["online"]       = a->online;
     o["type"]         = a->type;
-    o["wsAddress"]    = a->wsAddress;
+
     o["wsIntents"]    = a->wsIntents;
     o["markdown"]     = a->markdown;
     o["markdown_pd"]  = a->markdown_pd;
@@ -299,7 +299,7 @@ void handleSaveBot(const QJsonObject &p, ClientConnection *client, const QString
     if (!secret.isEmpty()) info->secret = secret;
     if (p.contains("qq"))            info->botqq        = p.value("qq").toString();
     if (p.contains("name"))          info->nickname     = p.value("name").toString();
-    if (p.contains("wsAddress"))     info->wsAddress    = p.value("wsAddress").toString();
+
     if (p.contains("admin"))         info->admin        = p.value("admin").toString();
     if (p.contains("welcomeMsg"))    info->welcomeMsg   = p.value("welcomeMsg").toString();
     if (p.contains("fallbackReply")) info->fallbackReply= p.value("fallbackReply").toString();

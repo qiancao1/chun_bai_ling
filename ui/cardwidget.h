@@ -6,6 +6,11 @@
 #include <QPushButton>
 #include "accountinfo.h"
 #include "qqbotclient.h"
+
+class QMouseEvent;
+
+// 列表式紧凑卡片：[头像] 昵称 + 类型 + 状态 ............ [登录] [删除]
+// 整卡可点击 -> 通知 AccountPage 在右侧显示该账号的详细配置
 class CardWidget : public QWidget {
     Q_OBJECT
 public:
@@ -15,21 +20,24 @@ public:
     void refreshDisplay();
     void triggerLogin();
     void onTimeRefresh();       // 刷新在线时长显示
+    void setSelected(bool selected);
+    bool isSelected() const { return m_selected; }
+
     AccountInfo *m_info;
+
 public slots:
     void onLoginButton();
     void onLoginButtonA();
 
 signals:
-    void settingClicked(int appid);
+    void clicked(int appid);
     void deleteClicked(int appid);
 
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
 
 private slots:
-
-    void onSettingButton();
     void onDeleteButton();
-
 
     void onBotLoginSuccess();      // 某个机器人登录成功后的处理
 
@@ -51,10 +59,10 @@ private:
     QLabel *m_receivedLabel;    // 接收数量
     QLabel *m_sentLabel;        // 发送数量
     QPushButton *m_loginBtn;
-    QPushButton *m_settingBtn;
     QPushButton *m_deleteBtn;
     QLabel* m_appidLabel;
 
+    bool m_selected = false;
 
 
 };

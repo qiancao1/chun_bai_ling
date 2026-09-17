@@ -13,7 +13,14 @@
 #include <QProgressBar>
 #include <QGraphicsDropShadowEffect>
 #include <QSysInfo>
+#include <QStringList>
+#include <QList>
+#include <QPair>
+#include <algorithm>
 #include "global.h"
+
+// 「插件消息统计」面板最多展示的插件数（按发送量降序取前 N）
+static constexpr int kTopPluginCount = 6;
 
 #ifdef _WIN32
 #include <windows.h>
@@ -333,7 +340,7 @@ QFrame* HomePage::createRecentPanel() {
     recentLayout->setSpacing(5);
 
     auto recentTop = new QHBoxLayout;
-    recentTop->addWidget(createLabel("插件消息统计", "sectionTitle"));
+    recentTop->addWidget(createLabel("插件消息 TOP 6", "sectionTitle"));
     recentLayout->addLayout(recentTop);
 
     m_pluginMessageLayout = new QVBoxLayout;
@@ -517,14 +524,53 @@ QLabel *HomePage::createStatusLabel(const QString &title, const QString &value)
 }
 
 
+#ifdef _WIN32
+// 本进程「专用工作集」（MB）= 任务管理器「内存」列显示的那个值：
+// 只算本进程私有的部分，不含与其它进程共享的 DLL / 映射（所以比 WorkingSetSize 小一截）。
+// PrivateWorkingSetSize 字段只在较新的 Windows 上支持，所以这里自己定义结构并传满长度做探测，
+// 系统不认（老系统）就退回普通工作集。
+static double queryPrivateWorkingSetMB()
+{
+    struct PmcEx2 {
+        DWORD     cb;
+        DWORD     PageFaultCount;
+        SIZE_T    PeakWorkingSetSize;
+        SIZE_T    WorkingSetSize;
+        SIZE_T    QuotaPeakPagedPoolUsage;
+        SIZE_T    QuotaPagedPoolUsage;
+        SIZE_T    QuotaPeakNonPagedPoolUsage;
+        SIZE_T    QuotaNonPagedPoolUsage;
+        SIZE_T    PagefileUsage;
+        SIZE_T    PeakPagefileUsage;
+        SIZE_T    PrivateUsage;
+        SIZE_T    PrivateWorkingSetSize;
+        ULONGLONG SharedCommitUsage;
+    } pmc2;
+    ZeroMemory(&pmc2, sizeof(pmc2));
+    pmc2.cb = sizeof(pmc2);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc2),
+                                sizeof(pmc2))) {
+        return pmc2.PrivateWorkingSetSize / (1024.0 * 1024.0);
+    }
+
+    PROCESS_MEMORY_COUNTERS pmc;
+    ZeroMemory(&pmc, sizeof(pmc));
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        return pmc.WorkingSetSize / (1024.0 * 1024.0);
+    return 0.0;
+}
+#endif
+
+
 void HomePage::updateProcessStats()
 {
     // ========== 1. 内存占用（带进度条） ==========
 #ifdef _WIN32
-    PROCESS_MEMORY_COUNTERS pmc;
-    pmc.cb = sizeof(pmc);
-    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-        double memMB = pmc.WorkingSetSize / (1024.0 * 1024.0);
+    // 专用工作集 = 任务管理器「内存」列显示的那个值（只算本进程私有部分，不含共享 DLL）
+    double memMB = queryPrivateWorkingSetMB();
+    if (memMB > 0.0) {
         static double totalMemMB = []() {
             MEMORYSTATUSEX memStatus;
             memStatus.dwLength = sizeof(memStatus);
@@ -734,10 +780,24 @@ void HomePage::refreshRuntimeStats()
     if (m_pluginCountValue) m_pluginCountValue->setText(QString::number(pluginCount));
 
 
-    for (const PluginInfo &plugin : std::as_const(m_pluginList)) {
-        updatePluginMessageCount(plugin.name.isEmpty() ? plugin.path : plugin.name, plugin.SendQuantity);
-    }
+    // 插件发送量 TOP 6 榜单（见 refreshPluginMessageRanking）
+    refreshPluginMessageRanking();
     updateProcessStats();
+}
+
+// 递归清空布局（含子布局里的控件）；末尾的 stretch 也会一起被清掉
+static void clearLayoutItems(QLayout *layout)
+{
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            w->setParent(nullptr);
+            w->deleteLater();
+        } else if (QLayout *sub = item->layout()) {
+            clearLayoutItems(sub);
+            delete sub;
+        }
+        delete item;
+    }
 }
 
 void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
@@ -766,9 +826,56 @@ void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
         row->addWidget(createLabel(pluginName, "conversationName"), 1);
         row->addLayout(right);
         
-        // 插入到伸缩弹簧之前
-        m_pluginMessageLayout->insertLayout(m_pluginMessageLayout->count() - 1, row);
+        // 追加到末尾（重建时布局里还没有 stretch，收尾由 refreshPluginMessageRanking 统一 addStretch）
+        m_pluginMessageLayout->addLayout(row);
     }
+}
+
+void HomePage::refreshPluginMessageRanking()
+{
+    if (!m_pluginMessageLayout) return;
+
+    // 1. 收集发过消息（SendQuantity > 0）的插件，按发送量降序；并列时按名称，保证顺序稳定
+    QList<QPair<int, QString>> ranked;
+    ranked.reserve(m_pluginList.size());
+    for (const PluginInfo &plugin : std::as_const(m_pluginList)) {
+        if (plugin.SendQuantity <= 0) continue;   // 没发过消息的不占榜单名额
+        ranked.append(QPair<int, QString>(plugin.SendQuantity,
+                                          plugin.name.isEmpty() ? plugin.path : plugin.name));
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const QPair<int, QString> &a, const QPair<int, QString> &b) {
+                  if (a.first != b.first) return a.first > b.first;
+                  return a.second < b.second;
+              });
+    if (ranked.size() > kTopPluginCount) ranked.reserve(kTopPluginCount);
+
+    QStringList order;
+    order.reserve(ranked.size());
+    for (const auto &item : ranked) order << item.second;
+
+    // 2. 榜单成员和顺序都没变：只刷新数字（首页定时器每秒会调到这里，重建会闪）
+    if (m_pluginRankReady && order == m_pluginRankOrder) {
+        for (const auto &item : ranked) {
+            if (QLabel *label = m_pluginMessageCounts.value(item.second))
+                label->setText(QString::number(item.first));
+        }
+        return;
+    }
+
+    // 3. 有变化（含首次、插件上下榜、排名互换）：整体重建
+    m_pluginRankOrder = order;
+    m_pluginRankReady = true;
+    clearLayoutItems(m_pluginMessageLayout);
+    m_pluginMessageCounts.clear();
+
+    if (ranked.isEmpty()) {
+        m_pluginMessageLayout->addWidget(createLabel("暂无插件发送记录", "mutedText"));
+    } else {
+        for (const auto &item : ranked)
+            updatePluginMessageCount(item.second, item.first);
+    }
+    m_pluginMessageLayout->addStretch();
 }
 
 void HomePage::refreshPluginList()

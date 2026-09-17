@@ -39,7 +39,7 @@ QString AccountInfo::toJson() const {
     obj["botsettext"] = botsettext;
     obj["nickname"] = nickname;
     obj["avatarPath"] = avatarPath;
-    obj["wsAddress"] = wsAddress;
+
     obj["type"] = type;
     obj["message_received"] = message_received;
     obj["message_sent"] = message_sent;
@@ -129,7 +129,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.botsettext = obj["botsettext"].toString();
     info.nickname = obj["nickname"].toString();
     info.avatarPath = obj["avatarPath"].toString();
-    info.wsAddress = obj["wsAddress"].toString();
+
     info.admin = obj["admin"].toString();
     info.type = obj["type"].toInt();
     info.juece =obj["juece"].toBool();

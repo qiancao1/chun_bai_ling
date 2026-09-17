@@ -28,7 +28,7 @@
 extern QString m_taskId_login;
 extern QDialog *m_qrDialog;
 
-QString addbot(int appid,const QString &secret,const QString &wsAddress,int type,const QString  &markdown,int wsIntents);
+QString addbot(int appid,const QString &secret,int type,const QString  &markdown,int wsIntents);
 namespace qq_bind_detail {
 
 inline const char kCreateUrl[]   = "https://q.qq.com/lite/create_bind_task";
@@ -335,7 +335,7 @@ private:
         }
         const QString secret = QString::fromUtf8(plain);
         int appid2 = appid.toInt();
-        addbot(appid2,secret,QString(),0,"1",0);
+        addbot(appid2,secret,0,"1",0);
 
         if (m_taskId_login == sid) {
             if (m_qrDialog) {

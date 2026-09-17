@@ -65,6 +65,7 @@
 #include "qunguan.h"
 #include "sandboxwindow.h"
 #include "set.h"
+#include "themecolors.h"
 #include "textreplaceconfigwidget.h"
 #include "keywordmatchconfigwidget.h"
 #include <QNetworkReply>
@@ -72,15 +73,16 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.1.73"
-#define APP_BUILD_NUMBER 73
+#define APP_VERSION_STR "v1.3.2.74"
+#define APP_BUILD_NUMBER 74
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.3.1.73 (2026-09-17)
+## v1.3.2.74 (2026-09-17)
 - 修复 新版sdk无法加载问题
 - 修复 插件市场 没有安装linux 版本dll so选项
 - 修复短id 会重置问题 ai改的我不知道
+- 更新 UI
 
 ## v1.3.0.70 (2026-09-13)
 - 优化 http 优化复有链接 http池改单线程 回调使用线程池
@@ -357,6 +359,9 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
     xr();
     applyStyleSheet();
 
+    // 界面配色（高级设置 → 基础设置）改一个色就重新套一遍样式表
+    ThemeColors::setApplyHook([this]() { applyStyleSheet(); });
+
 
 
     // 默认选中首页
@@ -582,6 +587,9 @@ MainWindow::~MainWindow()
 
     delete chatPage;
     chatPage = nullptr;
+
+    // 解掉配色回调（捕获的是 this，别留下悬空引用）
+    ThemeColors::setApplyHook(nullptr);
 }
 
 bool _g_qieh=false;
@@ -692,9 +700,9 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(ui_qunguan,"基础");
     configTabWidget2->addTab(m_nickReviewWidget,"昵称审核");
     configTabWidget2->addTab(myPlts, "批量推送");
-    configTabWidget2->addTab(RuleConfigWidget, "按钮挂载");
-    configTabWidget2->addTab(TextReplace, "自定义替换");
-    configTabWidget2->addTab(keyword, "关键词回复");
+    configTabWidget2->addTab(RuleConfigWidget, "按钮");
+    configTabWidget2->addTab(TextReplace, "文本替换");
+    configTabWidget2->addTab(keyword, "问答");
     configTabWidget2->addTab(keyword_Punish, "关键词撤回");
     configTabWidget2->addTab(schedule, "订阅|定时");
     configTabWidget2->addTab(ai_ui, "Ai");
@@ -1617,7 +1625,9 @@ void MainWindow::showUpdateDialog(const QString &version, const QString &release
 
 void MainWindow::applyStyleSheet()
 {
-    setStyleSheet(R"(
+    // 下面这段是「基础样式表」（颜色都是默认配色）。
+    // ThemeColors::apply 会把用户改过的那些颜色替换掉；一项都没改过时输出与原样完全一致。
+    setStyleSheet(ThemeColors::apply(QString::fromUtf8(R"(
         QMainWindow {
             background: transparent;
         }
@@ -1809,6 +1819,39 @@ void MainWindow::applyStyleSheet()
         QComboBox::drop-down:hover {
             background: #e0e0e0;
         }
+        /* ---------- 选择夹（QTabWidget / QTabBar） ---------- */
+        QTabWidget, QTabBar {
+            background: transparent;
+            border: none;
+        }
+        QTabWidget::pane {
+            border: 1px solid #E0E0E0;
+            border-radius: 6px;
+            background: #FFFFFF;
+            top: -1px;
+        }
+        QTabBar::tab {
+            background: #F3EADF;
+            color: #687589;
+            border: 1px solid #E0E0E0;
+            border-bottom: none;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            padding: 6px 16px;
+            margin-right: 2px;
+            margin-bottom: -1px;
+            font-weight: 600;
+        }
+        QTabBar::tab:hover {
+            background: #FFF7EA;
+            color: #FF914D;
+        }
+        QTabBar::tab:selected {
+            background: #FFEDD9;
+            color: #FF7F32;
+            border: 1px solid #FFB066;
+            border-bottom: none;
+        }
 #tagLabel {
     background: transparent !important;
     color: #1E90FF;
@@ -1818,5 +1861,5 @@ void MainWindow::applyStyleSheet()
 }
         QTableWidget { border: 1px solid #AE8AB1; gridline-color: #d0d0d0; }
         QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
-    )");
+    )")));
 }

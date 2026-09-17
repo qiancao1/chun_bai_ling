@@ -123,44 +123,49 @@ void DragButton::setButtonData(const ButtonData &data) {
     m_data = data;
     setText(data.label);
 
-    if (data.style == 0) {
-        // 灰色线框样式
-        setStyleSheet(
+    // 六种样式各自的预览外观（与下拉框里那六项一一对应）。
+    // 这里只是「底色 + 边框 + 文字色」的近似预览，方便编辑时区分；
+    // QQ 端真正渲染时还会套图标 / 深浅底，以那边为准。
+    const QString qss = [&data]() -> QString {
+        const QString base =
             "QPushButton {"
-            "    background-color: #f0f0f0;"
-            "    border: 1px solid #ccc;"
+            "    background-color: %1;"
+            "    border: 1px solid %2;"
             "    border-radius: 4px;"
+            "    color: %3;"
             "}"
             "QPushButton:hover {"
-            "    background-color: #e0e0e0;"
-            "    border: 1px solid #999;"
+            "    background-color: %4;"
+            "    border: 1px solid %5;"
             "}"
             "QPushButton:focus {"
             "    outline: none;"
-            "    border: 2px solid #1976d2;"
-            "    background-color: #e8f0fe;"
-            "}"
-            );
-    } else {
-        // 蓝色线框样式
-        setStyleSheet(
-            "QPushButton {"
-            "    background-color: #e8f0fe;"
-            "    border: 1px solid #1976d2;"
-            "    border-radius: 4px;"
-            "    color: #1976d2;"
-            "}"
-            "QPushButton:hover {"
-            "    background-color: #d0e0fc;"
-            "    border: 1px solid #0d5b9e;"
-            "}"
-            "QPushButton:focus {"
-            "    outline: none;"
-            "    border: 2px solid #0d5b9e;"
-            "    background-color: #c0d4f0;"
-            "}"
-            );
-    }
+            "    border: 2px solid %6;"
+            "    background-color: %7;"
+            "}";
+
+        switch (data.style) {
+        case 0:   // 灰色线框：灰底 + 灰边框
+            return QString(base).arg("#f0f0f0", "#cccccc", "#333333",
+                                     "#e0e0e0", "#999999", "#1976d2", "#e8f0fe");
+        case 1:   // 蓝色线框：浅蓝底 + 蓝边框 + 蓝字
+            return QString(base).arg("#e8f0fe", "#1976d2", "#1976d2",
+                                     "#d0e0fc", "#0d5b9e", "#0d5b9e", "#c0d4f0");
+        case 3:   // 灰线红文本：白底 + 灰边框 + 红字
+            return QString(base).arg("#ffffff", "#999999", "#d32f2f",
+                                     "#fafafa", "#777777", "#1976d2", "#fff5f5");
+        case 4:   // 蓝底白文本：蓝底 + 白字
+            return QString(base).arg("#1976d2", "#1976d2", "#ffffff",
+                                     "#1565c0", "#0d5b9e", "#0d47a1", "#1565c0");
+        case 2:   // 图标：白底黑字
+        case 5:   // 保留：白底黑字
+        default:
+            return QString(base).arg("#ffffff", "#d9d9d9", "#000000",
+                                     "#f2f2f2", "#bfbfbf", "#1976d2", "#ffffff");
+        }
+    }();
+
+    setStyleSheet(qss);
 }
 
 void DragButton::mousePressEvent(QMouseEvent *event) {

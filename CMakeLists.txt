@@ -134,6 +134,7 @@ set(PROJECT_SOURCES_ALL
     ui/botruleconfigwidget.h ui/botruleconfigwidget.cpp
     ui/textreplaceconfigwidget.h ui/textreplaceconfigwidget.cpp
     ui/set.h ui/set.cpp
+    ui/themecolors.h ui/themecolors.cpp ui/themecolorwidget.h ui/themecolorwidget.cpp
     ui/keywordmatchconfigwidget.h ui/keywordmatchconfigwidget.cpp
     ui/keywordpunishconfigwidget.h ui/keywordpunishconfigwidget.cpp
     ui/blacklistpage.h ui/blacklistpage.cpp

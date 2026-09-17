@@ -10,6 +10,7 @@
 #include <qthreadpool.h>
 #include "websocketserver.h"
 #include "machinekey.h"
+#include "themecolorwidget.h"
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 QString uploadFileSync_cos(const QString &localPath);
@@ -107,7 +108,7 @@ void set::setupUI()
 
     QLabel *urlLabel3 = new QLabel(tr("日志数"), this);
     m_日志数量 = new QLineEdit(this);
-    m_日志数量->setPlaceholderText("默认10w条 看你电脑配置来 是永久缓存 这样子可用存更多聊天信息");
+    m_日志数量->setPlaceholderText("默认20w条 看你电脑配置来 是永久缓存 这样子可用存更多聊天信息");
     m_日志数量->setText(QString::number(g_config["logs"].toInt(200000)));
     m_日志数量->setMaximumWidth(110);
     QPushButton *bt2 = new QPushButton(tr("确认"), this);
@@ -448,6 +449,9 @@ void set::setupUI()
 
     });
     mainVLayout->addLayout(localLayout2);
+
+    // 界面配色（点色块自定义，立即生效）
+    mainVLayout->addWidget(new ThemeColorWidget(this));
 
     m_admid_deit = new QTextEdit;
     m_admid_deit->setPlainText("空格分割 允许触发 webui 全局禁用启用插件 启用ws");
