@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <qpushbutton.h>
+#include <QSet>
 #include "accountinfo.h"
 
 class AddAccountDialog;
@@ -44,6 +45,7 @@ private:
     void loadAccounts();
     void onStatTick();
     AccountInfo* findAccount(int appid);
+    void removeAccountNow(int appid);   // 真正删掉账号（下线并等待 1 秒后才调用）
 
     QScrollArea *m_scrollArea = nullptr;
     QWidget *m_containerWidget = nullptr;
@@ -56,6 +58,8 @@ private:
 
     int m_selectedAppid = 0;    // 0 = 没有选中任何账号
     bool m_newMode = false;     // 编辑器处于“新建账号”状态
+
+    QSet<int> m_pendingDelete;  // 已进入「先下线 → 1 秒后删除」流程的 appid，防重复触发
 
     int m_lastTotalReceived = 0;
     int m_lastTotalSent = 0;

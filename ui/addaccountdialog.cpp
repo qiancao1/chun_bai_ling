@@ -277,9 +277,10 @@ void AddAccountDialog::setupUI() {
 
         QQBindLogin::instance().start([this](bool ok, const QString& sid, const QString& qrUrl, const QString& err) {
             if (ok) {
-                m_qrDialog = this;
+
                 m_taskId_login = sid;
                 QDialog * qrDialog = new QDialog(this);
+                m_qrDialog = qrDialog;
                 qrDialog->setWindowTitle("扫描二维码登录");
                 qrDialog->setModal(false); // 可改为 true 为模态
                 qrDialog->setAttribute(Qt::WA_DeleteOnClose); // 关闭时自动删除

@@ -124,6 +124,20 @@ void CardWidget::setSelected(bool selected) {
     updateBorder();
 }
 
+// 账号已经下线、进入「1 秒后删除」的等待期：把按钮锁住并给出文字反馈
+void CardWidget::setDeletePending(bool pending) {
+    m_deletePending = pending;
+
+    if (m_loginBtn) {
+        m_loginBtn->setText(pending ? "下线中…" : (m_info->online ? "登出" : "登录"));
+        m_loginBtn->setEnabled(!pending);
+    }
+    if (m_deleteBtn) {
+        m_deleteBtn->setText(pending ? "删除中…" : "删除");
+        m_deleteBtn->setEnabled(!pending);
+    }
+}
+
 void CardWidget::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
         emit clicked(m_info ? m_info->appid_int : 0);
@@ -169,7 +183,7 @@ void CardWidget::refreshDisplay() {
     m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");
 
     onTimeRefresh();  // 刷新时长
-    m_loginBtn->setText(m_info->online ? "登出" : "登录");
+    m_loginBtn->setText(m_deletePending ? "下线中…" : (m_info->online ? "登出" : "登录"));
     updateBorder();
 }
 

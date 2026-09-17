@@ -22,6 +22,9 @@ public:
     void onTimeRefresh();       // 刷新在线时长显示
     void setSelected(bool selected);
     bool isSelected() const { return m_selected; }
+    // 进入「已下线、等待删除」状态：删除按钮显示“删除中…”，并禁用两个按钮，
+    // 避免这 1 秒里又被登录或重复点删除
+    void setDeletePending(bool pending);
 
     AccountInfo *m_info;
 
@@ -63,6 +66,7 @@ private:
     QLabel* m_appidLabel;
 
     bool m_selected = false;
+    bool m_deletePending = false;   // 已下线、等 1 秒定时器来删
 
 
 };

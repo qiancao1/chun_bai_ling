@@ -3,6 +3,7 @@
 #include "addaccountdialog.h"
 #include "global.h"
 #include "homepage.h"
+#include "qqbotclient.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QScrollArea>
@@ -648,47 +649,81 @@ void AccountPage::onSaveSelected() {
     AppendEventLog(QString("已保存账号配置 %1").arg(ai->appid), 0x2E9E5B);
 }
 
+// 删除账号：不能直接删。
+// QQBotClient 是卡片的子对象，连接还在收包 / 重连时把卡片（连同 client）
+// 析构掉就会崩。所以流程固定为：先下线 → 等 1 秒让网络事件收尾 → 再真正删除。
 void AccountPage::onDeleteAccount(int appid) {
+    if (appid == 0 || m_pendingDelete.contains(appid))
+        return;   // 已经在等删除的，忽略重复点击
+
+    AccountInfo *ai = findAccount(appid);
+    if (!ai)
+        return;
+
+    m_pendingDelete.insert(appid);
+
+    // 卡片给个「删除中…」的反馈，同时挡住登录按钮和重复点删除
+    if (CardWidget *card = g_CW.value(appid, nullptr))
+        card->setDeletePending(true);
+
+    // 1) 先下线：stop() 会关 websocket、停心跳、断掉重连定时器
+    if (QQBotClient *client = m_botClients.value(appid, nullptr)) {
+        client->stop();
+        AppendEventLog(QString("账号 %1 已下线，1 秒后删除").arg(ai->appid), 0xFF7F32);
+    }
+
+    // 2) 1 秒后再删 —— 这段延迟就是留给连接收尾的
+    QTimer::singleShot(1000, this, [this, appid]() {
+        m_pendingDelete.remove(appid);
+        removeAccountNow(appid);
+    });
+}
+
+// 真正执行删除。唯一调用点是上面那个定时器，此时连接已经收尾，删卡片才安全。
+void AccountPage::removeAccountNow(int appid) {
     for (int i = 0; i < m_accounts.size(); ++i) {
-        if (m_accounts[i]->appid_int == appid) {
-            // 1. 删除界面上的卡片控件
-            if (g_CW.contains(appid)) {
-                CardWidget *card = g_CW.take(appid);   // 从映射中取出
-                m_cardLayout->removeWidget(card);      // 从布局中移除
-                card->deleteLater();                   // 安全删除（或在当前函数 delete card）
-            }
-            if(m_botClients.contains(appid))
-            {
-                m_botClients.remove(appid);
-                doWork(500); //等待断开
-            }
+        if (m_accounts[i]->appid_int != appid)
+            continue;
 
-            accdb->remove(m_accounts[i]->appid);
-            m_accounts.removeAt(i);
-
-            for(int j = 0; j < robotListWidget->count(); ++j)
-            {
-                auto *item = robotListWidget->item(j);
-                if(item->data(Qt::UserRole).toInt() == appid)
-                {
-                    robotListWidget->takeItem(j);
-                    delete item;
-                    break;
-                }
-            }
-
-            // 删掉的正好是选中项：自动切到第一个剩余账号
-            if (m_selectedAppid == appid) {
-                m_selectedAppid = 0;
-                m_newMode = false;
-                if (!m_accounts.isEmpty())
-                    selectAccount(m_accounts.first()->appid_int);
-                else
-                    clearEditor();
-            }
-
-            break;
+        // 1. 删除界面上的卡片控件
+        if (g_CW.contains(appid)) {
+            CardWidget *card = g_CW.take(appid);   // 从映射中取出
+            m_cardLayout->removeWidget(card);      // 从布局中移除
+            card->deleteLater();                   // 安全删除（或在当前函数 delete card）
         }
+
+        // 2. 网络客户端：前面已经 stop 过，这里只从映射摘掉，销毁交给事件循环
+        //    （不再用 doWork 阻塞等待，延迟已经等过了）
+        if (QQBotClient *client = m_botClients.take(appid))
+            client->deleteLater();
+
+        const QString appidStr = m_accounts[i]->appid;
+        accdb->remove(appidStr);
+        m_accounts.removeAt(i);
+
+        for(int j = 0; j < robotListWidget->count(); ++j)
+        {
+            auto *item = robotListWidget->item(j);
+            if(item->data(Qt::UserRole).toInt() == appid)
+            {
+                robotListWidget->takeItem(j);
+                delete item;
+                break;
+            }
+        }
+
+        // 删掉的正好是选中项：自动切到第一个剩余账号
+        if (m_selectedAppid == appid) {
+            m_selectedAppid = 0;
+            m_newMode = false;
+            if (!m_accounts.isEmpty())
+                selectAccount(m_accounts.first()->appid_int);
+            else
+                clearEditor();
+        }
+
+        AppendEventLog(QString("已删除账号 %1").arg(appidStr), 0xD9534F);
+        break;
     }
 }
 
