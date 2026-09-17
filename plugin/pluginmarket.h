@@ -68,17 +68,24 @@ bool parsePluginListFromJson(const QByteArray& jsonData,
         info.author      = item["author"].toString();
         info.versionCode = item["versionCode"].toInt();
         info.versionName = item["versionName"].toString();
-        info.downloadUrl = item["downloadUrl"].toString();
+        info.downloadUrl = item["downloadUrl"].toString();             // 通用包 / Windows 包
+        info.downloadUrlLinux = item["downloadUrl_linux"].toString();  // 仅原生库：Linux 包（可空）
+        info.index       = item["index"].toString().trimmed();         // 仅原生库：入口基名（Python / JS 无此字段）
         info.type        = item["type"].toString();
 
         // 兜底
         if (info.id.isEmpty()) info.id = info.name;
         if (info.type.isEmpty()) info.type = "未知";
+        // index 只有原生库（DLL / DLL32）才用：没写时退回插件名当入口基名；Python / JS 保持空
+        if (info.index.isEmpty() && PluginMarketMeta::isNativeType(info.type))
+            info.index = info.name;
 
         const QJsonArray tags = item["tags"].toArray();
         for (const QJsonValue& tag : tags) {
             info.tags << tag.toString();
         }
+        // 按包地址自动补 windows / linux 标签（Python / JS 默认跨平台，两个都补）
+        PluginMarketMeta::applyPlatformTags(info);
 
         outList.append(info);
     }

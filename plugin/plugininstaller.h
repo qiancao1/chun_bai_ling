@@ -15,8 +15,12 @@
  *   - resolveSevenZip()      平台感知地定位解压工具
  *                            （Linux = 7zz；Windows = 程序目录下的 7za.exe）
  *   - installDirName()       计算 plugins/ 下的落地目录名（过滤非法字符）
+ *   - resolveNativeEntry()   原生库入口定位（市场 JSON 的 index + 当前平台后缀）
  *   - detectLoadTarget()     按目录内容判断该走哪种加载方式
  *   - installMarketPlugin()  下载 + 解压 + 加载（给聊天指令用）
+ *
+ * 平台差异（下载地址 / 入口文件后缀 / 平台标签）统一在 pluginmarketwindow.h 的
+ * PluginMarketMeta 里，这里只调用，不再写 #ifdef。
  *
  * 加载分流（重要）：
  *   下载与解压是**同步阻塞**的，但 Python / JS 的插件**依赖安装**不是——
@@ -35,6 +39,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
@@ -152,6 +157,47 @@ inline bool detectLoadTarget(const QString &dir, int &type, QString &path)
 }
 
 // ---------------------------------------------------------------------------
+// 原生库入口定位（按市场 JSON 的 index，当前平台补后缀）
+// ---------------------------------------------------------------------------
+// ⚠ index 是**原生库（DLL / DLL32）专属**的市场字段：Python / JS 的入口靠目录内容
+//   判定（main.py / main.js），二者都不写 index，也不会走到这个函数。
+// index 只是入口文件的**基名**（"纯白世界"），平台后缀由 PluginMarketMeta 决定：
+//     Windows → 纯白世界.dll   Linux → 纯白世界.so   macOS → 纯白世界.dylib
+// 三级定位：① 目录下直接拼名字 ② 递归找同名库（包内带子目录）③ 目录里第一个本平台原生库
+// 找不到返回空串（errMsg 非空时写入提示）。
+inline QString resolveNativeEntry(const QString &dir, const QString &index,
+                                  QString *errMsg = nullptr)
+{
+    const QString entryName = PluginMarketMeta::entryFileName(index);
+    if (entryName.isEmpty()) {
+        if (errMsg) *errMsg = QStringLiteral("插件没有 index 字段，无法确定入口文件");
+        return QString();
+    }
+
+    // ① 标准结构
+    const QString absPath = QDir(dir).absoluteFilePath(entryName);
+    if (QFileInfo::exists(absPath)) return absPath;
+
+    // ② 递归找同名库
+    const QString base = QFileInfo(entryName).completeBaseName();
+    QDirIterator it(dir, nativePluginFilters(), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString p = it.next();
+        if (QFileInfo(p).completeBaseName().compare(base, Qt::CaseInsensitive) == 0)
+            return p;
+    }
+
+    // ③ 兜底：目录里第一个本平台原生库
+    QDir d(dir);
+    const QStringList natives = d.entryList(nativePluginFilters(), QDir::Files, QDir::Name);
+    if (!natives.isEmpty()) return d.absoluteFilePath(natives.first());
+
+    if (errMsg)
+        *errMsg = QStringLiteral("没找到入口文件 %1（目录里也没有本平台的原生库）").arg(entryName);
+    return QString();
+}
+
+// ---------------------------------------------------------------------------
 // 同步下载（阻塞）
 // ---------------------------------------------------------------------------
 // 注意：NetManager 的请求策略是 NoLessSafeRedirectPolicy，重定向会自动跟随，
@@ -234,8 +280,15 @@ inline bool extractZip(const QString &zipPath, const QString &targetDir, QString
 inline QString installMarketPlugin(const PluginInfo2 &info, QString &note,
                                    QString *installedDirOut = nullptr)
 {
-    if (info.downloadUrl.trimmed().isEmpty())
-        return QStringLiteral("该插件没有提供下载链接");
+    // 按当前平台挑包：原生库 = Windows 的 downloadUrl / Linux 的 downloadUrl_linux；
+    // Python / JS 只有通用 downloadUrl（市场 JSON 里没有 downloadUrl_linux）。
+    // 原生库缺对应平台的包时返回空串 —— 绝不回退到另一个平台的二进制。
+    const QString dlUrl = PluginMarketMeta::activeDownloadUrl(info);
+    if (dlUrl.isEmpty()) {
+        return QStringLiteral("该插件没有 %1 版本的包（市场里 %2 为空）")
+            .arg(PluginMarketMeta::platformName(),
+                 PluginMarketMeta::downloadUrlFieldName(info.type));
+    }
     if (!pluginPage)
         return QStringLiteral("插件页面尚未就绪");
 
@@ -258,7 +311,7 @@ inline QString installMarketPlugin(const PluginInfo2 &info, QString &note,
 
     // 1. 下载
     QString err;
-    if (!downloadFile(info.downloadUrl, zipPath, err,120000)) {
+    if (!downloadFile(dlUrl, zipPath, err,120000)) {
         QFile::remove(zipPath);
         return err;
     }
@@ -274,13 +327,16 @@ inline QString installMarketPlugin(const PluginInfo2 &info, QString &note,
     QFile::remove(zipPath);
 
     // 3. 先在暂存目录里确认能认出入口，再换入正式目录
+    //    原生库额外按 index 递归找一次：包里带子目录（bin/xxx.so）时顶层扫不到，
+    //    只有 detectLoadTarget 会误判成"没有入口"而回滚。
     {
         int probeType = -1;
         QString probePath;
-        if (!detectLoadTarget(stagingDir, probeType, probePath)) {
+        if (!detectLoadTarget(stagingDir, probeType, probePath)
+            && resolveNativeEntry(stagingDir, info.index).isEmpty()) {
             QDir(stagingDir).removeRecursively();
             return QStringLiteral("解压完成，但包内既没有 main.py / main.js，"
-                                  "也没有原生插件库文件，无法自动加载（已回滚）");
+                                  "也没有 index 指定的原生插件库文件，无法自动加载（已回滚）");
         }
     }
 
@@ -296,6 +352,11 @@ inline QString installMarketPlugin(const PluginInfo2 &info, QString &note,
     QString loadPath;   // 原生库用：库文件的**绝对路径**（LoadPlugin_DLL 要求 isFile）
     if (!detectLoadTarget(targetDir, type, loadPath)) {
         return QStringLiteral("已解压到 plugins/%1/，但无法识别入口文件").arg(dirName);
+    }
+    // 原生库若声明了 index，就以 index 为准（多库文件时避免抓错那个）
+    if (type == 1 && !info.index.trimmed().isEmpty()) {
+        const QString byIndex = resolveNativeEntry(targetDir, info.index);
+        if (!byIndex.isEmpty()) loadPath = byIndex;
     }
 
     // 6. 加载 —— 按类型分流，别一律用 LoadPlugin

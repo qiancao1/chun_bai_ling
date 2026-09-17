@@ -51,6 +51,9 @@ private slots:
     void nextPage();
     //void onSearch();
 
+protected:
+    void showEvent(QShowEvent *event) override;   // 每次显示时重建插件下拉项（插件是异步加载的）
+
 private:
     void setupUI();
     void refresh();
@@ -60,10 +63,19 @@ private:
     void updatePageLabel();
     void updateButtonsVisibility();
 
-    enum class Mode { Application, BatchUser };
+    // ---- 插件审核模式 ----
+    void refreshPluginItems();                        // 重建 m_modeCombo 里的插件项
+    // 调插件 get_review_list(开始位置,数量,状态) 拉一页并填表；state: 1=待审核 2=已审核
+    void loadFromPluginPage(int start, int count, int state);
+    void submitPluginReview(bool approved);           // 投递 {"状态":同意/拒绝,"data":[{id,name,id2}]} 给 submit_review
+    QString pluginCallInts(int pluginIndex, int start, int count, int state);     // 调插件 get_review_list（加载时已取好地址）
+    QString pluginCallStr(int pluginIndex, const QString &argJson);              // 调插件 submit_review（加载时已取好地址）
+
+    enum class Mode { Application, BatchUser, Plugin };
     Mode m_mode = Mode::Application;
     uint32_t m_appid = 0;
     BotDB* m_botDb = nullptr;
+    int m_pluginIndex = -1;   // 插件模式下在 m_pluginList 里的下标
 
     QTableView* m_tableView;
     QStandardItemModel* m_model;

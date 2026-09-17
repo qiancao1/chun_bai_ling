@@ -632,6 +632,8 @@ QString handlePluginMarket(const QString& msg) {
 
         // 检查是否已安装
         bool installed = isPluginInstalled(info.id);
+        // 本平台是否有可用包（原生库没发对应平台版本时为 false，不给安装链接）
+        const bool localAvailable = PluginMarketMeta::availableOnThisPlatform(info);
 
         // 插件名 + 安装链接（使用上下文参数，保证点击后能准确定位）
         // 链接格式： #安装插件 序号 页码 搜索词 标签
@@ -639,6 +641,9 @@ QString handlePluginMarket(const QString& msg) {
         QString installLink;
         if (installed) {
             installLink = "[已安装]";
+        } else if (!localAvailable) {
+            // 例如只发了 Windows 的 dll，当前却跑在 Linux 上 —— 别给一个必然失败的安装入口
+            installLink = QString("[本平台(%1)暂无版本]").arg(PluginMarketMeta::platformName());
         } else {
             // 构建参数：将当前过滤条件传递过去
             QString argsForLink;

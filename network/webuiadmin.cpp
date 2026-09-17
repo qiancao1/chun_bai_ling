@@ -801,6 +801,34 @@ void handleGetPluginMarket(ClientConnection *client, const QString &reqId)
                                    : item.value("type").toString();
             o["tags"]        = item.value("tags").toArray();
 
+            // 平台差异（**index 与 downloadUrl_linux 只有原生库 DLL / DLL32 才有**，
+            // Python / JS 只有通用 downloadUrl）：downloadUrl = Windows 包 / 通用包，
+            // downloadUrl_linux = 原生库的 Linux 包。按当前平台挑出真正要下载的那个地址
+            // 给前端（旧前端只会读 downloadUrl），并把 index 与自动补好的平台标签一起传下去。
+            {
+                PluginInfo2 meta;
+                meta.type             = o["type"].toString();
+                meta.downloadUrl      = item.value("downloadUrl").toString();
+                meta.downloadUrlLinux = item.value("downloadUrl_linux").toString();
+                meta.index            = item.value("index").toString().trimmed();
+                // index 只有原生库才有：没写时退回插件名当入口基名；
+                // Python / JS 没有这个字段，保持空（entryFile 自然也是空）。
+                if (meta.index.isEmpty() && PluginMarketMeta::isNativeType(meta.type))
+                    meta.index = o["name"].toString();
+                PluginMarketMeta::applyPlatformTags(meta);
+
+                QJsonArray tagArr;
+                for (const QString &t : std::as_const(meta.tags)) tagArr.append(t);
+
+                o["index"]            = meta.index;
+                o["downloadUrlWin"]   = meta.downloadUrl;
+                o["downloadUrlLinux"] = meta.downloadUrlLinux;
+                o["downloadUrl"]      = PluginMarketMeta::activeDownloadUrl(meta);
+                o["entryFile"]        = PluginMarketMeta::entryFileName(meta.index);
+                o["available"]        = PluginMarketMeta::availableOnThisPlatform(meta);
+                o["tags"]             = tagArr;
+            }
+
             bool installed = false;
             bool hasUpdate = false;
             int  localVer  = 0;
@@ -850,6 +878,17 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
     const QString safeName = safeFileName(name);
     if (id.isEmpty()) id = safeName;
 
+    // 市场列表里补齐 index（**只有原生库 DLL / DLL32 才有**这个字段）：前端旧版本不会传 index，
+    // 而没有它就定位不到 纯白世界.dll / 纯白世界.so。查不到时退回插件名当基名。
+    // Python / JS 的入口靠目录内容判定（main.py / main.js），不需要 index，保持空。
+    QString index = params.value("index").toString().trimmed();
+    if (index.isEmpty() && PluginMarketMeta::isNativeType(type)) {
+        for (const PluginInfo2 &m : std::as_const(m_allPlugins)) {
+            if ((!id.isEmpty() && m.id == id) || m.name == name) { index = m.index; break; }
+        }
+        if (index.isEmpty()) index = name;
+    }
+
     QPointer<ClientConnection> safeClient(client);
     auto stage = [safeClient, reqId, name](const QString &s, int percent, const QString &m) {
         if (!safeClient) return;
@@ -876,7 +915,7 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
     auto lastPct = std::make_shared<int>(-1);
 
     httpGet(QUrl(dlUrl), 0,
-            [safeClient, reqId, name, type, safeName, zipPath, stage, lastPct]
+            [safeClient, reqId, name, type, safeName, index, zipPath, stage, lastPct]
             (bool ok, const QByteArray &data, const QString &err) {
         if (!ok) {
             sendReply(safeClient, "installPlugin", false, QJsonValue(), reqId,
@@ -913,7 +952,7 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
         QObject::connect(proc,
                          QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                          qApp,
-                         [safeClient, reqId, name, type, safeName, targetDir, zipPath,
+                         [safeClient, reqId, name, type, safeName, index, targetDir, zipPath,
                           proc, stage](int code, QProcess::ExitStatus status) {
             const QString stderrText = QString::fromLocal8Bit(proc->readAllStandardError());
             proc->deleteLater();
@@ -942,8 +981,32 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
                 pluginPage->npmJSpk(targetDir);
                 msg = QString("插件 %1 已解压到 plugins/%2，正在后台安装依赖 (npm) 并加载")
                           .arg(name, safeName);
+            } else if (PluginMarketMeta::isNativeType(type)) {
+                // 原生库（DLL / DLL32，大小写不敏感）：按 index 定位当前平台的入口文件
+                // （纯白世界 → 纯白世界.dll / 纯白世界.so）后直接加载，不再让用户手动装。
+                QString entryErr;
+                const QString entry = PluginInstaller::resolveNativeEntry(targetDir, index, &entryErr);
+                if (entry.isEmpty()) {
+                    msg = QString("插件 %1 已解压到 plugins/%2，但没找到入口文件：%3")
+                              .arg(name, safeName, entryErr);
+                } else {
+                    QList<int> noDisabledAccounts;   // 新装的插件默认对所有账号启用
+                    const int nativeType = (type.compare(QLatin1String("DLL32"), Qt::CaseInsensitive) == 0)
+                                               ? 2 : 1;   // 2=DLL32（走 32 位桥接），1=x64 原生库
+                    const QString loadErr = pluginPage->LoadPlugin(
+                        entry, nativeType, true, noDisabledAccounts);
+                    if (loadErr.isEmpty()) {
+                        pluginPage->savePlugins();
+                        msg = QString("插件 %1 已安装并加载（入口 %2）")
+                                  .arg(name, entry.section('/', -1));
+                    } else {
+                        msg = QString("插件 %1 已解压到 plugins/%2，但加载失败：%3")
+                                  .arg(name, safeName, loadErr);
+                    }
+                }
             } else {
-                msg = QString("插件 %1 已解压到 plugins/%2，DLL 类型需手动加载").arg(name, safeName);
+                msg = QString("插件 %1 已解压到 plugins/%2，类型 %3 未知，需手动加载")
+                          .arg(name, safeName, type);
             }
 
             AppendEventLog(QString("[WebUI] 安装插件 %1 (%2)").arg(name, type));

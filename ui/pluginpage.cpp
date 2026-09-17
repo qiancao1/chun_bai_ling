@@ -1265,6 +1265,8 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
         info.python.onEnable = py::object();
         info.python.onDisable = py::object();
         info.python.onUnload = py::object();
+        info.python.getReviewList = py::object();
+        info.python.submitReview = py::object();
 
         try {
             py::exec(R"(
@@ -1309,6 +1311,8 @@ def clean_plugin(plugin_path):
             delete info.dllLib;
             info.dllLib = nullptr;
         }
+        info.DLL.getReviewList = nullptr;
+        info.DLL.submitReview = nullptr;
         if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
             QFile::remove(info.loadedDllPath);
             info.loadedDllPath.clear();
@@ -1861,8 +1865,11 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     info.DLL.onUnload = (OnFunc0)lib->resolve("on_unload");
     info.DLL.onSet = (OnFunc0)lib->resolve("on_set");
     info.DLL.onMessage2 = (OnMessageFunc2)lib->resolve("onMessagev2");
+    // 昵称审核接口：加载时就把地址取出来（插件不实现则为 nullptr，不报错）
+    info.DLL.getReviewList = (ReviewFetchFunc)lib->resolve(kPluginFuncGetReviewList);
+    info.DLL.submitReview  = (ReviewSubmitFunc)lib->resolve(kPluginFuncSubmitReview);
     if (!info.DLL.getPluginInfo) return info.path + "\n get_plugin_info 函数不存在";
-    if (!info.DLL.onMessage) return info.path + "\n on_message 函数不存在";
+    if (!info.DLL.onMessage && !info.DLL.onMessage2) return info.path + "\n on_message 函数不存在";
     info.DLL.rules.clear();
     QByteArray uuidBytes = info.uuid.toUtf8();
     uuidBytes.append('\0');
@@ -2090,6 +2097,8 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         info.python.onEnable = py::object();
         info.python.onDisable = py::object();
         info.python.onUnload = py::object();
+        info.python.getReviewList = py::object();
+        info.python.submitReview = py::object();
 
         // 3. 清理 sys.path 中该插件目录（如果还残留），并从 sys.modules 删除该插件所有模块
         py::exec(R"(
@@ -2204,6 +2213,9 @@ event = _register_rule("event")
         info.python.onEnable = getCb("on_enable");
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
+        // 昵称审核接口：加载时就取出函数对象（插件不实现则为空对象，不报错）
+        info.python.getReviewList = getCb(kPluginFuncGetReviewList);
+        info.python.submitReview  = getCb(kPluginFuncSubmitReview);
         // 7. 解析 _plugin_commands（规则注册）
         info.python.rules.clear();
         if (plugin_globals.contains("_plugin_commands") && py::isinstance<py::dict>(plugin_globals["_plugin_commands"])) {

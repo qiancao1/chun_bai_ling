@@ -41,6 +41,16 @@ typedef void (*OnMessageFunc)(const char*);
 typedef void (*OnMessageFunc2)(const char*,qint64);
 typedef void (*OnFunc0)();
 
+// ---- 昵称审核接口（插件可选实现，加进昵称审核窗口的下拉框后生效）----
+// 函数名定死，Python 与原生库插件同名：
+//   get_review_list(开始位置:int, 数量:int, 状态:int) -> JSON 文本 {"总数量":xx,"data":[{"id":整数,"name":"..","id2":".."}]}
+//       状态（第 3 个参数）：1=待审核  2=已审核
+//   submit_review(JSON文本) -> 任意文本  入参 {"状态":"同意"/"拒绝","data":[...]}
+constexpr const char *kPluginFuncGetReviewList = "get_review_list";
+constexpr const char *kPluginFuncSubmitReview  = "submit_review";
+typedef const char* (*ReviewFetchFunc)(int, int, int);   // get_review_list(开始位置, 数量, 状态)
+typedef const char* (*ReviewSubmitFunc)(const char*);    // submit_review
+
 
 enum class MatchType {
     Equals,
@@ -80,6 +90,8 @@ struct PythonPluginobj {
     py::object onEnable;                 // 启用时调用
     py::object onDisable;                // 禁用时调用
     py::object onUnload;                 // 卸载前调用
+    py::object getReviewList;            // 昵称审核：get_review_list(开始位置,数量,状态)
+    py::object submitReview;             // 昵称审核：submit_review(JSON文本)
     QList<Rule> rules;      // 所有规则列表（替代原来的 equals hash）
 
 
@@ -101,6 +113,8 @@ struct DLLPluginobj {
     OnFunc0 onDisable;
     OnFunc0 onUnload;
     OnFunc0 onSet;
+    ReviewFetchFunc getReviewList = nullptr;    // 昵称审核：get_review_list(开始位置,数量,状态)
+    ReviewSubmitFunc submitReview = nullptr;    // 昵称审核：submit_review(JSON文本)
     QList<Rule_Dll> rules;      // 所有规则列表（替代原来的 equals hash）
 };
 struct PluginInfo {

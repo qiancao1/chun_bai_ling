@@ -1352,8 +1352,6 @@ void QQBotClient::sendHeartbeat() //心跳
     hb["op"] = 1;
     if (m_seq != 0)
         hb["d"] = m_seq;
-    else
-        hb["d"] = QJsonValue();
 
     QString msg = QJsonDocument(hb).toJson(QJsonDocument::Compact);
     m_webSocket.sendTextMessage(msg);

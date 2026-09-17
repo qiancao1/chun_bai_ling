@@ -72,11 +72,15 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.0.70"
-#define APP_BUILD_NUMBER 70
+#define APP_VERSION_STR "v1.3.1.73"
+#define APP_BUILD_NUMBER 73
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.3.1.72 (2026-09-17)
+- 修复 新版sdk无法加载问题
+- 修复 插件市场 没有安装linux 版本dll so选项
+
 ## v1.3.0.70 (2026-09-13)
 - 优化 http 优化复有链接 http池改单线程 回调使用线程池
 - 用户 ai到回调 之前堵塞

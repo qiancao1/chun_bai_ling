@@ -1,6 +1,9 @@
 #include "pluginmarketwindow.h"
 #include "global.h"
 #include "plugininstaller.h"   // 解压工具定位（平台差异只在这一处）
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QFrame>
 #include <QMessageBox>
@@ -66,6 +69,17 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
 
     // 版本信息
     QString versionText;
+
+    // 入口文件只有原生库（DLL / DLL32）才显示：JSON 的 index 按当前平台补后缀
+    // （纯白世界 → 纯白世界.dll / 纯白世界.so）。Python / JS 没有 index 字段，
+    // 入口由包内的 main.py / main.js 决定，这里不显示这一项。
+    QString entryText;
+    if (PluginMarketMeta::isNativeType(info.type)) {
+        const QString entry = PluginMarketMeta::entryFileName(
+            info.index.isEmpty() ? info.name : info.index);
+        if (!entry.isEmpty()) entryText = QString("入口: %1").arg(entry);
+    }
+
     if (info.isInstalled) {
         versionText = QString("已安装: %1").arg(info.installedVersionName.isEmpty() ? "未知" : info.installedVersionName);
         if (!info.versionName.isEmpty()) {
@@ -78,6 +92,9 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
         if (!info.versionName.isEmpty()) {
             versionText = QString("最新: %1").arg(info.versionName);
         }
+    }
+    if (!entryText.isEmpty()) {
+        versionText += versionText.isEmpty() ? entryText : " | " + entryText;
     }
     m_versionLabel = new QLabel(versionText);
     m_versionLabel->setStyleSheet("background: transparent; color: #888; font-size: 11px;");
@@ -107,6 +124,14 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
 
     tagVersionLayout->addWidget(bq_type);
     tagVersionLayout->addWidget(author);
+
+    // 本平台可用性徽标：原生库缺当前平台的包时标出来，安装按钮同时置灰（见 updateStatus）
+    if (!PluginMarketMeta::availableOnThisPlatform(info)) {
+        QLabel *bq_plat = new QLabel(" 本平台暂无 ");
+        bq_plat->setStyleSheet("background-color: #DDDDDD; color: #666666;");
+        tagVersionLayout->addWidget(bq_plat);
+    }
+
     tagVersionLayout->addWidget(m_tagLabel);
 
 
@@ -142,8 +167,12 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
 }
 void PluginCard::updateStatus(bool installed) {
     m_info.isInstalled = installed;
-    if (installed) {
-        m_actionBtn->setText("已安装");
+
+    if (!PluginMarketMeta::availableOnThisPlatform(m_info)) {
+        m_actionBtn->setText("无本平台版本");
+        m_actionBtn->setToolTip(QStringLiteral("市场里没有 %1 版本的数据"
+                                               "（downloadUrl_linux 为空）")
+                                    .arg(PluginMarketMeta::platformName()));
         m_actionBtn->setEnabled(false);
     } else {
         m_actionBtn->setText("安装");
@@ -199,6 +228,10 @@ void PluginMarketWindow::setupUI() {
 
     m_categoryCombo->addItem("游戏");
     m_categoryCombo->addItem("小游戏");
+
+    // 平台标签（市场加载时会按包地址自动补进 tags：windows / linux）
+    m_categoryCombo->addItem("Windows");
+    m_categoryCombo->addItem("Linux");
 
     m_categoryCombo->setFixedWidth(120);
 
@@ -296,14 +329,21 @@ void PluginMarketWindow::onTabChanged(int index) {
 void PluginMarketWindow::filterAndDisplay() {
     m_listWidget->clear();
     int count = 0;
+    int unavailable = 0;   // 当前平台上没有可用包的插件数（按钮会置灰）
 
     // 1. 先计算已安装总数（从 m_pluginList 读取）
     int installedTotal = m_pluginList.size(); // 如果 m_pluginList 就是已安装列表的话
 
     for (PluginInfo2 &info : m_allPlugins) {
 
-        if (!m_currentCategory.isEmpty() && !info.tags.contains(m_currentCategory))
-            continue;
+        // 标签筛选（大小写不敏感：市场自动补的 windows / linux 与下拉框的 Windows / Linux 要能对上）
+        if (!m_currentCategory.isEmpty()) {
+            bool tagHit = false;
+            for (const QString &t : std::as_const(info.tags)) {
+                if (t.compare(m_currentCategory, Qt::CaseInsensitive) == 0) { tagHit = true; break; }
+            }
+            if (!tagHit) continue;
+        }
         if(m_plugin_type_str !="全部" && !m_plugin_type_str.isEmpty())
         {
             if(m_plugin_type_str != info.type) continue;
@@ -333,6 +373,8 @@ void PluginMarketWindow::filterAndDisplay() {
         if (m_currentTabIndex == 1 && !info.isInstalled) continue;
         if (m_currentTabIndex == 2 && !info.hasUpdate) continue;
 
+        if (!PluginMarketMeta::availableOnThisPlatform(info)) ++unavailable;
+
         // 创建卡片
         PluginCard *card = new PluginCard(info);
         QListWidgetItem *item = new QListWidgetItem(m_listWidget);
@@ -346,9 +388,12 @@ void PluginMarketWindow::filterAndDisplay() {
     }
 
     // 2. 更新状态栏
-    m_statusLabel->setText(QString("共 %1 个插件 (已安装 %2)")
+    m_statusLabel->setText(QString("共 %1 个插件 (已安装 %2%3)")
                                .arg(count)
-                               .arg(installedTotal));
+                               .arg(installedTotal)
+                               .arg(unavailable > 0
+                                        ? QString("，本平台暂无 %1").arg(unavailable)
+                                        : QString()));
 }
 
 
@@ -366,9 +411,16 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
         return;
     }
 
-    // 检查下载链接
-    if (targetInfo->downloadUrl.isEmpty()) {
-        QMessageBox::warning(this, "错误", "该插件没有提供下载链接");
+    // 检查下载链接：按当前平台挑包（原生库 = downloadUrl / downloadUrl_linux，Python / JS = 通用 downloadUrl）
+    const QString dlUrl = PluginMarketMeta::activeDownloadUrl(*targetInfo);
+    if (dlUrl.isEmpty()) {
+        QMessageBox::warning(this, "无法安装",
+                             QString("「%1」暂无 %2 版本的包，无法在当前平台安装。\n\n"
+                                     "（市场里该插件的 %3 为空；"
+                                     "Python / JS 插件会默认复用通用包，原生库必须各自提供对应平台的包）")
+                                 .arg(targetInfo->name,
+                                      PluginMarketMeta::platformName(),
+                                      PluginMarketMeta::downloadUrlFieldName(targetInfo->type)));
         return;
     }
 
@@ -382,18 +434,18 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
             return;
         }
     }
-    Installed_type=-1;
-    if(targetInfo->type=="Python")
-    {
-        Installed_type=0;
-    }
-    if(targetInfo->type=="DLL")
-    {
-        Installed_type=1;
-    }
-    if(targetInfo->type=="JS")
-    {
-        Installed_type=3;
+    // 类型映射：0=Python / 1=x64 原生库 / 2=DLL32（走 32 位桥接）/ 3=JS
+    // 原生库用 PluginMarketMeta::isNativeType 判定（大小写不敏感），与 index / 平台包的
+    // 判断口径保持一致；认不出的类型保持 -1，走"未知类型，已解压"提示，不当原生库硬加载。
+    Installed_type = -1;
+    if (targetInfo->type.compare(QLatin1String("DLL32"), Qt::CaseInsensitive) == 0) {
+        Installed_type = 2;
+    } else if (PluginMarketMeta::isNativeType(targetInfo->type)) {
+        Installed_type = 1;
+    } else if (targetInfo->type.compare(QLatin1String("Python"), Qt::CaseInsensitive) == 0) {
+        Installed_type = 0;
+    } else if (targetInfo->type.compare(QLatin1String("JS"), Qt::CaseInsensitive) == 0) {
+        Installed_type = 3;
     }
     // 准备临时文件路径
     QString tempZipPath = "tmp/market" + targetInfo->id + ".zip";
@@ -407,7 +459,7 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
         return;
     }
     tempFile->close(); // 先关闭，等下载完成再打开写入
-    startDownload(targetInfo, QUrl(targetInfo->downloadUrl), 0);
+    startDownload(targetInfo, QUrl(dlUrl), 0);
 }
 
 
@@ -544,7 +596,11 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
     progress->setLabelText("正在解压 " + info->name + " ...");
     progress->setValue(0);
 
-    QString targetDir = QCoreApplication::applicationDirPath() + "/plugins/" + info->name + "/";
+    // 落地目录名走 PluginInstaller::installDirName()：会过滤文件系统非法字符
+    // （插件名里带 * ? : 之类时 mkpath 会直接失败），并与 #安装插件 / WebUI 的落地目录保持一致，
+    // 避免同名插件被装进两个不同的目录。
+    QString targetDir = QCoreApplication::applicationDirPath() + "/plugins/"
+                        + PluginInstaller::installDirName(*info) + "/";
     QDir().mkpath(targetDir);
 
     QStringList args;
@@ -599,15 +655,38 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                 // 裸 LoadPlugin 不补依赖，带 requirements.txt / package.json 的插件会因缺包加载失败。
                 // 传绝对目录 targetDir：这两个函数内部用 QFile::exists(dir + "/main.py") 和
                 // setWorkingDirectory(dir)，相对路径会依赖进程的当前工作目录，不可靠。
+                QString uiTitle, uiMsg;
+                bool uiOk = true;
+
                 if (Installed_type == 0) {
                     pluginPage->LoadPlugin_Python_pip(targetDir);
                 } else if (Installed_type == 3) {
                     pluginPage->npmJSpk(targetDir);
+                } else if (Installed_type == 1 || Installed_type == 2) {
+
+                    QString entry;
+                    const QString loadErr = installNativePlugin(info, targetDir, &entry);
+                    if (loadErr.isEmpty()) {
+                        uiTitle = "安装完成";
+                        uiMsg = QString("%1 已安装并加载").arg(info->name);
+                        if (!entry.isEmpty()) uiMsg += "\n入口：" + entry;
+                    } else {
+                        uiOk = false;
+                        uiTitle = "已解压，但加载失败";
+                        uiMsg = QString("%1\n\n目录：%2\n%3").arg(info->name, targetDir, loadErr);
+                    }
                 } else {
-                    QMessageBox::information(this, "下载完成", info->name + "\n此类插件需要手动安装（dll 未知入口）");
+                    uiTitle = "下载完成";
+                    uiMsg = QString("%1\n未知插件类型（%2），已解压到：\n%3")
+                                .arg(info->name, info->type, targetDir);
                 }
+
                 progress->close();
                 progress->deleteLater();
+                if (!uiTitle.isEmpty()) {
+                    if (uiOk) QMessageBox::information(this, uiTitle, uiMsg);
+                    else      QMessageBox::warning(this, uiTitle, uiMsg);
+                }
             });
 
     // 取消响应（不变）
@@ -616,6 +695,69 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
             process->kill();
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// 原生库（DLL / DLL32）自动安装
+// ---------------------------------------------------------------------------
+// 入口文件由市场 JSON 的 index 决定（不带平台后缀的基名），这里按当前平台补后缀：
+//     index "纯白世界" → Windows 纯白世界.dll / Linux 纯白世界.so / macOS 纯白世界.dylib
+// 三级定位，尽量让老数据（没有 index、或包内套了一层子目录）也能装上：
+//     1) <插件目录>/<index+后缀>           —— 标准包结构
+//     2) 递归找同名库文件（bin/xxx.so）     —— 包内带子目录
+//     3) 目录里第一个本平台原生库           —— 老数据兜底
+// 找到后交给 pluginPage->LoadPlugin(库文件, 类型, 启用, 空黑名单)，
+// 类型 1 加载失败会自动降级 32 位（LoadPlugin 内部已处理）。
+// 返回空串 = 加载成功；entryOut 传出实际使用的入口文件绝对路径。
+QString PluginMarketWindow::installNativePlugin(const PluginInfo2 *info, const QString &targetDir,
+                                                QString *entryOut)
+{
+    if (!pluginPage) return QStringLiteral("插件页面尚未就绪");
+    if (!info)       return QStringLiteral("插件信息为空");
+
+    // index 是入口文件基名；老数据没写 index 时退回插件名当基名
+    const QString indexName = info->index.trimmed().isEmpty() ? info->name : info->index;
+    const QString entryName = PluginMarketMeta::entryFileName(indexName);
+    if (entryName.isEmpty())
+        return QStringLiteral("插件信息里没有 index，无法确定入口文件（市场 JSON 需要 index 字段）");
+
+    // 1) 标准结构：直接拼路径
+    QString entryAbs = QDir(targetDir).absoluteFilePath(entryName);
+    if (!QFileInfo::exists(entryAbs)) entryAbs.clear();
+
+    // 2) 包内带子目录：递归找同名库
+    if (entryAbs.isEmpty()) {
+        const QString base = QFileInfo(entryName).completeBaseName();
+        QDirIterator it(targetDir, nativePluginFilters(), QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString p = it.next();
+            if (QFileInfo(p).completeBaseName().compare(base, Qt::CaseInsensitive) == 0) {
+                entryAbs = p;
+                break;
+            }
+        }
+    }
+
+    // 3) 老数据兜底：目录里第一个本平台原生库
+    if (entryAbs.isEmpty()) {
+        QDir d(targetDir);
+        const QStringList natives = d.entryList(nativePluginFilters(), QDir::Files, QDir::Name);
+        if (!natives.isEmpty()) entryAbs = d.absoluteFilePath(natives.first());
+    }
+
+    if (entryAbs.isEmpty()) {
+        return QString("解压后没找到入口文件 %1（目录里也没有本平台的原生库）").arg(entryName);
+    }
+
+    const int type = (Installed_type == 2) ? 2 : 1;   // 2=DLL32（走 32 位桥接），1=x64 原生库
+    QList<int> noDisabledAccounts;                    // 新装的插件默认对所有账号启用
+    const QString err = pluginPage->LoadPlugin(entryAbs, type, true, noDisabledAccounts);
+    if (!err.isEmpty()) return err;
+
+    pluginPage->savePlugins();
+    if (entryOut) *entryOut = entryAbs;
+    return QString();
 }
 
 
@@ -725,14 +867,22 @@ void PluginMarketWindow::onReplyFinished(QNetworkReply *reply)
         info.author = item["author"].toString();
         info.versionCode = item["versionCode"].toInt();
         info.versionName = item["versionName"].toString();
-        info.downloadUrl = item["downloadUrl"].toString();
+        info.downloadUrl = item["downloadUrl"].toString();                // 通用包 / Windows 包
+        info.downloadUrlLinux = item["downloadUrl_linux"].toString();     // 仅原生库：Linux 包（可空）
+        info.index = item["index"].toString().trimmed();                  // 仅原生库：入口文件基名（Python / JS 无此字段）
         info.type = item["type"].toString();
         if(info.id.isEmpty()) info.id=info.name;
         if(info.type.isEmpty()) info.type = "未知";
+        // index 只对原生库（DLL / DLL32）有意义：老数据没写时退回插件名当入口基名
+        // （按平台补后缀后仍可能命中，见 installNativePlugin）；Python / JS 保持空。
+        if (info.index.isEmpty() && PluginMarketMeta::isNativeType(info.type))
+            info.index = info.name;
         const QJsonArray tags = item["tags"].toArray();
         for (const QJsonValue &tag : tags) {
             info.tags << tag.toString();
         }
+        // 按包地址自动补 windows / linux 标签（Python / JS 默认跨平台，两个都补）
+        PluginMarketMeta::applyPlatformTags(info);
         m_allPlugins.append(info);
     }
 
