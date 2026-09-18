@@ -94,6 +94,7 @@ void QQBotClient::start()
                 }
                 if(m_info->type==0)
                 {
+
                     QNetworkRequest request(wsUrl);
                     request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux; WorkBuddy/1.2.6)");
                     m_webSocket.open(request);
@@ -188,9 +189,12 @@ void QQBotClient::stop()
 // ---------- 网络请求 ----------
 void QQBotClient::fetchGatewayUrl(Callback calls)
 {
-
-
-    Get("https://api.bot.qq.com/gateway",QString(),10000,[this,calls](const QString &resp,QNetworkReply::NetworkError neterr){
+    QString url;
+    if(m_info->sandbox)
+        url = "https://sandbox.api.bot.qq.com/gateway";
+    else
+        url = "https://api.bot.qq.com/gateway";
+    Get(url,QString(),10000,[this,calls](const QString &resp,QNetworkReply::NetworkError neterr){
 
             QJsonParseError err;
             QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8(), &err);

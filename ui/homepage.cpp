@@ -525,12 +525,20 @@ QLabel *HomePage::createStatusLabel(const QString &title, const QString &value)
 
 
 #ifdef _WIN32
-// 本进程「专用工作集」（MB）= 任务管理器「内存」列显示的那个值：
-// 只算本进程私有的部分，不含与其它进程共享的 DLL / 映射（所以比 WorkingSetSize 小一截）。
-// PrivateWorkingSetSize 字段只在较新的 Windows 上支持，所以这里自己定义结构并传满长度做探测，
-// 系统不认（老系统）就退回普通工作集。
-static double queryPrivateWorkingSetMB()
+// 本进程实际占用内存（MB）；三种方式依次降级，全失败返回 0。
+//   1) PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize —— 即任务管理器「内存」列那个值
+//      ⚠️ 这个字段只有 Win10 22H2 / Win11 22H2 打上 2023-09 累积更新之后才会真正被填充。
+//         更早的系统（Windows Server 2016/2019/2022 内核都早于 22H2）上传 sizeof(EX2) 时：
+//           a) 可能直接返回 FALSE（cb 不被认识）；或
+//           b) 返回 TRUE 但压根不写 PrivateWorkingSetSize —— 缓冲区是我们 ZeroMemory 过的，读出来就是 0。
+//         所以**不能只看返回值**，必须再判 > 0；否则在服务器上会算出「0 MB」，
+//         而调用方又用 memMB > 0 当成功条件 → 整个内存面板一直挂着初始的 0 不动。
+//   2) PROCESS_MEMORY_COUNTERS.WorkingSetSize —— 普通工作集（含共享 DLL，比任务管理器偏大，但一定是真数）
+//   3) psapi.dll 的 GetProcessMemoryInfo —— 动态加载，兜住最老的系统
+static double queryProcessMemMB()
 {
+    HANDLE hProc = GetCurrentProcess();
+
     struct PmcEx2 {
         DWORD     cb;
         DWORD     PageFaultCount;
@@ -548,17 +556,41 @@ static double queryPrivateWorkingSetMB()
     } pmc2;
     ZeroMemory(&pmc2, sizeof(pmc2));
     pmc2.cb = sizeof(pmc2);
-    if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+    if (K32GetProcessMemoryInfo(hProc,
                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc2),
-                                sizeof(pmc2))) {
+                                sizeof(pmc2))
+        && pmc2.PrivateWorkingSetSize > 0
+        && pmc2.PrivateWorkingSetSize <= pmc2.WorkingSetSize) {
         return pmc2.PrivateWorkingSetSize / (1024.0 * 1024.0);
     }
 
     PROCESS_MEMORY_COUNTERS pmc;
     ZeroMemory(&pmc, sizeof(pmc));
     pmc.cb = sizeof(pmc);
-    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+    if (K32GetProcessMemoryInfo(hProc, &pmc, sizeof(pmc)) && pmc.WorkingSetSize > 0)
         return pmc.WorkingSetSize / (1024.0 * 1024.0);
+
+    typedef BOOL (WINAPI *FnGetProcessMemoryInfo)(HANDLE, PPROCESS_MEMORY_COUNTERS, DWORD);
+    static FnGetProcessMemoryInfo fnPsapi = []() -> FnGetProcessMemoryInfo {
+        HMODULE h = ::LoadLibraryA("psapi.dll");
+        return h ? reinterpret_cast<FnGetProcessMemoryInfo>(
+                       ::GetProcAddress(h, "GetProcessMemoryInfo"))
+                 : nullptr;
+    }();
+    if (fnPsapi && fnPsapi(hProc, &pmc, sizeof(pmc)) && pmc.WorkingSetSize > 0)
+        return pmc.WorkingSetSize / (1024.0 * 1024.0);
+
+    return 0.0;
+}
+
+// 机器物理内存总量（MB）；拿不到返回 0，由调用方决定怎么显示
+static double queryTotalMemMB()
+{
+    MEMORYSTATUSEX memStatus;
+    ZeroMemory(&memStatus, sizeof(memStatus));
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus) && memStatus.ullTotalPhys > 0)
+        return memStatus.ullTotalPhys / (1024.0 * 1024.0);
     return 0.0;
 }
 #endif
@@ -567,53 +599,76 @@ static double queryPrivateWorkingSetMB()
 void HomePage::updateProcessStats()
 {
     // ========== 1. 内存占用（带进度条） ==========
+    double memMB = 0.0;        // 本进程占用
+    double totalMB = 0.0;      // 机器（或容器）总量
 #ifdef _WIN32
     // 专用工作集 = 任务管理器「内存」列显示的那个值（只算本进程私有部分，不含共享 DLL）
-    double memMB = queryPrivateWorkingSetMB();
-    if (memMB > 0.0) {
-        static double totalMemMB = []() {
-            MEMORYSTATUSEX memStatus;
-            memStatus.dwLength = sizeof(memStatus);
-            if (GlobalMemoryStatusEx(&memStatus))
-                return memStatus.ullTotalPhys / (1024.0 * 1024.0);
-            return 8192.0;
-        }();
-        int memPercent = (totalMemMB > 0) ? static_cast<int>((memMB / totalMemMB) * 100) : 0;
-        memPercent = qBound(0, memPercent, 100);
-        m_ramTextLabel->setText(QString("%1 MB / %2 MB (%3%)")
-                                    .arg(memMB, 0, 'f', 1)
-                                    .arg(totalMemMB, 0, 'f', 0)
-                                    .arg(memPercent));
-        m_ramProgressBar->setValue(memPercent);
-    }
+    memMB = queryProcessMemMB();
+    static const double s_totalMemMB = queryTotalMemMB();
+    totalMB = s_totalMemMB;
 #else
     // Linux: 读取 /proc/self/status 中的 VmRSS
-    long rss = 0;
-    std::ifstream statusFile("/proc/self/status");
-    std::string line;
-    while (std::getline(statusFile, line)) {
-        if (line.compare(0, 6, "VmRSS:") == 0) {
-            std::istringstream iss(line.substr(6));
-            iss >> rss;  // 单位 kB
-            break;
+    long rss = 0;  // 单位 kB
+    {
+        std::ifstream statusFile("/proc/self/status");
+        std::string line;
+        while (std::getline(statusFile, line)) {
+            if (line.compare(0, 6, "VmRSS:") == 0) {
+                std::istringstream iss(line.substr(6));
+                iss >> rss;
+                break;
+            }
         }
     }
-    double memMB = rss / 1024.0;
-    static double totalMemMB = []() {
+    if (rss <= 0) {
+        // 兜底：/proc/self/statm 第 2 个字段 = 常驻页数
+        std::ifstream statmFile("/proc/self/statm");
+        long totalPages = 0, residentPages = 0;
+        if ((statmFile >> totalPages >> residentPages) && residentPages > 0) {
+            long pageSz = sysconf(_SC_PAGE_SIZE);
+            if (pageSz > 0) rss = residentPages * pageSz / 1024;
+        }
+    }
+    memMB = rss / 1024.0;
+
+    static const double s_totalMemMB = []() -> double {
         long pages = sysconf(_SC_PHYS_PAGES);
         long pageSize = sysconf(_SC_PAGE_SIZE);
-        if (pages > 0 && pageSize > 0)
-            return (pages * pageSize) / (1024.0 * 1024.0);
-        return 8192.0;
+        double total = (pages > 0 && pageSize > 0) ? (pages * pageSize) / (1024.0 * 1024.0) : 0.0;
+        // 容器（docker / lxc）里 _SC_PHYS_PAGES 报的是宿主机总量，占比会小得离谱；
+        // 有 cgroup 限额就以限额为准
+        const char* cgPaths[] = {"/sys/fs/cgroup/memory.max",                    // cgroup v2
+                                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"};  // cgroup v1
+        for (const char* cgPath : cgPaths) {
+            std::ifstream cgFile(cgPath);
+            unsigned long long limit = 0;
+            if ((cgFile >> limit) && limit > 0 && limit < (1ULL << 62)) {  // "max" 解析失败，直接跳过
+                double limitMB = limit / (1024.0 * 1024.0);
+                if (limitMB > 0 && (total <= 0.0 || limitMB < total)) total = limitMB;
+                break;
+            }
+        }
+        return total > 0.0 ? total : 8192.0;
     }();
-    int memPercent = (totalMemMB > 0) ? static_cast<int>((memMB / totalMemMB) * 100) : 0;
-    memPercent = qBound(0, memPercent, 100);
-    m_ramTextLabel->setText(QString("%1 MB / %2 MB (%3%)")
-                                .arg(memMB, 0, 'f', 1)
-                                .arg(totalMemMB, 0, 'f', 0)
-                                .arg(memPercent));
-    m_ramProgressBar->setValue(memPercent);
+    totalMB = s_totalMemMB;
 #endif
+
+    // 无论取没取到都必须刷新界面：宁可显示「获取失败」，也不要一直挂着初始值不动
+    if (m_ramTextLabel) {
+        if (memMB > 0.0) {
+            int memPercent = (totalMB > 0.0)
+                                 ? qBound(0, static_cast<int>((memMB / totalMB) * 100.0), 100)
+                                 : 0;
+            m_ramTextLabel->setText(QString("内存消耗: %1 MB / %2 MB (%3%)")
+                                        .arg(memMB, 0, 'f', 1)
+                                        .arg(totalMB, 0, 'f', 0)
+                                        .arg(memPercent));
+            if (m_ramProgressBar) m_ramProgressBar->setValue(memPercent);
+        } else {
+            m_ramTextLabel->setText(QStringLiteral("内存消耗: 获取失败"));
+            if (m_ramProgressBar) m_ramProgressBar->setValue(0);
+        }
+    }
 
     // ========== 2. CPU 使用率（带进度条） ==========
     static bool isFirstCpuSample = true;

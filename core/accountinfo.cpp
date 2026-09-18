@@ -74,6 +74,7 @@ QString AccountInfo::toJson() const {
     obj["atTrigger"] = atTrigger;
     obj["e_ChannelPersonal"] = enableChannelPersonal;
     obj["e_ImageRec"] = enableImageRec;
+    obj["sandbox"] = sandbox;
     obj["pplx"] = pplx;
     obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
@@ -173,7 +174,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.times = obj["times"].toInt(5);
     info.xiangliang=obj["xiangliang"].toBool(); //向量开关
     info.cbl=obj["cbl"].toBool(true);
-
+    info.sandbox=obj["sandbox"].toBool();
     info.pbbot =obj["pbbot"].toBool(true);
     info.tiaoshu = obj["tiaoshu"].toInt(5);
 
