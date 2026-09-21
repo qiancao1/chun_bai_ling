@@ -791,7 +791,7 @@ bool __cqkj=false;
 QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
 
-    if(!g_admin.contains(ev.user)) return QString();
+    if(ev.admin_role!=2) return QString();
 
     // ---------- AI 长期日志（没有 UI，用指令调）----------
     // 日志正文是 AI 自己用 write_log 工具写的，这里只管"上限"和"清空"。
@@ -1252,35 +1252,31 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
 QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
+    if(ev.admin_role==0){
 
-    bool upad = g_admin.contains(ev.user);
-    if(!upad){
-
-        if(!info->admin.contains(ev.user)){
-            if(!info->cbl) return QString();
-            if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
-            {
-                return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
-                        "**群管理**\n>"
-                        "[踢]() <艾特> 移除某个成员\n>"
-                        "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
-                        "[禁言]() <艾特> <秒> \n>"
-                        "[解禁]() <艾特> 解除禁言某个人\n>"
-                        "[免验证]() <艾特> 删除某人的验证\n>"
-                        "[一键解禁]() 批量解除\n>"
-                        "[禁言列表]() 获取禁言列表\n>"
-                        "[本群状态]() 查看开启列表\n>"
-                        "[开入群验证]() | [关入群验证]()\n>"
-                        "[获取加群列表]() 获取申请加群列表\n"
-                        "[添加本群代管]() | [删除本群代管]()\n>"
-                        "[开申请加群提示]() | [关申请加群提示]()\n>"
-                        "[开自动同意加群]() | [关自动同意加群]()\n>"
-                        "[设置自动同意加群答案]()\n>"
-                        "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
-                        "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
-            }
-            return QString();
+        if(!info->cbl) return QString();
+        if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
+        {
+            return             "**普通权限**\n>[我的ID]() 获取ID\n>[代管列表]() 查看本群代管\n[修改昵称]() <新昵称>\n\n"
+                    "**群管理**\n>"
+                    "[踢]() <艾特> 移除某个成员\n>"
+                    "[撤回]() <艾特> <条数> 可能有接口频率限制(不指定用户时撤回机器人)\n>"
+                    "[禁言]() <艾特> <秒> \n>"
+                    "[解禁]() <艾特> 解除禁言某个人\n>"
+                    "[免验证]() <艾特> 删除某人的验证\n>"
+                    "[一键解禁]() 批量解除\n>"
+                    "[禁言列表]() 获取禁言列表\n>"
+                    "[本群状态]() 查看开启列表\n>"
+                    "[开入群验证]() | [关入群验证]()\n>"
+                    "[获取加群列表]() 获取申请加群列表\n"
+                    "[添加本群代管]() | [删除本群代管]()\n>"
+                    "[开申请加群提示]() | [关申请加群提示]()\n>"
+                    "[开自动同意加群]() | [关自动同意加群]()\n>"
+                    "[设置自动同意加群答案]()\n>"
+                    "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
+                    "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
         }
+        return QString();
     }
     if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃"))
     {
@@ -1594,7 +1590,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             auto *cw = g_CW[appid];
             if(cw->m_info->online) return "机器人已经在线 无须重复登录";
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(!upad) return "你非该机器人管理员 或者超管 不能执行上线";
+                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行上线";
             }
             QMetaObject::invokeMethod(qApp, [=]() {
                 cw->onLoginButton();
@@ -1618,7 +1614,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             auto *cw = g_CW[appid];
             if(!cw->m_info->online) return "机器人未在线 无须下线";
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(!upad) return "你非该机器人管理员 或者超管 不能执行下线";
+                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行下线";
             }
             QMetaObject::invokeMethod(qApp, [=]() {
                 cw->onLoginButton();
@@ -1637,7 +1633,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             auto *cw = g_CW[appid];
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(!upad) return "你非该机器人管理员 或者超管 不能执行删除";
+                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行删除";
             }
 
             QMetaObject::invokeMethod(qApp, [=]() {
@@ -2080,7 +2076,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
-    if(info->cbl || g_admin.contains(ev.user) || info->admin.contains(ev.user) ) {
+    if(info->cbl || ev.admin_role!=0) {
         bool admin=false,admin2=false;
         for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
             if (ev.qid[i] == ev.user_int) {
@@ -2088,7 +2084,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 break;
             }
         }
-        admin2 = ((ev.member_role ==0) || g_admin.contains(ev.user) || info->admin.contains(ev.user) );
+        admin2 = ((ev.member_role ==0) || ev.admin_role!=0 );
         if(admin2)
         {
             if (ev.msg.startsWith("添加本群代管"))

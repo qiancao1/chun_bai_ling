@@ -908,6 +908,9 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     //2300 +-
     if(!ev.fullType) ev.at_you=true; //
 
+    if(m_info->admin.contains(ev.user)) ev.admin_role=1;
+    if(g_admin.contains(ev.user)) ev.admin_role=2;
+
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
     ev.user_int=-1;
@@ -1110,6 +1113,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["d"] = d;
     payload["user_id"] = ev.user_int;
     payload["appid"]=ev.appid;
+    payload["admin_role"]=ev.admin_role;
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     payload["GroupName"]=ev.groupname;

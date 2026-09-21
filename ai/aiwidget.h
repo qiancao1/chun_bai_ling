@@ -114,6 +114,11 @@ public:
     QJsonArray get_tools(const AccountInfo *info);
     QString Ai_qx(AccountInfo *info, const MessageEvent &ev);
     void list_c(); // 切换机器人
+
+    // 给 WebUI 用：网页上改完 data/model_config.json / data/fujia.json 之后重新读一遍，
+    // 免得桌面端还显示旧数据。分别对应「模型配置」和「附加模型」两个标签页。
+    void webuiReloadModelConfig();
+    void webuiReloadFujia();
     // 注意：m_sessions 会被线程池线程访问（flushPendingMessages / ...Tail），
     // 主线程（onNewMessage / onCleanupTimer / onAsyncReply / 析构 / aisxw 界面）也在读写。
     // 任何一次访问都必须持 m_sessionsMutex，否则 QMap 和 SessionContext 里的

@@ -49,9 +49,13 @@ public:
     void oninitbot();
     void 列表行被单击();   // 切换机器人
 
+    // 从 data/text_replace_rules.json 重新读取规则。
+    // 给 WebUI 用：网页上改完规则文件后调用，立刻生效。
+    void webuiReload() { loadAllRulesFromFile(); }
 
 signals:
     void needLoadRules(int appid);
+
 private slots:
 
     void onAddRow();

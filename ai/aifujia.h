@@ -31,6 +31,9 @@ public:
     void initmode(QList<ModelData> &modelist);
     void initdata(AccountInfo *acc);
 
+    // 给 WebUI 用：网页上改完 data/fujia.json 后重新读一遍
+    void webuiReload() { load_data(); }
+
 private slots:
     void on_add_row_clicked();
 

@@ -61,6 +61,10 @@ public:
     // 将当前机器人规则应用到全局 m_accounts（可选）
     void oninitbot();
 
+    // 从 data/keyword_match_rules.json 重新读取并重建匹配器。
+    // 给 WebUI 用：网页上改完规则文件后调用，立刻生效。
+    void webuiReload() { loadAllRulesFromFile(); }
+
 signals:
     void needLoadRules(int robotId);
     void needRefreshTable();  // 新增：异步刷新信号

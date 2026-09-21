@@ -73,11 +73,16 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.2.74"
-#define APP_BUILD_NUMBER 74
+#define APP_VERSION_STR "v1.3.3.75"
+#define APP_BUILD_NUMBER 75
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.3.4.75 (2026-09-21)
+- 修复 读取缓存 时间戳失败问题
+- 更新 webui 内容
+- 修复 内存占用获取在 部分电脑不可用问题
+
 ## v1.3.2.74 (2026-09-17)
 - 修复 新版sdk无法加载问题
 - 修复 插件市场 没有安装linux 版本dll so选项

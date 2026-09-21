@@ -40,6 +40,10 @@ public:
     // 匹配接口：返回惩罚动作
     bool match(const MessageEvent &ev);
 
+    // 从 data/keyword_punish_rules.json 重新读取并重建匹配器。
+    // 给 WebUI 用：网页上改完规则文件后调用，立刻生效。
+    void webuiReload() { loadAllRulesFromFile(); }
+
 private slots:
     void onAddRow();
     void onDeleteRow();

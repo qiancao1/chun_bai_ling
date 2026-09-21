@@ -21,6 +21,13 @@
 //   插件市场
 //     getPluginMarket     拉取 gitee PluginList.json
 //     installPlugin       下载 + 解压 + 加载
+//   设置 / 规则
+//     getSysConfig        读取可在 WebUI 编辑的全局配置（data/config.json 白名单）
+//     setSysConfig        写回配置并保存
+//     getForbiddenWords   读取 data/forbidden_words.txt
+//     setForbiddenWords   写回并重建 AC 自动机
+//     getRuleFile         读取 data/*_rules.json（白名单）
+//     setRuleFile         校验 JSON 后写回，并让框架重新加载规则
 
 #include "webuiadmin.h"
 #include "clientconnection.h"
@@ -50,6 +57,7 @@
 #include <QUrlQuery>
 #include <QUuid>
 
+#include <algorithm>   // std::sort（黑名单排序）
 #include <functional>
 #include <utility>
 
@@ -63,6 +71,24 @@
 #include <sstream>
 #include <string>
 #endif
+
+// 规则类页面保存后要回调这些控件做「重新加载」，改动才会立刻生效。
+// 注意：forbiddenwordpage.h 里有 #define QTextEdit PlaceholderTextEdit，
+// 所以这一组头文件必须放在所有 Qt 头之后（本 TU 不使用 QTextEdit，安全）。
+#include "forbiddenwordpage.h"
+#include "keywordmatchconfigwidget.h"
+#include "keywordpunishconfigwidget.h"
+#include "textreplaceconfigwidget.h"
+#include "botruleconfigwidget.h"
+
+// 「Ai → 模型配置」里的 API 密钥在 data/model_config.json 里是加密存的，
+// WebUI 读要解密、写要加密，所以这里跟着用同一套 MachineKey。
+#include <QSysInfo>
+#include "machinekey.h"
+
+// 这两个全局指针定义在 mainwindow.cpp，core/global.h 里没有声明
+extern TextReplaceConfigWidget *TextReplace;
+extern BotRuleConfigWidget     *RuleConfigWidget;
 
 namespace {
 
@@ -1070,6 +1096,1033 @@ void handleGetSysInfo(ClientConnection *client, const QString &reqId)
     sendReply(client, "getSysInfo", true, o, reqId);
 }
 
+// ---------------------------------------------------------------- 全局设置
+
+// WebUI 里可编辑的全局配置（data/config.json 白名单）。
+// 只列框架级、改了不会当场把 WebUI 自己弄死的项。
+// restart = true 表示要重启框架才生效，界面上会标出来。
+struct SysConfigItem {
+    const char *key;
+    const char *label;
+    const char *type;      // int / bool / string
+    bool        restart;
+    const char *desc;
+};
+
+const SysConfigItem kSysConfigItems[] = {
+    { "webws_p",         "WebSocket 端口", "int",    true,  "WebUI 长连接与聊天室用的端口" },
+    { "webhook_p",       "HTTP 端口",      "int",    true,  "静态页（/webui）与图床上传用的端口" },
+    { "SSL",             "启用 SSL",       "bool",   true,  "WebUI 走 https / wss" },
+    { "logs",            "日志缓存条数",   "int",    false, "最多永久缓存多少条聊天记录" },
+    { "xc_s",            "线程池线程数",   "int",    true,  "0 表示按 CPU 核心数自动" },
+    { "ai_log_max",      "AI 日志条数",    "int",    false, "每个账号最多保留多少条 AI 日志" },
+    { "admin",           "全局管理员",     "string", false, "空格分隔的管理员 openid" },
+    { "ffmpeg",          "ffmpeg 路径",    "string", false, "ffmpeg 可执行文件所在目录" },
+    { "local_server_ip", "本机对外 IP",    "string", false, "生成 WebUI / 图床链接时用的地址" },
+    { "y_img",           "启用远程图床",   "bool",   false, "把图片交给远程服务处理" },
+    { "y_port",          "远程图床地址",   "string", false, "远程图床的主机:端口" },
+    { "SendType",        "聊天发送模式",   "int",    false, "聊天页默认的发送模式" },
+};
+const int kSysConfigCount = int(sizeof(kSysConfigItems) / sizeof(kSysConfigItems[0]));
+
+bool jsonToBool(const QJsonValue &v)
+{
+    if (v.isBool()) return v.toBool();
+    const QString s = v.toVariant().toString().trimmed().toLower();
+    return s == "true" || s == "1" || s == "on" || s == "yes";
+}
+
+QJsonArray buildSysConfigItems()
+{
+    QJsonArray items;
+    for (int i = 0; i < kSysConfigCount; ++i) {
+        const SysConfigItem &it = kSysConfigItems[i];
+        const QString key  = QString::fromUtf8(it.key);
+        const QString type = QString::fromUtf8(it.type);
+        // 注意用 value() 而不是 operator[] —— 后者会在键不存在时往 g_config 里塞一个 null
+        const QJsonValue cur = g_config.value(key);
+
+        QJsonObject o;
+        o["key"]     = key;
+        o["label"]   = QString::fromUtf8(it.label);
+        o["type"]    = type;
+        o["restart"] = it.restart;
+        o["desc"]    = QString::fromUtf8(it.desc);
+        if (type == QLatin1String("bool"))      o["value"] = cur.toBool(false);
+        else if (type == QLatin1String("int"))  o["value"] = cur.toInt(0);
+        else                                    o["value"] = cur.toString();
+        items.append(o);
+    }
+    return items;
+}
+
+void handleGetSysConfig(ClientConnection *client, const QString &reqId)
+{
+    QJsonObject ret;
+    ret["items"] = buildSysConfigItems();
+    sendReply(client, "getSysConfig", true, ret, reqId);
+}
+
+void handleSetSysConfig(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const QJsonObject values = params.value("values").toObject();
+    if (values.isEmpty()) {
+        sendReply(client, "setSysConfig", false, QJsonValue(), reqId, "没有提交任何配置");
+        return;
+    }
+
+    QStringList changed;
+    for (int i = 0; i < kSysConfigCount; ++i) {
+        const SysConfigItem &it = kSysConfigItems[i];
+        const QString key = QString::fromUtf8(it.key);
+        if (!values.contains(key)) continue;          // 只认白名单里的键
+        const QJsonValue in = values.value(key);
+        const QString type = QString::fromUtf8(it.type);
+
+        if (type == QLatin1String("bool"))       g_config[key] = jsonToBool(in);
+        else if (type == QLatin1String("int"))   g_config[key] = in.toVariant().toString().trimmed().isEmpty()
+                                                                    ? 0
+                                                                    : in.toVariant().toInt();
+        else                                     g_config[key] = in.toVariant().toString();
+        changed << key;
+    }
+
+    if (changed.isEmpty()) {
+        sendReply(client, "setSysConfig", false, QJsonValue(), reqId,
+                  "提交的配置项都不在白名单里，已忽略");
+        return;
+    }
+
+    saveConfig();
+    AppendEventLog(QString("[WebUI] 修改全局配置 %1").arg(changed.join(QLatin1Char(','))));
+
+    QJsonObject ret;
+    ret["items"] = buildSysConfigItems();
+    sendReply(client, "setSysConfig", true, ret, reqId,
+              QString("已保存 %1 项（端口 / SSL 这类改动要重启框架才生效）").arg(changed.size()));
+}
+
+// ---------------------------------------------------------------- 违禁词
+
+QString forbiddenWordsPath() { return QStringLiteral("data/forbidden_words.txt"); }
+
+int countNonEmptyLines(const QString &text)
+{
+    int n = 0;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &l : lines) {
+        if (!l.trimmed().isEmpty()) ++n;
+    }
+    return n;
+}
+
+void handleGetForbiddenWords(ClientConnection *client, const QString &reqId)
+{
+    const QString path = forbiddenWordsPath();
+    QString text;
+    QFile f(path);
+    if (f.exists()) {
+        if (!f.open(QIODevice::ReadOnly)) {
+            sendReply(client, "getForbiddenWords", false, QJsonValue(), reqId,
+                      QString("打不开 %1").arg(path));
+            return;
+        }
+        text = QString::fromUtf8(f.readAll());
+        f.close();
+    }
+
+    QJsonObject ret;
+    ret["text"]  = text;
+    ret["count"] = countNonEmptyLines(text);
+    ret["path"]  = path;
+    sendReply(client, "getForbiddenWords", true, ret, reqId);
+}
+
+void handleSetForbiddenWords(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const QString path = forbiddenWordsPath();
+    const QString text = params.value("text").toString();
+    if (text.size() > 2 * 1024 * 1024) {
+        sendReply(client, "setForbiddenWords", false, QJsonValue(), reqId, "内容过大（超过 2MB），未保存");
+        return;
+    }
+
+    // 去空行、去重后再写盘，和桌面端 loadFromDefaultFile 的口径保持一致
+    QStringList words;
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &l : lines) {
+        const QString w = l.trimmed();
+        if (!w.isEmpty() && !words.contains(w)) words.append(w);
+    }
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        sendReply(client, "setForbiddenWords", false, QJsonValue(), reqId, QString("写不了 %1").arg(path));
+        return;
+    }
+    QByteArray body = words.join(QLatin1Char('\n')).toUtf8();
+    if (!body.isEmpty()) body.append('\n');
+    f.write(body);
+    f.close();
+
+    const bool reloaded = (forbidden != nullptr);
+    if (reloaded) forbidden->webuiReload();
+
+    AppendEventLog(QString("[WebUI] 更新违禁词 %1 条").arg(words.size()));
+
+    QJsonObject ret;
+    ret["count"]    = words.size();
+    ret["reloaded"] = reloaded;
+    ret["path"]     = path;
+    sendReply(client, "setForbiddenWords", true, ret, reqId,
+              reloaded ? QString("已保存 %1 条违禁词并重新加载").arg(words.size())
+                       : QString("已保存 %1 条违禁词（框架未重载，重启后生效）").arg(words.size()));
+}
+
+// ---------------------------------------------------------------- 关键词 / 规则文件
+
+struct RuleFileMeta {
+    const char *id;         // WebUI 里用的名字
+    const char *path;       // 相对框架目录
+};
+
+const RuleFileMeta kRuleFiles[] = {
+    { "keyword_match",  "data/keyword_match_rules.json"  },
+    { "keyword_punish", "data/keyword_punish_rules.json" },
+    { "text_replace",   "data/text_replace_rules.json"   },
+    { "bot_rules",      "data/bot_rules.json"            },
+};
+const int kRuleFileCount = int(sizeof(kRuleFiles) / sizeof(kRuleFiles[0]));
+
+const RuleFileMeta *findRuleFile(const QString &id)
+{
+    for (int i = 0; i < kRuleFileCount; ++i) {
+        if (id == QLatin1String(kRuleFiles[i].id)) return &kRuleFiles[i];
+    }
+    return nullptr;
+}
+
+// 让对应的控件重新读一遍文件，重建匹配器 / 规则表
+void reloadRuleConsumer(const QString &id)
+{
+    if (id == QLatin1String("keyword_match") && keyword) {
+        keyword->webuiReload();
+    } else if (id == QLatin1String("keyword_punish") && keyword_Punish) {
+        keyword_Punish->webuiReload();
+    } else if (id == QLatin1String("text_replace") && TextReplace) {
+        TextReplace->webuiReload();
+    } else if (id == QLatin1String("bot_rules") && RuleConfigWidget) {
+        RuleConfigWidget->webuiReload();
+    }
+}
+
+void handleGetRuleFile(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const QString id = params.value("file").toString();
+    const RuleFileMeta *meta = findRuleFile(id);
+    if (!meta) {
+        sendReply(client, "getRuleFile", false, QJsonValue(), reqId, QString("未知的规则文件：%1").arg(id));
+        return;
+    }
+    const QString path = QString::fromUtf8(meta->path);
+
+    QString text = QStringLiteral("{}");
+    QFile f(path);
+    if (f.exists()) {
+        if (!f.open(QIODevice::ReadOnly)) {
+            sendReply(client, "getRuleFile", false, QJsonValue(), reqId, QString("打不开 %1").arg(path));
+            return;
+        }
+        const QString raw = QString::fromUtf8(f.readAll()).trimmed();
+        f.close();
+        if (!raw.isEmpty()) text = raw;
+    }
+
+    QJsonObject ret;
+    ret["file"] = QString::fromUtf8(meta->id);
+    ret["path"] = path;
+    ret["text"] = text;
+    ret["exists"] = QFile::exists(path);
+
+    // 带 appid 时额外把这一个账号的规则数组单独拆出来：
+    // 这几个规则文件顶层都是 { "<appid>": [ ... ] }，网页上要按账号编辑。
+    if (params.contains("appid")) {
+        const int appid = params.value("appid").toInt(0);
+        QJsonArray rules;
+        QJsonParseError perr{};
+        const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &perr);
+        if (perr.error == QJsonParseError::NoError && doc.isObject()) {
+            rules = doc.object().value(QString::number(appid)).toArray();
+        }
+        ret["appid"] = appid;
+        ret["rules"] = rules;
+    }
+    sendReply(client, "getRuleFile", true, ret, reqId);
+}
+
+void handleSetRuleFile(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const QString id = params.value("file").toString();
+    const RuleFileMeta *meta = findRuleFile(id);
+    if (!meta) {
+        sendReply(client, "setRuleFile", false, QJsonValue(), reqId, QString("未知的规则文件：%1").arg(id));
+        return;
+    }
+    const QString path = QString::fromUtf8(meta->path);
+
+    // ---- 按账号写入：只替换该 appid 那一份，其它账号原样保留 ----
+    // 这几个文件是「一个文件装所有账号」的结构，整份覆盖式保存会互相踩，
+    // 所以 WebUI 默认走这条路径。
+    if (params.contains("appid") && params.value("rules").isArray()) {
+        const int appid = params.value("appid").toInt(0);
+        if (appid == 0) {
+            sendReply(client, "setRuleFile", false, QJsonValue(), reqId, "appid 不能为 0，未保存");
+            return;
+        }
+
+        QJsonObject root;
+        QFile rf(path);
+        if (rf.exists()) {
+            if (!rf.open(QIODevice::ReadOnly)) {
+                sendReply(client, "setRuleFile", false, QJsonValue(), reqId, QString("打不开 %1").arg(path));
+                return;
+            }
+            const QByteArray raw = rf.readAll();
+            rf.close();
+            QJsonParseError rerr{};
+            const QJsonDocument rdoc = QJsonDocument::fromJson(raw, &rerr);
+            if (rerr.error == QJsonParseError::NoError && rdoc.isObject()) root = rdoc.object();
+        }
+
+        const QJsonArray rules = params.value("rules").toArray();
+        const QString key = QString::number(appid);
+        if (rules.isEmpty()) root.remove(key);   // 清空 = 顺手删掉这个账号的键
+        else                 root[key] = rules;
+
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile wf(path);
+        if (!wf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            sendReply(client, "setRuleFile", false, QJsonValue(), reqId, QString("写不了 %1").arg(path));
+            return;
+        }
+        wf.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+        wf.close();
+
+        reloadRuleConsumer(id);
+        AppendEventLog(QString("[WebUI] 更新规则文件 %1 里账号 %2 的 %3 条规则")
+                           .arg(path).arg(appid).arg(rules.size()));
+
+        QJsonObject ret;
+        ret["file"]  = id;
+        ret["path"]  = path;
+        ret["appid"] = appid;
+        ret["count"] = rules.size();
+        sendReply(client, "setRuleFile", true, ret, reqId,
+                  QString("已保存账号 %1 的 %2 条规则并重新加载").arg(appid).arg(rules.size()));
+        return;
+    }
+
+    const QString text = params.value("text").toString();
+
+    if (text.size() > 8 * 1024 * 1024) {
+        sendReply(client, "setRuleFile", false, QJsonValue(), reqId, "内容过大（超过 8MB），未保存");
+        return;
+    }
+
+    // 先校验，别把坏内容写进去 —— 这个文件是框架运行时直接读的
+    QJsonParseError perr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &perr);
+    if (perr.error != QJsonParseError::NoError) {
+        sendReply(client, "setRuleFile", false, QJsonValue(), reqId,
+                  QString("JSON 不合法：%1（位置 %2），未保存").arg(perr.errorString()).arg(perr.offset));
+        return;
+    }
+    if (!doc.isObject()) {
+        sendReply(client, "setRuleFile", false, QJsonValue(), reqId,
+                  "JSON 顶层必须是对象（键为 appid），未保存");
+        return;
+    }
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        sendReply(client, "setRuleFile", false, QJsonValue(), reqId, QString("写不了 %1").arg(path));
+        return;
+    }
+    f.write(doc.toJson(QJsonDocument::Compact));
+    f.close();
+
+    reloadRuleConsumer(id);
+    AppendEventLog(QString("[WebUI] 更新规则文件 %1").arg(path));
+
+    QJsonObject ret;
+    ret["file"] = id;
+    ret["path"] = path;
+    sendReply(client, "setRuleFile", true, ret, reqId, QString("已保存并重新加载 %1").arg(path));
+}
+
+// ---------------------------------------------------------------- 内置功能（按账号）
+
+// 前端可能把数字传成字符串，统一兜一下。注意 QJsonValue::toInt() 对字符串恒为 0。
+int jsonToInt(const QJsonValue &v)
+{
+    if (v.isDouble()) return v.toInt();
+    const QString s = v.toVariant().toString().trimmed();
+    return s.isEmpty() ? 0 : s.toInt();
+}
+
+// 一个可以由 WebUI 编辑的账号字段。
+// key 直接用 AccountInfo 的成员名，方便和桌面端 ai/ 下的界面逐项对照。
+// choices 以 '@' 开头表示「选项在 options 里动态取」（模型名 / 全局设定名）。
+struct AcctField {
+    const char *key;
+    const char *label;
+    const char *type;      // int / bool / string / strings
+    const char *group;     // 分组，前端按组排版
+    const char *desc;
+    const char *choices;
+    QJsonValue (*get)(const AccountInfo &a);
+    void       (*set)(AccountInfo &a, const QJsonValue &v);
+};
+
+QJsonArray buildAcctFields(const AcctField *fields, int count,
+                           const AccountInfo *a, const QJsonObject &options)
+{
+    QJsonArray arr;
+    for (int i = 0; i < count; ++i) {
+        const AcctField &f = fields[i];
+        const QString key  = QString::fromUtf8(f.key);
+        const QString type = QString::fromUtf8(f.type);
+
+        QJsonObject o;
+        o["key"]   = key;
+        o["label"] = QString::fromUtf8(f.label);
+        o["type"]  = type;
+        o["group"] = QString::fromUtf8(f.group);
+        o["desc"]  = QString::fromUtf8(f.desc);
+
+        if (a)                                      o["value"] = f.get(*a);
+        else if (type == QLatin1String("bool"))     o["value"] = false;
+        else if (type == QLatin1String("int"))      o["value"] = 0;
+        else if (type == QLatin1String("strings"))  o["value"] = QJsonArray();
+        else                                        o["value"] = QString();
+
+        const QString ch = QString::fromUtf8(f.choices);
+        if (ch.startsWith(QLatin1Char('@'))) o["choices"] = options.value(ch.mid(1)).toArray();
+        else if (!ch.isEmpty())              o["choices"] = QJsonArray::fromStringList(ch.split(QLatin1Char('|')));
+        else                                 o["choices"] = QJsonArray();
+
+        arr.append(o);
+    }
+    return arr;
+}
+
+// 只认白名单里的键，返回实际写入的项数
+int applyAcctFields(const AcctField *fields, int count, AccountInfo &a,
+                    const QJsonObject &values, QStringList &changed)
+{
+    int n = 0;
+    for (int i = 0; i < count; ++i) {
+        const AcctField &f = fields[i];
+        const QString key = QString::fromUtf8(f.key);
+        if (!values.contains(key)) continue;
+        f.set(a, values.value(key));
+        changed << key;
+        ++n;
+    }
+    return n;
+}
+
+// ---- 「内置功能 → 基础」（对应桌面端 ai/qunguan 那一页） ----
+// 字段名 = AccountInfo 成员名；注意桌面端「条数 / 时长」两栏的绑定关系就是
+// time_Edit→times、tiao_Edit→tiaoshu，这里保持一致。
+const AcctField kBasicFields[] = {
+    // 刷屏检测
+    { "times", "刷屏检测条数", "int", "detect", "统计窗口内同一个人连发多少条就判定为刷屏", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.times); },
+      [](AccountInfo &a, const QJsonValue &v) { a.times = jsonToInt(v); } },
+    { "tiaoshu", "刷屏检测时长(秒)", "int", "detect", "上面那个统计窗口的长度", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.tiaoshu); },
+      [](AccountInfo &a, const QJsonValue &v) { a.tiaoshu = jsonToInt(v); } },
+
+    // 入群 / 退群
+    { "rq_ychf", "入群发送延迟(秒)", "int", "delay", "成员入群后等多久再发欢迎语", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.rq_ychf); },
+      [](AccountInfo &a, const QJsonValue &v) { a.rq_ychf = jsonToInt(v); } },
+    { "rq_lq", "入群提醒 CD(秒)", "int", "delay", "同一个人入群提醒的最小间隔", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.rq_lq); },
+      [](AccountInfo &a, const QJsonValue &v) { a.rq_lq = jsonToInt(v); } },
+    { "tq_ychf", "退群发送延迟(秒)", "int", "delay", "成员退群后等多久再发提示", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.tq_ychf); },
+      [](AccountInfo &a, const QJsonValue &v) { a.tq_ychf = jsonToInt(v); } },
+    { "tq_lq", "退群提醒 CD(秒)", "int", "delay", "同一个人退群提醒的最小间隔", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.tq_lq); },
+      [](AccountInfo &a, const QJsonValue &v) { a.tq_lq = jsonToInt(v); } },
+
+    // 开关
+    { "autoht", "自动回应回调", "bool", "switch", "收到需要回调的事件时自动回应", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.autoht); },
+      [](AccountInfo &a, const QJsonValue &v) { a.autoht = jsonToBool(v); } },
+    { "pbbot", "屏蔽机器人信息", "bool", "switch", "忽略其它机器人发出的消息", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.pbbot); },
+      [](AccountInfo &a, const QJsonValue &v) { a.pbbot = jsonToBool(v); } },
+    { "cbl", "启用纯白铃指令", "bool", "switch", "允许群里使用框架的内置指令", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.cbl); },
+      [](AccountInfo &a, const QJsonValue &v) { a.cbl = jsonToBool(v); } },
+
+    // 各类回复文本
+    { "admin", "机器人管理", "string", "text", "群管理指令的回复", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.admin); },
+      [](AccountInfo &a, const QJsonValue &v) { a.admin = v.toString(); } },
+    { "caidan", "发送菜单", "string", "text", "菜单指令的回复内容", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.caidan); },
+      [](AccountInfo &a, const QJsonValue &v) { a.caidan = v.toString(); } },
+    { "help", "发送帮助", "string", "text", "帮助指令的回复内容", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.help); },
+      [](AccountInfo &a, const QJsonValue &v) { a.help = v.toString(); } },
+    { "emptyAt", "空艾特时", "string", "text", "只 @ 机器人、没带内容时回什么", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.emptyAt); },
+      [](AccountInfo &a, const QJsonValue &v) { a.emptyAt = v.toString(); } },
+    { "rqhy", "用户入群", "string", "text", "入群欢迎语，支持 py 代码与 {id} 等变量", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.rqhy); },
+      [](AccountInfo &a, const QJsonValue &v) { a.rqhy = v.toString(); } },
+    { "tqhy", "用户退群", "string", "text", "退群提示语，支持 py 代码与变量", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.tqhy); },
+      [](AccountInfo &a, const QJsonValue &v) { a.tqhy = v.toString(); } },
+    { "jojnhf", "加群验证", "string", "text", "入群验证的处理逻辑（py 或变量）", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.jojnhf); },
+      [](AccountInfo &a, const QJsonValue &v) { a.jojnhf = v.toString(); } },
+    { "xxwb", "信息尾巴", "string", "text", "每条回复后面追加的固定文本", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.xxwb); },
+      [](AccountInfo &a, const QJsonValue &v) { a.xxwb = v.toString(); } },
+    { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.fallbackReply); },
+      [](AccountInfo &a, const QJsonValue &v) { a.fallbackReply = v.toString(); } },
+    { "welcomeMsg", "机器人入群", "string", "text", "机器人被拉进群时的欢迎语", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.welcomeMsg); },
+      [](AccountInfo &a, const QJsonValue &v) { a.welcomeMsg = v.toString(); } },
+    { "apply", "有人申请加群", "string", "text", "收到加群申请时的处理逻辑", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.apply); },
+      [](AccountInfo &a, const QJsonValue &v) { a.apply = v.toString(); } },
+};
+const int kBasicFieldCount = int(sizeof(kBasicFields) / sizeof(kBasicFields[0]));
+
+// ---- 「内置功能 → Ai」 ----
+// 与桌面端 AiWidget::on_btnSaveRobot_clicked() 保存的是同一批字段，
+// 这样网页改完直接写进 AccountInfo，桌面端界面切过去看到的就是新值。
+const AcctField kAiFields[] = {
+    { "Ai_nickname", "机器人昵称", "string", "ai_basic", "左侧列表里显示的名字", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.Ai_nickname); },
+      [](AccountInfo &a, const QJsonValue &v) { a.Ai_nickname = v.toString(); } },
+    { "model", "模型", "string", "ai_basic", "对话用的大模型", "@models",
+      [](const AccountInfo &a) { return QJsonValue(a.model); },
+      [](AccountInfo &a, const QJsonValue &v) { a.model = v.toString(); } },
+    { "Embed_model", "向量模型", "string", "ai_basic", "向量记忆库用的模型", "@models",
+      [](const AccountInfo &a) { return QJsonValue(a.Embed_model); },
+      [](AccountInfo &a, const QJsonValue &v) { a.Embed_model = v.toString(); } },
+    { "pplx", "匹配类型", "int", "ai_basic", "群内按什么规则决定要不要理这条消息",
+      "不匹配昵称|信息包含|信息头",
+      [](const AccountInfo &a) { return QJsonValue(a.pplx); },
+      [](AccountInfo &a, const QJsonValue &v) { a.pplx = jsonToInt(v); } },
+    { "setting", "全局设定", "string", "ai_basic", "选用哪一套人设设定", "@settings",
+      [](const AccountInfo &a) { return QJsonValue(a.setting); },
+      [](AccountInfo &a, const QJsonValue &v) { a.setting = v.toString(); } },
+    { "context_len", "上下文条数", "int", "ai_basic", "带多少条历史消息给模型", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.context_len); },
+      [](AccountInfo &a, const QJsonValue &v) { a.context_len = jsonToInt(v); } },
+    { "delayReplySeconds", "延迟回复(秒)", "int", "ai_basic", "收到消息后先等几秒再回", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.delayReplySeconds); },
+      [](AccountInfo &a, const QJsonValue &v) { a.delayReplySeconds = jsonToInt(v); } },
+    { "nSecondsNoReply", "N 秒没回复", "int", "ai_basic", "0 表示关闭；大于 0 则安静这么久后主动搭话", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.nSecondsNoReply); },
+      [](AccountInfo &a, const QJsonValue &v) { a.nSecondsNoReply = jsonToInt(v); } },
+    { "nMinutesNoReply", "N 分钟没回复", "int", "ai_basic", "同上，按分钟计", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.nMinutesNoReply); },
+      [](AccountInfo &a, const QJsonValue &v) { a.nMinutesNoReply = jsonToInt(v); } },
+
+    { "enableGroupChat", "群聊", "bool", "ai_switch", "在群里启用", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enableGroupChat); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enableGroupChat = jsonToBool(v); } },
+    { "enableGroupPersonal", "群个人", "bool", "ai_switch", "群里的私聊式触发", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enableGroupPersonal); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enableGroupPersonal = jsonToBool(v); } },
+    { "enablePrivateChat", "私聊", "bool", "ai_switch", "在私聊里启用", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enablePrivateChat); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enablePrivateChat = jsonToBool(v); } },
+    { "enableChannel", "频道", "bool", "ai_switch", "在频道里启用", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enableChannel); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enableChannel = jsonToBool(v); } },
+    { "enableChannelPersonal", "频道个人", "bool", "ai_switch", "频道私聊场景", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enableChannelPersonal); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enableChannelPersonal = jsonToBool(v); } },
+    { "atTrigger", "艾特触发", "bool", "ai_switch", "只有被 @ 才回应", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.atTrigger); },
+      [](AccountInfo &a, const QJsonValue &v) { a.atTrigger = jsonToBool(v); } },
+    { "enableImageRec", "识图", "bool", "ai_switch", "把图片也送给模型", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.enableImageRec); },
+      [](AccountInfo &a, const QJsonValue &v) { a.enableImageRec = jsonToBool(v); } },
+    { "xiangliang", "向量记忆库", "bool", "ai_switch", "启用向量数据库做长期记忆", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.xiangliang); },
+      [](AccountInfo &a, const QJsonValue &v) { a.xiangliang = jsonToBool(v); } },
+    { "niren", "拟人", "bool", "ai_switch", "拟人模式（@咸鱼王）", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.niren); },
+      [](AccountInfo &a, const QJsonValue &v) { a.niren = jsonToBool(v); } },
+    { "juece", "群决策", "bool", "ai_switch", "由模型判断这条消息要不要回", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.juece); },
+      [](AccountInfo &a, const QJsonValue &v) { a.juece = jsonToBool(v); } },
+
+    { "e_bai", "白名单模式", "bool", "ai_white", "只回应白名单里的群 / 人", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.e_bai); },
+      [](AccountInfo &a, const QJsonValue &v) { a.e_bai = jsonToBool(v); } },
+    { "bai_qy", "白名单模式号", "string", "ai_white", "对应桌面端的「设置ai白名单模式」", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.bai_qy); },
+      [](AccountInfo &a, const QJsonValue &v) { a.bai_qy = v.toString(); } },
+    { "bai_sr", "添加白名单", "string", "ai_white", "要加进白名单的 ID", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.bai_sr); },
+      [](AccountInfo &a, const QJsonValue &v) { a.bai_sr = v.toString(); } },
+    { "bai_sc", "删除白名单", "string", "ai_white", "要从白名单删掉的 ID", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.bai_sc); },
+      [](AccountInfo &a, const QJsonValue &v) { a.bai_sc = v.toString(); } },
+
+    { "触发概率", "随机回复", "int", "ai_rand", "每条消息被理会的百分比概率", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.触发概率); },
+      [](AccountInfo &a, const QJsonValue &v) { a.触发概率 = jsonToInt(v); } },
+    { "递增概率", "递增概率", "int", "ai_rand", "被无视后每次多出来的概率", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.递增概率); },
+      [](AccountInfo &a, const QJsonValue &v) { a.递增概率 = jsonToInt(v); } },
+    { "固定条数", "固定条数", "int", "ai_rand", "连续回应多少条之后重新掷概率", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.固定条数); },
+      [](AccountInfo &a, const QJsonValue &v) { a.固定条数 = jsonToInt(v); } },
+
+    { "tools", "内置函数", "strings", "ai_tools",
+      "勾选这个账号允许 AI 调用的函数（对应桌面端内置功能列表）", "@toolNames",
+      // 注意：必须显式写成 QJsonValue，否则 lambda 推导出的是 QJsonArray，
+      // 转换不出 QJsonValue(*)(const AccountInfo &) 这个函数指针类型。
+      [](const AccountInfo &a) -> QJsonValue { return QJsonArray::fromStringList(a.tools); },
+      [](AccountInfo &a, const QJsonValue &v) {
+          a.tools.clear();
+          const QJsonArray arr = v.toArray();
+          for (const QJsonValue &t : arr) {
+              const QString name = t.toString().trimmed();
+              if (!name.isEmpty()) a.tools.append(name);
+          }
+      } },
+};
+const int kAiFieldCount = int(sizeof(kAiFields) / sizeof(kAiFields[0]));
+
+// data/roles.json（模型 / 全局设定）与 data/functions.json（内置函数）里的可选值
+QJsonObject buildAiOptions()
+{
+    QJsonObject o;
+    QJsonArray models, settings, tools, toolNames;
+
+    QFile rf(QStringLiteral("data/roles.json"));
+    if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
+        const QJsonObject root = QJsonDocument::fromJson(rf.readAll()).object();
+        rf.close();
+        for (const QJsonValue &v : root.value(QStringLiteral("models")).toArray()) {
+            const QString name = v.toObject().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty()) models.append(name);
+        }
+        for (const QJsonValue &v : root.value(QStringLiteral("global_settings")).toArray()) {
+            const QString name = v.toObject().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty()) settings.append(name);
+        }
+    }
+
+    QFile ff(QStringLiteral("data/functions.json"));
+    if (ff.exists() && ff.open(QIODevice::ReadOnly)) {
+        // 先把数组落到具名变量上再遍历，别依赖临时 QJsonDocument 的生存期
+        const QJsonArray funcs = QJsonDocument::fromJson(ff.readAll()).array();
+        ff.close();
+        for (const QJsonValue &v : funcs) {
+            const QJsonObject fo = v.toObject();
+            const QString fn = fo.value(QStringLiteral("funcName")).toString();
+            if (fn.isEmpty()) continue;
+            QJsonObject t;
+            t["name"]   = fn;
+            t["remark"] = fo.value(QStringLiteral("remark")).toString();
+            tools.append(t);
+            toolNames.append(fn);
+        }
+    }
+
+    o["models"]    = models;
+    o["settings"]  = settings;
+    o["tools"]     = tools;
+    o["toolNames"] = toolNames;
+    return o;
+}
+
+AccountInfo *accountByAppid(int appid)
+{
+    const int idx = appid ? findAccountIndex(appid) : -1;
+    return (idx < 0) ? nullptr : m_accounts[idx].get();
+}
+
+QString accountDisplayName(const AccountInfo &a)
+{
+    if (!a.nickname.isEmpty())   return a.nickname;
+    if (!a.Ai_nickname.isEmpty())return a.Ai_nickname;
+    if (!a.botqq.isEmpty())      return a.botqq;
+    return a.appid;
+}
+
+// 基础 / Ai 两页共用一套「读 → 改 → 存」流程，这里抽一层
+void replyAcctConfig(const QString &cmd, const AcctField *fields, int count,
+                     const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const int appid = params.value("appid").toInt(0);
+    const AccountInfo *a = accountByAppid(appid);
+
+    QJsonObject ret;
+    ret["appid"]  = appid;
+    ret["exists"] = (a != nullptr);
+    ret["name"]   = a ? accountDisplayName(*a) : QString();
+    ret["fields"] = buildAcctFields(fields, count, a, buildAiOptions());
+    sendReply(client, cmd, true, ret, reqId,
+              a ? QString() : QStringLiteral("还没有选中账号"));
+}
+
+void saveAcctConfig(const QString &cmd, const AcctField *fields, int count,
+                    const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const int appid = params.value("appid").toInt(0);
+    AccountInfo *a = accountByAppid(appid);
+    if (!a) {
+        sendReply(client, cmd, false, QJsonValue(), reqId, "没找到这个账号");
+        return;
+    }
+    if (!accountPage) {
+        sendReply(client, cmd, false, QJsonValue(), reqId, "账号页未就绪，无法落盘");
+        return;
+    }
+
+    QStringList changed;
+    const int n = applyAcctFields(fields, count, *a, params.value("values").toObject(), changed);
+    if (n == 0) {
+        sendReply(client, cmd, false, QJsonValue(), reqId, "提交的字段都不在白名单里，已忽略");
+        return;
+    }
+
+    accountPage->saveAccounts(a);
+    AppendEventLog(QString("[WebUI] 更新账号 %1 的配置 %2").arg(appid).arg(changed.join(QLatin1Char(','))));
+
+    QJsonObject ret;
+    ret["appid"]   = appid;
+    ret["changed"] = changed.size();
+    ret["fields"]  = buildAcctFields(fields, count, a, buildAiOptions());
+    sendReply(client, cmd, true, ret, reqId, QString("已保存 %1 项").arg(changed.size()));
+}
+
+void handleGetBasicConfig(const QJsonObject &p, ClientConnection *c, const QString &r)
+{ replyAcctConfig("getBasicConfig", kBasicFields, kBasicFieldCount, p, c, r); }
+
+void handleSetBasicConfig(const QJsonObject &p, ClientConnection *c, const QString &r)
+{ saveAcctConfig("setBasicConfig", kBasicFields, kBasicFieldCount, p, c, r); }
+
+void handleGetAiConfig(const QJsonObject &p, ClientConnection *c, const QString &r)
+{ replyAcctConfig("getAiConfig", kAiFields, kAiFieldCount, p, c, r); }
+
+void handleSetAiConfig(const QJsonObject &p, ClientConnection *c, const QString &r)
+{ saveAcctConfig("setAiConfig", kAiFields, kAiFieldCount, p, c, r); }
+
+// ---------------------------------------------------------------- 黑名单
+
+// 黑名单文件是 QDataStream 序列化的 QHash<QString,QString>，网页端解析不了，
+// 所以读写统一走 BlacklistPage 的桥接口。
+void handleGetBlacklist(ClientConnection *client, const QString &reqId)
+{
+    if (!Black) {
+        sendReply(client, "getBlacklist", false, QJsonValue(), reqId, "黑名单页未就绪");
+        return;
+    }
+
+    QList<QPair<QString, QString>> list;
+    const QHash<QString, QString> snap = Black->webuiSnapshot();
+    list.reserve(snap.size());
+    for (auto it = snap.constBegin(); it != snap.constEnd(); ++it) {
+        list.append(qMakePair(it.key(), it.value()));
+    }
+    std::sort(list.begin(), list.end(),
+              [](const QPair<QString, QString> &x, const QPair<QString, QString> &y) {
+                  return x.first < y.first;
+              });
+
+    QJsonArray items;
+    for (const auto &kv : std::as_const(list)) {
+        QJsonObject o;
+        o["id"]     = kv.first;
+        o["remark"] = kv.second;
+        items.append(o);
+    }
+
+    QJsonObject ret;
+    ret["items"] = items;
+    ret["count"] = items.size();
+    sendReply(client, "getBlacklist", true, ret, reqId);
+}
+
+void handleSetBlacklist(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    if (!Black) {
+        sendReply(client, "setBlacklist", false, QJsonValue(), reqId, "黑名单页未就绪");
+        return;
+    }
+
+    const QJsonArray items = params.value("items").toArray();
+    if (items.size() > 200000) {
+        sendReply(client, "setBlacklist", false, QJsonValue(), reqId, "条目过多（超过 20 万），未保存");
+        return;
+    }
+
+    QHash<QString, QString> data;
+    int skipped = 0;
+    for (const QJsonValue &v : items) {
+        const QJsonObject o = v.toObject();
+        const QString id = o.value("id").toString().trimmed();
+        if (id.isEmpty()) { ++skipped; continue; }
+        data.insert(id, o.value("remark").toString());
+    }
+
+    if (!Black->webuiApply(data)) {
+        sendReply(client, "setBlacklist", false, QJsonValue(), reqId,
+                  "写 data/blacklist.json 失败，改动已应用到界面但没能落盘");
+        return;
+    }
+
+    AppendEventLog(QString("[WebUI] 更新黑名单 %1 条").arg(data.size()));
+
+    QJsonObject ret;
+    ret["count"]   = data.size();
+    ret["skipped"] = skipped;
+    sendReply(client, "setBlacklist", true, ret, reqId,
+              skipped > 0 ? QString("已保存 %1 条（忽略了 %2 条空 ID）").arg(data.size()).arg(skipped)
+                          : QString("已保存 %1 条黑名单").arg(data.size()));
+}
+
+// ---------------------------------------------------------------- Ai · 模型配置
+
+QString modelConfigPath() { return QStringLiteral("data/model_config.json"); }
+
+void handleGetModelConfig(ClientConnection *client, const QString &reqId)
+{
+    const QString path = modelConfigPath();
+
+    QJsonObject root;
+    QFile f(path);
+    if (f.exists()) {
+        if (!f.open(QIODevice::ReadOnly)) {
+            sendReply(client, "getModelConfig", false, QJsonValue(), reqId, QString("打不开 %1").arg(path));
+            return;
+        }
+        root = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+    }
+
+    // 密钥在文件里是加密存的（跟桌面端 AiWidget::saveToFile2 用的是同一把机密钥）
+    const QByteArray keyA = MachineKey::generateKey("000");
+
+    QJsonArray interfaces;
+    for (const QJsonValue &iv : root.value(QStringLiteral("interfaces")).toArray()) {
+        const QJsonObject io = iv.toObject();
+        QJsonObject o;
+        o["remark"] = io.value(QStringLiteral("remark")).toString();
+        o["url"]    = io.value(QStringLiteral("url")).toString();
+        QJsonArray keys;
+        for (const QJsonValue &kv : io.value(QStringLiteral("keys")).toArray()) {
+            const QJsonObject ko = kv.toObject();
+            QJsonObject k;
+            k["key"]        = MachineKey::decrypt(ko.value(QStringLiteral("key")).toString(), keyA);
+            k["usageCount"] = ko.value(QStringLiteral("usageCount")).toInt();
+            k["lastUsed"]   = ko.value(QStringLiteral("lastUsed")).toString();
+            keys.append(k);
+        }
+        o["keys"] = keys;
+        interfaces.append(o);
+    }
+
+    QJsonArray models;
+    for (const QJsonValue &mv : root.value(QStringLiteral("models")).toArray()) {
+        const QJsonObject mo = mv.toObject();
+        QJsonObject m;
+        m["name"]              = mo.value(QStringLiteral("name")).toString();
+        m["enabledInterfaces"] = mo.value(QStringLiteral("enabledInterfaces")).toArray();
+        models.append(m);
+    }
+
+    QJsonObject ret;
+    ret["interfaces"] = interfaces;
+    ret["models"]     = models;
+    ret["path"]       = path;
+    ret["exists"]     = QFile::exists(path);
+    sendReply(client, "getModelConfig", true, ret, reqId);
+}
+
+void handleSetModelConfig(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    if (!params.contains("interfaces") && !params.contains("models")) {
+        sendReply(client, "setModelConfig", false, QJsonValue(), reqId, "没有提交任何内容，未保存");
+        return;
+    }
+
+    const QByteArray keyA = MachineKey::generateKey("000");
+
+    QJsonObject root;
+
+    QJsonArray ia;
+    for (const QJsonValue &iv : params.value("interfaces").toArray()) {
+        const QJsonObject io = iv.toObject();
+        QJsonObject o;
+        o["remark"] = io.value("remark").toString();
+        o["url"]    = io.value("url").toString();
+        QJsonArray keys;
+        for (const QJsonValue &kv : io.value("keys").toArray()) {
+            const QJsonObject ko = kv.toObject();
+            const QString plain = ko.value("key").toString();
+            QJsonObject k;
+            // 留着原样的密文没意义，空串也照存（桌面端本身就是空串起始）
+            k["key"]        = MachineKey::encrypt(plain, keyA);
+            k["usageCount"] = ko.value("usageCount").toInt();
+            k["lastUsed"]   = ko.value("lastUsed").toString();
+            keys.append(k);
+        }
+        o["keys"] = keys;
+        ia.append(o);
+    }
+    root["interfaces"] = ia;
+
+    QJsonArray ma;
+    for (const QJsonValue &mv : params.value("models").toArray()) {
+        const QJsonObject mo = mv.toObject();
+        QJsonObject m;
+        m["name"]              = mo.value("name").toString();
+        m["enabledInterfaces"] = mo.value("enabledInterfaces").toArray();
+        ma.append(m);
+    }
+    root["models"] = ma;
+
+    const QString path = modelConfigPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        sendReply(client, "setModelConfig", false, QJsonValue(), reqId, QString("写不了 %1").arg(path));
+        return;
+    }
+    f.write(QJsonDocument(root).toJson());
+    f.close();
+
+    const bool reloaded = (ai_ui != nullptr);
+    if (reloaded) ai_ui->webuiReloadModelConfig();
+
+    AppendEventLog(QString("[WebUI] 更新模型配置（%1 个接口 / %2 个模型）").arg(ia.size()).arg(ma.size()));
+
+    QJsonObject ret;
+    ret["interfaces"] = ia.size();
+    ret["models"]     = ma.size();
+    ret["reloaded"]   = reloaded;
+    sendReply(client, "setModelConfig", true, ret, reqId,
+              reloaded ? QString("已保存 %1 个接口、%2 个模型，模型下拉已刷新").arg(ia.size()).arg(ma.size())
+                       : QString("已保存 %1 个接口、%2 个模型（框架未重载，重启后生效）").arg(ia.size()).arg(ma.size()));
+}
+
+// ---------------------------------------------------------------- Ai · 附加模型
+
+QString fujiaPath() { return QStringLiteral("data/fujia.json"); }
+
+// 公共的附加模型库：data/fujia.json 是个数组，注意模型字段在文件里叫 "mode"
+QJsonArray readFujiaItems()
+{
+    QJsonArray items;
+    QFile f(fujiaPath());
+    if (!f.exists() || !f.open(QIODevice::ReadOnly)) return items;
+    const QJsonArray arr = QJsonDocument::fromJson(f.readAll()).array();
+    f.close();
+    for (const QJsonValue &v : arr) {
+        const QJsonObject o = v.toObject();
+        QJsonObject it;
+        it["name"] = o.value(QStringLiteral("name")).toString();
+        it["role"] = o.value(QStringLiteral("role")).toString();
+        it["mode"] = o.value(QStringLiteral("mode")).toString();
+        items.append(it);
+    }
+    return items;
+}
+
+void handleGetFujia(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const int appid = params.value("appid").toInt(0);
+    const AccountInfo *a = accountByAppid(appid);
+
+    QJsonObject ret;
+    ret["items"]   = readFujiaItems();
+    ret["models"]  = buildAiOptions().value(QStringLiteral("models")).toArray();
+    ret["appid"]   = appid;
+    ret["exists"]  = (a != nullptr);
+    ret["name"]    = a ? accountDisplayName(*a) : QString();
+    ret["enabled"] = a ? QJsonArray::fromStringList(a->fujia) : QJsonArray();
+    sendReply(client, "getFujia", true, ret, reqId,
+              a ? QString() : QStringLiteral("还没有选中账号，仍可编辑公共的附加模型库"));
+}
+
+void handleSetFujia(const QJsonObject &params, ClientConnection *client, const QString &reqId)
+{
+    const int appid = params.value("appid").toInt(0);
+    AccountInfo *a = accountByAppid(appid);
+
+    // 1) 公共库写回 data/fujia.json
+    QJsonArray out;
+    for (const QJsonValue &v : params.value("items").toArray()) {
+        const QJsonObject o = v.toObject();
+        const QString name = o.value("name").toString();
+        if (name.trimmed().isEmpty()) continue;
+        QJsonObject item;
+        item["name"] = name;
+        item["role"] = o.value("role").toString();
+        item["mode"] = o.value("mode").toString();
+        out.append(item);
+    }
+
+    const QString path = fujiaPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        sendReply(client, "setFujia", false, QJsonValue(), reqId, QString("写不了 %1").arg(path));
+        return;
+    }
+    f.write(QJsonDocument(out).toJson(QJsonDocument::Indented));
+    f.close();
+
+    // 2) 这个账号勾了哪几个（桌面端是存在 AccountInfo::fujia 里的名字列表）
+    bool accSaved = false;
+    int enabledCount = 0;
+    if (a && accountPage) {
+        a->fujia.clear();
+        for (const QJsonValue &v : params.value("enabled").toArray()) {
+            const QString name = v.toString().trimmed();
+            if (!name.isEmpty()) a->fujia.append(name);
+        }
+        accountPage->saveAccounts(a);
+        enabledCount = a->fujia.size();
+        accSaved = true;
+    }
+
+    const bool reloaded = (ai_ui != nullptr);
+    if (reloaded) ai_ui->webuiReloadFujia();
+
+    AppendEventLog(QString("[WebUI] 更新附加模型库 %1 条").arg(out.size()));
+
+    QJsonObject ret;
+    ret["count"]    = out.size();
+    ret["enabled"]  = enabledCount;
+    ret["accSaved"] = accSaved;
+    ret["reloaded"] = reloaded;
+    sendReply(client, "setFujia", true, ret, reqId,
+              accSaved ? QString("已保存 %1 条附加模型，当前账号勾选 %2 项").arg(out.size()).arg(enabledCount)
+                       : QString("已保存 %1 条附加模型（未选账号，勾选未保存）").arg(out.size()));
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- 入口
@@ -1100,6 +2153,30 @@ bool webuiAdminHandle(const QString &action,
     // 插件市场
     if (action == "getPluginMarket")     { handleGetPluginMarket(client, reqId);                    return true; }
     if (action == "installPlugin")       { handleInstallPlugin(params, client, reqId);              return true; }
+
+    // 设置 / 规则
+    if (action == "getSysConfig")        { handleGetSysConfig(client, reqId);                       return true; }
+    if (action == "setSysConfig")        { handleSetSysConfig(params, client, reqId);               return true; }
+    if (action == "getForbiddenWords")   { handleGetForbiddenWords(client, reqId);                  return true; }
+    if (action == "setForbiddenWords")   { handleSetForbiddenWords(params, client, reqId);          return true; }
+    if (action == "getRuleFile")         { handleGetRuleFile(params, client, reqId);                return true; }
+    if (action == "setRuleFile")         { handleSetRuleFile(params, client, reqId);                return true; }
+
+    // 内置功能 · 基础 / Ai
+    if (action == "getBasicConfig")      { handleGetBasicConfig(params, client, reqId);             return true; }
+    if (action == "setBasicConfig")      { handleSetBasicConfig(params, client, reqId);             return true; }
+    if (action == "getAiConfig")         { handleGetAiConfig(params, client, reqId);                return true; }
+    if (action == "setAiConfig")         { handleSetAiConfig(params, client, reqId);                return true; }
+
+    // 黑名单
+    if (action == "getBlacklist")        { handleGetBlacklist(client, reqId);                       return true; }
+    if (action == "setBlacklist")        { handleSetBlacklist(params, client, reqId);               return true; }
+
+    // Ai · 模型配置 / 附加模型
+    if (action == "getModelConfig")      { handleGetModelConfig(client, reqId);                     return true; }
+    if (action == "setModelConfig")      { handleSetModelConfig(params, client, reqId);             return true; }
+    if (action == "getFujia")            { handleGetFujia(params, client, reqId);                   return true; }
+    if (action == "setFujia")            { handleSetFujia(params, client, reqId);                   return true; }
 
     return false;
 }

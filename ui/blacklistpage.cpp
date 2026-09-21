@@ -126,6 +126,23 @@ bool BlacklistPage::saveToFile()
     return stream.status() == QDataStream::Ok;
 }
 
+// ---------------- WebUI 桥接 ----------------
+// 黑名单文件是 QDataStream 序列化的 QHash<QString,QString>，网页端无法解析，
+// 所以读写都放在这里：对外只暴露「ID → 备注」的普通容器。
+QHash<QString, QString> BlacklistPage::webuiSnapshot() const
+{
+    return m_blacklist;
+}
+
+bool BlacklistPage::webuiApply(const QHash<QString, QString> &data)
+{
+    m_blacklist = data;
+    // 先落盘再刷界面：表格是从 m_blacklist 重建的
+    const bool ok = saveToFile();
+    refreshTable();
+    return ok;
+}
+
 void BlacklistPage::onAddClicked()
 {
     QDialog dialog(this);

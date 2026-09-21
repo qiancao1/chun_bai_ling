@@ -49,6 +49,10 @@ public:
     ~BotRuleConfigWidget();
     void 列表行被单击();
 
+    // 从 data/bot_rules.json 重新读取规则。
+    // 给 WebUI 用：网页上改完规则文件后调用，立刻生效。
+    void webuiReload() { loadAllRulesFromFile(); }
+
 
 private slots:
 

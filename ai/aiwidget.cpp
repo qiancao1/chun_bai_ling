@@ -2815,3 +2815,22 @@ void AiWidget::onCleanupTimer()
         }
     }
 }
+
+// ============ WebUI 刷新钩子 ============
+// 网页上改完 data/model_config.json / data/fujia.json 之后调这两个，
+// 让桌面端的「模型配置」「附加模型」两个标签页立刻跟上，不必重启框架。
+
+void AiWidget::webuiReloadModelConfig()
+{
+    if (!QFile::exists(configFilePath2)) return;
+    // 注意：loadFromFile3() 内部只 insertRow、不会先清表，反复调用会把模型行越堆越多，
+    // 所以这里自己先把表清空。
+    modelListTable->setRowCount(0);
+    loadFromFile3();
+    刷新模型();
+}
+
+void AiWidget::webuiReloadFujia()
+{
+    if (ai_fujia) ai_fujia->webuiReload();
+}

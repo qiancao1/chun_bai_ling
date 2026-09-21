@@ -67,12 +67,14 @@ struct MessageEvent
     int subType=0;          //ai整的没啥用
     int callbackType = 0;   // 回调回应来源: 0群 1频道 2私聊 3频道私聊
     int member_role=-1;     //0群主 1管理 2群成员
+    int admin_role=0;     //0无权限 1机器人管理 2后台管理
     int bitmap=0;//群相关配置
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;
     bool bot=false;         //true时 为机器人
     bool bot_admin = false; //true时 机器人是管理员 不是就不要多管闲事了
     bool op=false; //本条消息是否被处理
+
     QString toString() const;
 };
 struct MessageLogContext {

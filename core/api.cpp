@@ -2039,10 +2039,20 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 if (!cached.isEmpty()) {
                     //qDebug() <<cached;
                     int timeIdx = cached.lastIndexOf(",Time=");
+
                     if (timeIdx != -1) {
-                        qint64 expire = cached.mid(timeIdx + 6).toLongLong();
-                        if (QDateTime::currentSecsSinceEpoch() < expire) {
-                            fileInfo = cached.left(timeIdx);
+                        // ⚠️ 缓存里存的是 uploadRichMediaA 返回的整串 "[audio,path=...,md5=...,Time=1790086656]"，
+                        // 末尾还有个 ']'。toLongLong() 要求整串都是数字，遇到 ']' 会整体转换失败并返回 0，
+                        // 结果 QDateTime::currentSecsSinceEpoch() < 0 恒为假 → 缓存永远判过期 → 每次都重传。
+                        QString expireStr = cached.mid(timeIdx + 6);
+                        const int rbIdx = expireStr.indexOf(']');
+                        if (rbIdx >= 0) expireStr.truncate(rbIdx);   // 切掉 "]"
+                        bool okNum = false;
+                        qint64 expire = expireStr.trimmed().toLongLong(&okNum);
+                         qDebug() << cached<<"|" << timeIdx <<"|"<< expire;
+                        if (okNum && QDateTime::currentSecsSinceEpoch() < expire) {
+                            // 补回被 left() 一并切掉的收尾 ']'，与「未命中缓存」时 uploadRichMediaA 的格式一致
+                            fileInfo = cached.left(timeIdx) + "]";
                             needUpload = false;
                         }
                     } else {

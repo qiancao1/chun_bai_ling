@@ -73,6 +73,10 @@ public:
 
     QString filterText(const QString &input) const;   // 过滤文本，违禁词替换为"...."
 
+    // 从默认路径重新读词库并重建 AC 自动机。
+    // 给 WebUI 用：网页上改完 data/forbidden_words.txt 后调用，立刻生效。
+    void webuiReload() { loadFromDefaultFile(); }
+
 private slots:
     void onAddRow();
     void onDeleteRow();
