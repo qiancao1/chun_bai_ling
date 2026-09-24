@@ -292,50 +292,73 @@ void doCnbUpload(const QByteArray &fileData, std::function<void(QString)> callba
     int idx = m_index.fetchAndAddOrdered(1) % 10000;
     QString fileName = QString("%1.png").arg(idx);
 
-    QJsonObject uploadInfo = getUploadUrlSync(fileName, fileData.size());
-    if (uploadInfo.isEmpty()) {
-        callback(QString());
-        return;
-    }
-
-    QString uploadUrl = uploadInfo["upload_url"].toString();
-    QString token = uploadInfo["token"].toString();
-    QJsonObject form = uploadInfo["form"].toObject();
-
-    QUrl url(uploadUrl);
-    if (!form.isEmpty()) {
-        QUrlQuery query;
-        for (auto it = form.begin(); it != form.end(); ++it)
-            query.addQueryItem(it.key(), it.value().toString());
-        url.setQuery(query);
-    }
+    QString url = QString("https://api.cnb.cool/%1/-/upload/imgs").arg(g_cnb.repo);
 
     QHash<QString, QString> headers;
-    headers["Content-Type"] = "application/octet-stream";
-    headers["Content-Length"] = QString::number(fileData.size());
-    if (!token.isEmpty())
-        headers["Authorization"] = "Bearer " + token;
+    headers["Content-Type"] = "application/json";
+    headers["Accept"] = "application/json";
+    headers["Authorization"] = "Bearer " + g_cnb.key;
 
-    struct Ctx { QJsonObject uploadInfo; };
-    auto ctx = std::make_shared<Ctx>();
-    ctx->uploadInfo = uploadInfo;
+    QJsonObject body;
+    body["name"] = fileName;
+    body["size"] = fileData.size();
+    QByteArray jsonData = QJsonDocument(body).toJson();
 
-    NetManager::instance()->putAsync(
-        uploadUrl,
-        fileData,
+    // 原实现 getUploadUrlSync 阻塞等上传地址；改纯异步，保证回调链全程不占线程等待
+    NetManager::instance()->postAsync(
+        url,
+        jsonData,
         headers,
         30000,
-        [ctx, callback](const QString &response, QNetworkReply::NetworkError error) {
-            if (error == QNetworkReply::NoError) {
-                QJsonObject assets = ctx->uploadInfo["assets"].toObject();
-                QString path = assets["path"].toString();
-                QString finalUrl = path.startsWith("http") ? path : "https://cnb.cool" + path;
-                callback(finalUrl);
-            } else {
+        [fileData, callback](const QString &response, QNetworkReply::NetworkError) {
+            QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+            QJsonObject uploadInfo = doc.object();
+            if (!uploadInfo.contains("upload_url"))
+                uploadInfo = QJsonObject();
+            if (uploadInfo.isEmpty()) {
                 callback(QString());
+                return;
             }
-        }
-        );
+
+            QString uploadUrl = uploadInfo["upload_url"].toString();
+            QString token = uploadInfo["token"].toString();
+            QJsonObject form = uploadInfo["form"].toObject();
+
+            QUrl u(uploadUrl);
+            if (!form.isEmpty()) {
+                QUrlQuery query;
+                for (auto it = form.begin(); it != form.end(); ++it)
+                    query.addQueryItem(it.key(), it.value().toString());
+                u.setQuery(query);
+            }
+
+            QHash<QString, QString> headers2;
+            headers2["Content-Type"] = "application/octet-stream";
+            headers2["Content-Length"] = QString::number(fileData.size());
+            if (!token.isEmpty())
+                headers2["Authorization"] = "Bearer " + token;
+
+            struct Ctx { QJsonObject uploadInfo; };
+            auto ctx = std::make_shared<Ctx>();
+            ctx->uploadInfo = uploadInfo;
+
+            NetManager::instance()->putAsync(
+                uploadUrl,
+                fileData,
+                headers2,
+                30000,
+                [ctx, callback](const QString &response, QNetworkReply::NetworkError error) {
+                    if (error == QNetworkReply::NoError) {
+                        QJsonObject assets = ctx->uploadInfo["assets"].toObject();
+                        QString path = assets["path"].toString();
+                        QString finalUrl = path.startsWith("http") ? path : "https://cnb.cool" + path;
+                        callback(finalUrl);
+                    } else {
+                        callback(QString());
+                    }
+                }
+                );
+        });
 }
 
 
@@ -678,45 +701,42 @@ void doRichMediaUpload(const QString &filePath, std::function<void(QString)> cal
     callback(QString());
 }
 
-std::future<QString> uploadimg(const QString &filePath)
+// uploadimg 的纯回调版：同一回调链（CNB→COS→本地→远程→富媒体→CDN），不占任何线程等待，
+// 完成时调用 onDone(结果 URL 或空串)。onDone 可能在 NetManager 线程池线程触发，
+// 个别同步失败路径（如渠道被禁用直接 callback）在发起线程触发。
+void uploadimgCb(const QString &filePath, std::function<void(QString)> onDone)
 {
-    auto promise = std::make_shared<std::promise<QString>>();
-    std::future<QString> future = promise->get_future();
-
     // 预读文件数据
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        promise->set_value(QString());
-        return future;
+        onDone(QString());
+        return;
     }
     QByteArray fileData = file.readAll();
     file.close();
-
 
     // 使用上下文对象管理所有数据，生命周期与回调链一致
     struct Context {
         QByteArray fileData;
         QString filePath;
-
-        std::shared_ptr<std::promise<QString>> promise;
+        std::function<void(QString)> onDone;
     };
     auto ctx = std::make_shared<Context>();
     ctx->fileData = std::move(fileData);
-    ctx->filePath  = filePath;
-    ctx->promise = promise;
+    ctx->filePath = filePath;
+    ctx->onDone = onDone;
 
     // 回调链调度器
-
     auto tryNext = std::make_shared<std::function<void(int)>>();
     *tryNext = [ctx, tryNext](int index) {
         if (index >= 6) {
-            ctx->promise->set_value(QString());
+            ctx->onDone(QString());
             return;
         }
 
         auto onDone = [ctx, tryNext, index](const QString &result) {
             if (!result.isEmpty()) {
-                ctx->promise->set_value(result);
+                ctx->onDone(result);
             } else {
                 (*tryNext)(index + 1);
             }
@@ -729,7 +749,7 @@ std::future<QString> uploadimg(const QString &filePath)
         case 1: // COS
             doCosUploadAsync(ctx->fileData, onDone);
             break;
-        case 2: // 本地上传
+        case 2: // 本地上传（阻塞调用，在触发本回调的线程上执行）
             onDone(upload(ctx->filePath));
             break;
         case 3: // 远程服务器
@@ -744,14 +764,24 @@ std::future<QString> uploadimg(const QString &filePath)
             doRichMediaUpload(ctx->filePath , onDone);
             break;
         case 5: // CDN
-            uploadToMhimgAsync(ctx->fileData, ctx->filePath, onDone);
-            break;
+            //uploadToMhimgAsync(ctx->fileData, ctx->filePath, onDone);
+            //break;
         default:
             onDone(QString());
         }
     };
 
     (*tryNext)(0);
+}
+
+std::future<QString> uploadimg(const QString &filePath)
+{
+    auto promise = std::make_shared<std::promise<QString>>();
+    std::future<QString> future = promise->get_future();
+
+    uploadimgCb(filePath, [promise](const QString &result) {
+        promise->set_value(result);
+    });
     return future;
 }
 

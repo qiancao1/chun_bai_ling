@@ -1,8 +1,6 @@
 #include "netmanager.h"
 #include "global.h"
 #include <qhash.h>
-#include <qhostaddress.h>
-#include <qhostinfo.h>
 #include <qmetaobject.h>
 #include <qnetworkreply.h>
 #include <qrunnable.h>
@@ -232,6 +230,50 @@ std::future<QByteArray> NetManager::post(const QString &url, const QByteArray &j
 
     return future; // 毫秒级返回
 }
+// ── cos put 请求构建（阻塞版 put / 回调版 putAsync 共用）──
+// 内网模式（g_neiw 非空，启动时探测已确定）：URL 域名区域段替换成 g_neiw
+// （如 .accelerate. → .ap-guangzhou.），Host 头保留原域名（cos 签名按 Host 校验，路由也按 Host 走）
+// ——连接时由内网 DNS 直达内网。
+// 返回 true = 已改写内网。调用方据此禁用 HTTP/2（H2 无 Host 头，:authority 取自 URL 会顶掉手动 Host）。
+// 公网（g_neiw 空）或非 cos 域名：原样直连，返回 false。业务 headers 逐一设置（跳过 Host）。
+static bool buildCosPutRequest(const QString &url, const QHash<QString, QString> &headers, QNetworkRequest &request)
+{
+    QUrl originalUrl(url);
+    QString originalHost = originalUrl.host();
+    bool isCos = originalHost.contains(".cos.") || originalHost.contains(".myqcloud.com");
+
+    bool rewritten = false;
+    if (isCos && !g_neiw.isEmpty()) {
+        QString newHost = originalHost;
+        if (newHost.contains(".accelerate.")) {
+            newHost.replace(".accelerate.", "." + g_neiw + ".");
+        } else if (newHost.contains(".cos.")) {
+            QStringList parts = originalHost.split('.');
+            int cosIdx = parts.indexOf("cos");
+            if (cosIdx != -1 && cosIdx + 1 < parts.size()) {
+                parts[cosIdx + 1] = g_neiw;
+                newHost = parts.join('.');
+            }
+        }
+        if (newHost != originalHost) {
+            QUrl newUrl = originalUrl;
+            newUrl.setHost(newHost);
+            request.setUrl(newUrl);
+            request.setRawHeader("Host", originalHost.toUtf8());
+            rewritten = true;
+        }
+    }
+    if (!rewritten)
+        request.setUrl(originalUrl);
+
+    for (auto it = headers.begin(); it != headers.end(); ++it) {
+        if (it.key().toLower() != "host") {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+    }
+    return rewritten;
+}
+
 std::future<QByteArray> NetManager::put(const QString &url, const QByteArray &data,
                                      const QHash<QString, QString> &headers, int timeoutMs) {
     auto promise = std::make_shared<std::promise<QByteArray>>();
@@ -246,71 +288,10 @@ std::future<QByteArray> NetManager::put(const QString &url, const QByteArray &da
 
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
+        const bool internalEp = buildCosPutRequest(url, headers, request);   // cos 内网改写 + Host 头 + 业务 headers
 
-        QUrl originalUrl(url);
-        QString originalHost = originalUrl.host();
-        bool isCos = originalHost.contains(".cos.") || originalHost.contains(".myqcloud.com");
-
-        if (isCos) {
-            QHostAddress internalAddr;
-
-            QHostInfo info = QHostInfo::fromName(originalHost);
-            for (const QHostAddress &addr : info.addresses()) {
-                if (addr.isInSubnet(QHostAddress::parseSubnet("10.0.0.0/8")) ||
-                    addr.isInSubnet(QHostAddress::parseSubnet("100.0.0.0/8")) ||
-                    addr.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
-                    internalAddr = addr;
-                    break;
-                }
-            }
-
-            if (internalAddr.isNull()) {
-                QString guangzhouHost;
-                if (originalHost.contains(".accelerate.")) {
-                    guangzhouHost = originalHost;
-                    guangzhouHost.replace(".accelerate.", "."+g_neiw+".");
-                } else if (originalHost.contains(".cos.")) {
-                    QStringList parts = originalHost.split('.');
-                    int cosIdx = parts.indexOf("cos");
-                    if (cosIdx != -1 && cosIdx + 1 < parts.size()) {
-                        parts[cosIdx + 1] = g_neiw;
-                        guangzhouHost = parts.join('.');
-                    }
-                }
-                if (!guangzhouHost.isEmpty()) {
-                    QHostInfo gzInfo = QHostInfo::fromName(guangzhouHost);
-                    for (const QHostAddress &addr : gzInfo.addresses()) {
-                        if (addr.isInSubnet(QHostAddress::parseSubnet("10.0.0.0/8")) ||
-                            addr.isInSubnet(QHostAddress::parseSubnet("100.0.0.0/8")) ||
-                            addr.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
-                            internalAddr = addr;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!internalAddr.isNull()) {
-                QUrl newUrl = originalUrl;
-                newUrl.setHost(internalAddr.toString());
-                request.setUrl(newUrl);
-                request.setRawHeader("Host", originalHost.toUtf8());
-            } else {
-                request.setUrl(originalUrl);
-            }
-        } else {
-            request.setUrl(originalUrl);
-        }
-
-        // 继续设置其他 headers（注意跳过 Host）
-        for (auto it = headers.begin(); it != headers.end(); ++it) {
-            if (it.key().toLower() != "host") {
-                request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-            }
-        }
-
-
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        // 内网改写时禁用 HTTP/2：H2 无 Host 头（:authority 取自 URL 会顶掉手动 Host），HTTP/1.1 下手动 Host 必定生效
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, !internalEp);
         QNetworkReply *reply = mgr->put(request, data);
 
         QTimer *timer = new QTimer(reply);
@@ -523,12 +504,11 @@ void NetManager::putAsync(const QString& url, const QByteArray& data,
 
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
-        request.setUrl(QUrl(url));
+        const bool internalEp = buildCosPutRequest(url, headers, request);
+
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-        for (auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, !internalEp);
 
         QNetworkReply* reply = mgr->put(request, data);
         QTimer* timer = new QTimer(reply);

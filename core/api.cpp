@@ -39,6 +39,9 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
+#include <QMutex>
+#include <thread>
+#include <memory>
 
 const int OUTLOG = 1; //输出日志
 const int API_ID_SEND_MESSAGES    = 2; //发送消息
@@ -1131,6 +1134,7 @@ void get_ref(QString &text,QString &message_reference)
 
 }
 std::future<QString> uploadimg(const QString &filePath);
+void uploadimgCb(const QString &filePath, std::function<void(QString)> onDone);
 
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
@@ -1419,8 +1423,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 qint64 expireTime = 0;
                 QString md5;
                 bool ok = false;
-                QString result = uploadRichMedia(targetType, openid, 1,replacements[replaceIdx].fileData,QString(), // filename 可以为空
-                                                         expireTime, md5, ok, uploadedUrl);
+                uploadRichMediaPool(targetType, openid, 1, replacements[replaceIdx].fileData, QString(), // filename 可以为空，走图片池子复用
+                                    expireTime, md5, ok, uploadedUrl, /*usePool=*/true);
                  if (ok) uploadedUrl += "&response-content-type=image%2Fpng";
             }
 
@@ -1527,7 +1531,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
 
 
-                        QString fileInfo = uploadRichMediaA(targetType, openid, 1, newUrl, ok);
+                        // type==0 用 file_info 发送（每次都要新的）→ 每次重新上传，不入池；只享受 100K 直传快速路径
+                        QString fileInfo = uploadRichMediaPoolA(targetType, openid, 1, newUrl, ok, /*usePool=*/false);
 
                         if (ok) {
                             QString path = extractBetween(fileInfo, "path=", ",");
@@ -1621,6 +1626,38 @@ QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int 
     qint64 expireTime=0;
     QString md5,url;
     QString info = uploadRichMedia(targetType,openid,fileType,data,filename,expireTime,md5,ok,url);
+    if(!ok) return info;
+    QString typeStr;
+    switch (fileType) {
+    case 1: typeStr = "image"; break;
+    case 2: typeStr = "video"; break;
+    case 3: typeStr = "audio"; break;
+    case 4: typeStr = "file"; break;
+    default: typeStr = "unknown";
+    }
+    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
+}
+
+// uploadRichMediaA 的池子版：入参/返回格式与 A 完全一致，调用点可直接替换
+// http 链接 → uploadRichMedia_url（与 A 相同，不涉及 put 池）；本地文件 → uploadRichMediaPool
+QString QQBotClient::uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok, bool usePool)
+{
+    qint64 expireTime=0;
+    QString md5,info,url;
+    if(filePath.startsWith("http"))
+    {
+        info = uploadRichMedia_url(targetType,openid,fileType,filePath,expireTime,ok);
+    }else{
+        QFile file(filePath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            ok=false;
+            return QString();
+        }
+        QByteArray fileData = file.readAll();
+        file.close();
+        QString filename = QFileInfo(filePath).fileName();
+        info = uploadRichMediaPool(targetType,openid,fileType,fileData,filename,expireTime,md5,ok,url,usePool);
+    }
     if(!ok) return info;
     QString typeStr;
     switch (fileType) {
@@ -1912,6 +1949,844 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     return file_info;
 }
 
+// ==================== 复用 cos put 链接的快速上传池 ====================
+// 思路：upload_prepare 时 file_size 固定申请 100K（服务端只下发 1 个分片，流程快），
+// 但 cos 的 presigned put 链接实际可传任意大小 —— 把完整文件 put 上去即可。
+// put 链接 + upload_id 存入池子，cos 有效期 60 分钟 → 55 分钟超时删除；
+// 每次使用后 1 分钟内不再复用（冷却）；raw_url 加时间戳防 CDN/浏览器缓存。
+namespace {
+
+struct CosPutPoolEntry {
+    QString presignedUrl;   // 可重复 put 的 cos 链接
+    QString uploadId;       // upload_prepare 返回的 upload_id
+    int     partIndex = 0;  // 分片 index（100K 申请只有 1 片）
+    qint64  expireAt = 0;     // 链接诞生时刻 + 55 分钟（毫秒），cos 实际 60 分钟
+    qint64  availableAt = 0;  // 最早可再次取用时刻（毫秒）= 上次使用 + 60 秒
+    QString fileInfo;         // 首次 /files 返回的 file_info —— 同 upload_id 固定不变，复用时直接用
+    QString rawUrl;           // 首次 /files 返回的原始 raw_url（不带时间戳，出参时再加工）
+    int     infoFileType = -1; // fileInfo 是哪类 fileType 上传后拿到的（视频测试期间防跨类型误用）
+};
+
+// 可互换的 put 链接池：不按 targetType/openid 做 key（这俩基本固定，做 key 会退化成单条）。
+// 语义：取用即移出 → put 覆盖内容 → 消息发送完成（腾讯已下载图片）→ 立即回池，无 CD。
+// 暂存区（pending）在发送函数退出时统一回池；失败不回（坏/过期链接自然淘汰）。
+static QMutex g_cosPutPoolMutex;
+static QList<CosPutPoolEntry> g_cosPutPool;
+
+static const qint64 COS_POOL_TTL_MS   = 55 * 60 * 1000;  // 55 分钟超时删除
+// 防失控上限（不是预填数量，空池零开销，按需增长）。
+// 稳态条数 ≈ 发图速率 × 在途时间：1000张/秒 × 30s = 3 万条（约 30MB），故上限放大到 5 万。
+static const int    COS_POOL_MAX      = 50000;
+// 【视频测试】usePool=false（音视频/文件，file_info 用户）也尝试复用池链接：
+// 复用后照常走 finish → files，把返回的 file_info 与上次的对比打到事件日志 ——
+// 验证「同一 upload_id 重复 put 不同内容后 files 是否返回新的有效 file_info」。
+// 结论出来后改回 false 即恢复原行为。
+static const bool   COS_POOL_VIDEO_TEST = true;
+
+// 从池子取一条可用链接。O(1) 无遍历：giveBack 的 availableAt 时间戳单调递增，append 即保序，
+// 队头永远是最早可用的 —— 只看队头：过期就弹出，可用就取出，队头冷却中说明整池都在冷却。
+// 取到返回 true 并移出池子。
+bool takeCosPutEntry(CosPutPoolEntry &out)
+{
+    QMutexLocker locker(&g_cosPutPoolMutex);
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    while (!g_cosPutPool.isEmpty() && nowMs >= g_cosPutPool.first().expireAt)
+        g_cosPutPool.removeFirst();    // 队头过期 → 丢弃（55 分钟超时，惰性清理）
+    if (g_cosPutPool.isEmpty()) return false;
+    if (nowMs < g_cosPutPool.first().availableAt) return false;   // 队头冷却中 → 整池冷却
+    out = g_cosPutPool.takeFirst();
+    return true;
+}
+
+// 取走的链接先暂存在这里（put 已完成，等这条消息发送完成）
+// thread_local：一条消息的「上传图片 → 发送消息」在同一线程内完成，天然按消息隔离
+static thread_local QList<CosPutPoolEntry> t_cosPutPending;
+
+// put 成功后暂存（不入池），等消息发送完再回池
+void parkCosPutEntry(const CosPutPoolEntry &entry)
+{
+    t_cosPutPending.append(entry);
+}
+
+// 把一组链接回池：availableAt = 现在，立即可复用（无 CD）。跨线程安全（池有锁）。
+void flushCosPutList(QList<CosPutPoolEntry> list)
+{
+    if (list.isEmpty()) return;
+    QMutexLocker locker(&g_cosPutPoolMutex);
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (const CosPutPoolEntry &e : list) {
+        if (nowMs >= e.expireAt) continue;              // 已过期直接丢弃
+        if (g_cosPutPool.size() >= COS_POOL_MAX) break;
+        CosPutPoolEntry item = e;
+        item.availableAt = nowMs;
+        g_cosPutPool.append(item);
+    }
+}
+
+// 取走当前线程暂存的全部条目（转移所有权），交给异步发送回调持有
+QList<CosPutPoolEntry> takeCosPutPending()
+{
+    QList<CosPutPoolEntry> out;
+    out.swap(t_cosPutPending);
+    return out;
+}
+
+// 消息发送完成后统一回池（同步路径用）
+void flushCosPutPending()
+{
+    flushCosPutList(takeCosPutPending());
+}
+
+// RAII：发送函数退出时（无论发送成败）把本线程 pending 的链接全部回池
+struct CosPutPendingGuard {
+    ~CosPutPendingGuard() { flushCosPutPending(); }
+};
+
+// raw_url 加时间戳：重复链接有缓存，加时间戳才会实时读取 cos 文件
+QString bustRawUrlCache(const QString &rawUrl)
+{
+    if (rawUrl.isEmpty()) return rawUrl;
+    QString sep = rawUrl.contains('?') ? "&" : "?";
+    return rawUrl + sep + "t=" + QString::number(QDateTime::currentMSecsSinceEpoch());
+}
+
+} // namespace
+
+// processImageTags 纯回调版（堵塞版不动；send_messagesAsync / send_messagesAsync2 接线用）：
+// 热路径（type==1 md 图片）全程零线程等待：
+//   阶段1（调用线程同步执行，微秒级）：解析标签 + md5 + 缓存命中判断 + 读文件；
+//     无本地待上传（纯 http / 全缓存命中）→ 直接完成，零线程零阻塞
+//   阶段2：每个待上传项走 uploadimgCb（uploadimg 的纯回调版，内部回调链，不占线程），
+//     原子计数聚合并发回调（回调在 NetManager 线程池线程触发）
+//   阶段3：最后一个回调所在线程统一替换文本 + convert 链接 → onDone
+// 备用上传也全回调：uploadimg 全渠道失败且有 fileData → uploadRichMediaPoolAsync
+//   （prepare→put→finish→files 全异步，零线程）；其回调线程 park 的池条目经
+//   takeCosPutPending 收进共享状态，完成时统一 re-park 到 onDone 线程 ——
+//   「发送后回池」闭环不依赖特定线程
+// 仅 type!=1（非 md 图片，低频）保留单线程包装（processImageTags 阻塞本体）
+// 全部中间状态挂 shared_ptr，this 销毁安全（每个 touchpoint 用 appid 重查 m_botClients）。
+void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int targetType,
+                                        const QString &openid,
+                                        std::function<void(const QString &, const QString &, const QString &)> onDone)
+{
+    if (!onDone) return;
+    const int appid = m_info->appid_int;
+
+    // ---------- type 0/2：上传是阻塞型，保留单线程包装 ----------
+    if (type != 1) {
+        std::thread([this, appid, textIn, type, targetType, openid, onDone]() mutable {
+            QQBotClient *c = m_botClients.value(appid);   // 防 this 已销毁（与 doPost 同款保护）
+            if (!c) return;
+
+            QString text = textIn;
+            QString info, message_reference;
+            c->processImageTags(text, type, info, targetType, openid, message_reference);
+            if (m_botClients.value(appid) != c) return;   // 回调前再确认一次
+            onDone(text, info, message_reference);
+        }).detach();
+        return;
+    }
+
+    // ---------- 共享状态 ----------
+    struct ReplaceInfo {   // 字段与堵塞版一致
+        int start;
+        int length;
+        QString newUrl;
+        bool isMdImg;
+        QString coreText;
+        QString alt;
+        int width;
+        int height;
+        bool needPadding;
+        QString fileMd5;
+        QString originalUrl;
+        QByteArray fileData;
+    };
+    struct AsyncState {
+        QMutex mutex;
+        QString text;
+        QString message_reference;
+        QList<ReplaceInfo> replacements;
+        std::atomic<int> pending{0};      // 未完成的待上传项（原子：回调并发聚合）
+        std::atomic<bool> phase1Done{false};
+        bool completed = false;           // 防重复收尾（mutex 内访问）
+        QList<CosPutPoolEntry> parked;    // 备用线程 park 的池条目
+    };
+    auto st = std::make_shared<AsyncState>();
+    st->text = textIn;
+
+    // ---------- 收尾：替换文本 + re-park + convert + onDone ----------
+    auto completeAll = [appid, st, onDone]() {
+        QQBotClient *c = m_botClients.value(appid);
+        if (!c) return;
+
+        QString text, message_reference;
+        {
+            QMutexLocker locker(&st->mutex);
+            if (st->completed) return;
+            st->completed = true;
+
+            QList<ReplaceInfo> reps = st->replacements;
+            std::sort(reps.begin(), reps.end(),
+                      [](const ReplaceInfo &a, const ReplaceInfo &b) { return a.start > b.start; });
+
+            text = st->text;
+            for (const ReplaceInfo &ri : std::as_const(reps)) {
+                if (ri.newUrl.isEmpty()) {
+                    text.replace(ri.start, ri.length, QString());
+                    continue;
+                }
+                QString markdownImg;
+                if (ri.isMdImg) {
+                    if (ri.needPadding) {
+                        int w = (ri.width > 0) ? ri.width : 0;
+                        int h = (ri.height > 0) ? ri.height : 0;
+                        if (w > 0 || h > 0)
+                            markdownImg = QString("![%1 #%2px #%3px](%4)").arg(ri.coreText).arg(w).arg(h).arg(ri.newUrl);
+                        else
+                            markdownImg = QString("![%1 #1000px #0px](%2)").arg(ri.coreText, ri.newUrl);
+                    } else {
+                        markdownImg = QString("![%1](%2)").arg(ri.alt, ri.newUrl);
+                    }
+                } else {
+                    int w = (ri.width > 0) ? ri.width : 1000;
+                    int h = ri.height;
+                    if (h > 0)
+                        markdownImg = QString("![#%1px #%2px](%3)").arg(w).arg(h).arg(ri.newUrl);
+                    else
+                        markdownImg = QString("![#1000px #0px](%2)").arg(ri.newUrl);
+                }
+                text.replace(ri.start, ri.length, markdownImg);
+            }
+            message_reference = st->message_reference;
+
+            // 备用线程 park 的池条目统一转到本线程 thread_local，发送时取走、发送回调里回池
+            for (const CosPutPoolEntry &e : std::as_const(st->parked))
+                parkCosPutEntry(e);
+            st->parked.clear();
+        }
+
+        if (m_botClients.value(appid) != c) return;   // onDone 前再确认一次
+        text = convertMarkdownLinksToXml(text);       // 与堵塞版 type==1 收尾一致
+        onDone(text, QString(), message_reference);
+    };
+
+    // ---------- 聚合：计数减一，归零且阶段1已收口才收尾 ----------
+    auto finishOne = [completeAll, st]() {
+        if (st->pending.fetch_sub(1) == 1 && st->phase1Done.load())
+            completeAll();
+    };
+
+    // ---------- 单项结果：空且备选数据在 → 全异步备用上传（uploadRichMediaPoolAsync）；否则写缓存 ----------
+    auto handleResult = [appid, st, targetType, openid, finishOne](int replaceIdx, QString uploadedUrl) {
+        QQBotClient *c = m_botClients.value(appid);
+
+        bool needFallback = false;
+        {
+            QMutexLocker locker(&st->mutex);
+            needFallback = uploadedUrl.isEmpty() && !st->replacements[replaceIdx].fileData.isEmpty();
+        }
+        if (needFallback) {
+            QByteArray data;
+            {
+                QMutexLocker locker(&st->mutex);
+                data = st->replacements[replaceIdx].fileData;
+            }
+            QQBotClient *c3 = m_botClients.value(appid);
+            if (!c3) { finishOne(); return; }
+            c3->uploadRichMediaPoolAsync(targetType, openid, 1, data, QString(), // filename 可以为空，走图片池子复用
+                                         /*usePool=*/true,
+                [appid, st, replaceIdx, finishOne](const QString &result, qint64, const QString &,
+                                                   bool ok, const QString &outurl) {
+                    QQBotClient *c2 = m_botClients.value(appid);
+                    QString url = outurl;
+                    if (ok) url += "&response-content-type=image%2Fpng";
+
+                    {
+                        QMutexLocker locker(&st->mutex);
+                        // 本回调线程 park 的池条目收进共享状态（completeAll 时统一 re-park 到 onDone 线程）
+                        st->parked.append(takeCosPutPending());
+                        ReplaceInfo &ri = st->replacements[replaceIdx];
+                        if (ok && !url.isEmpty()) {
+                            ri.newUrl = url;
+                            if (c2 && cache_db) {
+                                QString cacheKey = c2->m_info->appid + ":imageB_" + ri.fileMd5;
+                                qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                                cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(url));
+                            }
+                        } else {
+                            ri.newUrl = ri.originalUrl;
+                        }
+                    }
+                    finishOne();
+                });
+            return;
+        }
+
+        // 正常结果：写缓存 + 设置 newUrl
+        {
+            QMutexLocker locker(&st->mutex);
+            ReplaceInfo &ri = st->replacements[replaceIdx];
+            if (!uploadedUrl.isEmpty()) {
+                ri.newUrl = uploadedUrl;
+                if (c && cache_db) {
+                    QString cacheKey = c->m_info->appid + ":imageB_" + ri.fileMd5;
+                    qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                    cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
+                }
+            } else {
+                // 上传失败，保留原路径
+                ri.newUrl = ri.originalUrl;
+            }
+        }
+        finishOne();
+    };
+
+    // ---------- 阶段1：解析 + 缓存 + 整理（调用线程同步执行） ----------
+    QString &text = st->text;
+    get_ref(text, st->message_reference);
+    static const QRegularExpression mdImgRe(R"(!\[([^\]]*)\]\(([^)]*)\))");
+    static const QRegularExpression sizeRe(R"(#(\d+)px)");
+
+    struct ImgTag {
+        int start;
+        int length;
+        int width;
+        int height;
+        bool isMdImg = false;
+        bool needPadding = false;
+        QString alt;
+        QString coreText;
+        int userWidth = 0;
+        int userHeight = 0;
+        bool hasUserSize = false;
+        QString url;
+    };
+    QList<ImgTag> allTags;
+
+    // 解析旧标签 [image]
+    int searchFrom = 0;
+    while (true) {
+        int imgStart = text.indexOf(QLatin1String("[image"), searchFrom, Qt::CaseInsensitive);
+        if (imgStart == -1) break;
+
+        int imgEnd = imgStart + 1;
+        int bracketDepth = 1;
+        while (imgEnd < text.size() && bracketDepth > 0) {
+            if (text[imgEnd] == '[') bracketDepth++;
+            else if (text[imgEnd] == ']') bracketDepth--;
+            ++imgEnd;
+        }
+        if (bracketDepth != 0) break;
+
+        int tagLen = imgEnd - imgStart;
+        int contentStart = imgStart + 6;
+        while (contentStart < imgEnd - 1 && (text[contentStart].isSpace() || text[contentStart] == ','))
+            ++contentStart;
+        int contentLen = tagLen - (contentStart - imgStart) - 1;
+        if (contentLen < 0) contentLen = 0;
+        QStringView tagContentView = QStringView(text).mid(contentStart, contentLen);
+
+        ImageInfo imgInfo = parseImageTagContent(tagContentView);
+        if (!imgInfo.urlOrPath.isEmpty()) {
+            ImgTag tag;
+            tag.start = imgStart;
+            tag.length = tagLen;
+            tag.url = imgInfo.urlOrPath;
+            tag.width = imgInfo.x;
+            tag.height = imgInfo.y;
+            tag.isMdImg = false;
+            allTags.append(tag);
+        }
+        searchFrom = imgEnd;
+    }
+
+    // 解析 Markdown 图片标签 ![]()
+    QRegularExpressionMatchIterator it = mdImgRe.globalMatch(text);
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString alt = match.captured(1).trimmed();
+        QString url = match.captured(2).trimmed();
+        if (url.isEmpty()) continue;
+
+        QRegularExpressionMatchIterator sizeIt = sizeRe.globalMatch(alt);
+        QList<int> sizes;
+        while (sizeIt.hasNext()) {
+            QRegularExpressionMatch sizeMatch = sizeIt.next();
+            sizes.append(sizeMatch.captured(1).toInt());
+        }
+        int count = sizes.size();
+
+        QString coreText = alt;
+        coreText.remove(sizeRe);
+
+        bool needPadding = false;
+        QString modifiedAlt = alt;
+        int userWidth = 0, userHeight = 0;
+        bool hasUserSize = false;
+
+        if (count == 0) {
+            needPadding = true;
+            hasUserSize = false;
+        } else if (count == 1) {
+            modifiedAlt = alt.trimmed() + " #0px";
+            needPadding = false;
+            userWidth = sizes[0];
+            userHeight = 0;
+            hasUserSize = true;
+        } else {
+            needPadding = false;
+            userWidth = sizes[0];
+            userHeight = sizes[1];
+            hasUserSize = true;
+        }
+
+        ImgTag tag;
+        tag.start = match.capturedStart();
+        tag.length = match.capturedLength();
+        tag.url = url;
+        tag.isMdImg = true;
+        tag.alt = modifiedAlt;
+        tag.coreText = coreText;
+        tag.needPadding = needPadding;
+        tag.userWidth = userWidth;
+        tag.userHeight = userHeight;
+        tag.hasUserSize = hasUserSize;
+        tag.width = userWidth;
+        tag.height = userHeight;
+
+        allTags.append(tag);
+    }
+
+    // 没有任何图片标签：只处理其他 Markdown 链接后直接完成（同步、零线程）
+    if (allTags.isEmpty()) {
+        text = convertMarkdownLinksToXml(text);
+        onDone(text, QString(), st->message_reference);
+        return;
+    }
+
+    std::sort(allTags.begin(), allTags.end(),
+              [](const ImgTag &a, const ImgTag &b) { return a.start > b.start; });
+
+    // 遍历所有标签：缓存命中直接落位；未命中发起 uploadimgCb（纯回调，不占线程）
+    for (int idx = 0; idx < allTags.size(); ++idx) {
+        ImgTag &tag = allTags[idx];
+        QString newUrl = tag.url;
+        bool isHttp = newUrl.startsWith("http://", Qt::CaseInsensitive) ||
+                      newUrl.startsWith("https://", Qt::CaseInsensitive);
+
+        if (!isHttp && !newUrl.isEmpty()) {
+            QString fileMd5;
+            if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
+                continue;
+
+            if (tag.isMdImg && tag.hasUserSize) {
+                tag.width = tag.userWidth;
+                tag.height = tag.userHeight;
+            }
+
+            // 缓存检查
+            QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
+            bool cacheValid = false;
+            QString cachedUrl;
+            if (cache_db && !fileMd5.isEmpty()) {
+                QString cached = cache_db->get(cacheKey);
+                if (!cached.isEmpty()) {
+                    int sepIdx = cached.lastIndexOf("||||");
+                    if (sepIdx != -1) {
+                        qint64 expireTime = cached.left(sepIdx).toLongLong();
+                        cachedUrl = cached.mid(sepIdx + 4);
+                        if (QDateTime::currentSecsSinceEpoch() < expireTime)
+                            cacheValid = true;
+                    }
+                }
+            }
+
+            // 读取文件数据（用于备用上传）
+            QByteArray fileData;
+            if (!cacheValid) {
+                QFile file(newUrl);
+                if (file.open(QIODevice::ReadOnly)) {
+                    fileData = file.readAll();
+                    file.close();
+                }
+            }
+
+            int replaceIdx = st->replacements.size();
+            st->replacements.append({
+                tag.start,
+                tag.length,
+                cacheValid ? cachedUrl : QString(),
+                tag.isMdImg,
+                tag.coreText,
+                tag.alt,
+                tag.width,
+                tag.height,
+                tag.needPadding,
+                fileMd5,
+                newUrl,
+                fileData
+            });
+
+            if (!cacheValid) {
+                // 需要上传：先计数再发起（发起可能同步重入回调，保证计数完整）
+                ++st->pending;
+                uploadimgCb(newUrl, [st, handleResult, replaceIdx](QString uploadedUrl) {
+                    handleResult(replaceIdx, uploadedUrl);
+                });
+            }
+        } else {
+            // HTTP 链接或空路径
+            st->replacements.append({
+                tag.start,
+                tag.length,
+                newUrl,
+                tag.isMdImg,
+                tag.coreText,
+                tag.alt,
+                tag.width,
+                tag.height,
+                tag.needPadding,
+                QString(),
+                newUrl,
+                QByteArray()
+            });
+        }
+    }
+
+    // 阶段1收口：无待上传项（全缓存命中）→ 同步收尾；有 → 最后一个回调收尾
+    st->phase1Done = true;
+    if (st->pending.load() == 0)
+        completeAll();
+}
+
+// 参考 uploadRichMedia(QByteArray 版)，但走 put 链接池复用
+// usePool=false：只走「100K 申请 + 整文件直传」快速路径，不入池（音视频/文件用）
+QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,int fileType,
+                                         const QByteArray& data,const QString &filename,
+                                         qint64& expireTime,QString &md5,bool &ok,QString &outurl,
+                                         bool usePool) {
+
+    ok=false;
+    outurl.clear();
+    expireTime = 0;
+    if(data.isEmpty()) return QString();
+
+    // targetType==4 不支持 100K 申请/池子流程（会报错）→ 回退原始分片上传方法
+    if (targetType == 4) {
+        return uploadRichMedia(targetType, openid, fileType, data, filename, expireTime, md5, ok, outurl);
+    }
+
+    // ---- md5/sha1/md5_10m 一律用原文件的真实值（申请大小才固定 100K）----
+    qint64 fileSize = data.size();
+    QCryptographicHash md5Hash(QCryptographicHash::Md5);
+    md5Hash.addData(data);
+    md5 = md5Hash.result().toHex();
+    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
+    sha1Hash.addData(data);
+    QString sha1 = sha1Hash.result().toHex();
+    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+    md5_10mHash.addData(data.left(10 * 1024 * 1024));
+    QString md5_10m = md5_10mHash.result().toHex();
+
+    CosPutPoolEntry entry;
+    bool haveEntry = false;
+    bool fromPool = false;
+
+    // ---- 1. 从池子取一条可复用的 put 链接（取用即移出，顺带清理过期条目）----
+    // 视频测试：usePool=false 时也尝试取池（COS_POOL_VIDEO_TEST），观察复用后 files 的返回
+    fromPool = (usePool || COS_POOL_VIDEO_TEST) ? takeCosPutEntry(entry) : false;
+    haveEntry = fromPool;
+
+    // ---- 2. 池子没有 → 修改版 upload_prepare：file_size 固定 100K 申请 put 链接 ----
+    if (!haveEntry) {
+        const qint64 APPLY_SIZE = 100 * 1024;    // 申请 100K，cos 实际可传任意大小
+        QJsonObject prepJson;
+        prepJson["file_type"] = fileType;
+        prepJson["file_name"] = filename;
+        prepJson["file_size"] = APPLY_SIZE;
+        prepJson["md5"]       = md5;
+        prepJson["sha1"]      = sha1;
+        prepJson["md5_10m"]   = md5_10m;
+        QString prepUrl = get_url(targetType, openid, "upload_prepare");
+        QString response = PostSync(prepUrl, prepJson, QString(), 30000);
+        if (response.isEmpty()) return QString();
+
+        QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
+        if (respDoc.isNull()) return QString();
+        QJsonObject respObj = respDoc.object();
+        entry.uploadId = respObj["upload_id"].toString();
+        if (entry.uploadId.isEmpty()) return response; // 错误信息
+
+        QJsonArray parts = respObj["parts"].toArray();
+        if (parts.isEmpty()) return QString("upload_prepare 未返回分片");
+        QJsonObject part = parts[0].toObject();
+        entry.partIndex    = part["index"].toInt();
+        entry.presignedUrl = part["presigned_url"].toString();
+        if (entry.presignedUrl.isEmpty()) return QString("upload_prepare 未返回 presigned_url");
+        entry.expireAt = QDateTime::currentMSecsSinceEpoch() + COS_POOL_TTL_MS;  // 55 分钟超时
+
+    }
+
+    // ---- 3. 把完整文件 put 到 cos（申请 100K 但实际可传任意大小）----
+    // 链接此刻已不在池中：失败 → 直接丢弃（不还池）；成功 → 最后统一还池
+    bool putOk = false;
+    int retry = 0;
+    int currentTimeout = 30000;
+    while (retry < 3 && !putOk) {
+        try {
+            put(entry.presignedUrl, data, "application/octet-stream", currentTimeout);
+            putOk = true;
+        } catch (const std::exception &) {
+            retry++;
+            if (retry < 3) {
+                QThread::msleep(1000 * (1 << (retry - 1)));
+                currentTimeout += 10000;
+            }
+        }
+    }
+    if (!putOk) {
+        return QString("put 文件到 cos 失败(重试3次)");
+    }
+
+    // ---- 3.5 复用捷径（md 图片）：put 覆盖 cos 内容即完成 —— 省掉 finish + files 两个 API，
+    // 直接用首次返回的 raw_url 加时间戳（链接实时反映本次 put 的数据）----
+    // 视频测试期间：只允许 usePool 且 infoFileType 同类型走捷径（file_info 被其他类型覆盖过则走完整流程）
+    if (fromPool && usePool && !entry.fileInfo.isEmpty() && entry.infoFileType == fileType) {
+        outurl = bustRawUrlCache(entry.rawUrl);
+        expireTime = entry.expireAt / 1000;   // 剩余有效期（秒）
+        ok = true;
+        parkCosPutEntry(entry);               // 暂存，等消息发送完成后回池（无 CD）
+        return entry.fileInfo;
+    }
+
+    // ---- 4. 提交 put 成功（upload_part_finish，按实际 put 的数据提交）----
+    // 【池测】复用路径跳过 finish：upload_id 已提交过一次，重复 put 只是覆盖 cos 对象，
+    // 验证 files 是否不依赖本次 finish 照常工作（若返回旧 info 且能正常发送，finish 彻底可省）
+    const bool skipFinish = fromPool && !usePool && COS_POOL_VIDEO_TEST;
+    if (!skipFinish) {
+        QJsonObject finishJson;
+        finishJson["upload_id"]  = entry.uploadId;
+        finishJson["part_index"] = entry.partIndex;
+        finishJson["block_size"] = fileSize;
+        finishJson["md5"]        = md5;
+        QString finishUrl = get_url(targetType, openid, "upload_part_finish");
+        qDebug() << PostSync(finishUrl, finishJson, QString(), 30000);
+    }
+
+    // ---- 5. 执行 /files 拿 file_info ----
+    QJsonObject filesJson;
+    filesJson["upload_id"] = entry.uploadId;
+    QString filesUrl = get_url(targetType, openid, "files");
+    QString filesResp = PostSync(filesUrl, filesJson, QString(), 30000);
+    if (filesResp.isEmpty()) return QString();
+
+    QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
+    if (filesRespDoc.isNull()) return QString();
+    QJsonObject filesObj = filesRespDoc.object();
+    QString file_info = filesObj["file_info"].toString();
+    if (file_info.isEmpty()) {
+        // 【池测】复用后 files 失败 —— 记录返回内容（免 finish 验证期间保留）
+        if (!usePool && COS_POOL_VIDEO_TEST)
+            AppendEventLog(QString("【池测】files 失败(%1): %2")
+                               .arg(fromPool ? "复用" : "全新",filesResp.left(200)));
+        return filesResp; // 错误信息（链接已移出池，自然丢弃）
+    }
+
+    // 【池测】files 成功 —— 观察免 finish 后 file_info 是否随内容刷新
+    if (fromPool && !usePool && COS_POOL_VIDEO_TEST) {
+        AppendEventLog(QString("【池测】复用(免finish): 上次info=%1 本次=%2 %3")
+                           .arg(entry.fileInfo.left(24), file_info.left(24),
+                                entry.fileInfo == file_info ? "（相同！）" : "（不同）"));
+    }
+
+    // ---- 6. 成功：链接暂存（存下 file_info/raw_url），消息发送完成后回池即可复用 ----
+    // 视频测试：usePool=false 也回池（带最新 file_info），让下一次视频继续复用对比
+    if (usePool || (COS_POOL_VIDEO_TEST && !usePool)) {
+        entry.fileInfo = file_info;
+        entry.rawUrl   = filesObj["raw_url"].toString();
+        entry.infoFileType = fileType;
+        parkCosPutEntry(entry);
+    }
+
+    // raw_url 加时间戳，避免重复链接命中缓存
+    outurl = bustRawUrlCache(filesObj["raw_url"].toString());
+    expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
+    ok = true;
+    return file_info;
+}
+
+// uploadRichMediaPool 的纯回调版：prepare → put → finish → files 全链路异步，零线程零阻塞。
+// 与阻塞版逻辑逐行对应（取池/复用捷径/暂存回池机制完全一致），仅把三个 PostSync 换成 PostAsync、
+// 阻塞 put 换成 put2（NetManager::putAsync，已具备 cos 内网直连）。
+// 回调在 NetManager 线程池线程触发（无事件循环）→ put 重试为立即重试，不能用 QTimer 退避。
+void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid, int fileType,
+                                           const QByteArray &data, const QString &filename, bool usePool,
+                                           std::function<void(const QString &result, qint64 expireTime,
+                                                              const QString &md5, bool ok, const QString &outurl)> onDone)
+{
+    const int appid = m_info->appid_int;
+    if (!onDone) return;
+    if (data.isEmpty()) { onDone(QString(), 0, QString(), false, QString()); return; }
+
+    // targetType==4 不支持 100K 申请/池子流程 → 原始分片上传是阻塞型，罕见路径临时线程兜底
+    if (targetType == 4) {
+        std::thread([this, appid, targetType, openid, fileType, data, filename, onDone]() mutable {
+            QQBotClient *c = m_botClients.value(appid);
+            if (!c) return;
+            qint64 expireTime = 0; QString md5; bool ok = false; QString outurl;
+            QString result = c->uploadRichMedia(targetType, openid, fileType, data, filename, expireTime, md5, ok, outurl);
+            if (m_botClients.value(appid) != c) return;
+            onDone(result, expireTime, md5, ok, outurl);
+        }).detach();
+        return;
+    }
+
+    // ---- 共享状态（全链路异步，跨线程存活）----
+    struct PoolAsyncState {
+        CosPutPoolEntry entry;
+        bool fromPool = false;
+        bool usePool = false;
+        int targetType = 0;
+        QString openid;
+        QByteArray data;
+        qint64 fileSize = 0;
+        QString md5, sha1, md5_10m;
+        int retry = 0;
+        int currentTimeout = 30000;
+    };
+    auto stp = std::make_shared<PoolAsyncState>();
+    stp->usePool = usePool;
+    stp->targetType = targetType;
+    stp->openid = openid;
+    stp->data = data;
+    stp->fileSize = data.size();
+
+    // ---- 同步部分（调用线程，微秒级）：md5/sha1 用原文件真实值 + 取池 ----
+    QCryptographicHash md5Hash(QCryptographicHash::Md5);
+    md5Hash.addData(data);
+    stp->md5 = md5Hash.result().toHex();
+    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
+    sha1Hash.addData(data);
+    stp->sha1 = sha1Hash.result().toHex();
+    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+    md5_10mHash.addData(data.left(10 * 1024 * 1024));
+    stp->md5_10m = md5_10mHash.result().toHex();
+
+    stp->fromPool = usePool ? takeCosPutEntry(stp->entry) : false;
+
+    auto fail = [stp, appid, onDone](const QString &msg) {
+        if (!m_botClients.value(appid)) return;
+        onDone(msg, 0, stp->md5, false, QString());
+    };
+
+    // ---- 4/5. finish → files（put 成功后）----
+    auto afterPut = [this, appid, stp, onDone, fail]() {
+        QQBotClient *c = m_botClients.value(appid);
+        if (!c) return;
+
+        // ---- 3.5 复用捷径（md 图片）：put 覆盖 cos 内容即完成 —— 省掉 finish + files 两个 API，
+        // 直接用首次返回的 raw_url 加时间戳（链接实时反映本次 put 的数据）----
+        if (stp->fromPool && !stp->entry.fileInfo.isEmpty()) {
+            QString outurl = bustRawUrlCache(stp->entry.rawUrl);
+            parkCosPutEntry(stp->entry);   // 暂存在本回调线程，等消息发送完成后回池（无 CD）
+            onDone(stp->entry.fileInfo, stp->entry.expireAt / 1000, stp->md5, true, outurl);
+            return;
+        }
+
+        QJsonObject finishJson;
+        finishJson["upload_id"]  = stp->entry.uploadId;
+        finishJson["part_index"] = stp->entry.partIndex;
+        finishJson["block_size"] = stp->fileSize;
+        finishJson["md5"]        = stp->md5;
+        QString finishUrl = get_url(stp->targetType, stp->openid, "upload_part_finish");
+        c->PostAsync(finishUrl, finishJson, QString(), 30000,
+            [this, appid, stp, onDone, fail](const QString &, QNetworkReply::NetworkError) {
+                QQBotClient *c2 = m_botClients.value(appid);
+                if (!c2) return;
+
+                QJsonObject filesJson;
+                filesJson["upload_id"] = stp->entry.uploadId;
+                QString filesUrl = get_url(stp->targetType, stp->openid, "files");
+                c2->PostAsync(filesUrl, filesJson, QString(), 30000,
+                    [this, appid, stp, onDone, fail](const QString &filesResp, QNetworkReply::NetworkError) {
+                        QQBotClient *c3 = m_botClients.value(appid);
+                        if (!c3) return;
+                        if (filesResp.isEmpty()) { fail(QString()); return; }
+                        QJsonDocument doc = QJsonDocument::fromJson(filesResp.toUtf8());
+                        if (doc.isNull()) { fail(QString()); return; }
+                        QJsonObject filesObj = doc.object();
+                        QString fileInfo = filesObj["file_info"].toString();
+                        if (fileInfo.isEmpty()) { fail(filesResp); return; }   // 链接已移出池，自然丢弃
+
+                        // ---- 6. 成功：链接暂存（存下 file_info/raw_url），消息发送完成后回池 ----
+                        if (stp->usePool) {
+                            stp->entry.fileInfo = fileInfo;
+                            stp->entry.rawUrl   = filesObj["raw_url"].toString();
+                            parkCosPutEntry(stp->entry);   // 暂存在本回调线程，onDone 同线程可 takeCosPutPending 取走
+                        }
+                        QString outurl = bustRawUrlCache(filesObj["raw_url"].toString());
+                        qint64 expire = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
+                        onDone(fileInfo, expire, stp->md5, true, outurl);
+                    });
+            });
+    };
+
+    // ---- 3. put 到 cos（put2 = NetManager::putAsync，含 cos 内网直连），3 次重试 ----
+    auto tryPut = std::make_shared<std::function<void()>>();
+    *tryPut = [this, appid, stp, afterPut, fail, tryPut]() {
+        QQBotClient *c = m_botClients.value(appid);
+        if (!c) return;
+        c->put2(stp->entry.presignedUrl, stp->data, "application/octet-stream", stp->currentTimeout,
+                [appid, stp, afterPut, fail, tryPut](const QString &, QNetworkReply::NetworkError err) {
+                    if (err == QNetworkReply::NoError) { afterPut(); return; }
+                    stp->retry++;
+                    if (stp->retry < 3) {
+                        stp->currentTimeout += 10000;
+                        if (m_botClients.value(appid)) (*tryPut)();   // 立即重试（回调线程无事件循环）
+                    } else {
+                        fail(QString("put 文件到 cos 失败(重试3次)"));
+                    }
+                });
+    };
+
+    // ---- 2. 池子没有 → upload_prepare（file_size 固定 100K，md5 用真实值）----
+    if (stp->fromPool) {
+        (*tryPut)();
+        return;
+    }
+    QQBotClient *c = m_botClients.value(appid);
+    if (!c) return;
+    const qint64 APPLY_SIZE = 100 * 1024;    // 申请 100K，cos 实际可传任意大小
+    QJsonObject prepJson;
+    prepJson["file_type"] = fileType;
+    prepJson["file_name"] = filename;
+    prepJson["file_size"] = APPLY_SIZE;
+    prepJson["md5"]       = stp->md5;
+    prepJson["sha1"]      = stp->sha1;
+    prepJson["md5_10m"]   = stp->md5_10m;
+    QString prepUrl = get_url(targetType, openid, "upload_prepare");
+    c->PostAsync(prepUrl, prepJson, QString(), 30000,
+        [this, appid, stp, tryPut, fail](const QString &resp, QNetworkReply::NetworkError) {
+            QQBotClient *c2 = m_botClients.value(appid);
+            if (!c2) return;
+            if (resp.isEmpty()) { fail(QString()); return; }
+            QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
+            if (doc.isNull()) { fail(QString()); return; }
+            QJsonObject obj = doc.object();
+            stp->entry.uploadId = obj["upload_id"].toString();
+            if (stp->entry.uploadId.isEmpty()) { fail(resp); return; }
+            QJsonArray parts = obj["parts"].toArray();
+            if (parts.isEmpty()) { fail(QString("upload_prepare 未返回分片")); return; }
+            QJsonObject part = parts[0].toObject();
+            stp->entry.partIndex    = part["index"].toInt();
+            stp->entry.presignedUrl = part["presigned_url"].toString();
+            if (stp->entry.presignedUrl.isEmpty()) { fail(QString("upload_prepare 未返回 presigned_url")); return; }
+            stp->entry.expireAt = QDateTime::currentMSecsSinceEpoch() + COS_POOL_TTL_MS;  // 55 分钟超时
+            (*tryPut)();
+        });
+}
+
 
 QString convertAudioToSilk(const QString &srcFilePath)
 {
@@ -2090,7 +2965,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             {
                 uploadedUrl = filePath;
             }
-            fileInfo = uploadRichMediaA(type, openid, fileType, uploadedUrl,ok);
+            // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
+            fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, ok, /*usePool=*/false);
 
             if(!ok)
             {
@@ -2147,8 +3023,10 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
         return response;
 
     }
+    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
     PostAsync(url, json, "", 5000,
-              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
                     if(ctx.cb)
@@ -2605,6 +3483,7 @@ QString processText(const QString &text, int timeoutMs = 30000);
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
                               const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
 {
+    CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     if(type==18) type =0;
 
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
@@ -2644,6 +3523,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
+    CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     if(type!=18){
         if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
     }
@@ -2748,6 +3628,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                    const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
 {
+    CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
 
     QString newtext = text;
     if(text.contains("#python"))
@@ -2797,13 +3678,17 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     else seq_index = 2;
 
     QString response="{}",fileinfo;
+    const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
     if(type==1 || type ==3)
     {
         if(!mbise)
         {
-            textB = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);
-            send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx,noref);
+            processImageTagsAsync(mb,1,type,openid,
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                (const QString &tb, const QString &, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);
+                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
+                });
             return response;
         }
         if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
@@ -2814,33 +3699,48 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
             response = R"({"message":"暂时不支持模板方式"})";
         }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);//违禁词过滤
-             send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+            processImageTagsAsync(textB,1,type,openid,
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                (const QString &tb, const QString &, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);//违禁词过滤
+                    send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                });
         }else {
-            textB = processImageTags(textB,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);//违禁词过滤
-            QString url = get_url(type, openid, "messages");
-            send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,ctx,noref);
+            processImageTagsAsync(textB,2,type,openid,
+                [this, type, openid, msgIdCopy, seq_index, ctx, noref]
+                (const QString &tb, const QString &fi, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);//违禁词过滤
+                    QString url = get_url(type, openid, "messages");
+                    send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
+                });
         }
         return response;
     }
 
     if(!mbise) //模板 一般用不到
     {
-        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(textB);
-        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(textB,1,type,openid,
+            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &, const QString &mr) {
+                QString textA = forbidden->filterText(tb);
+                send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }
     if(!mode && m_info->markdown || mode && sendType==1)
     {
-        textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(textB);
-        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(textB,1,type,openid,
+            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &, const QString &mr) {
+                QString textA = forbidden->filterText(tb);//违禁词过滤
+                send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }else{
-        textB = processImageTags(textB,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(textB);
-        send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(textB,0,type,openid,
+            [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &fi, const QString &mr) {
+                QString textA = forbidden->filterText(tb);//违禁词过滤
+                send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }
     return response;
 }
@@ -2848,6 +3748,7 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
                                          const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
                                          const QJsonArray &prompt_keyboard, const QJsonValue  &keyboard, Callback cb)
 {
+    CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     QString mb=mb2;
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
@@ -2879,13 +3780,17 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     else seq_index = 2;
 
     QString response="{}",fileinfo;
+    const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
     if(type==1 || type ==3)
     {
         if(!mbise)
         {
-            text = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(text);
-            send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx,noref);
+            processImageTagsAsync(mb,1,type,openid,
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                (const QString &tb, const QString &, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);
+                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
+                });
             return response;
         }
         if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
@@ -2896,33 +3801,48 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
             response = R"({"message":"暂时不支持模板方式"})";
         }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
-            text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(text);//违禁词过滤
-            send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+            processImageTagsAsync(text,1,type,openid,
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                (const QString &tb, const QString &, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);//违禁词过滤
+                    send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                });
         }else {
-            text = processImageTags(text,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(text);//违禁词过滤
-            QString url = get_url(type, openid, "messages");
-            send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,ctx,noref);
+            processImageTagsAsync(text,2,type,openid,
+                [this, type, openid, msgIdCopy, seq_index, ctx, noref]
+                (const QString &tb, const QString &fi, const QString &mr) {
+                    QString textA = forbidden->filterText(tb);//违禁词过滤
+                    QString url = get_url(type, openid, "messages");
+                    send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
+                });
         }
         return response;
     }
 
     if(!mbise) //模板 一般用不到
     {
-        text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(text);
-        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(text,1,type,openid,
+            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &, const QString &mr) {
+                QString textA = forbidden->filterText(tb);
+                send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }
     if(!mode && m_info->markdown || mode && sendType==1)
     {
-        text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(text);
-        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(text,1,type,openid,
+            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &, const QString &mr) {
+                QString textA = forbidden->filterText(tb);
+                send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }else{
-        text = processImageTags(text,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
-        QString textA = forbidden->filterText(text);
-        send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,ctx, noref);
+        processImageTagsAsync(text,0,type,openid,
+            [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+            (const QString &tb, const QString &fi, const QString &mr) {
+                QString textA = forbidden->filterText(tb);
+                send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+            });
     }
     return response;
 }
@@ -2945,8 +3865,10 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url = get_url(type, openid, "messages");
     if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
     PostAsync(url, json, "", 5000,
-              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
                     if(ctx.cb) ctx.cb(resp,err);
@@ -3038,8 +3960,10 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     QString url= get_url(type,openid,"messages");
 
     if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
     PostAsync(url, json, "", 5000,
-              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
                     if(ctx.cb) ctx.cb(resp,err);
@@ -3090,8 +4014,10 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url= get_url(type,openid,"messages");
     if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
     PostAsync(url, json, "", 5000,
-              [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
+              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
                             ctx.now_us, ctx.type, ctx.openid);
         if(ctx.cb) ctx.cb(resp,err);

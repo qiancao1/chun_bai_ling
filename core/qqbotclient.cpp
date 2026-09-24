@@ -1137,7 +1137,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     return ;//3736 ms
 }
-
+// QElapsedTimer __t;
 class ___tdxx : public QRunnable {
 public:
     ___tdxx(QQBotClient *c, const QString &m) : m_client(c), m_msg(m) {
@@ -1147,6 +1147,7 @@ public:
     void run() override {
         QString msg = m_msg;
         m_client->onTextMessage(msg);
+       // qDebug() << "线程池耗时 " << __t.nsecsElapsed() / 1e6 << " ms";
     }
 
 private:
@@ -1155,6 +1156,7 @@ private:
 };
 
 void QQBotClient::onTextMessageReceived(const QString &message) {
+    //__t.start();
     auto *task = new ___tdxx(this, message);
     QThreadPool::globalInstance()->start(task);
 }

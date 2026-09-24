@@ -232,6 +232,19 @@ private:
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
+    //复用 cos put 链接的快速上传（put 链接池，55 分钟超时 / 发送完成即回池无 CD / raw_url 加时间戳防缓存）
+    //usePool=false 时只用「100K 申请 + 整文件直传」的快速路径，不入池（给音视频/文件用）；targetType==4 回退原始上传
+    QString uploadRichMediaPool(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
+                                qint64& expireTime,QString &md5, bool &ok, QString &outurl, bool usePool=true);
+    //uploadRichMediaA 的池子版：入参/返回格式与 A 完全一致（[type,path=...,md5=...,Time=...]），可直接换调用点
+    QString uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok, bool usePool=true);
+    //uploadRichMediaPool 的纯回调版：prepare → put → finish → files 全链路异步（零线程零阻塞），图片热路径专用
+    //onDone 在 NetManager 线程池线程触发（不可在里面阻塞），成败都会回调；出参语义与阻塞版一致：
+    //result=返回串（成功=file_info，失败=错误信息/空）、ok 标记成败、outurl=加时间戳的 raw_url
+    void uploadRichMediaPoolAsync(int targetType, const QString& openid, int fileType,
+                                  const QByteArray& data, const QString& filename, bool usePool,
+                                  std::function<void(const QString &result, qint64 expireTime,
+                                                     const QString &md5, bool ok, const QString &outurl)> onDone);
     void addmsglog(const QString &response, int index, const QString &pname, const QString &text, qint64 now_us, int type, const QString &openid);
     void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
@@ -265,6 +278,15 @@ private:
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000);
     void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000, Callback callbacks=Callback());
     QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
+    //processImageTags 纯回调版（堵塞版不受影响）：type==1 热路径零线程——
+    //阶段1（同步微秒级）解析+缓存判断+读文件 → 待上传项走 uploadimgCb 回调链（不占线程）
+    //→ 原子计数聚合 → 最后回调所在线程替换文本并回调 onDone(text, info, message_reference)。
+    //仅两类罕见路径临时起线程：uploadimg 全失败走阻塞备用上传；type==0/2 阻塞型上传单线程包装。
+    //onDone 里可直接接着违禁词过滤+发消息（备用线程 park 的池条目会在收尾时 re-park 到
+    //onDone 线程，发送走带 ctx 的 PostAsync，回池由发送回调负责）。
+    void processImageTagsAsync(const QString &text, int type, int targetType, const QString &openid,
+                               std::function<void(const QString &text, const QString &info,
+                                                  const QString &message_reference)> onDone);
 
 
     QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);
