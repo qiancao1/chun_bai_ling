@@ -823,6 +823,7 @@ int PluginPage::findPluginIndex(const QString &id) const {
     }
     return -1;
 }
+
 void plug_tji() {
     plugin_n=2;
 
@@ -939,13 +940,11 @@ bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
     return false;
 }
 
-void PluginPage::onMessageReceived(MessageEvent &msg, int i) {
+void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::optional<py::gil_scoped_acquire> &gil) {
+
     try {
         // 3.14t 下必须持锁，保持原有的 acquire
-        py::gil_scoped_acquire gil;
-
         QString reply;
-
         auto process_ret = [&](py::object ret) {
             msg.op=true;
             if (!ret.is_none() && !m_asyncio_mod.is_none() &&
@@ -961,14 +960,17 @@ void PluginPage::onMessageReceived(MessageEvent &msg, int i) {
             if (!ret.is_none() && py::isinstance<py::str>(ret)) {
                 QString str = QString::fromStdString(py::str(ret).cast<std::string>());
                 if (reply.isEmpty()) reply = str;
-                else reply += "\n" + str;
+                else reply += "\n---\n" + str;
             }
         };
 
-        for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
+        for (const Rule &rule : std::as_const(p.python.rules)) {
             if (matchRule(rule, msg)) {
+                if (!gil) gil.emplace();   // 第一次命中才获取，循环内复用
+
                 py::object ret = rule.function(msg); // 如果是async，这里返回协程对象
                 process_ret(ret);
+
             }
         }
 
@@ -976,65 +978,77 @@ void PluginPage::onMessageReceived(MessageEvent &msg, int i) {
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
-                QString pname = "[" + m_pluginList[i].name + "|%1ms]";
+                QString pname = "[" + p.name + "|%1ms]";
                 client->send_msgAsync(msg.type, msg.groupId, pname, reply, msg.msgId);
+
             }
+
             return;
         }
 
-    } catch (const std::exception &e) {
-        AppendEventLog("[Python] " + m_pluginList[i].name + " 错误: " + e.what(), 0xff);
-    } catch (...) {
-        AppendEventLog("[Python] " + m_pluginList[i].name + " 未知错误", 0xff);
-    }
-}
-void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
-{
-    QByteArray utf8 = text.toUtf8();
 
-    int _32=0;
-    for (int i = 0; i < m_pluginList.size(); ++i) {
-        if (!m_pluginList[i].enabled) continue;
-        if(m_pluginList[i].appid.contains(msg.appid)) continue; //这个插件禁用
-        if (m_pluginList[i].type == 0){
-            onMessageReceived(msg,i);
+    } catch (const std::exception &e) {
+        AppendEventLog("[Python] " + p.name + " 错误: " + e.what(), 0xff);
+    } catch (...) {
+        AppendEventLog("[Python] " + p.name + " 未知错误", 0xff);
+    }
+
+}
+void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_32,const QByteArray &utf8)
+{
+
+    std::optional<py::gil_scoped_acquire> gil;
+    for (const auto & p:std::as_const(m_pluginList)) {
+        if (!p.enabled) continue;
+        if(p.appid.contains(msg.appid)) continue; //这个插件禁用
+
+        if (p.type == 0){
+            onMessageReceived(msg,p,gil);
             continue;
         }
-        if(m_pluginList[i].type == 2)
+        else if(p.type == 2)
         {
             _32++;
             continue;
-        }else if (m_pluginList[i].type == 3) {
+        }else if (p.type == 3) {
 
-            for (const Rule_js &rule : std::as_const(m_pluginList[i].js.rules)) {
+            for (const Rule_js &rule : std::as_const(p.js.rules)) {
                 if (matchRule3(rule, msg)) {
-                    NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text,rule.fun);
+                    NodePluginManager::instance().postEventAsync(p.uuid,"on_message", text,rule.fun);
                 }
             }
-            if(m_pluginList[i].js.rules.size()==0)
-                NodePluginManager::instance().postEventAsync(m_pluginList[i].uuid,"on_message", text,QString());
+            if(p.js.rules.size()==0)
+                NodePluginManager::instance().postEventAsync(p.uuid,"on_message", text,QString());
             continue;
         }
 
-
-        try {
-            if (m_pluginList[i].DLL.onMessage2) {
-                for (const Rule_Dll &rule : std::as_const(m_pluginList[i].DLL.rules)) {
+       try {
+            if (p.DLL.onMessage2) {
+                for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
                     if (matchRule2(rule, msg)) {
-                        m_pluginList[i].DLL.onMessage2(utf8.data(),rule.fun);
+                        p.DLL.onMessage2(utf8.data(),rule.fun);
                     }
                 }
             }
 
-            if (m_pluginList[i].DLL.onMessage) {
-                m_pluginList[i].DLL.onMessage(utf8.data());
+            if (p.DLL.onMessage) {
+                p.DLL.onMessage(utf8.data());
             }
         } catch (const std::exception &e) {
-            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: " + e.what() ,0xff);
+            AppendEventLog("[DLL] " + p.name + " on_message: " + e.what() ,0xff);
         } catch (...) {
-            AppendEventLog("[DLL] " + m_pluginList[i].name + " on_message: unknown exception" ,0xff);
+            AppendEventLog("[DLL] " + p.name + " on_message: unknown exception" ,0xff);
         }
     }
+
+}
+
+void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
+{
+    int _32=0;
+    QByteArray utf8 = text.toUtf8();
+    dispatch_message2(text,msg,_32,utf8);
+
     #ifdef _WIN32
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
@@ -2230,7 +2244,8 @@ event = _register_rule("event")
                     QString funName = QString::fromStdString(cmd["fun"].cast<std::string>());
 
                     py::object funcObj = plugin_globals[py::str(funName.toStdString())];
-                    if (funcObj.is_none() || !(py::isinstance<py::function>(funcObj) || PyCallable_Check(funcObj.ptr()))) {
+
+                   if (!funcObj){
                         qWarning() << "指令/事件函数" << funName << "不存在或不可调用，跳过";
                         continue;
                     }
@@ -2274,6 +2289,7 @@ event = _register_rule("event")
 
         // 8. 获取插件信息（get_plugin_info）
         if (plugin_globals.contains("get_plugin_info")) {
+
             try {
                 py::dict dict = plugin_globals["get_plugin_info"](py::str(info.uuid.toStdString()));
                 if (dict.is_none()) {
@@ -2290,6 +2306,7 @@ event = _register_rule("event")
                 readString("description", info.description);
                 readString("icon", info.icon);
                 readString("id", info.id);
+
                 if (dict.contains("version2") && !dict["version2"].is_none()) {
                     info.version_int = dict["version2"].cast<int>();
                 }
@@ -2322,13 +2339,17 @@ event = _register_rule("event")
                             }
 
                             py::object funcObj;
+
                             if (plugin_globals.contains(py::str(funName.toStdString()))) {
                                 py::object obj = plugin_globals[py::str(funName.toStdString())];
                                 if (py::isinstance<py::function>(obj) || PyCallable_Check(obj.ptr())) {
                                     funcObj = obj;
                                 }
                             }
-                            if (funcObj.is_none()) {
+
+
+
+                            if (!funcObj) {
                                 qWarning() << "函数" << funName << "不存在或不可调用，跳过该规则";
                                 continue;
                             }

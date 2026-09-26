@@ -173,6 +173,7 @@ public:
     void savePlugins();
     void loadPlugins();
     void dispatch_message(const QString &text, MessageEvent &msg);
+    void dispatch_message2(const QString &text, MessageEvent &msg, int &_32, const QByteArray &utf8);
     void initPluginList(const QList<PluginInfo> &plugins);
     void appendPlugin(const PluginInfo &info);
     void insertPlugin(int index, const PluginInfo &info);
@@ -229,7 +230,7 @@ private:
     void LoadPlugin_JS();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
-    void onMessageReceived(MessageEvent &msg, int i);
+    void onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
     QListWidget *pluginListWidget;
     QPushButton *reloadBtn;
     QPushButton *openDirBtn;

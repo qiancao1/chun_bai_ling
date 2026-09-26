@@ -73,14 +73,16 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.3.75"
-#define APP_BUILD_NUMBER 75
+#define APP_VERSION_STR "v1.3.5.81"
+#define APP_BUILD_NUMBER 81
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
 ## v1.3.5.80 (2026-09-25)
-- 优化 发送图片效率 内网上传单张图片60ms左右
-
+- 优化 发送图片效率 内网上传单张图片60ms左右 非内网应该也有200ms一张
+- 增加 Rust SDK
+- 优化 python重复获取gil锁导致 py插件越多耗时越大问题
+- 修复 插件注册 空指令 执行时报错问题
 
 ## v1.3.4.75 (2026-09-21)
 - 修复 读取缓存 时间戳失败问题
