@@ -663,15 +663,12 @@ QString handlePluginMarket(const QString& msg) {
                       .arg(info.type.isEmpty() ? "未知" : info.type, info.remark);
     }
 
-    // 6. 翻页提示
-    if (page < totalPages) {
-        result += QString("输入 `#插件市场 %1` 查看下一页\n").arg(page + 1);
-    }
+
     if (page > 1) {
-        result += QString("输入 `#插件市场 %1` 查看上一页\n").arg(page - 1);
+        result += QString("[上一页](#插件市场 %1) | [下一页](#插件市场 %2)\n").arg(page-1).arg(page+1);
     }
     if (!keyword.isEmpty() || !tagFilter.isEmpty()) {
-        result += "提示：使用 `#插件市场 页码 搜索词` 或 `#插件市场 页码 标签:标签名` 筛选\n";
+        result += "提示：使用 [#插件市场]() 页码 搜索词`\n或 `#插件市场 页码 标签:标签名` 筛选\n";
     }
 
     return result;

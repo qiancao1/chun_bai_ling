@@ -40,6 +40,7 @@
 #include <QRegularExpression>
 #include <QUrl>
 #include <QMutex>
+#include <QElapsedTimer>
 #include <thread>
 #include <memory>
 
@@ -1724,6 +1725,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 
     qint64 fileSize = data.size();
      ok=false;
+
     // 2. 计算哈希值
     QCryptographicHash md5Hash(QCryptographicHash::Md5);
     md5Hash.addData(data);
@@ -1737,7 +1739,18 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     md5_10mHash.addData(first10M);
     QString md5_10m = md5_10mHash.result().toHex();
 
+    // 视频分两路：
+    //   ≤80M → uploadSmallVideo：prepare 固定申请 1K（返回 1 个分片）→ 整段数据写入 put 链接 →
+    //          提交 → files 注册（视频处理可能「富媒体文件上传超时」，循环重试即可）
+    //   >80M → 当文件（file_type=4）走原版分片上传（有多大传多大，上限 200M）
+    if (fileType == 2) {
+        if (fileSize <= 80LL * 1024 * 1024)
+            return uploadSmallVideo(targetType, openid, data, filename, expireTime, md5, sha1, md5_10m, ok, outurl);
+        fileType = 4;
+    }
+
     // 3. 准备上传准备请求
+    // 声明真实大小（有多大传多大）。
     QJsonObject prepJson;
     prepJson["file_type"] = fileType;
     prepJson["file_name"] = filename;
@@ -1747,7 +1760,9 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     prepJson["md5_10m"] = md5_10m;
     //prepJson["block_size"] = fileSize;
     QString url = get_url(targetType, openid, "upload_prepare");
+
     QString response = PostSync(url, prepJson,QString(), 30000);
+
     if (response.isEmpty()) return QString();
 
     // 4. 解析响应获取 upload_id 和 parts
@@ -1784,6 +1799,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
                 try {
 
                     put(presignedUrl, chunk, "application/octet-stream", currentTimeout);
+
                     success = true;
                 } catch (const std::exception &e) {
                     //qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
@@ -1808,7 +1824,9 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
             chunkMd5.addData(chunk);
             finishJson["md5"] = QString(chunkMd5.result().toHex());
 
+
             QString finishResp = PostSync(finishUrl, finishJson,QString(), 30000);
+
         }
     }else{
 
@@ -1849,6 +1867,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
             const QByteArray &chunk = chunks[j]; // 保存的数据，用于重试
             while (retry < MAX_RETRIES && !success) {
                 try {
+
                     QString resp;
                     if (retry == 0) {
                         // 第一次使用已存储的 future
@@ -1864,6 +1883,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
                             );
                         resp = newFut.get();
                     }
+
                     success = true;
                 } catch (const std::exception &e) {
                     //qWarning() << "分片" << finishJsons[j]["part_index"].toInt()
@@ -1883,7 +1903,9 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
         }
         //AppendEventLog("分片上传完成 通知服务器："+QString::number(futures.size()));
         for (int j = 0; j < futures.size(); ++j) {
+
             QString finishResp = PostSync(finishUrl, finishJsons[j], QString(), 30000);
+
         }
 
 
@@ -1929,24 +1951,123 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
 
     }
     // 7. 完成上传，请求 /files
+    // 服务端处理可能返回「富媒体文件上传超时」——数据已在 COS，重复提交同一请求
+    // 服务端会重新处理，无需重新上传。
     QJsonObject filesJson;
     filesJson["upload_id"] = upload_id;
 
     QString filesUrl = get_url(targetType, openid, "files");
-    QString filesResp = PostSync(filesUrl, filesJson,QString(), 30000);
-    if (filesResp.isEmpty()) return QString();
+    QString filesResp;
+    for (int attempt = 0; attempt < 10; ++attempt) {
 
-    QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
-    if (filesRespDoc.isNull()) return QString();
-    QJsonObject filesObj = filesRespDoc.object();
-    QString file_info = filesObj["file_info"].toString();
-    if (file_info.isEmpty()) return filesResp; // 错误信息
-    outurl = filesObj["raw_url"].toString();
+        filesResp = PostSync(filesUrl, filesJson,QString(), 30000);
+        if (filesResp.isEmpty()) return QString();
 
-    // 获取过期时间（秒为单位）
-    expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
-    ok=true;
-    return file_info;
+        QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
+        if (filesRespDoc.isNull()) return QString();
+        QJsonObject filesObj = filesRespDoc.object();
+        QString file_info = filesObj["file_info"].toString();
+
+        if (!file_info.isEmpty()) {
+            outurl = filesObj["raw_url"].toString();
+
+            // 获取过期时间（秒为单位）
+            expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
+            ok=true;
+            return file_info;
+        }
+        if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
+        QThread::sleep(3); // 稍等后重复提交
+    }
+    return filesResp; // 重试耗尽，返回最后的错误
+}
+
+// 小视频（≤80M）快速上传：不走分片，prepare 固定申请 1K（服务端返回 1 个分片），
+// 整段视频写入 put 链接（链接实际可传任意大小）→ 按真实数据提交 → files 注册。
+// files 阶段视频处理可能返回「富媒体文件上传超时」——数据已在 COS，循环重试即可。
+QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
+                                      const QByteArray& data, const QString& filename,
+                                      qint64& expireTime, const QString& md5,
+                                      const QString& sha1, const QString& md5_10m,
+                                      bool& ok, QString& outurl)
+{
+    ok = false;
+    outurl.clear();
+    expireTime = 0;
+    const qint64 fileSize = data.size();
+
+    // 1. prepare：file_size 固定申请 1K（返回 1 个分片 + put 链接）
+    QJsonObject prepJson;
+    prepJson["file_type"] = 2;
+    prepJson["file_name"] = filename;
+    prepJson["file_size"] = (qint64)1024;
+    prepJson["md5"]     = md5;
+    prepJson["sha1"]    = sha1;
+    prepJson["md5_10m"] = md5_10m;
+    QString response = PostSync(get_url(targetType, openid, "upload_prepare"), prepJson, QString(), 30000);
+    if (response.isEmpty()) return QString();
+    QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
+    if (respDoc.isNull()) return QString();
+    QJsonObject respObj = respDoc.object();
+    QString upload_id = respObj["upload_id"].toString();
+    if (upload_id.isEmpty()) return response;   // 错误信息
+    QJsonArray parts = respObj["parts"].toArray();
+    if (parts.isEmpty()) return QString("upload_prepare 未返回分片");
+    QJsonObject part = parts[0].toObject();
+    const int partIndex = part["index"].toInt();
+    const QString presignedUrl = part["presigned_url"].toString();
+    if (presignedUrl.isEmpty()) return QString("upload_prepare 未返回 presigned_url");
+
+    // 2. 整段视频写入 put 链接
+    bool putOk = false;
+    int retry = 0;
+    int currentTimeout = 30000;
+    while (retry < 3 && !putOk) {
+        try {
+            put(presignedUrl, data, "application/octet-stream", currentTimeout);
+            putOk = true;
+        } catch (const std::exception &) {
+            retry++;
+            if (retry < 3) {
+                QThread::msleep(1000 * (1 << (retry - 1)));
+                currentTimeout += 10000;
+            }
+        }
+    }
+    if (!putOk) return QString("put 视频数据失败(重试3次)");
+
+    // 3. 提交（按真实数据）
+    QJsonObject finJson;
+    finJson["upload_id"]  = upload_id;
+    finJson["part_index"] = partIndex;
+    finJson["block_size"] = fileSize;
+    finJson["md5"]        = md5;
+    PostSync(get_url(targetType, openid, "upload_part_finish"), finJson, QString(), 30000);
+
+    // 4. files 注册：超时循环重试
+    QJsonObject filesJson;
+    filesJson["upload_id"] = upload_id;
+    QString filesUrl = get_url(targetType, openid, "files");
+    QString filesResp;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+
+        filesResp = PostSync(filesUrl, filesJson, QString(), 30000);
+        if (filesResp.isEmpty()) return QString();
+        QJsonDocument filesDoc = QJsonDocument::fromJson(filesResp.toUtf8());
+        if (filesDoc.isNull()) return QString();
+        QJsonObject filesObj = filesDoc.object();
+        QString file_info = filesObj["file_info"].toString();
+
+        if (!file_info.isEmpty()) {
+            outurl = filesObj["raw_url"].toString();
+            expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
+            ok = true;
+            return file_info;
+        }
+        if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
+        QThread::sleep(3); // 稍等后重复提交
+    }
+    return filesResp; // 重试耗尽，返回最后的错误
 }
 
 // ==================== 复用 cos put 链接的快速上传池 ====================
@@ -1961,10 +2082,9 @@ struct CosPutPoolEntry {
     QString uploadId;       // upload_prepare 返回的 upload_id
     int     partIndex = 0;  // 分片 index（100K 申请只有 1 片）
     qint64  expireAt = 0;     // 链接诞生时刻 + 55 分钟（毫秒），cos 实际 60 分钟
-    qint64  availableAt = 0;  // 最早可再次取用时刻（毫秒）= 上次使用 + 60 秒
     QString fileInfo;         // 首次 /files 返回的 file_info —— 同 upload_id 固定不变，复用时直接用
     QString rawUrl;           // 首次 /files 返回的原始 raw_url（不带时间戳，出参时再加工）
-    int     infoFileType = -1; // fileInfo 是哪类 fileType 上传后拿到的（视频测试期间防跨类型误用）
+    int     infoFileType = -1; // fileInfo 是哪类 fileType 上传后拿到的（捷径防跨类型误用）
 };
 
 // 可互换的 put 链接池：不按 targetType/openid 做 key（这俩基本固定，做 key 会退化成单条）。
@@ -1973,18 +2093,13 @@ struct CosPutPoolEntry {
 static QMutex g_cosPutPoolMutex;
 static QList<CosPutPoolEntry> g_cosPutPool;
 
-static const qint64 COS_POOL_TTL_MS   = 55 * 60 * 1000;  // 55 分钟超时删除
+static const qint64 COS_POOL_TTL_MS   = 58 * 60 * 1000;  // 55 分钟超时删除
 // 防失控上限（不是预填数量，空池零开销，按需增长）。
 // 稳态条数 ≈ 发图速率 × 在途时间：1000张/秒 × 30s = 3 万条（约 30MB），故上限放大到 5 万。
-static const int    COS_POOL_MAX      = 50000;
-// 【视频测试】usePool=false（音视频/文件，file_info 用户）也尝试复用池链接：
-// 复用后照常走 finish → files，把返回的 file_info 与上次的对比打到事件日志 ——
-// 验证「同一 upload_id 重复 put 不同内容后 files 是否返回新的有效 file_info」。
-// 结论出来后改回 false 即恢复原行为。
-static const bool   COS_POOL_VIDEO_TEST = true;
+static const int    COS_POOL_MAX      = 10000;
 
-// 从池子取一条可用链接。O(1) 无遍历：giveBack 的 availableAt 时间戳单调递增，append 即保序，
-// 队头永远是最早可用的 —— 只看队头：过期就弹出，可用就取出，队头冷却中说明整池都在冷却。
+// 从池子取一条可用链接。O(1) 无遍历：回池 append 即保序，队头永远最早入池——
+// 只看队头：过期就弹出（55 分钟超时惰性清理），没过期直接取走。
 // 取到返回 true 并移出池子。
 bool takeCosPutEntry(CosPutPoolEntry &out)
 {
@@ -1993,7 +2108,6 @@ bool takeCosPutEntry(CosPutPoolEntry &out)
     while (!g_cosPutPool.isEmpty() && nowMs >= g_cosPutPool.first().expireAt)
         g_cosPutPool.removeFirst();    // 队头过期 → 丢弃（55 分钟超时，惰性清理）
     if (g_cosPutPool.isEmpty()) return false;
-    if (nowMs < g_cosPutPool.first().availableAt) return false;   // 队头冷却中 → 整池冷却
     out = g_cosPutPool.takeFirst();
     return true;
 }
@@ -2008,7 +2122,7 @@ void parkCosPutEntry(const CosPutPoolEntry &entry)
     t_cosPutPending.append(entry);
 }
 
-// 把一组链接回池：availableAt = 现在，立即可复用（无 CD）。跨线程安全（池有锁）。
+// 把一组链接回池：立即可复用（无 CD）。跨线程安全（池有锁）。
 void flushCosPutList(QList<CosPutPoolEntry> list)
 {
     if (list.isEmpty()) return;
@@ -2017,9 +2131,7 @@ void flushCosPutList(QList<CosPutPoolEntry> list)
     for (const CosPutPoolEntry &e : list) {
         if (nowMs >= e.expireAt) continue;              // 已过期直接丢弃
         if (g_cosPutPool.size() >= COS_POOL_MAX) break;
-        CosPutPoolEntry item = e;
-        item.availableAt = nowMs;
-        g_cosPutPool.append(item);
+        g_cosPutPool.append(e);
     }
 }
 
@@ -2111,9 +2223,12 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
         std::atomic<bool> phase1Done{false};
         bool completed = false;           // 防重复收尾（mutex 内访问）
         QList<CosPutPoolEntry> parked;    // 备用线程 park 的池条目
+        QElapsedTimer timer;              // 上传总耗时（日志页勾选「图片上传统计」时输出）
+        std::atomic<int> uploadCount{0};  // 实际发起上传的图片数（缓存命中不算）
     };
     auto st = std::make_shared<AsyncState>();
     st->text = textIn;
+    st->timer.start();
 
     // ---------- 收尾：替换文本 + re-park + convert + onDone ----------
     auto completeAll = [appid, st, onDone]() {
@@ -2165,6 +2280,11 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                 parkCosPutEntry(e);
             st->parked.clear();
         }
+
+        // 图片上传统计（日志页勾选「图片上传统计」时输出，临时开关不落盘）
+        if (logPage && logPage->imgStat && st->uploadCount.load() > 0)
+            AppendEventLog(QString("图片上传：%1 张，耗时 %2ms")
+                               .arg(st->uploadCount.load()).arg(st->timer.elapsed()));
 
         if (m_botClients.value(appid) != c) return;   // onDone 前再确认一次
         text = convertMarkdownLinksToXml(text);       // 与堵塞版 type==1 收尾一致
@@ -2431,6 +2551,7 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             if (!cacheValid) {
                 // 需要上传：先计数再发起（发起可能同步重入回调，保证计数完整）
                 ++st->pending;
+                ++st->uploadCount;   // 上传统计（日志页勾选时输出）
                 uploadimgCb(newUrl, [st, handleResult, replaceIdx](QString uploadedUrl) {
                     handleResult(replaceIdx, uploadedUrl);
                 });
@@ -2461,7 +2582,8 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
 }
 
 // 参考 uploadRichMedia(QByteArray 版)，但走 put 链接池复用
-// usePool=false：只走「100K 申请 + 整文件直传」快速路径，不入池（音视频/文件用）
+// usePool=false：音视频/文件——实测复用链接服务端报「文件格式不对」，不做优化，
+// 直接回退原始分片上传（uploadRichMedia），保险
 QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,int fileType,
                                          const QByteArray& data,const QString &filename,
                                          qint64& expireTime,QString &md5,bool &ok,QString &outurl,
@@ -2472,8 +2594,9 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     expireTime = 0;
     if(data.isEmpty()) return QString();
 
-    // targetType==4 不支持 100K 申请/池子流程（会报错）→ 回退原始分片上传方法
-    if (targetType == 4) {
+    // targetType==4 不支持 100K 申请/池子流程（会报错）；
+    // 音视频/文件（usePool=false）复用链接实测报文件格式不对 → 都回退原始分片上传方法
+    if (targetType == 4 || !usePool) {
         return uploadRichMedia(targetType, openid, fileType, data, filename, expireTime, md5, ok, outurl);
     }
 
@@ -2492,17 +2615,19 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     CosPutPoolEntry entry;
     bool haveEntry = false;
     bool fromPool = false;
+    bool freshLink = false;   // 新建链接：1KB 占位内容已注册 file_info/raw_url，真实内容随后复写
 
     // ---- 1. 从池子取一条可复用的 put 链接（取用即移出，顺带清理过期条目）----
-    // 视频测试：usePool=false 时也尝试取池（COS_POOL_VIDEO_TEST），观察复用后 files 的返回
-    fromPool = (usePool || COS_POOL_VIDEO_TEST) ? takeCosPutEntry(entry) : false;
+    fromPool = takeCosPutEntry(entry);
     haveEntry = fromPool;
 
     // ---- 2. 池子没有 → 修改版 upload_prepare：file_size 固定 100K 申请 put 链接 ----
     if (!haveEntry) {
         const qint64 APPLY_SIZE = 100 * 1024;    // 申请 100K，cos 实际可传任意大小
         QJsonObject prepJson;
-        prepJson["file_type"] = fileType;
+        // 注册声明 file_type=4（文件类不校验内容）：1KB 占位不是合法图片，
+        // 类型 1 会被服务端类型检查拒绝；注册后真实图片靠 put 复写（COS 层无类型概念）
+        prepJson["file_type"] = 4;
         prepJson["file_name"] = filename;
         prepJson["file_size"] = APPLY_SIZE;
         prepJson["md5"]       = md5;
@@ -2526,6 +2651,47 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
         if (entry.presignedUrl.isEmpty()) return QString("upload_prepare 未返回 presigned_url");
         entry.expireAt = QDateTime::currentMSecsSinceEpoch() + COS_POOL_TTL_MS;  // 55 分钟超时
 
+        // ---- 新建链接（md 图片路径）：先传 1KB 占位内容快速注册 file_info/raw_url，----
+        // 真实内容随后一次 put 复写 —— 耗时的 files 放在 1KB 小对象上，真实图片只承担一次 put
+        if (usePool) {
+            // 占位内容：1KB，每次不同（时间戳做种子的伪随机），避免 cos 去重/缓存命中
+            QByteArray placeholder(1024, 0);
+            quint64 seed = QDateTime::currentMSecsSinceEpoch();
+            for (int i = 0; i < 1024; ++i) {
+                seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+                placeholder[i] = (char)((seed >> 33) & 0xFF);
+            }
+            QCryptographicHash phHash(QCryptographicHash::Md5);
+            phHash.addData(placeholder);
+            const QString phMd5 = phHash.result().toHex();
+
+            try {
+                put(entry.presignedUrl, placeholder, "application/octet-stream", 30000);
+            } catch (const std::exception &) {
+                return QString("put 占位失败(新建链接)");
+            }
+
+            // finish 按占位内容提交（block_size/md5 = 实际 put 的数据）
+            QJsonObject phFin;
+            phFin["upload_id"]  = entry.uploadId;
+            phFin["part_index"] = entry.partIndex;
+            phFin["block_size"] = placeholder.size();
+            phFin["md5"]        = phMd5;
+            qDebug() << PostSync(get_url(targetType, openid, "upload_part_finish"), phFin, QString(), 30000);
+
+            // files 注册出 file_info / raw_url
+            QJsonObject phFiles;
+            phFiles["upload_id"] = entry.uploadId;
+            QString phResp = PostSync(get_url(targetType, openid, "files"), phFiles, QString(), 30000);
+            QJsonDocument phDoc = QJsonDocument::fromJson(phResp.toUtf8());
+            QJsonObject phObj = phDoc.object();
+            entry.fileInfo = phObj["file_info"].toString();
+            entry.rawUrl   = phObj["raw_url"].toString();
+            if (entry.fileInfo.isEmpty() || entry.rawUrl.isEmpty())
+                return phResp;   // 注册失败，链接作废
+            entry.infoFileType = fileType;   // 记「使用类型」（非注册类型 4）：md 图片捷径靠它防跨类型误用
+            freshLink = true;
+        }
     }
 
     // ---- 3. 把完整文件 put 到 cos（申请 100K 但实际可传任意大小）----
@@ -2546,13 +2712,15 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
         }
     }
     if (!putOk) {
+        if (freshLink)
+            parkCosPutEntry(entry);   // 占位链接已注册有效，留着给下一个调用者复写
         return QString("put 文件到 cos 失败(重试3次)");
     }
 
     // ---- 3.5 复用捷径（md 图片）：put 覆盖 cos 内容即完成 —— 省掉 finish + files 两个 API，
-    // 直接用首次返回的 raw_url 加时间戳（链接实时反映本次 put 的数据）----
-    // 视频测试期间：只允许 usePool 且 infoFileType 同类型走捷径（file_info 被其他类型覆盖过则走完整流程）
-    if (fromPool && usePool && !entry.fileInfo.isEmpty() && entry.infoFileType == fileType) {
+    // 直接用已注册的 raw_url 加时间戳（链接实时反映本次 put 的数据）----
+    // fromPool = 池里取的；freshLink = 新建链接（1KB 占位注册后复写）。infoFileType 防跨类型误用。
+    if ((fromPool || freshLink) && usePool && !entry.fileInfo.isEmpty() && entry.infoFileType == fileType) {
         outurl = bustRawUrlCache(entry.rawUrl);
         expireTime = entry.expireAt / 1000;   // 剩余有效期（秒）
         ok = true;
@@ -2561,10 +2729,8 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     }
 
     // ---- 4. 提交 put 成功（upload_part_finish，按实际 put 的数据提交）----
-    // 【池测】复用路径跳过 finish：upload_id 已提交过一次，重复 put 只是覆盖 cos 对象，
-    // 验证 files 是否不依赖本次 finish 照常工作（若返回旧 info 且能正常发送，finish 彻底可省）
-    const bool skipFinish = fromPool && !usePool && COS_POOL_VIDEO_TEST;
-    if (!skipFinish) {
+    // （捷径未命中才会走到这：fileInfo 缺失等兜底全流程）
+    {
         QJsonObject finishJson;
         finishJson["upload_id"]  = entry.uploadId;
         finishJson["part_index"] = entry.partIndex;
@@ -2586,28 +2752,14 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     QJsonObject filesObj = filesRespDoc.object();
     QString file_info = filesObj["file_info"].toString();
     if (file_info.isEmpty()) {
-        // 【池测】复用后 files 失败 —— 记录返回内容（免 finish 验证期间保留）
-        if (!usePool && COS_POOL_VIDEO_TEST)
-            AppendEventLog(QString("【池测】files 失败(%1): %2")
-                               .arg(fromPool ? "复用" : "全新",filesResp.left(200)));
         return filesResp; // 错误信息（链接已移出池，自然丢弃）
     }
 
-    // 【池测】files 成功 —— 观察免 finish 后 file_info 是否随内容刷新
-    if (fromPool && !usePool && COS_POOL_VIDEO_TEST) {
-        AppendEventLog(QString("【池测】复用(免finish): 上次info=%1 本次=%2 %3")
-                           .arg(entry.fileInfo.left(24), file_info.left(24),
-                                entry.fileInfo == file_info ? "（相同！）" : "（不同）"));
-    }
-
     // ---- 6. 成功：链接暂存（存下 file_info/raw_url），消息发送完成后回池即可复用 ----
-    // 视频测试：usePool=false 也回池（带最新 file_info），让下一次视频继续复用对比
-    if (usePool || (COS_POOL_VIDEO_TEST && !usePool)) {
-        entry.fileInfo = file_info;
-        entry.rawUrl   = filesObj["raw_url"].toString();
-        entry.infoFileType = fileType;
-        parkCosPutEntry(entry);
-    }
+    entry.fileInfo = file_info;
+    entry.rawUrl   = filesObj["raw_url"].toString();
+    entry.infoFileType = fileType;
+    parkCosPutEntry(entry);
 
     // raw_url 加时间戳，避免重复链接命中缓存
     outurl = bustRawUrlCache(filesObj["raw_url"].toString());
@@ -2629,8 +2781,9 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
     if (!onDone) return;
     if (data.isEmpty()) { onDone(QString(), 0, QString(), false, QString()); return; }
 
-    // targetType==4 不支持 100K 申请/池子流程 → 原始分片上传是阻塞型，罕见路径临时线程兜底
-    if (targetType == 4) {
+    // targetType==4 不支持 100K 申请/池子流程；音视频/文件（usePool=false）复用实测报文件格式不对
+    // → 都回退原始分片上传（阻塞型，罕见路径临时线程兜底）
+    if (targetType == 4 || !usePool) {
         std::thread([this, appid, targetType, openid, fileType, data, filename, onDone]() mutable {
             QQBotClient *c = m_botClients.value(appid);
             if (!c) return;
@@ -2651,6 +2804,7 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         QString openid;
         QByteArray data;
         qint64 fileSize = 0;
+        int fileType = 0;
         QString md5, sha1, md5_10m;
         int retry = 0;
         int currentTimeout = 30000;
@@ -2661,6 +2815,7 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
     stp->openid = openid;
     stp->data = data;
     stp->fileSize = data.size();
+    stp->fileType = fileType;
 
     // ---- 同步部分（调用线程，微秒级）：md5/sha1 用原文件真实值 + 取池 ----
     QCryptographicHash md5Hash(QCryptographicHash::Md5);
@@ -2687,7 +2842,7 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
 
         // ---- 3.5 复用捷径（md 图片）：put 覆盖 cos 内容即完成 —— 省掉 finish + files 两个 API，
         // 直接用首次返回的 raw_url 加时间戳（链接实时反映本次 put 的数据）----
-        if (stp->fromPool && !stp->entry.fileInfo.isEmpty()) {
+        if (stp->fromPool && !stp->entry.fileInfo.isEmpty() && stp->entry.infoFileType == stp->fileType) {
             QString outurl = bustRawUrlCache(stp->entry.rawUrl);
             parkCosPutEntry(stp->entry);   // 暂存在本回调线程，等消息发送完成后回池（无 CD）
             onDone(stp->entry.fileInfo, stp->entry.expireAt / 1000, stp->md5, true, outurl);
@@ -2723,6 +2878,7 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
                         if (stp->usePool) {
                             stp->entry.fileInfo = fileInfo;
                             stp->entry.rawUrl   = filesObj["raw_url"].toString();
+                            stp->entry.infoFileType = stp->fileType;   // 记使用类型，与阻塞版捷径防跨类型一致
                             parkCosPutEntry(stp->entry);   // 暂存在本回调线程，onDone 同线程可 takeCosPutPending 取走
                         }
                         QString outurl = bustRawUrlCache(filesObj["raw_url"].toString());

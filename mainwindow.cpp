@@ -78,6 +78,10 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.3.5.80 (2026-09-25)
+- 优化 发送图片效率 内网上传单张图片60ms左右
+
+
 ## v1.3.4.75 (2026-09-21)
 - 修复 读取缓存 时间戳失败问题
 - 更新 webui 内容

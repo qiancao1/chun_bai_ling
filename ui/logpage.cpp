@@ -533,6 +533,7 @@ void LogPage::setupUi()
     btnChannelPrivateTab = makeTabBtn("频道私聊");
     qbload = makeTabBtn("加载这些数量");
     chbox = new QCheckBox("显示完整json");
+    chboxStat = new QCheckBox("图片上传统计");
     btnEventTab->setChecked(true);
     logs = new QLineEdit ;
     logs->setText("10000");
@@ -558,6 +559,7 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnChannelPrivateTab);
     tabLayout->addStretch();
     tabLayout->addWidget(chbox);
+    tabLayout->addWidget(chboxStat);
     tabLayout->addWidget(logs);
     tabLayout->addWidget(qbload);
     panelLayout->addLayout(tabLayout);
@@ -825,6 +827,9 @@ void LogPage::setupUi()
 
     connect(chbox, &QCheckBox::clicked, this, [this]{
         wanzjson = chbox->isChecked();
+    });
+    connect(chboxStat, &QCheckBox::clicked, this, [this]{
+        imgStat = chboxStat->isChecked();   // 临时状态，不落盘
     });
     connect(btnEventTab, &QPushButton::clicked, this, [this]{ switchTab(0); });
     connect(btnGroupTab, &QPushButton::clicked, this, [this]{ switchTab(1); });

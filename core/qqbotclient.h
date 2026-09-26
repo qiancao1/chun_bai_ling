@@ -232,6 +232,11 @@ private:
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,qint64& expireTime,bool &ok);
+    //小视频(≤80M)快速上传：prepare 固定申请 1K → 整段写入 put 链接 → 按真实数据提交 →
+    //files 注册（视频处理可能「富媒体文件上传超时」，循环重试 10 次）
+    QString uploadSmallVideo(int targetType, const QString& openid, const QByteArray& data, const QString& filename,
+                             qint64& expireTime, const QString& md5, const QString& sha1, const QString& md5_10m,
+                             bool& ok, QString& outurl);
     //复用 cos put 链接的快速上传（put 链接池，55 分钟超时 / 发送完成即回池无 CD / raw_url 加时间戳防缓存）
     //usePool=false 时只用「100K 申请 + 整文件直传」的快速路径，不入池（给音视频/文件用）；targetType==4 回退原始上传
     QString uploadRichMediaPool(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,

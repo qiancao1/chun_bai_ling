@@ -51,6 +51,7 @@ public:
     int currentTabIndex = 0;
     bool m_active = true;
     bool wanzjson=false;
+    bool imgStat=false;   // 图片上传统计（勾选时输出图片上传耗时/张数；临时状态不落盘）
 private slots:
 
     void switchTab(int index);  // 切换标签页
@@ -79,6 +80,7 @@ private:
     QLineEdit *logs;
     QPushButton *qbload = nullptr;
     QCheckBox *chbox;
+    QCheckBox *chboxStat;   // 图片上传统计开关（勾选后 api 侧输出耗时+张数，不落盘）
     // 五个Tab对应的View和Model
     QTableView *eventListView = nullptr;
     QTableView *groupListView = nullptr;
