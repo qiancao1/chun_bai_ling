@@ -311,6 +311,81 @@ AiWidget::AiParseResult AiWidget::parseAiResponse(const QByteArray &response, co
     return AiParseResult::Ok;
 }
 
+// 按图片魔数判断格式，返回扩展名；不是常见图片格式返回空串
+static QString detectImageExtByMagic(const QByteArray &img)
+{
+    if (img.startsWith("\xFF\xD8\xFF")) return "jpg";
+    if (img.startsWith("\x89PNG"))      return "png";
+    if (img.startsWith("GIF8"))         return "gif";
+    if (img.size() > 12 && img.startsWith("RIFF") && img.mid(8,4) == "WEBP") return "webp";
+    return QString();
+}
+
+// 解码落盘到 tmp/image/ai/<md5>.<ext>，返回相对路径；落盘失败返回空串
+static QString saveImageByMd5(const QByteArray &img, const QString &ext)
+{
+    const QString md5 = QString::fromLatin1(
+        QCryptographicHash::hash(img, QCryptographicHash::Md5).toHex());
+    QDir().mkpath("tmp/image/ai");
+    const QString relPath = "tmp/image/ai/" + md5 + "." + ext;
+    if (!QFile::exists(relPath)) {             // 同一张图(md5 同)只落一次盘
+        QFile f(relPath);
+        if (!f.open(QIODevice::WriteOnly) || f.write(img) == -1)
+            return QString();
+    }
+    return relPath;
+}
+
+// 识别绘图模型返回的内嵌 base64 图片，落盘换成本地路径。
+// 只用在 handleAiResponse 里「写进上下文的 assistant 消息」上，
+// 发送用的文本不经过这里。两道识别：
+//   1) 标准格式：![alt](data:image/png;base64,....) —— 保留 alt 文本原样替换
+//   2) 兜底：没有 data:image 前缀的裸 base64（有的模型直接吐码，或只包在
+//      ![..](纯b64) 里）—— 超长 b64 串才尝试，解码后按魔数校验，是图片才
+//      落盘替换；不是图片原样保留，交给下面的 10k 截断兜底
+// b64 解不出来的整段替换成占位文本。最终长度超过 10k 截断，防止转换失败的
+// 残渣混进上下文越积越大。
+static QString normalizeInlineB64Images(const QString &content)
+{
+    QString out = content;
+
+    // ---- 1) 标准格式 ----
+    static const QRegularExpression rx(
+        R"(!\[([^\]]*)\]\(\s*data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)\))");
+    QRegularExpressionMatchIterator it = rx.globalMatch(out);
+    while (it.hasNext()) {
+        QRegularExpressionMatch m = it.next();
+        const QString alt = m.captured(1);
+        QString ext = m.captured(2).toLower();
+        QByteArray img = QByteArray::fromBase64(m.captured(3).remove('\n').remove('\r').toLatin1());
+        if (img.isEmpty()) {                       // b64 解不出来：别让垃圾进上下文
+            out.replace(m.captured(0), "![生成图片](图片数据无效)");
+            continue;
+        }
+        if (ext == "jpeg") ext = "jpg";
+        const QString relPath = saveImageByMd5(img, ext);
+        if (relPath.isEmpty()) continue;
+        out.replace(m.captured(0), QString("![%1](%2)").arg(alt, relPath));
+    }
+
+    // ---- 2) 裸 base64 兜底（无 data:image 前缀）----
+    // 512 字符起步：正常中英文文本几乎不可能连续出现这么长的 b64 字符集
+    static const QRegularExpression bareRx("[A-Za-z0-9+/=\\s]{512,}");
+    it = bareRx.globalMatch(out);
+    while (it.hasNext()) {
+        QRegularExpressionMatch m = it.next();
+        QByteArray img = QByteArray::fromBase64(m.captured(0).toLatin1());
+        const QString ext = detectImageExtByMagic(img);
+        if (ext.isEmpty()) continue;               // 不是图片：不动它
+        const QString relPath = saveImageByMd5(img, ext);
+        if (relPath.isEmpty()) continue;
+        out.replace(m.captured(0), relPath);
+    }
+
+    if (out.size() > 10000) out = out.left(10000); // 防止异常内容撑爆上下文
+    return out;
+}
+
 // 处理一次 AI 响应：追加上下文 + 执行工具调用（同步 / 异步链路共用）
 AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw)
 {
@@ -325,11 +400,13 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
     }
     QJsonObject obj2 = arr.at(0).toObject();
     QJsonObject obj3 = obj2["message"].toObject();
-    QString text = obj3["content"].toString().trimmed();
+
     const QJsonArray arr2 = obj3["tool_calls"].toArray();
     obj3.remove("reasoning_content");
-    //qDebug() << "ai回复：" << text << "tool:" << arr2;
-    // 将 AI 响应加入上下文
+    QString text  = normalizeInlineB64Images(obj3["content"].toString());
+
+    obj3["content"] = text;
+
     if (sxw.contains("messages") && sxw["messages"].isArray()) {
         QJsonArray msgs = sxw["messages"].toArray();
         if(arr2.size()==0)
@@ -545,6 +622,35 @@ void AiWidget::Ai_postAsync(const MessageEvent &ev, const QString &url, const QS
     }
 
     Ai_postAsyncCore(ev, url, key, sxwPtr, std::make_shared<QString>(), timeoutMs, std::move(cb));
+}
+
+// 异步版 Ai_post(model, msg, timeoutMs)：和同步版只差「等待方式」，
+// 模型名解析、上下文构造、图片下载/转 base64 与同步版完全一致，
+// 请求阶段走 Ai_postsAsync（逐接口逐 key 重试逻辑全继承）。
+// cb 一定被调用一次：配置错误传错误文案，总失败传 Ai_postsAsync 累积的错误串。
+void AiWidget::Ai_postAsync(const QString &model, const QString &msg, int timeoutMs, AiReplyCb cb)
+{
+    int index = -1;
+    for (int i = 0; i < modelList.size(); ++i) {
+        if (modelList[i].name == model) { index = i; break; }
+    }
+    if (index == -1) {
+        if (cb) cb("【" + model + "】 在模型列表不存在 请配置模型后试试");
+        return;
+    }
+    if (modelList[index].enabledInterfaceIndices.isEmpty()) {
+        if (cb) cb("【" + model + "】 未设置接口 请配置接口后试试");
+        return;
+    }
+
+    QJsonObject obj;
+    obj["model"] = model;
+    appendPendingMessageToContext(obj, parseImageTagsAndDownload(msg)); //下载
+    convertContextImagesToBase64(obj);
+
+    if (timeoutMs <= 0) timeoutMs = 30000;
+    if (timeoutMs <= 5000) timeoutMs = 5000;
+    Ai_postsAsync(MessageEvent(), index, obj, timeoutMs, std::move(cb));
 }
 
 // 异步版 Ai_posts：逐个接口、逐个 key 试；全部失败时把累积的错误串回调出去（同步版 return err）

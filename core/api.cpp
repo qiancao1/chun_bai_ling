@@ -190,10 +190,12 @@ QString convertMarkdownLinksToXml(const QString &input)
         QString lowerUrl = url.toLower();
         bool shouldConvert = !(lowerUrl.startsWith("http://") ||
                                lowerUrl.startsWith("https://") ||
-                               lowerUrl.startsWith("mqqapi://"));
+                               lowerUrl.startsWith("mqqapi://") ||
+                               lowerUrl.startsWith("qagent://")) ;
 
         if (shouldConvert) {
             QString encodedUrl = QString::fromUtf8(QUrl::toPercentEncoding(url));
+            showText.replace("%", "%25");
 
             encodedUrl.replace("\\","\\\\");
             encodedUrl.replace("\"","\\\"");
@@ -282,6 +284,7 @@ QString botlist()
 
 
 #include <QImageReader>
+#include <QImage>
 #include <QBuffer>
 
 bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, int &height)
@@ -530,6 +533,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             if(!m_accounts[i]->online)
             {
                 result = "{\"msg\":\"bot不在线\"}";
+                AppendEventLog(QString("插件：%1 发送消息：%2 时bot不在线 无法发送消息 目标appid:%3").arg(pname,toQString(_3),QString::number(appid)));
                 return result.c_str();
             }
             ok = true;
@@ -541,8 +545,13 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result = "{\"msg\":\"client没找到 代表机器人未登录 一般来说online 是 false 这里不会执行\"}";
             return result.c_str();
         }
-        if(!ok) return result.c_str();
+        if(!ok)
+        {
+            AppendEventLog(QString("插件：%1 发送消息：%2 时指定appid不可用 无法发送消息 目标appid:%3").arg(pname,toQString(_3),QString::number(appid)));
+            return result.c_str();
+        }
     }
+
 
     switch (apiId) {
     case OUTLOG: {
@@ -952,6 +961,7 @@ void QQBotClient::addmsglog(const QString &response,int index,const QString &pna
             msg.direction+="\n\n--------------------------\n\n"+response;
             msg.Color_0 = 0xff0000;
         }
+
         g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
         logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
         msg.isSelf=true;
@@ -2098,6 +2108,24 @@ static const qint64 COS_POOL_TTL_MS   = 58 * 60 * 1000;  // 55 分钟超时删�
 // 稳态条数 ≈ 发图速率 × 在途时间：1000张/秒 × 30s = 3 万条（约 30MB），故上限放大到 5 万。
 static const int    COS_POOL_MAX      = 10000;
 
+// 生成一张随机像素的小 PNG：合法图片（能过 file_type=1 的内容类型检查），
+// 像素随机 → 每次内容不同，避免缓存命中。池子新建链接的占位用。
+QByteArray makePlaceholderPng()
+{
+    QImage img(8, 8, QImage::Format_RGB32);
+    quint64 seed = QDateTime::currentMSecsSinceEpoch();
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = 0; x < img.width(); ++x) {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            img.setPixel(x, y, qRgb((seed >> 33) & 0xFF, (seed >> 41) & 0xFF, (seed >> 49) & 0xFF));
+        }
+    }
+    QBuffer buf;
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    return buf.data();
+}
+
 // 从池子取一条可用链接。O(1) 无遍历：回池 append 即保序，队头永远最早入池——
 // 只看队头：过期就弹出（55 分钟超时惰性清理），没过期直接取走。
 // 取到返回 true 并移出池子。
@@ -2625,10 +2653,11 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     if (!haveEntry) {
         const qint64 APPLY_SIZE = 100 * 1024;    // 申请 100K，cos 实际可传任意大小
         QJsonObject prepJson;
-        // 注册声明 file_type=4（文件类不校验内容）：1KB 占位不是合法图片，
-        // 类型 1 会被服务端类型检查拒绝；注册后真实图片靠 put 复写（COS 层无类型概念）
-        prepJson["file_type"] = 4;
-        prepJson["file_name"] = filename;
+        // 注册声明 file_type=1（图片）：某些群「禁止非管理员上传文件」，类型 4 注册的
+        // file_info 发消息会被拦 → 占位改用随机生成的小 PNG（合法图片，过类型 1 内容检查），
+        // 注册后真实图片靠 put 复写（COS 层无类型概念）
+        prepJson["file_type"] = 1;
+        prepJson["file_name"] = "text.bin";
         prepJson["file_size"] = APPLY_SIZE;
         prepJson["md5"]       = md5;
         prepJson["sha1"]      = sha1;
@@ -2651,16 +2680,11 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
         if (entry.presignedUrl.isEmpty()) return QString("upload_prepare 未返回 presigned_url");
         entry.expireAt = QDateTime::currentMSecsSinceEpoch() + COS_POOL_TTL_MS;  // 55 分钟超时
 
-        // ---- 新建链接（md 图片路径）：先传 1KB 占位内容快速注册 file_info/raw_url，----
-        // 真实内容随后一次 put 复写 —— 耗时的 files 放在 1KB 小对象上，真实图片只承担一次 put
+        // ---- 新建链接（md 图片路径）：先传随机小 PNG 占位快速注册 file_info/raw_url，----
+        // 真实内容随后一次 put 复写 —— 耗时的 files 放在小占位对象上，真实图片只承担一次 put
         if (usePool) {
-            // 占位内容：1KB，每次不同（时间戳做种子的伪随机），避免 cos 去重/缓存命中
-            QByteArray placeholder(1024, 0);
-            quint64 seed = QDateTime::currentMSecsSinceEpoch();
-            for (int i = 0; i < 1024; ++i) {
-                seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-                placeholder[i] = (char)((seed >> 33) & 0xFF);
-            }
+            // 占位内容：随机像素 PNG（每次不同），合法图片 + 避免缓存命中
+            const QByteArray placeholder = makePlaceholderPng();
             QCryptographicHash phHash(QCryptographicHash::Md5);
             phHash.addData(placeholder);
             const QString phMd5 = phHash.result().toHex();
@@ -2689,7 +2713,7 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
             entry.rawUrl   = phObj["raw_url"].toString();
             if (entry.fileInfo.isEmpty() || entry.rawUrl.isEmpty())
                 return phResp;   // 注册失败，链接作废
-            entry.infoFileType = fileType;   // 记「使用类型」（非注册类型 4）：md 图片捷径靠它防跨类型误用
+            entry.infoFileType = fileType;   // 记「使用类型」（注册类型同为 1 图片）：md 图片捷径靠它防跨类型误用
             freshLink = true;
         }
     }

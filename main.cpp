@@ -142,77 +142,193 @@ void initdir()
 
 
 
+
+#include <QDir>
+#include <QCoreApplication>
+#include <QProcess>
+#include <QDateTime>
+
+// ---------- 通用：重启自身 ----------
+static void restartSelf()
+{
+    QString exePath = QCoreApplication::applicationFilePath();
+    QStringList args = QCoreApplication::arguments();
+    if (!args.isEmpty()) args.removeFirst();   // 去掉 argv[0]
+
+    // 用 startDetached，脱离父子关系，父进程退出不影响子进程
+    QProcess::startDetached(exePath, args, QCoreApplication::applicationDirPath());
+}
+
+// ---------- 通用：安全清理业务对象 ----------
+static void safeCleanup()
+{
+    // 每个 stop 独立 try-catch，避免一个挂掉影响其他
+    for (auto& c : m_botClients) {
+        if (!c) continue;
+        try { c->stop(); } catch (...) {}
+    }
+#ifdef _WIN32
+    if (bridge) {
+        try { bridge->writeResponseToBlock(1, "{\"type\":6}"); } catch (...) {}
+        try { bridge->stopServer(); } catch (...) {}
+    }
+#endif
+    if (pluginPage) {
+        try { pluginPage->foruninstall_Plugin(); } catch (...) {}
+    }
+}
+
 #ifdef _WIN32
 #include <windows.h>
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
+
+// ---------- 生成 minidump（带时间戳） ----------
+static void writeMiniDump(EXCEPTION_POINTERS* ep)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char name[MAX_PATH];
+    wsprintfA(name, "crash_%04d%02d%02d_%02d%02d%02d.dmp",
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond);
+
+    HANDLE hFile = CreateFileA(name, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+
+    MINIDUMP_EXCEPTION_INFORMATION mei;
+    mei.ThreadId          = GetCurrentThreadId();
+    mei.ExceptionPointers = ep;
+    mei.ClientPointers    = FALSE;
+
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                      hFile, MiniDumpNormal, &mei, NULL, NULL);
+    CloseHandle(hFile);
+}
+
+// ---------- 重启循环保护：60 秒内最多重启 3 次 ----------
+static bool shouldRestart()
+{
+    const char* flagFile = "restart_guard.tmp";
+    const int   MAX_RESTART = 3;
+    const qint64 WINDOW_SEC = 60;
+
+    qint64 now = QDateTime::currentSecsSinceEpoch();
+    qint64 first = 0;
+    int    count = 0;
+
+    QFile f(flagFile);
+    if (f.open(QIODevice::ReadOnly)) {
+        QByteArray data = f.readAll();
+        f.close();
+        QList<QByteArray> parts = data.split(' ');
+        if (parts.size() == 2) {
+            first = parts[0].toLongLong();
+            count = parts[1].toInt();
+        }
+    }
+
+    if (first == 0 || (now - first) > WINDOW_SEC) {
+        first = now;
+        count = 0;
+    }
+    count++;
+
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(QByteArray::number(first) + " " + QByteArray::number(count));
+        f.close();
+    }
+
+    return count <= MAX_RESTART;
+}
+
+// ---------- Windows 崩溃处理 ----------
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
+{
+    writeMiniDump(ep);
+
+    // 先判断是否还允许重启，再决定清理
+    bool doRestart = shouldRestart();
+
+    // 崩溃现场清理（每个都独立保护）
+    safeCleanup();
+
+    // 记录崩溃日志（异步安全：只写文件）
+    {
+        QFile f("crash.log");
+        if (f.open(QIODevice::Append)) {
+            f.write(QDateTime::currentDateTime()
+                        .toString("[yyyy-MM-dd hh:mm:ss] ").toUtf8());
+            f.write(QString("Crash code=0x%1\n")
+                        .arg((quintptr)ep->ExceptionRecord->ExceptionCode, 0, 16)
+                        .toUtf8());
+            f.close();
+        }
+    }
+
+    // 重启自身
+    if (doRestart) {
+        restartSelf();
+    } else {
+        // 超过重启次数，弹一次提示（此路径已很少走到，相对安全）
+        MessageBoxA(NULL,
+                    "程序反复崩溃，已停止自动重启。\n请查看 crash_*.dmp。",
+                    "崩溃", MB_OK | MB_ICONERROR);
+    }
+
+    // 直接结束，不跑 atexit / 全局析构，避免二次崩溃
+    TerminateProcess(GetCurrentProcess(), 1);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void setupCrashHandler()
+{
+    SetUnhandledExceptionFilter(CrashHandler);
+    // 关掉 CRT 的 abort 弹框，让 SEH 接管
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+}
+
 #else
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
-#endif
 
-#ifdef _WIN32
-
-// ---------- Windows 崩溃处理 ----------
-LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
-{
-    // 生成 minidump
-    HANDLE hFile = CreateFileA("crash.dmp", GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION mei;
-        mei.ThreadId = GetCurrentThreadId();
-        mei.ExceptionPointers = ep;
-        mei.ClientPointers = FALSE;
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
-                          hFile, MiniDumpNormal, &mei, NULL, NULL);
-        CloseHandle(hFile);
-    }
-    // 弹窗提示（注意：在异常处理中弹窗可能不稳定，但大多数情况下可用）
-    QMessageBox::about(nullptr, "程序崩溃",
-                       "程序崩溃，已生成 crash.dmp 文件。\n"
-                       "如果你是第一次运行报错，请安装微软运行库。");
-    return EXCEPTION_EXECUTE_HANDLER; // 终止进程
-}
-
-void setupCrashHandler()
-{
-    SetUnhandledExceptionFilter(CrashHandler);
-}
-
-#else
-// ---------- Linux 崩溃处理 ----------
+// ---------- Linux 信号处理：只做异步安全的事 ----------
 static void posixSignalHandler(int sig)
 {
-    // 写入崩溃标记文件（异步安全）
-    int fd = open("/tmp/myapp_crash_marker", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // 1. 写崩溃标记（只 open/write/close，异步安全）
+    int fd = open("/tmp/myapp_crash_marker",
+                  O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd != -1) {
-        const char* msg = "Crash\n";
-        write(fd, msg, strlen(msg));
+        char buf[64];
+        int n = snprintf(buf, sizeof(buf), "signal=%d\n", sig);
+        write(fd, buf, n);
         close(fd);
     }
-    // 恢复默认处理，重新触发信号以生成 core dump
+
+    // 2. 恢复默认并重新触发，让内核生成 core dump
     signal(sig, SIG_DFL);
     raise(sig);
+    // 理论上不会再执行到这里
 }
 
+// 用 atexit / 正常退出路径做清理，而不是在信号处理里
 void setupCrashHandler()
 {
     struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
     sa.sa_handler = posixSignalHandler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;  // 让被中断的系统调用自动重启
-    // 捕获常见崩溃信号
+    sa.sa_flags = SA_RESTART;
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGABRT, &sa, nullptr);
     sigaction(SIGFPE,  &sa, nullptr);
     sigaction(SIGILL,  &sa, nullptr);
-    // 可选：SIGBUS, SIGSYS 等
+    // 可选：SIGBUS, SIGSYS
 }
-
 #endif
 void initDBs() {
     for (int i = 0; i < 5; ++i) {

@@ -78,7 +78,14 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.3.5.80 (2026-09-25)
+## v1.3.6.85 (2026-09-29)
+- 修改 AI生图一部分 ai返回b64问题
+- 优化 ai功能的使用
+- 优化 ai附加功能 会先返回指令未被处理 问题
+- 修复 图床 图片上传失败问题(因为用文件类型创建 部分群不开群文件上传会失败)
+- 增加 插件新的函数 用于投递 插件路径 方便读取插件携带的数据 同时更新sdk
+
+## v1.3.5.81 (2026-09-26)
 - 优化 发送图片效率 内网上传单张图片60ms左右 非内网应该也有200ms一张
 - 增加 Rust SDK
 - 优化 python重复获取gil锁导致 py插件越多耗时越大问题
@@ -1457,7 +1464,7 @@ QString checkUpdate(const MessageEvent &ev) {
     }
     if (remoteBuild > APP_BUILD_NUMBER) {
         __cqkj=true;
-        return "#"+remoteTag+"\n>"+releaseNotes+"\n\n---\n\n发送[#确认更新框架]() 来更新 注意更新需要重启 如果更新失败 可能需要手动更新";
+        return "#"+remoteTag+"\n"+releaseNotes+"\n\n---\n\n发送[#确认更新框架]() 来更新 注意更新需要重启 如果更新失败 可能需要手动更新";
     }
     return  "当前已经是最新版本";
 }

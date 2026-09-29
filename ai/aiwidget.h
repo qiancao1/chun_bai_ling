@@ -99,6 +99,9 @@ public:
     QString Ai_post(AccountInfo *info, const MessageEvent &ev);
 
     QString Ai_post(const QString &model, const QString &msg, int type);
+    // 异步版 Ai_post(model,msg,timeout)：按模型名解析接口/key，结果一次性回调。
+    // 配置错误（模型不存在/未设接口）也走 cb，调用方拿到的语义和同步版返回值一致。
+    void Ai_postAsync(const QString &model, const QString &msg, int timeoutMs, AiReplyCb cb);
     QString Ai_posts(const MessageEvent &ev, int model_index, QJsonObject &sxw, int timeoutMs);
     QString Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs);
     QByteArray Ai_post3(const QString &url, const QString &key, QJsonObject &sxw, int timeoutMs);

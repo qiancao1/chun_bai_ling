@@ -166,6 +166,9 @@ async def ping2(msg):
     msg_id = await api.send_message_async(msg, "这是异步消息 因为本api会堵塞等待返回值 先转移线程权")
     return f"发送成功，消息 ID 是: {msg_id}"
 """
+def set_plugin_path(path):
+    """与main.py目录 相当于 {path}main.py 带\或者 /结尾 根据系统而定 如果有与文件同目录 可记录路径"""
+    ...
 def get_plugin_info(uuid):
     import qiancao_sdk
     global api

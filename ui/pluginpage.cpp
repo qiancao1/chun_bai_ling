@@ -1027,6 +1027,7 @@ void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
                     if (matchRule2(rule, msg)) {
                         p.DLL.onMessage2(utf8.data(),rule.fun);
+
                     }
                 }
             }
@@ -1871,6 +1872,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
         QUuid uuid = QUuid::createUuid();
         info.uuid=uuid.toString(QUuid::WithoutBraces);
     }
+    OnMessageFunc set_plugin_path = (OnMessageFunc)lib->resolve("set_plugin_path");
     info.DLL.getPluginInfo = (GetPluginInfoFunc)lib->resolve("get_plugin_info");
     info.DLL.onMessage = (OnMessageFunc)lib->resolve("on_message");
     info.DLL.onEnable = (OnFunc0)lib->resolve("on_enable");
@@ -1887,6 +1889,31 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     QByteArray uuidBytes = info.uuid.toUtf8();
     uuidBytes.append('\0');
     // 假设 info_str 是 DLL 返回的 JSON 字符串
+
+    if (set_plugin_path) {
+        const QString fullPath = info.path;
+
+        const int pos1 = fullPath.lastIndexOf('/');
+        const int pos2 = fullPath.lastIndexOf('\\');
+        const int pos = qMax(pos1, pos2);
+
+        QString dir;
+        if (pos >= 0) {
+            dir = fullPath.left(pos + 1); // 包含最后一个 / 或 \n
+        } else {
+            dir = fullPath; // 没有分隔符时按你的需求处理
+        }
+
+        // 统一分隔符为 /，并保证末尾一定是 /
+        dir.replace('\\', '/');
+        if (!dir.endsWith('/')) {
+            dir += '/';
+        }
+
+        const std::string dirStd = dir.toStdString();
+        set_plugin_path(dirStd.c_str());
+    }
+
     const char* info_str = info.DLL.getPluginInfo(uuidBytes.data(), myCallback);
     if (info_str && *info_str) {
         QJsonParseError err;
@@ -2231,6 +2258,13 @@ event = _register_rule("event")
         info.python.submitReview  = getCb(kPluginFuncSubmitReview);
         // 7. 解析 _plugin_commands（规则注册）
         info.python.rules.clear();
+        py::object set_plugin_path = getCb("set_plugin_path");
+        if (set_plugin_path) {
+            const std::string dirStd = info.path.toStdString();
+            set_plugin_path(dirStd.c_str());
+        }
+
+
         if (plugin_globals.contains("_plugin_commands") && py::isinstance<py::dict>(plugin_globals["_plugin_commands"])) {
             py::dict commands = plugin_globals["_plugin_commands"].cast<py::dict>();
 

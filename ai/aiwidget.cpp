@@ -2241,11 +2241,13 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
 }
 
 // ========== 入口函数（只做检查，发射信号到主线程） ==========
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped); // 定义在 api.cpp
 QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
 {
 
 
     if(ev.type==0 && info->enableGroupChat){}
+    else if(ev.type==0 &&info->enableGroupPersonal){}
     else if(ev.type==1 && info->enableChannel){}
     else if(ev.type==2 && info->enablePrivateChat){}
     else return QString();
@@ -2255,7 +2257,13 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         if(ev.type==0)
         {
 
-            if (!(ev.bitmap & BIT_AI_BAI)) return QString();
+            if (!(ev.bitmap & BIT_AI_BAI)){ //群没有ai白名单 检查个人有没有 如果有 就触发
+                auto *db = g_botdb[info->appid_int];
+                UserRecord rec;
+                db->getUserBySeqId(ev.user_int,rec);
+                if (!(rec.bitmap & BIT_AI_BAI)) return QString();
+
+            }
         }else if(ev.type==2)
         {
             auto *db = g_botdb[info->appid_int];
@@ -2274,7 +2282,25 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
             QString role;
             QString mode = ai_fujia->fujia_jy(f,role);
             if(mode.isEmpty()) return "触发附加ai指令 但是 ui界面与 设置不一致";
-            return Ai_post(mode,role+ev.msg,60000);
+            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+            if(index>0) {
+                bool ok = false;
+                g_logdb [ev.type+1]->setBuffer_250(index,ok); //设置为250 让未处理 回复 不回复
+            }
+            // 改为异步请求：不再阻塞当前线程干等 60s，回复在回调里直接发出去。
+            // ev 值拷贝进 lambda（异步链路跨线程，不能引用栈上内容）。
+            const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+            Ai_postAsync(mode, role+ev.msg, 60000,
+                [this, ev, appid = info->appid_int, t0](const QString &reply) {
+                    if (m_shuttingDown) return;   // 正在析构
+                    if (reply.isEmpty()) return;
+                    if (!m_botClients.contains(appid)) return;
+                    QQBotClient *bot = m_botClients.value(appid);
+                    QString text = QString("[Ai|%1ms]").arg(QDateTime::currentMSecsSinceEpoch() - t0);
+                    QString rep = reply;
+                    bot->send_msgAsync(ev.type, ev.groupId, text, rep, ev.msgId);
+                });
+            return QString();   // 异步链路负责发回，这里不再返回内容
         }
 
     }
