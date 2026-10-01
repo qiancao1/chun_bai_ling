@@ -21,7 +21,7 @@
 
 class PluginManager;   // 前置声明
 class QScrollArea;
-class QVBoxLayout;
+class QLayout;
 
 
 namespace py = pybind11;
@@ -194,6 +194,7 @@ public:
     QString LoadPlugin_js(PluginInfo &info);
     int findPluginIndex(const QString &id) const;
     QString sendData32(int type,PluginInfo &info,const QString &appidlist = QString());
+    QString sendData32(int type, PluginInfo &info, const QString &id, const QString &value);
     QString LoadPlugin_DLL32(PluginInfo &info);
     void syncPluginsTo32();
     QString anzpip(const QString &reqPath);
@@ -231,6 +232,9 @@ private:
 
     void setupUi();
 
+    // 配置区视口宽度一变（首次布局 / 拉窗口），折行数就变 → 高度要跟着重算
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
     void LoadPlugin_Python();
@@ -242,6 +246,8 @@ private:
     // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
     void rebuildConfigPanel(int index);
     void clearConfigPanel();
+    void updateConfigScrollHeight();          // 按可用宽度重算配置区高度（不超过 5 行）
+    int  configAvailableWidth() const;        // 配置区可用宽度（兜底 260）
     QString callGetConfigList(int index);
     QString callSetConfigValue(int index, const QString &id, const QString &value);
     void applyPluginConfig(int index, const QString &id, const QString &value);
@@ -252,7 +258,8 @@ private:
     QTextBrowser *detailDescLabel;
     QScrollArea *configScroll = nullptr;      // 插件配置滚动区
     QWidget *configContainer = nullptr;       // 配置项容器
-    QVBoxLayout *configLayout = nullptr;      // 配置项布局
+    QLayout *configLayout = nullptr;          // 配置项布局（自适应折行，见 pluginpage.cpp）
+    bool m_configHeightLock = false;          // 重算高度时防递归（改高度会再触发视口 resize）
     QListWidget *rightCheckList;
     QPushButton *pypip,*ai_c_j,*ai_b_j;
     QPushButton *plugin_sc;

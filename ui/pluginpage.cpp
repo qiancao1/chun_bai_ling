@@ -31,6 +31,8 @@
 #include <QScrollArea>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QLayout>
+#include <QEvent>
 
 // ======================== 插件类型徽章（列表卡片 / 详情用） ========================
 static QString pluginTypeName(int type)
@@ -55,6 +57,10 @@ static QString pluginTypeColor(int type)
     }
 }
 
+// 配置区布局的工厂：ConfigFlowLayout 定义在下面的「配置区」段里（本文件后半部分），
+// setupUi 在同一文件更靠前的位置，没法直接 new，所以走一个前置声明的工厂函数。
+static QLayout *createConfigLayout(QWidget *parent);
+
 static void safeCall(const py::object &func) {
     if (func.is_none()) return;
     if (!py::isinstance<py::function>(func) && !PyCallable_Check(func.ptr())) return;
@@ -67,7 +73,11 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     : QWidget(parent)
 {
     setFixedHeight(48);
-    setStyleSheet("background: transparent;");
+    // ⚠ 不能写 setStyleSheet("background: transparent;")：不带选择器的声明块在 Qt 里等价于
+    // `* { ... }`，会**向下传播给所有后代**，把后代从全局样式表继承到的样式（比如 QPushButton
+    // 的 #FFF0DE 底色）覆盖掉。要限定到控件自身，必须带 #objectName。
+    setObjectName("qcPluginItem");
+    setStyleSheet("#qcPluginItem { background: transparent; }");
 
     QHBoxLayout *hLayout = new QHBoxLayout(this);
     hLayout->setContentsMargins(8, 4, 8, 4);
@@ -77,7 +87,10 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     iconLabel->setFixedSize(36, 36);
     iconLabel->setScaledContents(true);
     iconLabel->setObjectName("icon_AAA");
-    iconLabel->setStyleSheet("border: 1px solid #89b4fa; border-radius: 2px;");
+    // ⚠ 全局样式表里有 `QFrame { background: #FFFFFF; }`，而 **QLabel 是 QFrame 的子类**
+    // → 不显式声明的话每个 QLabel 都会自带一块白底（在浅色卡片上很明显）。
+    // 所以这里的 QLabel 一律自带 `background: transparent;`（自身规则优先于全局的 QFrame）。
+    iconLabel->setStyleSheet("border: 1px solid #89b4fa; border-radius: 2px; background: transparent;");
     QPixmap pix(info.icon);
     if (!pix.isNull()) iconLabel->setPixmap(pix);
     else iconLabel->clear();
@@ -92,7 +105,7 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
         statusIndicator->setStyleSheet("background: #f38ba8; border-radius: 6px;");
     line1->addWidget(statusIndicator);
     nameLabel = new QLabel(info.name);
-    nameLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #111111;");
+    nameLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #111111; background: transparent;");
     line1->addWidget(nameLabel);
     // 类型徽章紧跟插件名
     typeLabel = new QLabel(pluginTypeName(info.type));
@@ -108,9 +121,9 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     QHBoxLayout *line2 = new QHBoxLayout;
     line2->setSpacing(6);
     authorLabel = new QLabel(info.author.isEmpty() ? "未知作者" : info.author);
-    authorLabel->setStyleSheet("font-size: 12px; color: #111111;");
+    authorLabel->setStyleSheet("font-size: 12px; color: #111111; background: transparent;");
     versionLabel = new QLabel("v" + info.version);
-    versionLabel->setStyleSheet("font-size: 12px; color: #89b4fa; font-weight: bold;");
+    versionLabel->setStyleSheet("font-size: 12px; color: #89b4fa; font-weight: bold; background: transparent;");
     line2->addWidget(authorLabel);
     line2->addStretch();
     line2->addWidget(versionLabel);
@@ -362,10 +375,13 @@ void PluginPage::setupUi()
 
     // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
     configContainer = new QWidget;
-    configContainer->setStyleSheet("background: transparent;");
-    configLayout = new QVBoxLayout(configContainer);
+    // 同上：必须带 #objectName 限定，否则 `* { background: transparent; }` 会让配置区里
+    // 所有 QPushButton 丢掉全局底色（看起来就是「白按钮」）。
+    configContainer->setObjectName("qcConfigContainer");
+    configContainer->setStyleSheet("#qcConfigContainer { background: transparent; }");
+    // 自适应折行布局：input 独占一行，checkbox / button 能并排就并排
+    configLayout = createConfigLayout(configContainer);
     configLayout->setContentsMargins(0, 0, 0, 0);
-    configLayout->setSpacing(6);
 
     configScroll = new QScrollArea;
     configScroll->setWidget(configContainer);
@@ -374,6 +390,7 @@ void PluginPage::setupUi()
     configScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     configScroll->setStyleSheet("QScrollArea { background: transparent; border: none; }"
                                 "QScrollArea > QWidget > QWidget { background: transparent; }");
+    configScroll->viewport()->installEventFilter(this);   // 视口宽度变了 → 重算折行高度
     configScroll->setVisible(false);
     rightMainLayout->addWidget(configScroll);
 
@@ -1147,6 +1164,166 @@ QString getShortPath(const QString& path, int maxLen = 64) {
     }
     return QString("...") + shortPath;
 }
+// ==================== 配置区尺寸常量 ====================
+static const int kConfigMaxRows   = 5;    // 高度按 5 行封顶（超出滚动）
+static const int kConfigRowHeight = 28;   // 单行高度
+static const int kConfigSpacing   = 6;    // 同一行里「项与项」的间距（水平）
+static const int kConfigRowGap    = 10;   // 「行与行」的间距（垂直）——比项间距大一点，输入框/按钮上下不显挤
+static const int kConfigConfirmWidth = 56;  // input 行右侧「确认」按钮宽度
+
+// ==================== 配置区自适应折行布局 ====================
+// 用 QVBoxLayout 的话 JSON 里连着好几个 checkbox / button 会一人占一行，太占地方。
+// 这里的规则：
+//   · 「整行项」= widget 动态属性 `qc_config_full_row` 为 true（input 那种要拉满宽度的），独占一行；
+//   · 「紧凑项」= 其余（checkbox / button），从左到右并排，放不下自动换行。
+// 必须实现 heightForWidth：QScrollArea(widgetResizable) 会用它决定容器高度，否则折行后高度不对。
+class ConfigFlowLayout : public QLayout
+{
+public:
+    explicit ConfigFlowLayout(QWidget *parent = nullptr)
+        : QLayout(parent)
+    {
+        setContentsMargins(0, 0, 0, 0);
+        setSpacing(kConfigSpacing);
+    }
+    // 换行时的垂直间距，默认跟项间距（spacing）一样；设了就按设的来。
+    void setRowGap(int g) { m_rowGap = g; invalidate(); }
+    int  rowGap() const   { return m_rowGap >= 0 ? m_rowGap : spacing(); }
+    ~ConfigFlowLayout() override
+    {
+        while (QLayoutItem *item = takeAt(0)) delete item;
+    }
+
+    void addItem(QLayoutItem *item) override { m_items.append(item); }
+    int count() const override { return m_items.size(); }
+    QLayoutItem *itemAt(int index) const override { return m_items.value(index); }
+    QLayoutItem *takeAt(int index) override
+    {
+        if (index < 0 || index >= m_items.size()) return nullptr;
+        return m_items.takeAt(index);
+    }
+    Qt::Orientations expandingDirections() const override { return Qt::Orientations(); }
+    bool hasHeightForWidth() const override { return true; }
+    QSize sizeHint() const override
+    {
+        if (m_items.isEmpty()) return QSize(0, 0);
+        // ⚠ 必须用「最近一次真实布局的宽度」算高度。写死 240 的话，容器在更宽的视口里
+        // 会被报一个虚高的高度（240 宽要 3 行、300 宽只要 2 行），QScrollArea 就以为
+        // 内容超出了视口 → 冒出一条其实没内容可滚的滚动条。
+        const int w = m_lastWidth > 0 ? m_lastWidth : 240;
+        return QSize(w, heightForWidth(w));
+    }
+    QSize minimumSize() const override
+    {
+        // 宽度方向不能回报「最宽那个 item」：那会把容器的最小宽度顶大，视口被撑破后
+        // 折行失效（内容被裁）。这里只保留高度方向的最小值。
+        int h = 0;
+        for (QLayoutItem *item : m_items)
+            h = qMax(h, itemSize(item).height());
+        return QSize(0, h);
+    }
+    int heightForWidth(int width) const override
+    {
+        return doLayout(QRect(0, 0, width, 0), false).height();
+    }
+    void setGeometry(const QRect &rect) override
+    {
+        QLayout::setGeometry(rect);
+        const QMargins mg = contentsMargins();
+        m_lastWidth = qMax(0, rect.width() - mg.left() - mg.right());
+        doLayout(rect, true);
+    }
+
+private:
+    // ⚠ 刚 new 出来、还没被 Qt 显示过的控件，QWidgetItem 会把它当「空 item」：
+    //    sizeHint()/minimumSize() 直接返回 (0,0)，setGeometry() 也会被跳过。
+    //    Qt 是在 addWidget 之后**排队**调 _q_showIfNotHidden 才把控件显示出来的，
+    //    所以「建完控件立刻量高度」在同一个事件循环回合里必然量到 0 ——
+    //    高度就停在切插件前那个插件的旧值上，表现是切到多配置插件后只露出第一行、
+    //    后面的行被容器裁掉且不出滚动条。这里在 item 报空时退回控件自身的 sizeHint
+    //    （内部会 ensurePolished，值是准的）。
+    static QSize itemSize(QLayoutItem *item)
+    {
+        QSize s = item->sizeHint();
+        if (s.height() <= 0) {
+            if (QWidget *w = item->widget()) s = s.expandedTo(w->sizeHint());
+        }
+        return s;
+    }
+    // 空 item 的 setGeometry 会被 Qt 丢掉，直接给控件本身设，保证这一遍就能摆好
+    static void placeItem(QLayoutItem *item, const QRect &r)
+    {
+        item->setGeometry(r);
+        if (QWidget *w = item->widget()) {
+            if (w->geometry() != r) w->setGeometry(r);
+        }
+    }
+
+    static bool isFullRowItem(QLayoutItem *item)
+    {
+        QWidget *w = item->widget();
+        return w && w->property("qc_config_full_row").toBool();
+    }
+
+    QSize doLayout(const QRect &rect, bool apply) const
+    {
+        const QMargins mg = contentsMargins();
+        const int left   = rect.left() + mg.left();
+        const int avail  = qMax(0, rect.width() - mg.left() - mg.right());
+        const int gap    = spacing();   // 同一行里「项与项」
+        const int vGap   = rowGap();    // 「行与行」
+
+        int  y          = rect.top() + mg.top();
+        int  x          = left;
+        int  lineH      = 0;      // 当前行里最高的那个
+        bool hasContent = false;  // 已经放过东西 → 换行时先补 vGap
+        int  bottom     = y;
+
+        for (QLayoutItem *item : m_items) {
+            const QSize hint = itemSize(item);   // 刚建的控件 item->sizeHint() 会是 0，见上
+
+            if (isFullRowItem(item)) {
+                if (hasContent) y += (lineH > 0 ? lineH + vGap : vGap);   // 收掉上一行
+                x = left;
+                lineH = 0;
+                if (apply) placeItem(item, QRect(x, y, avail, hint.height()));
+                y += hint.height();
+                bottom = qMax(bottom, y);
+                hasContent = true;
+                continue;
+            }
+
+            // 紧凑项要换行的两种情况：
+            //   · 上一项是「整行项」（此时 lineH == 0）：上面那个分支只把 y 推到了行底、**没留间距**，
+            //     这里必须补 vGap，否则 input 行和紧跟的按钮会贴在一起（几乎 0 间距）。
+            //   · 本行已排了东西、再放一个就超宽。
+            if (hasContent && (lineH == 0 || x + hint.width() > left + avail)) {
+                y += (lineH > 0 ? lineH + vGap : vGap);
+                x = left;
+                lineH = 0;
+            }
+            if (apply) placeItem(item, QRect(x, y, hint.width(), hint.height()));
+            x += hint.width() + gap;
+            lineH = qMax(lineH, hint.height());
+            bottom = qMax(bottom, y + hint.height());
+            hasContent = true;
+        }
+
+        return QSize(rect.width(), bottom - rect.top() + mg.bottom());
+    }
+
+    QList<QLayoutItem *> m_items;
+    int m_lastWidth = 0;    // 最近一次真实布局可用的宽度（sizeHint 用它算折行高度）
+    int m_rowGap    = -1;   // 行间距；< 0 表示沿用 spacing()
+};
+
+static QLayout *createConfigLayout(QWidget *parent)
+{
+    ConfigFlowLayout *layout = new ConfigFlowLayout(parent);
+    layout->setRowGap(kConfigRowGap);   // 行间距 > 项间距：输入框和下面那排按钮不至于贴在一起
+    return layout;
+}
+
 // ==================== 插件配置区（get_config_list / set_config_value）====================
 // 只有 Python（type 0）与 x64 原生库（type 1）才可能实现这两个函数：
 //   get_config_list()            -> JSON 文本：
@@ -1156,9 +1333,6 @@ QString getShortPath(const QString& path, int maxLen = 64) {
 //        checkbox -> value 是 "1" / "0"
 //        button   -> value 是空串
 // 配置项本身不设数量上限，但区域高度按 5 行封顶，多出来的滚动查看。
-static const int kConfigMaxRows   = 5;    // 高度按 5 行封顶
-static const int kConfigRowHeight = 28;   // 单行高度（和布局里各处保持一致）
-static const int kConfigSpacing   = 6;    // 行间距（与 configLayout->setSpacing 一致）
 
 // 读配置项列表：拿不到（没实现 / 返回空 / 不是 JSON 数组）就返回空串
 QString PluginPage::callGetConfigList(int index)
@@ -1171,7 +1345,10 @@ QString PluginPage::callGetConfigList(int index)
         const char *ret = info.DLL.get_config_list();
         return ret ? QString::fromUtf8(ret) : QString();
     }
+    if (info.type == 2) {
 
+        return sendData32(12,info);
+    }
     if (info.type == 0) {
         try {
             py::gil_scoped_acquire gil;
@@ -1205,7 +1382,10 @@ QString PluginPage::callSetConfigValue(int index, const QString &id, const QStri
         const char *ret = info.DLL.set_config_value(idUtf8.constData(), valUtf8.constData());
         return ret ? QString::fromUtf8(ret) : QString();
     }
+    if (info.type == 2) {
 
+        return sendData32(13,info,id,value);
+    }
     if (info.type == 0) {
         try {
             py::gil_scoped_acquire gil;
@@ -1291,50 +1471,63 @@ void PluginPage::rebuildConfigPanel(int index)
         const QString itemType = obj["type"].toString().trimmed().toLower();
         const QString def = obj["default"].toString();
 
-        QWidget *row = new QWidget(configContainer);
-        row->setStyleSheet("background: transparent;");
-        QHBoxLayout *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(8);
-
         if (itemType == "checkbox") {
-            QCheckBox *box = new QCheckBox(desc, row);
+            // 紧凑项：直接丢进 ConfigFlowLayout，和别的 compact 项并排 / 自动换行
+            QCheckBox *box = new QCheckBox(desc, configContainer);
             // 先 setChecked 再 connect，避免初始化时白写一次
             box->setChecked(def == "1" || def.compare("true", Qt::CaseInsensitive) == 0);
             box->setStyleSheet("font-size: 12px; color: #222222;");
             box->setFixedHeight(kConfigRowHeight);
-            rowLayout->addWidget(box);
-            rowLayout->addStretch();
+            configLayout->addWidget(box);
             connect(box, &QCheckBox::toggled, this, [this, index, id](bool checked) {
                 applyPluginConfig(index, id, checked ? QStringLiteral("1") : QStringLiteral("0"));
             });
-        } else if (itemType == "button") {
-            QPushButton *btn = new QPushButton(desc, row);
+            ++rows;
+            continue;
+        }
+
+        if (itemType == "button") {
+            QPushButton *btn = new QPushButton(desc, configContainer);
             btn->setFixedHeight(kConfigRowHeight);
-            rowLayout->addWidget(btn);
-            rowLayout->addStretch();
+            configLayout->addWidget(btn);
             connect(btn, &QPushButton::clicked, this, [this, index, id]() {
                 applyPluginConfig(index, id, QString());   // 按钮不带值，传空串
             });
-        } else {                                          // 其余一律按 input 处理
-            QLabel *lb = new QLabel(desc, row);
-            lb->setStyleSheet("font-size: 12px; color: #222222;");
-            // ⚠ 本文件里 `#define QLineEdit PlaceholderLineEdit` 是**活跃**的（appwindow.h 间接引入），
-            // PlaceholderLineEdit 只有 (QWidget*) 一个构造函数，不能像 QLineEdit 那样一次传文本
-            QLineEdit *edit = new QLineEdit(row);
-            edit->setText(def);
-            edit->setPlaceholderText("按回车键保存");
-            edit->setFixedHeight(kConfigRowHeight);
-            // 提示放在输入框右边常显：输入框里已经有 default，placeholder 基本看不到
-            QLabel *hint = new QLabel("按回车键保存", row);
-            hint->setStyleSheet("font-size: 11px; color: #999999;");
-            rowLayout->addWidget(lb);
-            rowLayout->addWidget(edit, 1);
-            rowLayout->addWidget(hint);
-            connect(edit, &QLineEdit::returnPressed, this, [this, index, id, edit]() {
-                applyPluginConfig(index, id, edit->text());
-            });
+            ++rows;
+            continue;
         }
+
+        // 其余一律按 input 处理：整行项，独占一行
+        QWidget *row = new QWidget(configContainer);
+        // 同上：无选择器写法会把这一行里的「确认」按钮底色一起抹掉
+        row->setObjectName("qcConfigRow");
+        row->setStyleSheet("#qcConfigRow { background: transparent; }");
+        row->setProperty("qc_config_full_row", true);      // 告诉 ConfigFlowLayout 这行要拉满
+        QHBoxLayout *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+
+        QLabel *lb = new QLabel(desc, row);
+        lb->setStyleSheet("font-size: 12px; color: #222222; background: transparent;");
+        // ⚠ 本文件里 `#define QLineEdit PlaceholderLineEdit` 是**活跃**的（appwindow.h 间接引入），
+        // PlaceholderLineEdit 只有 (QWidget*) 一个构造函数，不能像 QLineEdit 那样一次传文本
+        QLineEdit *edit = new QLineEdit(row);
+        edit->setText(def);
+        edit->setPlaceholderText("输入后点确认保存");
+        edit->setFixedHeight(kConfigRowHeight);
+        QPushButton *okBtn = new QPushButton("确认", row);
+        okBtn->setFixedHeight(kConfigRowHeight);
+        okBtn->setFixedWidth(kConfigConfirmWidth);    // 固定宽，多行 input 的按钮能对齐
+        rowLayout->addWidget(lb);
+        rowLayout->addWidget(edit, 1);
+        rowLayout->addWidget(okBtn);
+        connect(okBtn, &QPushButton::clicked, this, [this, index, id, edit]() {
+            applyPluginConfig(index, id, edit->text());
+        });
+        // 回车一样提交，两种操作都能用
+        connect(edit, &QLineEdit::returnPressed, this, [this, index, id, edit]() {
+            applyPluginConfig(index, id, edit->text());
+        });
 
         configLayout->addWidget(row);
         ++rows;
@@ -1346,9 +1539,55 @@ void PluginPage::rebuildConfigPanel(int index)
     }
 
     configScroll->setVisible(true);
-    const int contentH = configContainer->sizeHint().height();
-    const int maxH = kConfigMaxRows * kConfigRowHeight + (kConfigMaxRows - 1) * kConfigSpacing;
-    configScroll->setFixedHeight(qBound(1, contentH, maxH));   // 最多 5 行高，多了滚动
+    updateConfigScrollHeight();   // 按可用宽度折行后算高度，最多 5 行，多了滚动
+    // 控件要等下一个事件循环回合才被 Qt 真正显示出来（addWidget 是排队 show 的），
+    // 那时尺寸才算彻底定型，再量一次最稳 —— 切插件时高度就靠这一下纠正
+    QTimer::singleShot(0, this, [this]() {
+        if (configScroll && configScroll->isVisible()) updateConfigScrollHeight();
+    });
+}
+
+// 配置区可用宽度。首次构建时滚动区还没完成布局（width 为 0），逐级退回兜底值
+int PluginPage::configAvailableWidth() const
+{
+    int w = configScroll ? configScroll->viewport()->width() : 0;
+    // 描述框和配置区在同一个布局列里、宽度一致，比容器自身更可靠
+    if (w < 80 && detailDescLabel) w = detailDescLabel->width();
+    if (w < 80 && configContainer) w = configContainer->width();
+    if (w < 80 && configScroll)    w = configScroll->width();
+    if (w < 80 && configScroll && configScroll->parentWidget())
+        w = configScroll->parentWidget()->width() - 20;    // 父布局左右各 10
+    if (w < 80)                    w = 260;
+    return w;
+}
+
+// 用当前可用宽度问布局要高度（ConfigFlowLayout::heightForWidth 会按折行结果算）。
+// 容器高度也一起钉死：容器的 sizeHint 一旦比视口高，QScrollArea 就会冒出多余的滚动条。
+void PluginPage::updateConfigScrollHeight()
+{
+    if (!configScroll || !configLayout || !configContainer) return;
+    if (m_configHeightLock) return;      // 下面会改高度 → 视口跟着 resize，别递归回来
+    int contentH = configLayout->heightForWidth(configAvailableWidth());
+    // 量不到（理论上不该发生）也不要留着上一次插件的高度 —— 那正是「切插件后只露出第一行」的样子
+    if (contentH <= 0) contentH = kConfigRowHeight;
+    // 封顶高度要按「行间距」算（不是项间距），否则 5 行时会差出 4*(10-6)=16px，
+    // 那点差值就足以让最后一行被压出滚动条。
+    const int maxH = kConfigMaxRows * kConfigRowHeight + (kConfigMaxRows - 1) * kConfigRowGap;
+
+    m_configHeightLock = true;
+    configContainer->setFixedHeight(contentH);                  // 内容的真实高度
+    configScroll->setFixedHeight(qBound(1, contentH, maxH));    // 可视高度：超过上限才滚动
+    m_configHeightLock = false;
+}
+
+// 视口宽度一变（首次布局 / 拉窗口 / 拖 splitter）折行数就变，高度得跟着重算
+bool PluginPage::eventFilter(QObject *obj, QEvent *event)
+{
+    if (configScroll && obj == configScroll->viewport()
+        && event->type() == QEvent::Resize && configScroll->isVisible()) {
+        updateConfigScrollHeight();
+    }
+    return QWidget::eventFilter(obj, event);
 }
 
 //更新右边面板
@@ -2243,7 +2482,25 @@ QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlis
     return QString();
 #endif
 }
+QString PluginPage::sendData32(int type, PluginInfo &info , const QString &id, const QString &value)
+{
+#ifdef _WIN32
 
+    if (!bridge) return QString();
+    QJsonObject reqJson;
+    reqJson["type"] = type;                       // 加载插件
+
+    reqJson["uuid"] = info.uuid;              // 插件唯一标识（可能为空，由易语言处理）
+    reqJson["id"] = id;
+    reqJson["value"] = value;
+    QByteArray reqData = QJsonDocument(reqJson).toJson(QJsonDocument::Compact);
+    if(!bridge->writeResponseToBlock(1, reqData.constData()))
+        return "发送加载命令失败（共享内存繁忙）";
+    return bridge->processRequestsA(5000);
+#else
+    return QString();
+#endif
+}
 QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
 {
     // 1. 确保临时目录存在

@@ -54,7 +54,7 @@ QString g_system=R"(注意 生成的插件是md语法 请 尽量使用[]() 表�
 14.发送图片 语音 视频 文件 使用这个格式[image,path=本地路径|路径] 图片语法还支持![#24px #24px](本地路径|链接)，#24px 是高宽 另外还有 语音[audio,path=本地路径|路径] 视频[video,path=本地路径|路径] 文件[file,path=本地路径|路径]
 15.制图请使用 PIL 制图库
 16.由于是QQ环境 请注意发送[]() 按钮时注意排版 由于这种按钮 腾讯会添加 一个箭头符号 相当于占两个中文长度 排版 是 [6字]() [6字]() 相当于 6+2(腾讯针对这类按钮 自动加的箭头)+6+2(腾讯针对这类按钮 自动加的箭头)=16 字符
-
+17.允许发送 LaTeX 格式文本 进行布局ui
 ========
 #当前文件目录！！！ 请不要执行cmd查看目录 这里有实时文件目录 请勿读取 ai对话.json 这个是你的上下文存储文件
 注意 格式是 文件名 (文件大小) 读取就读文件名即可 文件大小你看看就知道了
@@ -169,6 +169,20 @@ async def ping2(msg):
 def set_plugin_path(path):
     """与main.py目录 相当于 {path}main.py 带\或者 /结尾 根据系统而定 如果有与文件同目录 可记录路径"""
     ...
+def get_config_list():
+    """
+    在框架直接创建ui 适合那些轻量插件 单个开关 不想创建ui等插件 本函数可不写到main.py
+    "[{\"desc\":\"示例配置\",\"type\":\"input\",\"id\":\"demo\",\"default\":\"xxx\"},"
+    "{\"desc\":\"自动发送\",\"type\":\"checkbox\",\"id\":\"auto_send\",\"default\":\"1\"},"
+    "{\"desc\":\"立即重载\",\"type\":\"button\",\"id\":\"reload\",\"default\":\"\"}]";
+    """
+    ...
+
+def set_config_value(id,value):
+    """ 都是字符串参数 id是 上面那个函数 给的  value 根据类型 如果是输入框这里将是输入框数据 checkbox 类型是01 代表是否打勾 按钮这里是空 本函数可不写到main.py 成功返回空帮我 失败返回失败文本"""
+    ...
+
+
 def get_plugin_info(uuid):
     import qiancao_sdk
     global api

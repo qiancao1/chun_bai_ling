@@ -1329,7 +1329,7 @@ void ChatPage::updateAllContactLists(int index)
 
         for (auto it = 全量群.begin(); it != 全量群.end(); ++it) {
             Contact c;
-            c.id = it.key();
+            c.id = it.key();//群id
 
 
             int appid =it.value();
@@ -1337,7 +1337,7 @@ void ChatPage::updateAllContactLists(int index)
                 if (appid != m_accounts[m_currentBotIndex]->appid_int) continue;
             }
             Message msg;
-            if(sw)
+            if(sw) //最近1000条不存在 就直接显示id
             {
                 g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), c.id, msg);
             }else{

@@ -73,8 +73,8 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.6.85"
-#define APP_BUILD_NUMBER 85
+#define APP_VERSION_STR "v1.3.7.89"
+#define APP_BUILD_NUMBER 89
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
@@ -471,7 +471,7 @@ void MainWindow::xr()
     m_kantoumusume->resize(pixmap.size());
     QGraphicsOpacityEffect* effect = new QGraphicsOpacityEffect();
     m_kantoumusume->setStyleSheet("background: transparent;");
-    effect->setOpacity(0.5);
+    effect->setOpacity(0.2);
     m_kantoumusume->setGraphicsEffect(effect);
     m_kantoumusume->move(width() - m_kantoumusume->width() - 10,
                        height() - m_kantoumusume->height() + 40);
