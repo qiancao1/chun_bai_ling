@@ -20,6 +20,8 @@
 
 
 class PluginManager;   // 前置声明
+class QScrollArea;
+class QVBoxLayout;
 
 
 namespace py = pybind11;
@@ -50,7 +52,8 @@ constexpr const char *kPluginFuncGetReviewList = "get_review_list";
 constexpr const char *kPluginFuncSubmitReview  = "submit_review";
 typedef const char* (*ReviewFetchFunc)(int, int, int);   // get_review_list(开始位置, 数量, 状态)
 typedef const char* (*ReviewSubmitFunc)(const char*);    // submit_review
-
+typedef const char* (*OnFunc1)();    // submit_review
+typedef const char* (*OnFunc2)(const char*,const char*);    // submit_review
 
 enum class MatchType {
     Equals,
@@ -92,6 +95,8 @@ struct PythonPluginobj {
     py::object onUnload;                 // 卸载前调用
     py::object getReviewList;            // 昵称审核：get_review_list(开始位置,数量,状态)
     py::object submitReview;             // 昵称审核：submit_review(JSON文本)
+    py::object get_config_list;
+    py::object set_config_value;
     QList<Rule> rules;      // 所有规则列表（替代原来的 equals hash）
 
 
@@ -107,6 +112,8 @@ struct JsPlugin {
 
 struct DLLPluginobj {
     GetPluginInfoFunc getPluginInfo;
+    OnFunc1 get_config_list;
+    OnFunc2 set_config_value;
     OnMessageFunc onMessage;
     OnMessageFunc2 onMessage2;
     OnFunc0 onEnable;
@@ -153,6 +160,7 @@ private:
     QLabel *nameLabel;
     QLabel *authorLabel;
     QLabel *versionLabel;
+    QLabel *typeLabel;      // 插件类型徽章（Python / DLL / DLL32 / JS）
 };
 
 class PluginPage : public QWidget {
@@ -231,17 +239,20 @@ private:
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
     void onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
+    // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
+    void rebuildConfigPanel(int index);
+    void clearConfigPanel();
+    QString callGetConfigList(int index);
+    QString callSetConfigValue(int index, const QString &id, const QString &value);
+    void applyPluginConfig(int index, const QString &id, const QString &value);
     QListWidget *pluginListWidget;
     QPushButton *reloadBtn;
     QPushButton *openDirBtn;
-    QLabel *detailIconLabel;
-    QLabel *detailNameLabel;
-    QLabel *detailTypeLabel;
-    QLabel *detailVersionLabel;
-    QLabel *detailAuthorLabel;
     QLabel *detailpathLabel;
     QTextBrowser *detailDescLabel;
-    QLabel *detailStatusLabel;
+    QScrollArea *configScroll = nullptr;      // 插件配置滚动区
+    QWidget *configContainer = nullptr;       // 配置项容器
+    QVBoxLayout *configLayout = nullptr;      // 配置项布局
     QListWidget *rightCheckList;
     QPushButton *pypip,*ai_c_j,*ai_b_j;
     QPushButton *plugin_sc;

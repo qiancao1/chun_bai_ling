@@ -3,8 +3,8 @@
 IDI_ICON1 ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,3,5,81
-PRODUCTVERSION  1,3,5,81
+FILEVERSION     1,3,6,85
+PRODUCTVERSION  1,3,6,85
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "💐双月❀❅*"
             VALUE "FileDescription",  "纯白铃"
-            VALUE "FileVersion",      "1.3.5.81"
+            VALUE "FileVersion",      "1.3.6.85"
             VALUE "InternalName",     "纯白铃"
             VALUE "LegalCopyright",   "Copyright © 2026 两个月亮"
             VALUE "OriginalFilename", "纯白铃.exe"
             VALUE "ProductName",      "纯白铃"
-            VALUE "ProductVersion",   "1.3.5.81"
+            VALUE "ProductVersion",   "1.3.6.85"
         END
     END
     BLOCK "VarFileInfo"

@@ -28,6 +28,32 @@
 #include "scrolltextdialog.h"   // 可滚动的只读文本弹窗（内容多的提示用它替代 QMessageBox）
 
 #include <QListWidget>
+#include <QScrollArea>
+#include <QCheckBox>
+#include <QLineEdit>
+
+// ======================== 插件类型徽章（列表卡片 / 详情用） ========================
+static QString pluginTypeName(int type)
+{
+    switch (type) {
+    case 0: return "Python";
+    case 1: return "DLL";
+    case 2: return "DLL32";
+    case 3: return "JS";
+    default: return "未知";
+    }
+}
+
+static QString pluginTypeColor(int type)
+{
+    switch (type) {
+    case 0: return "#2EE89F";
+    case 1: return "#FFA500";
+    case 2: return "#FF6347";
+    case 3: return "#97CEEB";
+    default: return "#CCCCCC";
+    }
+}
 
 static void safeCall(const py::object &func) {
     if (func.is_none()) return;
@@ -68,11 +94,19 @@ PluginItemWidget::PluginItemWidget(const PluginInfo &info, QWidget *parent)
     nameLabel = new QLabel(info.name);
     nameLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #111111;");
     line1->addWidget(nameLabel);
+    // 类型徽章紧跟插件名
+    typeLabel = new QLabel(pluginTypeName(info.type));
+    typeLabel->setStyleSheet(QString("background: %1; color: #111111; border-radius: 3px;"
+                                     " padding: 0px 6px; font-size: 11px; font-weight: bold;")
+                                 .arg(pluginTypeColor(info.type)));
     line1->addStretch();
+    line1->addWidget(typeLabel, 0, Qt::AlignVCenter);
+
     vLayout->addLayout(line1);
 
     // 第二行：作者 | 版本
     QHBoxLayout *line2 = new QHBoxLayout;
+    line2->setSpacing(6);
     authorLabel = new QLabel(info.author.isEmpty() ? "未知作者" : info.author);
     authorLabel->setStyleSheet("font-size: 12px; color: #111111;");
     versionLabel = new QLabel("v" + info.version);
@@ -97,6 +131,11 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
         iconLabel->clear();
     // 更新名称
     nameLabel->setText(info.name);
+    // 更新类型徽章
+    typeLabel->setText(pluginTypeName(info.type));
+    typeLabel->setStyleSheet(QString("background: %1; color: #111111; border-radius: 3px;"
+                                     " padding: 0px 6px; font-size: 11px; font-weight: bold;")
+                                 .arg(pluginTypeColor(info.type)));
     // 更新作者
     authorLabel->setText(info.author.isEmpty() ? "未知作者" : info.author);
     // 更新版本
@@ -284,56 +323,29 @@ void PluginPage::setupUi()
     middleLayout->addLayout(iconNameLayout3);
     //middleLayout->addStretch(); // 让列表顶部分布，下方留白
 
-    // ========== 右侧：插件详情（不含账号列表） ==========
-    QGroupBox *detailGroup = new QGroupBox("插件详情");
+    // ========== 右侧：插件详情 ==========
+    // 顶部那一块（「插件详情」标题 / 图标 / 插件名 / 编辑·AI 按钮 / 类型·版本·作者）已按要求移除，
+    // 面板只保留「路径 + 说明 + 插件配置 + 操作按钮」；「编辑当前插件 / AI生成插件」下移到操作按钮上一行。
+    QGroupBox *detailGroup = new QGroupBox;
     detailGroup->setStyleSheet(
         "QGroupBox { padding-top: 0px; margin-top: 0px; border: 1px solid #cccccc; border-radius: 4px; }"
-        "QGroupBox::title { subcontrol-position: top left; padding: 0px; margin: 0px; top: 10px; }"
         );
     QVBoxLayout *rightMainLayout = new QVBoxLayout(detailGroup);
     rightMainLayout->setSpacing(8);
-    rightMainLayout->setContentsMargins(10, 30, 10, 10);
+    rightMainLayout->setContentsMargins(10, 10, 10, 10);
 
-    // ---- 图标 + 插件名（水平布局） ----
-    QHBoxLayout *iconNameLayout = new QHBoxLayout;
-    detailIconLabel = new QLabel;
-    detailIconLabel->setFixedSize(64, 64);
-    detailIconLabel->setScaledContents(true);
-    detailIconLabel->setStyleSheet("border: 1px solid #222222; border-radius: 0px;");
-    iconNameLayout->addWidget(detailIconLabel);
-    QFormLayout *formLayout2 = new QFormLayout;
-
-
-    detailNameLabel = new QLabel;
-    detailNameLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #222222;");
-    formLayout2->addWidget(detailNameLabel);
-    QHBoxLayout *iconNameLayout2 = new QHBoxLayout;
-    iconNameLayout2->setSpacing(3);
-    ai_b_j = new QPushButton("编辑当前插件");
-    ai_b_j->setFixedWidth(120);
-    ai_c_j= new QPushButton("Ai生成插件");
-    ai_c_j->setFixedWidth(100);
-
-    iconNameLayout2->addWidget(ai_b_j);
-    iconNameLayout2->addWidget(ai_c_j);
-    formLayout2->addItem(iconNameLayout2);
-    iconNameLayout->addLayout(formLayout2);
-
-    rightMainLayout->addLayout(iconNameLayout);
-
-    // ---- 表单信息（类型、版本、作者、路径） ----
-    QFormLayout *formLayout = new QFormLayout;
-    formLayout->setSpacing(10);
-    formLayout->setContentsMargins(0, 0, 0, 0);
-    detailTypeLabel = new QLabel;
-    detailVersionLabel = new QLabel;
-    detailAuthorLabel = new QLabel;
+    // ---- 路径 ----
+    QHBoxLayout *pathLayout = new QHBoxLayout;
+    pathLayout->setContentsMargins(0, 0, 0, 0);
+    QLabel *pathTagLabel = new QLabel("路径：");
+    pathTagLabel->setStyleSheet("font-size: 12px; color: #222222;");
     detailpathLabel = new QLabel;
-    formLayout->addRow("类型：", detailTypeLabel);
-    formLayout->addRow("版本：", detailVersionLabel);
-    formLayout->addRow("作者：", detailAuthorLabel);
-    formLayout->addRow("路径：", detailpathLabel);
-    rightMainLayout->addLayout(formLayout);
+    detailpathLabel->setStyleSheet("font-size: 12px; color: #666666;");
+    detailpathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    detailpathLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    pathLayout->addWidget(pathTagLabel);
+    pathLayout->addWidget(detailpathLabel, 1);
+    rightMainLayout->addLayout(pathLayout);
 
     // ---- 描述框 ----
     detailDescLabel = new QTextBrowser;
@@ -348,6 +360,35 @@ void PluginPage::setupUi()
         );
     rightMainLayout->addWidget(detailDescLabel, 1);
 
+    // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
+    configContainer = new QWidget;
+    configContainer->setStyleSheet("background: transparent;");
+    configLayout = new QVBoxLayout(configContainer);
+    configLayout->setContentsMargins(0, 0, 0, 0);
+    configLayout->setSpacing(6);
+
+    configScroll = new QScrollArea;
+    configScroll->setWidget(configContainer);
+    configScroll->setWidgetResizable(true);
+    configScroll->setFrameShape(QFrame::NoFrame);
+    configScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    configScroll->setStyleSheet("QScrollArea { background: transparent; border: none; }"
+                                "QScrollArea > QWidget > QWidget { background: transparent; }");
+    configScroll->setVisible(false);
+    rightMainLayout->addWidget(configScroll);
+
+    // ---- 编辑 / AI 生成（操作按钮的上一行）----
+    QHBoxLayout *editBtnLayout = new QHBoxLayout;
+    editBtnLayout->setSpacing(6);
+    ai_b_j = new QPushButton("编辑当前插件");
+
+    ai_c_j = new QPushButton("AI生成插件");
+
+    editBtnLayout->addWidget(ai_b_j);
+    editBtnLayout->addWidget(ai_c_j);
+
+    rightMainLayout->addLayout(editBtnLayout);
+
     // ---- 操作按钮 ----
     QHBoxLayout *btnLayout = new QHBoxLayout;
 
@@ -356,12 +397,15 @@ void PluginPage::setupUi()
     openDirBtn = new QPushButton("目录");
     uninstallBtn = new QPushButton("卸载");
     setBtn = new QPushButton("设置");
-    const int btnWidth = 60;
-    loadBtn->setFixedWidth(btnWidth);
-    reloadBtn->setFixedWidth(btnWidth);
-    openDirBtn->setFixedWidth(btnWidth);
-    uninstallBtn->setFixedWidth(btnWidth);
-    setBtn->setFixedWidth(btnWidth);
+    // 详情面板变窄了，5 个按钮再写死 60px 会被挤掉（原来「目录」就是被截掉的），
+    // 改成给最小宽度后平分这一行
+    const int btnMinWidth = 46;
+    loadBtn->setMinimumWidth(btnMinWidth);
+    reloadBtn->setMinimumWidth(btnMinWidth);
+    openDirBtn->setMinimumWidth(btnMinWidth);
+    uninstallBtn->setMinimumWidth(btnMinWidth);
+    setBtn->setMinimumWidth(btnMinWidth);
+    btnLayout->setSpacing(4);
 
 
     btnLayout->addWidget(loadBtn);
@@ -1026,6 +1070,10 @@ void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_
             if (p.DLL.onMessage2) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
                     if (matchRule2(rule, msg)) {
+                        if(msg.log>0) {
+                            bool ok = false;
+                            g_logdb [msg.type+1]->setBuffer_250(msg.log,ok); //设置为250 让未处理 回复 不回复
+                        }
                         p.DLL.onMessage2(utf8.data(),rule.fun);
 
                     }
@@ -1099,26 +1147,220 @@ QString getShortPath(const QString& path, int maxLen = 64) {
     }
     return QString("...") + shortPath;
 }
+// ==================== 插件配置区（get_config_list / set_config_value）====================
+// 只有 Python（type 0）与 x64 原生库（type 1）才可能实现这两个函数：
+//   get_config_list()            -> JSON 文本：
+//        [{"desc":"配置说明","type":"input|checkbox|button","id":"cookie","default":"xxx"}]
+//   set_config_value(id, value)  -> 文本；空串 = 成功，非空 = 失败原因
+//        input    -> value 是输入框内容（回车才写回）
+//        checkbox -> value 是 "1" / "0"
+//        button   -> value 是空串
+// 配置项本身不设数量上限，但区域高度按 5 行封顶，多出来的滚动查看。
+static const int kConfigMaxRows   = 5;    // 高度按 5 行封顶
+static const int kConfigRowHeight = 28;   // 单行高度（和布局里各处保持一致）
+static const int kConfigSpacing   = 6;    // 行间距（与 configLayout->setSpacing 一致）
+
+// 读配置项列表：拿不到（没实现 / 返回空 / 不是 JSON 数组）就返回空串
+QString PluginPage::callGetConfigList(int index)
+{
+    if (index < 0 || index >= m_pluginList.size()) return QString();
+    PluginInfo &info = m_pluginList[index];
+
+    if (info.type == 1) {
+        if (!info.DLL.get_config_list) return QString();
+        const char *ret = info.DLL.get_config_list();
+        return ret ? QString::fromUtf8(ret) : QString();
+    }
+
+    if (info.type == 0) {
+        try {
+            py::gil_scoped_acquire gil;
+            py::object fn = info.python.get_config_list;   // 拷贝 / 调用必须在持 GIL 时进行
+            if (!fn || !PyCallable_Check(fn.ptr())) return QString();
+            py::object ret = fn();
+            if (ret.is_none()) return QString();
+            return QString::fromStdString(py::str(ret).cast<std::string>());
+        } catch (const py::error_already_set &e) {
+            qWarning() << "get_config_list 执行异常:" << e.what();
+            PyErr_Clear();
+            return QString();
+        } catch (...) {
+            return QString();
+        }
+    }
+
+    return QString();   // 32 位原生库 / JS 暂无此接口
+}
+
+// 写配置项：返回空串表示成功，非空是插件给的失败原因
+QString PluginPage::callSetConfigValue(int index, const QString &id, const QString &value)
+{
+    if (index < 0 || index >= m_pluginList.size()) return QStringLiteral("插件索引无效");
+    PluginInfo &info = m_pluginList[index];
+
+    if (info.type == 1) {
+        if (!info.DLL.set_config_value) return QStringLiteral("插件未实现 set_config_value");
+        const QByteArray idUtf8 = id.toUtf8();
+        const QByteArray valUtf8 = value.toUtf8();
+        const char *ret = info.DLL.set_config_value(idUtf8.constData(), valUtf8.constData());
+        return ret ? QString::fromUtf8(ret) : QString();
+    }
+
+    if (info.type == 0) {
+        try {
+            py::gil_scoped_acquire gil;
+            py::object fn = info.python.set_config_value;
+            if (!fn || !PyCallable_Check(fn.ptr())) return QStringLiteral("插件未实现 set_config_value");
+            py::object ret = fn(id.toStdString(), value.toStdString());
+            if (ret.is_none()) return QString();
+            return QString::fromStdString(py::str(ret).cast<std::string>());
+        } catch (const py::error_already_set &e) {
+            const QString msg = QString::fromUtf8(e.what());
+            qWarning() << "set_config_value 执行异常:" << msg;
+            PyErr_Clear();
+            return QStringLiteral("set_config_value 异常: ") + msg;
+        } catch (...) {
+            return QStringLiteral("set_config_value 未知异常");
+        }
+    }
+
+    return QStringLiteral("该类型插件不支持配置");
+}
+
+// 统一入口：写回 + 失败提示（成功时插件返回空串，什么都不做）
+void PluginPage::applyPluginConfig(int index, const QString &id, const QString &value)
+{
+    if (index < 0 || index >= m_pluginList.size()) return;
+    // 控件是 rebuildConfigPanel 生成时绑定的 index，切走插件后旧控件可能还在事件队列里，
+    // 不是当前面板的插件就直接丢弃，免得把值写到别的插件身上
+    if (index != currentSelected_index) return;
+    const QString err = callSetConfigValue(index, id, value);
+    if (err.isEmpty()) return;
+
+    AppendEventLog(QString("[插件配置] %1 项 %2 保存失败：%3")
+                       .arg(m_pluginList[index].name, id, err), 0xff);
+    showAutoCloseMessageBox("配置保存失败", err);
+}
+
+void PluginPage::clearConfigPanel()
+{
+    if (!configLayout) return;
+    while (QLayoutItem *item = configLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            // 只是从布局里摘掉不会让它消失，得先隐藏再排队删除，
+            // 否则重建时旧控件会留在原位置和新控件叠在一起
+            w->hide();
+            w->deleteLater();
+        }
+        delete item;
+    }
+}
+
+// 按当前选中的插件重建配置区
+void PluginPage::rebuildConfigPanel(int index)
+{
+    clearConfigPanel();
+    if (!configScroll) return;
+
+    if (index < 0 || index >= m_pluginList.size()) {
+        configScroll->setVisible(false);
+        return;
+    }
+
+    const QString json = callGetConfigList(index);
+    if (json.trimmed().isEmpty()) {
+        configScroll->setVisible(false);
+        return;
+    }
+
+    QJsonParseError perr;
+    const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &perr);
+    if (perr.error != QJsonParseError::NoError || !doc.isArray()) {
+        qWarning() << "get_config_list 返回的内容不是 JSON 数组:" << json.left(200);
+        configScroll->setVisible(false);
+        return;
+    }
+
+    int rows = 0;
+    const QJsonArray arr = doc.array();
+    for (const QJsonValue &v : arr) {
+        const QJsonObject obj = v.toObject();
+        const QString id = obj["id"].toString();
+        if (id.isEmpty()) continue;                       // 没有 id 就没法写回，直接跳过
+        const QString desc = obj["desc"].toString(id);
+        const QString itemType = obj["type"].toString().trimmed().toLower();
+        const QString def = obj["default"].toString();
+
+        QWidget *row = new QWidget(configContainer);
+        row->setStyleSheet("background: transparent;");
+        QHBoxLayout *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+
+        if (itemType == "checkbox") {
+            QCheckBox *box = new QCheckBox(desc, row);
+            // 先 setChecked 再 connect，避免初始化时白写一次
+            box->setChecked(def == "1" || def.compare("true", Qt::CaseInsensitive) == 0);
+            box->setStyleSheet("font-size: 12px; color: #222222;");
+            box->setFixedHeight(kConfigRowHeight);
+            rowLayout->addWidget(box);
+            rowLayout->addStretch();
+            connect(box, &QCheckBox::toggled, this, [this, index, id](bool checked) {
+                applyPluginConfig(index, id, checked ? QStringLiteral("1") : QStringLiteral("0"));
+            });
+        } else if (itemType == "button") {
+            QPushButton *btn = new QPushButton(desc, row);
+            btn->setFixedHeight(kConfigRowHeight);
+            rowLayout->addWidget(btn);
+            rowLayout->addStretch();
+            connect(btn, &QPushButton::clicked, this, [this, index, id]() {
+                applyPluginConfig(index, id, QString());   // 按钮不带值，传空串
+            });
+        } else {                                          // 其余一律按 input 处理
+            QLabel *lb = new QLabel(desc, row);
+            lb->setStyleSheet("font-size: 12px; color: #222222;");
+            // ⚠ 本文件里 `#define QLineEdit PlaceholderLineEdit` 是**活跃**的（appwindow.h 间接引入），
+            // PlaceholderLineEdit 只有 (QWidget*) 一个构造函数，不能像 QLineEdit 那样一次传文本
+            QLineEdit *edit = new QLineEdit(row);
+            edit->setText(def);
+            edit->setPlaceholderText("按回车键保存");
+            edit->setFixedHeight(kConfigRowHeight);
+            // 提示放在输入框右边常显：输入框里已经有 default，placeholder 基本看不到
+            QLabel *hint = new QLabel("按回车键保存", row);
+            hint->setStyleSheet("font-size: 11px; color: #999999;");
+            rowLayout->addWidget(lb);
+            rowLayout->addWidget(edit, 1);
+            rowLayout->addWidget(hint);
+            connect(edit, &QLineEdit::returnPressed, this, [this, index, id, edit]() {
+                applyPluginConfig(index, id, edit->text());
+            });
+        }
+
+        configLayout->addWidget(row);
+        ++rows;
+    }
+
+    if (rows == 0) {
+        configScroll->setVisible(false);
+        return;
+    }
+
+    configScroll->setVisible(true);
+    const int contentH = configContainer->sizeHint().height();
+    const int maxH = kConfigMaxRows * kConfigRowHeight + (kConfigMaxRows - 1) * kConfigSpacing;
+    configScroll->setFixedHeight(qBound(1, contentH, maxH));   // 最多 5 行高，多了滚动
+}
+
 //更新右边面板
 void PluginPage::updateDetailPanel(int index)
 {
-    if (index<=-1 && index>m_pluginList.length()) return;
-    QPixmap pix(m_pluginList[index].icon);
-    if (!pix.isNull())
-        detailIconLabel->setPixmap(pix);
-    else detailIconLabel->clear();
-    detailNameLabel->setText(m_pluginList[index].name);
-    QString typeStr;
-    switch (m_pluginList[index].type) {
-    case 0: typeStr = "Python"; break;
-    case 1: typeStr = "DLL (64位)"; break;
-    case 2: typeStr = "DLL (32位)"; break;
-    case 3: typeStr = "JavaScript"; break;
-    default: typeStr = "未知"; break;
+    if (index < 0 || index >= m_pluginList.size()) {
+        detailpathLabel->clear();
+        detailDescLabel->clear();
+        clearConfigPanel();
+        if (configScroll) configScroll->setVisible(false);
+        return;
     }
-    detailTypeLabel->setText(typeStr);
-    detailVersionLabel->setText("v" + m_pluginList[index].version);
-    detailAuthorLabel->setText(m_pluginList[index].author.isEmpty() ? "未知" : m_pluginList[index].author);
     detailpathLabel->setText(getShortPath(m_pluginList[index].path,32));
     QString mdText = m_pluginList[index].description.isEmpty() ? "暂无说明" : m_pluginList[index].description;
     mdText.replace("\n", "  \n");               // 你之前加的换行处理
@@ -1127,6 +1369,9 @@ void PluginPage::updateDetailPanel(int index)
     if (mdText.startsWith("#") && mdText.length() > 1 && mdText[1] != ' ')
         mdText.insert(1, ' ');                  // 字符串开头的#补空格
     detailDescLabel->setMarkdown(mdText);
+
+    // 配置项随插件切换一起刷新（没实现 get_config_list 的插件这里会自动隐藏）
+    rebuildConfigPanel(index);
 
     if (m_pluginList[index].enabled) {
         loadBtn->setText("禁用");
@@ -1281,6 +1526,8 @@ bool PluginPage::uninstall_Plugin(PluginInfo &info)
         info.python.onUnload = py::object();
         info.python.getReviewList = py::object();
         info.python.submitReview = py::object();
+        info.python.get_config_list = py::object();
+        info.python.set_config_value = py::object();
 
         try {
             py::exec(R"(
@@ -1322,15 +1569,19 @@ def clean_plugin(plugin_path):
         if (info.DLL.onUnload) info.DLL.onUnload();
         if (info.dllLib) {
             info.dllLib->unload();
+
             delete info.dllLib;
             info.dllLib = nullptr;
         }
         info.DLL.getReviewList = nullptr;
         info.DLL.submitReview = nullptr;
+        info.DLL.get_config_list = nullptr;
+        info.DLL.set_config_value = nullptr;
         if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
             QFile::remove(info.loadedDllPath);
             info.loadedDllPath.clear();
         }
+
     } else if (info.type == 2) {
         bool ok = ( sendData32(4, info) == "true");
 
@@ -1364,12 +1615,10 @@ bool PluginPage::uninstall_Plugin(int index)
     removePlugin(index);
     onPluginSelected(currentSelected_index);
     if(currentSelected_index==-1){
-        detailIconLabel->clear();
-        detailNameLabel->clear();
-        detailTypeLabel->clear();
-        detailVersionLabel->clear();
-        detailAuthorLabel->clear();
+        detailpathLabel->clear();
         detailDescLabel->clear();
+        clearConfigPanel();
+        if (configScroll) configScroll->setVisible(false);
     }
     return true;
 }
@@ -1388,12 +1637,10 @@ bool PluginPage::uninstall_Plugin2(int index)
 
     removePlugin(index);
     onPluginSelected(currentSelected_index);
-    detailIconLabel->clear();
-    detailNameLabel->clear();
-    detailTypeLabel->clear();
-    detailVersionLabel->clear();
-    detailAuthorLabel->clear();
+    detailpathLabel->clear();
     detailDescLabel->clear();
+    clearConfigPanel();
+    if (configScroll) configScroll->setVisible(false);
     return true;
 }
 QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<int> &array)  //运行时调用
@@ -1873,6 +2120,9 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
         info.uuid=uuid.toString(QUuid::WithoutBraces);
     }
     OnMessageFunc set_plugin_path = (OnMessageFunc)lib->resolve("set_plugin_path");
+    info.DLL.get_config_list = (OnFunc1)lib->resolve("get_config_list");
+    info.DLL.set_config_value = (OnFunc2)lib->resolve("set_config_value");
+
     info.DLL.getPluginInfo = (GetPluginInfoFunc)lib->resolve("get_plugin_info");
     info.DLL.onMessage = (OnMessageFunc)lib->resolve("on_message");
     info.DLL.onEnable = (OnFunc0)lib->resolve("on_enable");
@@ -2139,6 +2389,8 @@ QString PluginPage::LoadPlugin_py(PluginInfo &info)
         info.python.onUnload = py::object();
         info.python.getReviewList = py::object();
         info.python.submitReview = py::object();
+        info.python.get_config_list = py::object();
+        info.python.set_config_value = py::object();
 
         // 3. 清理 sys.path 中该插件目录（如果还残留），并从 sys.modules 删除该插件所有模块
         py::exec(R"(
@@ -2253,6 +2505,10 @@ event = _register_rule("event")
         info.python.onEnable = getCb("on_enable");
         info.python.onDisable = getCb("on_disable");
         info.python.onUnload = getCb("on_unload");
+
+        info.python.get_config_list = getCb("get_config_list");
+        info.python.set_config_value = getCb("set_config_value");
+
         // 昵称审核接口：加载时就取出函数对象（插件不实现则为空对象，不报错）
         info.python.getReviewList = getCb(kPluginFuncGetReviewList);
         info.python.submitReview  = getCb(kPluginFuncSubmitReview);

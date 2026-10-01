@@ -356,16 +356,107 @@ QVector<QPair<int,int>> ForbiddenWordPage::getMatchIntervals(const QString &text
     return merged;
 }
 
-QString ForbiddenWordPage::filterText(const QString &input) const {
+QString ForbiddenWordPage::filterText(const QString &input) const
+{
     if (m_forbiddenWords.isEmpty()) return input;
+
     auto intervals = getMatchIntervals(input);
     if (intervals.isEmpty()) return input;
 
+    // 辅助：从 start 开始查找匹配的 ']'，考虑转义，返回索引，找不到返回 -1
+    auto findMatchingBracket = [&](int start) -> int {
+        for (int j = start; j < input.size(); ++j) {
+            if (input.at(j) == QLatin1Char('\\')) { ++j; continue; }
+            if (input.at(j) == QLatin1Char(']')) return j;
+        }
+        return -1;
+    };
+
+    // 辅助：从 start 开始查找匹配的 ')'，start 是 '(' 后面的位置，考虑嵌套和转义
+    auto findMatchingParen = [&](int start) -> int {
+        int depth = 0;
+        for (int j = start; j < input.size(); ++j) {
+            if (input.at(j) == QLatin1Char('\\')) { ++j; continue; }
+            if (input.at(j) == QLatin1Char('(')) {
+                ++depth;
+            } else if (input.at(j) == QLatin1Char(')')) {
+                if (depth == 0) return j;
+                --depth;
+            }
+        }
+        return -1;
+    };
+
+    // 收集所有需要跳过的区间（半开区间 [first, second)）
+    QVector<QPair<int, int>> skipIntervals;
+
+    for (int i = 0; i < input.size(); ++i) {
+        // 1. 图片语法 ![alt](url) —— 整个区间跳过
+        if (i + 1 < input.size() && input.at(i) == QLatin1Char('!') && input.at(i + 1) == QLatin1Char('[')) {
+            int closeBracket = findMatchingBracket(i + 2);
+            if (closeBracket != -1 && closeBracket + 1 < input.size() && input.at(closeBracket + 1) == QLatin1Char('(')) {
+                int closeParen = findMatchingParen(closeBracket + 2);
+                if (closeParen != -1) {
+                    skipIntervals.append(qMakePair(i, closeParen + 1));
+                    i = closeParen; // 跳过整个图片
+                    continue;
+                }
+            }
+        }
+
+        // 2. 链接语法 [text](url) —— 只跳过括号内的 URL，[] 内的文字保留
+        if (input.at(i) == QLatin1Char('[') && (i == 0 || input.at(i - 1) != QLatin1Char('!'))) {
+            int closeBracket = findMatchingBracket(i + 1);
+            if (closeBracket != -1 && closeBracket + 1 < input.size() && input.at(closeBracket + 1) == QLatin1Char('(')) {
+                int closeParen = findMatchingParen(closeBracket + 2);
+                if (closeParen != -1) {
+                    // 只跳过 ( 到 ) 的部分
+                    skipIntervals.append(qMakePair(closeBracket + 1, closeParen + 1));
+                    i = closeParen; // 跳过括号部分
+                    continue;
+                }
+            }
+        }
+
+        // 3. <qqbot-at-user id="xx" /> —— 整个标签跳过
+        if (input.mid(i, 14) == QLatin1String("<qqbot-at-user")) {
+            int end = input.indexOf(QLatin1String("/>"), i);
+            if (end != -1) {
+                skipIntervals.append(qMakePair(i, end + 2));
+                i = end + 1;
+                continue;
+            }
+        }
+    }
+
+    // 过滤掉落在跳过区间内的敏感词匹配
+    QVector<QPair<int, int>> filtered;
+    filtered.reserve(intervals.size());
+
+    for (const auto &iv : intervals) {
+        bool skip = false;
+        for (const auto &sr : skipIntervals) {
+            // 有重叠则跳过该敏感词匹配
+            if (iv.first < sr.second && iv.second > sr.first) {
+                skip = true;
+                break;
+            }
+        }
+        if (!skip) {
+            filtered.append(iv);
+        }
+    }
+
+    if (filtered.isEmpty()) return input;
+
+    // 执行替换（原逻辑）
     QString result;
     int lastEnd = input.length();
-    for (int i = intervals.size() - 1; i >= 0; --i) {
-        int start = intervals[i].first;
-        int end = intervals[i].second;
+
+    for (int i = filtered.size() - 1; i >= 0; --i) {
+        const int start = filtered[i].first;
+        const int end = filtered[i].second;
+
         result.prepend(input.mid(end, lastEnd - end));
         result.prepend("....");
         lastEnd = start;

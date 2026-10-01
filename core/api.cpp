@@ -1709,7 +1709,8 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
         }
         QString err = respObj["message"].toString();
         if(err!="富媒体文件上传超时") return response;
-        QThread::sleep(128);
+        QThread::msleep(128);
+
     }
     return response;
 }
@@ -1987,7 +1988,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
             return file_info;
         }
         if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
-        QThread::sleep(3); // 稍等后重复提交
+
     }
     return filesResp; // 重试耗尽，返回最后的错误
 }
@@ -2075,7 +2076,7 @@ QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
             return file_info;
         }
         if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
-        QThread::sleep(3); // 稍等后重复提交
+
     }
     return filesResp; // 重试耗尽，返回最后的错误
 }
@@ -3026,6 +3027,83 @@ QString convertAudioToSilk(const QString &srcFilePath)
     return outputFilePath;
 }
 
+// 语音时长限制实测 4 分 59 秒 → 每片切到 4:58（298 秒），留 1 秒余量：
+// ffmpeg 的切点只能落在 AAC 帧边界上，实际段长会略大于设定值。
+static const int AUDIO_SEG_MAX_SEC = 298;
+
+// 用 ffmpeg -i 的输出探测媒体时长（秒）；失败返回 -1
+static double probeAudioDurationSec(const QString &filePath)
+{
+#ifdef Q_OS_WIN
+    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
+#else
+    QString ffmpegPath = "ffmpeg";
+#endif
+    QProcess p;
+    p.start(ffmpegPath, {"-i", filePath});
+    if (!p.waitForStarted())
+        return -1;
+    if (!p.waitForFinished(10000)) {
+        p.kill();
+        return -1;
+    }
+    // 媒体信息在 stderr 上；没给输出文件时 ffmpeg 非 0 退出，不影响解析
+    static QRegularExpression re("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+    const auto m = re.match(QString::fromLocal8Bit(p.readAllStandardError()));
+    if (!m.hasMatch())
+        return -1;
+    return m.captured(1).toInt() * 3600 + m.captured(2).toInt() * 60 + m.captured(3).toDouble();
+}
+
+// 把 m4a 按 segSec 秒流复制切段（不重编码），段文件名 = 原名去 .m4a + _seg000.m4a ...
+// 已有同名段文件则直接复用；失败返回空表
+static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
+{
+    if (!m4aPath.endsWith(".m4a"))
+        return {};                       // 只切转换产物；转换失败兜底的原文件不动
+    const QString base = m4aPath.left(m4aPath.size() - 4);
+    const QString filter = QFileInfo(base).fileName() + "_seg*.m4a";
+
+    QDir dir = QFileInfo(m4aPath).absoluteDir();
+    QStringList out;
+    const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
+    if (!exist.isEmpty()) {              // 之前切过，直接复用
+        for (const QString &f : exist)
+            out << dir.filePath(f);
+        return out;
+    }
+
+#ifdef Q_OS_WIN
+    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
+#else
+    QString ffmpegPath = "ffmpeg";
+#endif
+    QProcess p;
+    p.start(ffmpegPath, {
+        "-y", "-i", m4aPath,
+        "-c", "copy",                    // AAC 直接流复制，秒级完成
+        "-f", "segment",
+        "-segment_time", QString::number(segSec),
+        "-reset_timestamps", "1",
+        base + "_seg%03d.m4a"
+    });
+    if (!p.waitForStarted())
+        return {};
+    if (!p.waitForFinished(60000)) {
+        p.kill();
+        return {};
+    }
+    if (p.exitCode() != 0)
+        return {};
+
+    const QStringList files = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
+    if (files.size() < 2)
+        return {};                       // 只切出 1 段没意义，按失败算
+    for (const QString &f : files)
+        out << dir.filePath(f);
+    return out;
+}
+
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,const MessageLogContext &ctx)
 {
@@ -3077,6 +3155,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             filePath=fileUrl;
         }
         bool needUpload = true;
+        QStringList audioSegs;   // 音频超长切段列表；空 = 单文件直传
         QString fileInfo,fileMd5;
         int fileType = 1;
         if (mediaType == "video") fileType = 2;
@@ -3104,7 +3183,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                         if (rbIdx >= 0) expireStr.truncate(rbIdx);   // 切掉 "]"
                         bool okNum = false;
                         qint64 expire = expireStr.trimmed().toLongLong(&okNum);
-                         qDebug() << cached<<"|" << timeIdx <<"|"<< expire;
+                        // qDebug() << cached<<"|" << timeIdx <<"|"<< expire;
                         if (okNum && QDateTime::currentSecsSinceEpoch() < expire) {
                             // 补回被 left() 一并切掉的收尾 ']'，与「未命中缓存」时 uploadRichMediaA 的格式一致
                             fileInfo = cached.left(timeIdx) + "]";
@@ -3124,46 +3203,63 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                     filePath = convertAudioToSilk(filePath);
                 else
                     filePath=newpath;
+
+                // 超长音频 → 切成多段，走下面的循环逐段上传发送
+                const double durSec = probeAudioDurationSec(filePath);
+                if (durSec > AUDIO_SEG_MAX_SEC)
+                    audioSegs = splitM4aSegments(filePath, AUDIO_SEG_MAX_SEC);
             }
 
         }
         bool ok = true;
         if (needUpload) {
-            qint64 expireTime = 0;
-            QString md5;
-            QString uploadedUrl;
-            /*
-            if (g_cnb.e) {
-                uploadedUrl = uploadFileSync(filePath);
-            }
-            // 2. COS
-            if (uploadedUrl.isEmpty() && g_cos.e) {
-                uploadedUrl = uploadFileSync_cos(filePath);
-            }
-            */
-            if(uploadedUrl.isEmpty())
-            {
-                uploadedUrl = filePath;
-            }
-            // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
-            fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, ok, /*usePool=*/false);
+            // 音频超长时 audioSegs 是各分段路径；否则就是 filePath 本身
+            const QStringList upPaths = audioSegs.isEmpty() ? QStringList{filePath} : audioSegs;
+            for (const QString &upPath : upPaths) {
+                ok = true;
+                qint64 expireTime = 0;
+                QString md5;
+                QString uploadedUrl;
+                /*
+                if (g_cnb.e) {
+                    uploadedUrl = uploadFileSync(upPath);
+                }
+                // 2. COS
+                if (uploadedUrl.isEmpty() && g_cos.e) {
+                    uploadedUrl = uploadFileSync_cos(upPath);
+                }
+                */
+                if(uploadedUrl.isEmpty())
+                {
+                    uploadedUrl = upPath;
+                }
+                // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
+                fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, ok, /*usePool=*/false);
 
-            if(!ok)
-            {
-                if(ctx.openid.isEmpty())
-                    send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
-                else
-                    send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
-            }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty()) { //发的链接是没有md5的
-                cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
+                if(!ok)
+                {
+                    if(ctx.openid.isEmpty())
+                        send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
+                    else
+                        send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                }else if (!fileInfo.isEmpty() && cache_db && !fileMd5.isEmpty() && audioSegs.isEmpty()) { //发的链接是没有md5的；分段结果不进缓存
+                    cache_db->put(QString("%1_%2").arg(mediaType,fileMd5), fileInfo);
+                }
+
+                if (ok && !fileInfo.isEmpty()) {
+
+                    response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,ctx); // 增加 fileType 参数
+                }
+            }
+        }else{
+            if (!fileInfo.isEmpty()) {
+
+                response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,ctx); // 增加 fileType 参数
             }
         }
-
-        if (ok && !fileInfo.isEmpty()) {
-
-            response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,ctx); // 增加 fileType 参数
-        }
+        qDebug () << text;
         text.remove(info.start, info.length);
+        qDebug() <<text;
     }
 
     return response;
@@ -3841,8 +3937,9 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
 
 
 
-    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
-    if (newtext.isEmpty()) return newtext2;
+    QString newtext2 = sendOneMedia(type,openid,pname,textB,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
+
+    if (textB.isEmpty()) return newtext2;
 
     bool mbise= mb.isEmpty();
     if(textB.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
@@ -3944,6 +4041,7 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     ctx.cb =cb;
     QString message_reference;
     QString newtext2 = sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
+
     if (text.isEmpty()) return newtext2;
 
     bool mbise= mb.isEmpty();

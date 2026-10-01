@@ -2282,10 +2282,10 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
             QString role;
             QString mode = ai_fujia->fujia_jy(f,role);
             if(mode.isEmpty()) return "触发附加ai指令 但是 ui界面与 设置不一致";
-            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
-            if(index>0) {
+
+            if(ev.log>0) {
                 bool ok = false;
-                g_logdb [ev.type+1]->setBuffer_250(index,ok); //设置为250 让未处理 回复 不回复
+                g_logdb [ev.type+1]->setBuffer_250(ev.log,ok); //设置为250 让未处理 回复 不回复
             }
             // 改为异步请求：不再阻塞当前线程干等 60s，回复在回调里直接发出去。
             // ev 值拷贝进 lambda（异步链路跨线程，不能引用栈上内容）。

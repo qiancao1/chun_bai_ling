@@ -73,17 +73,24 @@
 #include <qmessagebox.h>
 
 
-#define APP_VERSION_STR "v1.3.5.81"
-#define APP_BUILD_NUMBER 81
+#define APP_VERSION_STR "v1.3.6.85"
+#define APP_BUILD_NUMBER 85
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.3.7.89 (2026-10-01)
+- 修复 上传富媒体 url 重试 延迟耗时过久问题
+- 修改 插件UI 增加 简单 配置项快速调整开关
+- 优化 语音限制长度 分块上传
+- 修复 违禁词会将 图片 内容过滤问题
+
 ## v1.3.6.85 (2026-09-29)
 - 修改 AI生图一部分 ai返回b64问题
 - 优化 ai功能的使用
-- 优化 ai附加功能 会先返回指令未被处理 问题
+- 优化 ai附加功能 会先返回指令未被处理 问题 并且改为异步
 - 修复 图床 图片上传失败问题(因为用文件类型创建 部分群不开群文件上传会失败)
 - 增加 插件新的函数 用于投递 插件路径 方便读取插件携带的数据 同时更新sdk
+
 
 ## v1.3.5.81 (2026-09-26)
 - 优化 发送图片效率 内网上传单张图片60ms左右 非内网应该也有200ms一张

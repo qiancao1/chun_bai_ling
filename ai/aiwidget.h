@@ -215,15 +215,15 @@ private:
 
     QLabel *lblRobotName, *lblModel, *lblSetting, *lblContext;
     QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply,*lblPplx;
-    QLineEdit *editRobotName, *editContext, *editNoReplySeconds, *editNoReplyMinutes, *editDelayReply;
-    QLineEdit *set_zl, *set_sc,*set_qy,*set_sjhf,*set_递增概率,*set_固定条数;
+    PlaceholderLineEdit *editRobotName, *editContext, *editNoReplySeconds, *editNoReplyMinutes, *editDelayReply;
+    PlaceholderLineEdit *set_zl, *set_sc,*set_qy,*set_sjhf,*set_递增概率,*set_固定条数;
     QComboBox *comboModel, *comboSetting,*comboPplx,*combo_xiangliang;
 
     QListWidget *settingListWidget;    // 全局设定列表
     QTextEdit *settingTextEdit;
 
     QLabel *lblSettingName;
-    QLineEdit *editSettingName;
+    PlaceholderLineEdit *editSettingName;
     QPushButton *btnAddSetting;        // 添加/保存设定
     QPushButton *btnDeleteSetting;     // 删除设定
 
@@ -275,12 +275,12 @@ private:
 
     QTextEdit *funcCodeEdit;           // 右侧：上半部 Python 代码输入框
 
-    QLineEdit *funcNameEdit;           // 函数名
+    PlaceholderLineEdit *funcNameEdit;           // 函数名
     QPushButton *funcSaveBtn;          // 保存按钮
     QCheckBox *funcInterruptCheck;     // 触发后中断
 
-    QLineEdit *param1Edit, *param2Edit, *param3Edit, *param4Edit;
-    QLineEdit *param5Edit, *param6Edit, *param7Edit, *param8Edit; // 8个参数
+    PlaceholderLineEdit *param1Edit, *param2Edit, *param3Edit, *param4Edit;
+    PlaceholderLineEdit *param5Edit, *param6Edit, *param7Edit, *param8Edit; // 8个参数
 
     // --- 数据 ---
     QList<FunctionData> functionList;   // 所有函数数据
