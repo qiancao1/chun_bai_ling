@@ -532,42 +532,19 @@ static QString thirdPartyLicenseHtml()
         "Copyright (c) 2016 Yury Malkov and contributors.<br>"
         "采用 <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">Apache License, Version 2.0</a><br><br>"
 
-        "<b>FFmpeg 7.1.5</b>（自编译精简版，仅音频解封装 + 解码）<br>"
-        "Copyright (c) 2000-2024 the FFmpeg developers.<br>"
-        "采用 <a href=\"https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html\">GNU LGPL v2.1</a>"
-        "（未启用 --enable-gpl，非 GPL 构建）。<br>"
-        "• 本项目仅以 FFmpeg 官方源码配合自定义编译参数裁剪组件（去掉视频解码器、编码器与复用器），"
-        "未修改其源代码。<br>"
-        "• LGPL 义务：提供该库完整源代码，并允许用户以自行修改的版本重新链接本程序"
-        "（Windows 下为动态链接，直接替换 DLL 即可；Linux 下为静态链接，"
-        "可用随源码仓库提供的 libs/ffmpeg/build-linux.sh + 组件白名单重建后重新链接）。<br>"
-        "FFmpeg 源代码：<a href=\"https://ffmpeg.org/download.html\">https://ffmpeg.org/download.html</a>"
-        "（<a href=\"https://git.ffmpeg.org/ffmpeg.git\">git</a>，tag n7.1.5）<br><br>"
-
-        "<b>libopus 1.5.2</b><br>"
-        "Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, "
-        "CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon.<br>"
-        "采用 <a href=\"https://opensource.org/licenses/BSD-3-Clause\">BSD 3-Clause License</a>（含专利授权）<br>"
-        "libopus 源代码：<a href=\"https://opus-codec.org/downloads/\">https://opus-codec.org/downloads/</a><br><br>"
-
-        "<b>单文件音频解码库</b><br>"
-        "• <b>dr_libs</b>（dr_mp3 / dr_flac / dr_wav）：Copyright (c) mackron，"
-        "公共领域 / <a href=\"https://opensource.org/licenses/MIT-0\">MIT-0</a><br>"
-        "• <b>stb_vorbis</b>：Copyright (c) Sean Barrett and contributors，公共领域<br>"
-        "• <b>minimp4</b>：Copyright (c) lieff，"
-        "<a href=\"https://creativecommons.org/publicdomain/zero/1.0/\">CC0-1.0</a><br>"
-        "• <b>ogg_packer</b>：Copyright (c) 2017 Jean-Marc Valin / Xiph.Org Foundation，BSD 3-Clause<br><br>"
-
         // --- 插入 OpenSSL 许可证（已根据平台选择不同文本）---
         + opensslLicenseText +
 
-        "<b>可选的 ffmpeg.exe</b>（外部转码程序，LGPL-2.1）<br>"
-        "音频转码默认在程序内部完成，<b>无需</b>任何外部程序。<br>"
-        "仅在遇到少见容器格式、或需要对超长音频做无损切段时，才会调用可选的 ffmpeg 命令行程序"
-        "（设置中可指定其所在目录；也可从系统 PATH 获取）。<br>"
+        "<b>ffmpeg</b>（外部转码程序，LGPL-2.1）<br>"
+        "音频转码由 ffmpeg 命令行程序完成：随包附带一份，你也可以替换成自己编译或下载的版本"
+        "（设置中可指定其所在目录；放在程序同目录、或系统 PATH 中同样会被找到）。<br>"
         "随包分发的那份是第三方基于 FFmpeg 官方源码裁剪的音频版"
         "（<a href=\"https://github.com/xihan123/FFmpeg-Audio\">xihan123/FFmpeg-Audio</a>，"
-        "LGPL-2.1，<b>非</b> GPL 构建），你可以自由删除或替换为自己编译的版本。<br><br>"
+        "LGPL-2.1，<b>非</b> GPL 构建）。<br>"
+        "• LGPL 义务：提供 FFmpeg 完整源代码，并允许用户以自行修改的版本替换它。"
+        "本项目把它当作<b>独立可执行文件</b>调用（不是链接进本程序的库），"
+        "因此直接替换该文件即可满足要求，无需重新链接本程序。<br>"
+        "FFmpeg 源代码：<a href=\"https://ffmpeg.org/download.html\">https://ffmpeg.org/download.html</a><br><br>"
         );
 }
 

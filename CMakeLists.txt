@@ -180,13 +180,6 @@ set(PROJECT_SOURCES_ALL
     ui/ui_menupanelwidget.ui
     core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
-    core/audiodecoder.h core/audiodecoder.cpp
-    core/opusconvert.h core/opusconvert.cpp
-    core/libavio.h core/libavio.cpp
-    # 第三方解码/封装（单文件库：实现只在 decoder_impl.c 里生成一次）
-    libs/decoders/decoder_impl.c
-    libs/decoders/stb_vorbis.c
-    libs/decoders/ogg_packer.c
 )
 
 
@@ -197,102 +190,17 @@ if(NOT WIN32)
         python/sharedmemorybridge.h
     )
 endif()
-# ==================== 进程内音频转码（Opus）用的第三方库 ====================
-# 源码全部随仓库走，Windows / Linux 都不需要另外装包：
-#   libs/opus     : libopus 1.5.2（Opus **编码**，BSD-3）—— 直接用官方 CMake 编译
-#   libs/decoders : dr_mp3 / dr_flac / dr_wav / minimp4 / stb_vorbis（解封装 + 解码备用路径）
-#                   + ogg_packer.c（取自 libopusenc，BSD-3，负责 Ogg 分页与 CRC）
-# 故意不走 FetchContent：这些库版本不常动，随仓库走才能保证离线、可复现地编出来。
-#
-# ⚠ AAC 解码（MP4/M4A 里的音轨、裸 ADTS）**已经不用 faad2** 了 —— 改由 libs/ffmpeg
-#   那份自编译 FFmpeg（core/libavio.cpp）承担。faad2 是 GPL-2.0-or-later，静态链进主程序
-#   会把整个 qiancao.exe 变成 GPL-3；去掉它之后二进制里只剩 BSD-3 / MIT / CC0 / LGPL-2.1。
-if(NOT TARGET opus)
-    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(OPUS_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
-    set(OPUS_BUILD_PROGRAMS       OFF CACHE BOOL "" FORCE)
-    set(OPUS_INSTALL_PKG_CONFIG_MODULE   OFF CACHE BOOL "" FORCE)
-    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
-    # 1.5.x 的神经网络新特性（DRED/OSCE）用不到，关掉就不需要那 18MB 的 dnn/ 源码
-    set(OPUS_DRED OFF CACHE BOOL "" FORCE)
-    set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
-    # EXCLUDE_FROM_ALL：不拖慢默认构建，作为 qiancao 的依赖照常编译
-    add_subdirectory(libs/opus EXCLUDE_FROM_ALL)
-endif()
-
-# （原 libs/faad2 已移除：AAC 解码改走下面的 libav，许可证也一并干净了。）
-
-# ==================== 自编译的精简版 FFmpeg（libav） ====================
-# libs/ffmpeg/ 里是从源码编出来的一份 x64 / LGPL-2.1 FFmpeg，只保留音频解封装 + 解码。
-# 用来替掉 core/api.cpp 里的一部分 ffmpeg.exe 兜底：
-#   · 时长探测（自研 audiodecoder 认不出的容器）
-#   · 罕见容器（amr/wma/ac3/非 AAC 音轨…）解码 → 仍旧走进程内 libopus
-#
-# ⚠ Windows 与 Linux 是**两份独立产物**，构建脚本和目录都分开：
-#     win-x64/    ← build-win.sh（MinGW-w64 编，**动态库** .dll + import lib）
-#     linux-x64/  ← build-linux.sh（本机 gcc 编，**静态库** .a）
-#   Windows 必须是动态库：MinGW 产的 .a 无法被 MSVC 链接，只能给 DLL + import lib；
-#   Linux 用静态库：产物自包含，省掉 .so 的 RPATH / 版本符号链接 / 运行期拷贝。
-#
-# 用法与限制见 libs/ffmpeg/README.md。不想要它、或还没有对应平台的那份产物时：
-#     cmake -DQIANCAO_WITH_LIBAV=OFF ..
-# 关掉后 core/libavio.cpp 照常参与编译（所有函数返回「不可用」），行为与接入前一致。
-option(QIANCAO_WITH_LIBAV "链接自编译的精简版 FFmpeg（libs/ffmpeg）" ON)
-
-if(WIN32)
-    set(QA_LIBAV_SUBDIR "win-x64")
-else()
-    set(QA_LIBAV_SUBDIR "linux-x64")
-endif()
-set(QA_LIBAV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/ffmpeg/${QA_LIBAV_SUBDIR}")
-
-# 这里只做「探测 + 攒参数」——target_* 系列必须在 add_executable(qiancao) 之后调用
-# （见下面「自编译 FFmpeg：实际生效」那一段）。
-set(QA_LIBAV_ENABLED OFF)
-set(QA_LIBAV_DLLS "")
-if(QIANCAO_WITH_LIBAV AND EXISTS "${QA_LIBAV_DIR}/include/libavcodec/avcodec.h")
-    set(QA_LIBAV_ENABLED ON)
-
-    if(MSVC)
-        # 自编 FFmpeg 用 dlltool 生成的 import library，link.exe 直接认（已实测）
-        set(QA_LIBAV_LINK_LIBS
-            "${QA_LIBAV_DIR}/bin/avformat.lib"
-            "${QA_LIBAV_DIR}/bin/avcodec.lib"
-            "${QA_LIBAV_DIR}/bin/avutil.lib"
-            "${QA_LIBAV_DIR}/bin/swresample.lib")
-    elseif(WIN32)
-        # Windows 上的非 MSVC（MinGW/Ninja+gcc）走 GNU import lib
-        set(QA_LIBAV_LINK_LIBS
-            "${QA_LIBAV_DIR}/lib/libavformat.dll.a"
-            "${QA_LIBAV_DIR}/lib/libavcodec.dll.a"
-            "${QA_LIBAV_DIR}/lib/libavutil.dll.a"
-            "${QA_LIBAV_DIR}/lib/libswresample.dll.a")
-    else()
-        # Linux：静态库，按完整路径链，不依赖系统装没装 libav*-dev。
-        #
-        # ⚠ 顺序不能乱：GNU ld 对 .a 是**单遍**扫描，一个库只在「此时有未定义符号」时才会
-        #   被拉取；一旦扫过去就不再回头。所以必须让「用别人的」排在「被用的」前面：
-        #     libavformat → libavcodec → libswresample → libavutil
-        #   （依赖关系：format 用 codec/swr/util；codec 用 swr/util；swr 用 util。）
-        #   把 avutil 写在 swresample 前面 → swresample 里的 av_malloc/av_log/声道布局
-        #   全成 undefined reference。（Windows 是 import lib，MSVC 无此限制，故那边无所谓。）
-        #   m / pthread：libav*.pc 里 Libs 声明的额外依赖（-latomic 实测不需要，库里无
-        #   __atomic_* 符号，见 README 坑表）。
-        set(QA_LIBAV_LINK_LIBS
-            "${QA_LIBAV_DIR}/lib/libavformat.a"
-            "${QA_LIBAV_DIR}/lib/libavcodec.a"
-            "${QA_LIBAV_DIR}/lib/libswresample.a"
-            "${QA_LIBAV_DIR}/lib/libavutil.a"
-            m pthread)
-    endif()
-
-    # 运行期依赖只对 Windows（动态库）有意义：这几条 DLL **必须在 exe 同目录**，
-    # 否则进程一启动就报「找不到 avcodec-XX.dll」（是加载期依赖，不是用到才加载）。
-    # Linux 那份是静态库，没有这一步。
-    if(WIN32)
-        file(GLOB QA_LIBAV_DLLS "${QA_LIBAV_DIR}/bin/*.dll")
-    endif()
-endif()
+# ==================== 音频：零第三方依赖 ====================
+# ⚠ 2026-10-02 起，音频的**探测与转码全部交给外部 ffmpeg**（见 core/api.cpp 顶部那段说明）：
+#   · 时长 / 有无视频轨 → 解析 `ffmpeg -i` 的 stderr（core/api.cpp 的 probeMediaInfo）
+#   · 转码              → `ffmpeg -c:a aac -b:a 32k -ar 24000 -ac 1`
+#   · 超长切段          → `ffmpeg -c copy`
+# 下面这些目录**已从工程里整体移除**，不要再加回来：
+#   libs/opus      —— libopus 编码（原 core/opusconvert.cpp 用）
+#   libs/ffmpeg    —— 自编译精简版 FFmpeg/libav（原 core/libavio.cpp 用）
+#   libs/decoders  —— 单文件解码库 dr_mp3/dr_flac/dr_wav/stb_vorbis/minimp4（原 core/audiodecoder.cpp 用）
+# 更早还删过 libs/faad2（GPL-2.0-or-later，静态链进主程序会污染许可证）。
+# 结果：整条音频链路零第三方源码，只剩 core/api.cpp 里几处 QProcess 调用。
 
 # ==================== 构建目标 ====================
 if(WIN32)
@@ -323,7 +231,6 @@ if(WIN32)
         ${Python_LIBRARIES}
         OpenSSL::Crypto          # 对应 libcrypto
         OpenSSL::SSL             # 对应 libssl
-        opus                     # 进程内 Opus 编码
     )
 else()
     find_library(LMDB_LIB_PATH NAMES lmdb liblmdb PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
@@ -341,7 +248,6 @@ else()
         ${Python_LIBRARIES}
         OpenSSL::Crypto          # 对应 libcrypto
         OpenSSL::SSL             # 对应 libssl
-        opus                     # 进程内 Opus 编码
     )
 endif()
 
@@ -360,39 +266,8 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/hnswlib
-    ${CMAKE_CURRENT_SOURCE_DIR}/libs/decoders
     ${Python_INCLUDE_DIRS}
 )
-
-# ==================== 自编译 FFmpeg（libav）：实际生效 ====================
-# 必须在 add_executable(qiancao) 之后；探测与参数在上面的 libav 段落里攒好。
-if(QA_LIBAV_ENABLED)
-    target_include_directories(qiancao PRIVATE "${QA_LIBAV_DIR}/include")
-    target_compile_definitions(qiancao PRIVATE QIANCAO_WITH_LIBAV=1)
-    target_link_libraries(qiancao PRIVATE ${QA_LIBAV_LINK_LIBS})
-
-    if(WIN32 AND QA_LIBAV_DLLS)
-        add_custom_command(TARGET qiancao POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${QA_LIBAV_DLLS}
-                    "$<TARGET_FILE_DIR:qiancao>"
-            COMMENT "拷贝自编译 FFmpeg 动态库到输出目录")
-    endif()
-
-    message(STATUS "libav: 已启用（${QA_LIBAV_SUBDIR}）")
-else()
-    if(NOT QIANCAO_WITH_LIBAV)
-        message(STATUS "libav: 已显式关闭（-DQIANCAO_WITH_LIBAV=OFF）")
-    else()
-        message(STATUS "libav: 未启用 —— 缺 ${QA_LIBAV_DIR}/include")
-        if(WIN32)
-            message(STATUS "       在 Windows 上跑：bash libs/ffmpeg/build-win.sh")
-        else()
-            message(STATUS "       在 Linux  上跑：bash libs/ffmpeg/build-linux.sh")
-        endif()
-    endif()
-    message(STATUS "       这几处会照旧回退 ffmpeg.exe：时长探测兜底、罕见格式转 m4a")
-endif()
 
 if(USE_FREETHREADING_PYTHON)
     target_compile_definitions(qiancao PRIVATE Py_GIL_DISABLED=1)

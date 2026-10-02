@@ -26,9 +26,6 @@
 #include <qwaitcondition.h>
 #include <string>
 #include "global.h"
-#include "opusconvert.h"          // 进程内「任意音视频 → Ogg Opus」，替代反复起 ffmpeg
-#include "audiodecoder.h"         // 进程内解码层（含只读元数据的时长探测 probeAudioDurationMs）
-#include "libavio.h"              // 自编译 FFmpeg 动态库（libs/ffmpeg）：比自研层认得更多容器
 #include <QFile>
 #include <QCryptographicHash>
 #include <QJsonDocument>
@@ -3059,7 +3056,9 @@ QString convertAudioToSilk(const QString &srcFilePath)
         return srcFilePath;
     }
 
-    if (!ffmpeg.waitForFinished(30000)) {
+    // ⚠ 2026-10-02：转码现在全靠这一步（不再有进程内兜底），超时给宽一些 ——
+    //   超时会被当作「转换失败」按原文件发送，而超长音频原样发大概率被 QQ 的 4:59 上限拒绝。
+    if (!ffmpeg.waitForFinished(120000)) {
         AppendEventLog("ffmpeg 超时");
         ffmpeg.kill();
         return srcFilePath;
@@ -3083,27 +3082,24 @@ QString convertAudioToSilk(const QString &srcFilePath)
 // ffmpeg 的切点只能落在 AAC 帧边界上，实际段长会略大于设定值。
 static const int AUDIO_SEG_MAX_SEC = 298;
 
-// 音频发送优先走「进程内 libopus → Ogg Opus」，不再为每条音频起 1~3 次 ffmpeg 进程；
-// 解码不出来（不支持的容器/编码）或转换失败时，自动回退到老的 ffmpeg → .m4a 路线。
-// 置 false 即可整体退回旧行为。
-static const bool kPreferInProcessOpus = true;
-
-// 「发送音频」链路是否允许回退到 ffmpeg —— 这一层决定要不要装/带 ffmpeg.exe。
-//   true（默认）= 进程内优先、ffmpeg 只做最后兜底。只有前面几层都搞不定的才起进程：
-//                 · 时长探测失败（自研 + libav 都认不出的容器）→ 交给 ffmpeg 探
-//                 · 自研解码层解不出、libav 也解不出的格式 → 交给 ffmpeg 转 m4a
-//                 · 超长 m4a → 交给 ffmpeg 流复制切段（无损、秒级，比重编码划算）
-//                 全部失败也不会卡住：探测返回 -1 不判超长、转换失败回原路径，照常发送。
-//   false        = 完全不带 ffmpeg 的部署：只走进程内 libopus，一次外部进程都不起。
-//                  认不出容器的按「时长未知」原样发，体积压不下来。
-// 注意上面第 3 条：m4a 切段在 ffmpeg 缺失/失败时会自动落到进程内重编码，不会兜不住。
+// 音频发送链路 —— 2026-10-02 拍板：**统一走外部 ffmpeg**，不再有进程内解码/编码那一层。
+// （此前那套进程内链路要长期维护 libs/{opus,decoders,ffmpeg} 三套库 + 两平台构建脚本 +
+//   LGPL 声明，源文件数比主程序自己的全部源码还多 3.8 倍，维护成本远高于收益。）
 //
-// 链路层次（自上而下，每层只在前一层失败时介入）：
-//   ① 自研解码层  audiodecoder.{h,cpp} —— wav/mp3/flac/ogg/mp4(AAC)/adts，无第三方依赖
-//   ② 自编 libav  libs/ffmpeg（本文件用 libavio.h 调）—— 上面之外再加 amr/wma/ac3/mkv/avi/flv…
-//   ③ ffmpeg.exe  外部进程 —— 只剩「libav 也没编进来」或容器太古怪的情况
-// ② 是编译期可关的（CMake 的 QIANCAO_WITH_LIBAV），关掉后行为与接入前完全一致。
-static const bool kAllowFfmpegFallback = true;
+// 现在自上而下只有四步，每步都能失败降级、不会卡住发送：
+//   ① 原样发   audioCanSendAsIs() —— 已是小体积容器（opus/m4a/amr/silk/ogg/aac），
+//              或体积本身就不大且容器里没有视频轨 → 直接发，一次 ffmpeg 都不起。
+//   ② 只读探测 probeAudioDurationSec() —— 自研读文件头（最便宜），认不出再用 `ffmpeg -i`。
+//              只用来判断「这条看着不大的音频会不会其实超长」。失败返回 -1 = 不判超长。
+//   ③ 转码     convertAudioToSilk() —— `ffmpeg -c:a aac -b:a 32k -ar 24000 -ac 1` → .m4a。
+//              与原来的进程内 Opus 同为 32kbps 单声道，所以**产物体积基本不变**
+//              （QQ 只校验时长与大小，不校验容器格式）。
+//   ④ 切段     splitM4aSegments() —— 超长的 .m4a 用 `-c copy` 流复制（无损、秒级）。
+//
+// ⚠ **ffmpeg 现在是硬依赖**：不再有进程内兜底。找不到它时音频只能按原样发（体积压不下来、
+//   超长也切不了，可能被 QQ 的 4:59 上限拒绝）。查找顺序见上面的 findFfmpegPath()：
+//   ① 设置里的 ffmpeg 目录 → ② 主程序同目录（Linux 的 ~/qiancao、Windows 的 exe 旁）→ ③ PATH。
+//   打包时别忘带：Windows 发布包里有 5.7MB 的 ffmpeg.exe；Linux 需用户自装或放程序同目录。
 
 // 小于这个体积的音频直接原样发，不再转换 —— 转完也省不下一两百 KB，白跑一遍编解码。
 static const qint64 kAudioSkipConvertBytes = 1024 * 1024;
@@ -3119,6 +3115,58 @@ static bool isCompactAudioContainer(const QString &suffix)
     return kList.contains(suffix.toLower());
 }
 
+// 明确的视频后缀 —— 不可能是纯音频，直接判，连文件都不用打开（省一次 ffmpeg）
+static bool hasDefiniteVideoExtension(const QString &suffix)
+{
+    static const QStringList kList = {
+        QStringLiteral("avi"),  QStringLiteral("mkv"),  QStringLiteral("flv"),
+        QStringLiteral("webm"), QStringLiteral("ts"),   QStringLiteral("m2ts"),
+        QStringLiteral("mts"),  QStringLiteral("wmv"),  QStringLiteral("asf"),
+        QStringLiteral("rm"),   QStringLiteral("rmvb"), QStringLiteral("mpg"),
+        QStringLiteral("mpeg"), QStringLiteral("vob"),  QStringLiteral("ogv"),
+        QStringLiteral("m4v"),  QStringLiteral("f4v"),
+    };
+    return kList.contains(suffix.toLower());
+}
+
+// 一次 `ffmpeg -i` 同时拿到「时长」与「容器里有没有视频轨」—— 两者都在 stderr 的媒体信息里。
+// ⚠ 不给输出文件时 ffmpeg 会以非 0 退出，但信息照常打印完，不影响解析。
+// 只对「体积够小、后缀又看不出是视频」的文件调用，所以这点进程开销只落在少数路径上。
+struct MediaProbe
+{
+    double durationSec = -1;    // <0 = 未知（调用方按「不超长」处理）
+    bool   hasVideo    = false;
+};
+
+static MediaProbe probeMediaInfo(const QString &filePath)
+{
+    MediaProbe info;
+    QProcess p;
+    p.start(findFfmpegPath(), {"-i", filePath});
+    if (!p.waitForStarted())
+        return info;
+    if (!p.waitForFinished(10000)) {
+        p.kill();
+        return info;
+    }
+    const QString err = QString::fromLocal8Bit(p.readAllStandardError());
+
+    static QRegularExpression reDur("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+    const auto m = reDur.match(err);
+    if (m.hasMatch())
+        info.durationSec = m.captured(1).toInt() * 3600
+                         + m.captured(2).toInt() * 60
+                         + m.captured(3).toDouble();
+
+    // 形如 "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, ..."
+    // （音频轨是 "Audio:"、字幕轨是 "Subtitle:"，不会误命中）
+    static QRegularExpression reVid(QStringLiteral("Stream #\\d+:\\d+.*:\\s*Video:"));
+    info.hasVideo = reVid.match(err).hasMatch();
+    return info;
+}
+
+static double probeAudioDurationSec(const QString &filePath);   // 定义在下面，audioCanSendAsIs 要用
+
 // 这个音频是否可以直接原样发送（已是小体积容器，或本身就不大）
 // ⚠ 视频例外：视频当音频发时必须先提取音轨转码，哪怕只有几百 KB 也不能原样直传 ——
 //   否则发给 file_type=3 的是个视频容器而不是语音。
@@ -3128,77 +3176,40 @@ static bool audioCanSendAsIs(const QString &path)
     const int cut = p.indexOf(QLatin1Char('?'));   // URL 可能带 query，别把它算进后缀
     if (cut >= 0) p.truncate(cut);
     const QFileInfo fi(p);
-    if (isCompactAudioContainer(fi.suffix()))
-        return true;                               // 这些后缀确定是音频容器
 
     const qint64 sz = fi.size();                   // 不存在 / URL → 0，不会误判成「小」
     if (sz <= 0 || sz >= kAudioSkipConvertBytes)
-        return false;                              // 大文件本来就进转换，不必再判是不是视频
+        return false;                              // 体积偏大 → 交给转换流程决定要不要切段
 
-    // 走到这里 = 「体积够小，本来打算原样发」。只有这种情况才值得读一次文件头：
-    // .mp4/.mov/.3gp 光看后缀分不出音视频（m4a 也是 mp4 容器），明确的视频后缀则直接命中。
-    // 先跑自研那版（只读 moov，最便宜）；它说「不是视频」再让 libav 复核一遍
-    // —— libav 连 mkv / avi / flv / webm 这些自研层压根不看内容的容器也认得。
-    if (mediaFileHasVideoTrack(p))
-        return false;
-    if (libavHasVideoTrack(p))
-        return false;
-
-    return true;
-}
-
-// 首次用到 libav 时打一条日志：发布包万一漏带那几个 DLL，日志里一眼看得出来。
-static void logLibavOnce()
-{
-    static const bool once = [] {
-        const QString v = libavVersionString();
-        if (!v.isEmpty())
-            AppendEventLog(QStringLiteral("进程内 libav 已就绪：") + v);
+    // 体积够小（<1MB）才值得往下判：
+    //   ① 紧凑容器（opus/m4a/amr/silk/ogg/aac）：体积小不代表时长短（低码率能拖很久），
+    //      所以仍然探一次时长，但不必判视频轨 —— 这些容器里不可能有画面
+    //   ② 明确的视频后缀：必须先提音轨转码 → 不探内容，直接进转换
+    //   ③ 其他（mp3/wav/flac/mp4/mov/3gp…）：探「有没有视频轨」+「有没有超长」
+    //      （.mp4/.mov/.3gp 光看后缀分不出音视频，m4a 也是 mp4 容器）
+    // ⚠ SILK 是 QQ 自己的语音格式，ffmpeg 完全不认（连时长都读不出来）→ 探了也是白搭
+    //   一次进程启动。语音消息本身都很短，直接原样发。
+    if (fi.suffix().compare(QLatin1String("silk"), Qt::CaseInsensitive) == 0)
         return true;
-    }();
-    Q_UNUSED(once)
+
+    if (isCompactAudioContainer(fi.suffix()))
+        return probeAudioDurationSec(p) <= AUDIO_SEG_MAX_SEC;
+    if (hasDefiniteVideoExtension(fi.suffix()))
+        return false;
+
+    const MediaProbe mi = probeMediaInfo(p);
+    return !mi.hasVideo && mi.durationSec <= AUDIO_SEG_MAX_SEC;
 }
 
-// 探测媒体时长（秒）；失败返回 -1。
-// 依次尝试三条**都不起外部进程**的只读路径，只有全都认不出才回落 ffmpeg：
-//   ① 自研 probeAudioDurationMs —— 只认 wav/mp3/flac/ogg/mp4(含 m4a)/adts，但最快
-//   ② libav 只读探测            —— amr / wma(asf) / mkv / avi / flv / ac3 … 归它
-//   ③ ffmpeg -i                 —— 最后兜底（kAllowFfmpegFallback = false 时直接放弃）
+// 探测媒体时长（秒）；失败返回 -1。用于「转换产物要不要切段」以及上面的超长判断。
 static double probeAudioDurationSec(const QString &filePath)
 {
-    qint64 ms = 0;
-    if (probeAudioDurationMs(filePath, &ms))
-        return double(ms) / 1000.0;
-
-    if (libavProbeDurationMs(filePath, &ms))
-        return double(ms) / 1000.0;
-
-    // 彻底脱离 ffmpeg 时到此为止：认不出容器 = 时长未知 → 不判超长 → 原样发送
-    if (!kAllowFfmpegFallback)
-        return -1;
-
-    // 兜底：ffmpeg -i 的输出（进程内解不出这容器时才走到这）
-    QString ffmpegPath = findFfmpegPath();
-    QProcess p;
-    p.start(ffmpegPath, {"-i", filePath});
-    if (!p.waitForStarted())
-        return -1;
-    if (!p.waitForFinished(10000)) {
-        p.kill();
-        return -1;
-    }
-    // 媒体信息在 stderr 上；没给输出文件时 ffmpeg 非 0 退出，不影响解析
-    static QRegularExpression re("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
-    const auto m = re.match(QString::fromLocal8Bit(p.readAllStandardError()));
-    if (!m.hasMatch())
-        return -1;
-    return m.captured(1).toInt() * 3600 + m.captured(2).toInt() * 60 + m.captured(3).toDouble();
+    return probeMediaInfo(filePath).durationSec;
 }
 
 // 把 m4a 按 segSec 秒流复制切段（不重编码），段文件名 = 原名去 .m4a + _seg000.m4a ...
 // 已有同名段文件则直接复用；失败返回空表
-// ⚠ 只在 kAllowFfmpegFallback = true 时被调用；关掉后保留定义，打开开关即可原地恢复。
-[[maybe_unused]] static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
+static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
 {
     if (!m4aPath.endsWith(".m4a"))
         return {};                       // 只切转换产物；转换失败兜底的原文件不动
@@ -3335,9 +3346,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             if(needUpload && fileType==3)
             {
                 needUpload=true;
-                logLibavOnce();          // 只在第一次发音频时打一条「libav 已就绪」日志
 
-                // 之前 ffmpeg 转好的 <源>.m4a 还在 → 直接复用，不必再重转出一份 opus
+                // 之前 ffmpeg 转好的 <源>.m4a 还在 → 直接复用，不必再重转一份
                 const QString legacyM4a = filePath + ".m4a";
                 if (QFile::exists(legacyM4a))
                     filePath = legacyM4a;
@@ -3345,61 +3355,29 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 // 已经是小体积容器（opus/m4a/amr…）或本身就不大 → 原样发，转换纯属浪费算力。
                 // 只有这种「看着够小」的才值得花一次只读探测：小容器也可能是超长低码率音频。
                 // （大文件走短路求值，根本不探，直接进转换）
-                bool sendAsIs = audioCanSendAsIs(filePath);
-                if (sendAsIs && probeAudioDurationSec(filePath) > AUDIO_SEG_MAX_SEC)
-                    sendAsIs = false;
+                // audioCanSendAsIs() 内部已经判过「容器里有没有视频轨」和「时长有没有超 4:59」
+                const bool sendAsIs = audioCanSendAsIs(filePath);
 
                 if (!sendAsIs) {
-                    // ① 超长 m4a 的快捷路：ffmpeg 流复制切段（无损、秒级，不重编码）。
-                    //    切不出来（没装 ffmpeg / 执行失败）就往下走进程内链路 —— MP4/M4A 里的
-                    //    AAC 音轨同样能解，只是要重编码一遍，保证不会「切不了就只能单文件发」。
-                    if (kAllowFfmpegFallback
-                            && filePath.endsWith(QStringLiteral(".m4a"), Qt::CaseInsensitive))
+                    // ① 已经是 .m4a（多半就是上次转好的产物）→ 直接流复制切段：无损、秒级、不重编码
+                    if (filePath.endsWith(QStringLiteral(".m4a"), Qt::CaseInsensitive))
                         audioSegs = splitM4aSegments(filePath, AUDIO_SEG_MAX_SEC);
 
                     if (audioSegs.isEmpty()) {
-                        // ② 主链路：进程内解码（含从视频容器里提取音轨）+ 重采样 + libopus 编码，
-                        //    一步出 Opus，超长时顺带切好段
-                        QStringList opusOut;
-                        QString opusErr;
-                        if (kPreferInProcessOpus)
-                            opusOut = convertAudioToOpusSegments(filePath, AUDIO_SEG_MAX_SEC, &opusErr);
+                        // ② 转码：ffmpeg → 32kbps 单声道 .m4a。
+                        //    码率/采样率/声道数与原来的进程内 Opus 完全一致，产物体积也就基本不变
+                        //    （QQ 只校验时长和大小，不校验容器格式）。
+                        const QString newpath = filePath + ".m4a";
+                        if (!QFile::exists(newpath)) //检查有没有有就不转换了
+                            filePath = convertAudioToSilk(filePath);
+                        else
+                            filePath = newpath;
 
-                        // ②' 自研解码层不认识的容器（amr / wma / ac3 / 非 AAC 音轨 …）：
-                        //    只把「解出 PCM」这一步换成 libav（QIANCAO_WITH_LIBAV=ON 时才编进来），
-                        //    后面的单声道化 / 重采样 / libopus / Ogg 封装完全不变 ——
-                        //    产物依旧是与 ② 同规格的 .opus，不再多转一道 m4a。
-                        //    （转换层仍支持把分阶段耗时填进 OpusBenchStats 尾参，
-                        //      用来跑 libs/_qatest 的 --bench；正常运行不传，零计时开销）
-                        if (opusOut.isEmpty() && kPreferInProcessOpus && libavAvailable())
-                            opusOut = convertAudioToOpusSegmentsEx(filePath, AUDIO_SEG_MAX_SEC,
-                                                                   libavDecodeAudioFile, &opusErr);
-
-                        if (!opusOut.isEmpty()) {
-                            if (opusOut.size() == 1)
-                                filePath = opusOut.first();      // ≤298s：单文件，走下面的单文件上传路径（可进缓存）
-                            else
-                                audioSegs = opusOut;             // 超长：逐段上传，不进缓存
-                        } else if (kAllowFfmpegFallback) {
-                            qDebug() << "进程内转换失败，回退 ffmpeg:" << opusErr;
-                            // ③ 最后兜底：自研 + libav 都解不出的格式，交给 ffmpeg 转成 m4a 再发；
-                            //    超长的顺带切段
-                            const QString newpath = filePath + ".m4a";
-                            if (!QFile::exists(newpath)) //检查有没有有就不转换了
-                                filePath = convertAudioToSilk(filePath);
-                            else
-                                filePath = newpath;
-
-                            // 超长音频 → 切成多段，走下面的循环逐段上传发送
-                            // （splitM4aSegments 只对 .m4a 生效：转换失败时 filePath 还是原文件，
-                            //   它会直接返回空 = 原样发，不会把路径改坏）
-                            if (probeAudioDurationSec(filePath) > AUDIO_SEG_MAX_SEC)
-                                audioSegs = splitM4aSegments(filePath, AUDIO_SEG_MAX_SEC);
-                        } else {
-                            // 完全不带 ffmpeg 的部署：进程内解不出这个容器 → 原样发送
-                            // （体积没压下来，但不再依赖任何外部程序）
-                            qDebug() << "进程内解码不支持该容器，原样发送:" << filePath;
-                        }
+                        // 超长音频 → 切成多段，走下面的循环逐段上传发送
+                        // （splitM4aSegments 只对 .m4a 生效：转换失败时 filePath 还是原文件，
+                        //   它会直接返回空 = 原样发，不会把路径改坏）
+                        if (probeAudioDurationSec(filePath) > AUDIO_SEG_MAX_SEC)
+                            audioSegs = splitM4aSegments(filePath, AUDIO_SEG_MAX_SEC);
                     }
                 }
             }
