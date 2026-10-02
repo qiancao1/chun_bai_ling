@@ -29,18 +29,22 @@
 using PcmSink = std::function<bool(const float *samples, int frameCount, int channels)>;
 
 // 把音频/视频文件解码成 float32 PCM（保持源采样率与声道数，不做重采样）。
-// 支持：WAV / MP3 / FLAC / OGG-Vorbis / MP4(含 MOV、M4A、3GP 等) 里的 AAC 音轨 / 裸 ADTS AAC。
+// 本层只负责**自带解码器**的那几种：WAV / MP3 / FLAC / OGG-Vorbis。
+//   ⚠ MP4(含 MOV、M4A、3GP) 里的 AAC 音轨、裸 ADTS AAC **不在本层**
+//     —— 交给 core/libavio.h 的 libavDecodeAudioFile()（自编译 FFmpeg）。
+//     原因是原来给 AAC 用的 faad2 是 GPL-2.0-or-later，静态链进主程序会污染许可证。
 //   sink        : 数据回调
 //   srcRate     : [out] 源采样率（可传 nullptr）
 //   srcChannels : [out] 源声道数（可传 nullptr）
 //   error       : [out] 失败原因（可传 nullptr）
 // 返回 true 表示解码完成。任何失败（格式不支持、文件损坏、无音轨）都返回 false，
-// 调用方应当退回 ffmpeg 老链路兜底。
+// 调用方应当依次回落 libav、ffmpeg。
 bool decodeAudioFile(const QString &path, const PcmSink &sink,
                      int *srcRate, int *srcChannels, QString *error);
 
-// 只按「文件头魔数 + 扩展名」判断这本解码器是否受理该文件，不解码。
-// 用于提前决策（走进程内转换还是直接交给 ffmpeg）。
+// 只按「文件头魔数 + 扩展名」判断**本解码层**是否受理该文件，不解码。
+// 用于提前决策（走进程内第①层，还是直接交给 libav / ffmpeg）。
+// ⚠ MP4 / 裸 ADTS 一律返回 false —— 它们本身认得出来，但音轨解码不在本层。
 bool canDecodeAudioFile(const QString &path);
 
 // 只读容器/帧头元数据估算时长（毫秒），**不解码** —— 比解码一遍便宜好几个数量级，

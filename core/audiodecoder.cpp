@@ -34,14 +34,17 @@
 
 // ---------------------------------------------------------------------------
 // 第三方解码库
-//   · minimp4   : MP4/MOV/M4A 解封装（CC0-1.0）
-//   · faad2     : AAC 解码（GPL-2.0-or-later，Nero AG）
+//   · minimp4   : MP4/MOV/M4A 解封装 + 视频轨判定（CC0-1.0）
 //   · stb_vorbis: OGG Vorbis 解码（MIT / 公共领域）
 //   · dr_mp3 / dr_flac / dr_wav : MP3 / FLAC / WAV 解码（MIT-0 / 公共领域）
 // 实现统一在 libs/decoders/decoder_impl.c 与各自 .c 里生成，这里只取声明。
+//
+// ⚠ 这里已经**不内置 faad2** 了：MP4/M4A 里的音轨与裸 ADTS AAC 解码一并交给
+//    core/libavio.cpp 那份自编译 FFmpeg（libav）。原来用 faad2 是因为它顺带能解 AAC，
+//    但它是 GPL-2.0-or-later，静态链进主程序会让整个 qiancao.exe 变成 GPL-3，
+//    跟项目 LICENSE.txt 的 LGPL-3.0 冲突 —— 而 libav 侧的 aac/aac_latm 早就覆盖了。
 // ---------------------------------------------------------------------------
 #include "minimp4.h"
-#include "neaacdec.h"
 // STB_VORBIS_HEADER_ONLY：只取声明，实现由 CMake 单独编译的 stb_vorbis.c 提供，
 // 不这么写就会在两个目标文件里各生成一份实现 → LNK2005 重复定义
 #define STB_VORBIS_HEADER_ONLY
@@ -87,8 +90,8 @@ enum class Fmt {
     Flac,
     OggVorbis,
     OggOpus,   // 已经是 Opus：本层不处理（要保留就整文件直传，这里交回上层兜底）
-    Mp4,
-    Adts
+    Mp4,       // 只用于嗅探 / 时长探测 / 视频轨判定 —— **解码不在本层**（走 libav）
+    Adts       // 同上：裸 ADTS AAC 的解码也交给 libav
 };
 
 Fmt fromExtension(const QString &path)
@@ -267,8 +270,11 @@ bool decodeOggVorbis(const QString &path, const PcmSink &sink, int *rate, int *c
 }
 
 // --------------------------------------------------------------------------
-// MP4 / MOV / M4A 里的 AAC 音轨（minimp4 解封装 + faad2 解码）
+// MP4 / MOV / M4A 的读回调（minimp4 用）
 // --------------------------------------------------------------------------
+// 只服务于下面两处**只读元数据**的用途：probeMp4Ms() 估时长、mediaFileHasVideoTrack() 判视频轨。
+// 音轨解码本身已经不在本层了（走 libav）。
+//
 // minimp4 的读回调约定很反直觉：返回 **0 表示成功**，非 0 表示失败
 // （见 minimp4.h 的 minimp4_fgets：`if (read_callback(...)) return -1;`）
 int mp4ReadCb(int64_t offset, void *buffer, size_t size, void *token)
@@ -276,230 +282,6 @@ int mp4ReadCb(int64_t offset, void *buffer, size_t size, void *token)
     FILE *f = static_cast<FILE *>(token);
     if (qaFseek(f, offset) != 0) return 1;
     return std::fread(buffer, 1, size, f) == size ? 0 : 1;
-}
-
-bool decodeMp4Aac(const QString &path, const PcmSink &sink, int *rate, int *ch, QString *err)
-{
-    // 第三方库都只吃 const char* 文件名，Windows 下 fopen 认的是「本地代码页」而不是 UTF-8，
-    // 所以统一走 QFile::encodeName（Windows 转本地 8bit，Linux 转 UTF-8），中文路径才不会挂
-    const QByteArray u8 = QFile::encodeName(path);
-    FILE *f = std::fopen(u8.constData(), "rb");
-    if (!f) {
-        setErr(err, QStringLiteral("MP4 打开失败"));
-        return false;
-    }
-    if (qaFseek(f, 0, SEEK_END) != 0) {
-        std::fclose(f);
-        setErr(err, QStringLiteral("MP4 定位失败"));
-        return false;
-    }
-    const qint64 fileSize = qaFtell(f);
-    if (qaFseek(f, 0, SEEK_SET) != 0 || fileSize <= 0) {
-        std::fclose(f);
-        setErr(err, QStringLiteral("MP4 定位失败"));
-        return false;
-    }
-
-    MP4D_demux_t mp4;
-    std::memset(&mp4, 0, sizeof(mp4));
-    if (!MP4D_open(&mp4, mp4ReadCb, f, fileSize)) {
-        std::fclose(f);
-        setErr(err, QStringLiteral("MP4 解析失败"));
-        return false;
-    }
-
-    // 找第一条「AAC 音轨」（视频轨自动跳过：只认 handler_type == 'soun'）
-    int track = -1;
-    for (unsigned i = 0; i < mp4.track_count; ++i) {
-        const MP4D_track_t &t = mp4.track[i];
-        if (t.handler_type != MP4D_HANDLER_TYPE_SOUN) continue;
-        if (t.object_type_indication != MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3) continue;
-        if (!t.dsi || t.dsi_bytes == 0) continue;
-        track = int(i);
-        break;
-    }
-    if (track < 0) {
-        MP4D_close(&mp4);
-        std::fclose(f);
-        setErr(err, QStringLiteral("MP4 里没有可解码的 AAC 音轨"));
-        return false;
-    }
-    const MP4D_track_t &tr = mp4.track[track];
-
-    NeAACDecHandle dec = NeAACDecOpen();
-    if (!dec) {
-        MP4D_close(&mp4);
-        std::fclose(f);
-        setErr(err, QStringLiteral("AAC 解码器创建失败"));
-        return false;
-    }
-    NeAACDecConfigurationPtr cfg = NeAACDecGetCurrentConfiguration(dec);
-    if (cfg) {
-        cfg->outputFormat = FAAD_FMT_16BIT;   // 16bit 最稳（float 输出在部分 SBR 流上有坑），后面自己转 float
-        cfg->downMatrix   = 1;                // 多声道先降成双声道
-        NeAACDecSetConfiguration(dec, cfg);
-    }
-    unsigned long srcRate = 0;
-    unsigned char srcCh = 0;
-    if (NeAACDecInit2(dec, tr.dsi, tr.dsi_bytes, &srcRate, &srcCh) != 0) {
-        NeAACDecClose(dec);
-        MP4D_close(&mp4);
-        std::fclose(f);
-        setErr(err, QStringLiteral("AAC 初始化失败(AudioSpecificConfig 不合法)"));
-        return false;
-    }
-    if (rate) *rate = int(srcRate);
-    if (ch)   *ch   = int(srcCh);
-
-    std::vector<unsigned char> pkt;
-    std::vector<float> out;
-    bool ok = true;
-    for (unsigned s = 0; s < tr.sample_count && ok; ++s) {
-        unsigned bytes = 0, ts = 0, dur = 0;
-        const MP4D_file_offset_t off = MP4D_frame_offset(&mp4, unsigned(track), s, &bytes, &ts, &dur);
-        if (bytes == 0 || off == 0) continue;          // 空样本/坏索引：跳过这一帧
-        if (size_t(bytes) > pkt.size()) pkt.resize(bytes);
-        if (mp4ReadCb(int64_t(off), pkt.data(), bytes, f) != 0) continue;
-
-        NeAACDecFrameInfo fi;
-        std::memset(&fi, 0, sizeof(fi));
-        void *pcm = NeAACDecDecode(dec, &fi, pkt.data(), bytes);
-        if (fi.error || !pcm || fi.samples == 0 || fi.channels == 0) continue;   // 单帧坏 → 跳过
-
-        const int frames = int(fi.samples / fi.channels);
-        if (frames <= 0) continue;
-        const short *sp = static_cast<const short *>(pcm);
-        const size_t total = size_t(frames) * fi.channels;
-        if (out.size() < total) out.resize(total);
-        for (size_t i = 0; i < total; ++i) out[i] = float(sp[i]) / 32768.0f;
-        if (!sink(out.data(), frames, int(fi.channels))) ok = false;
-        // SBR/HE-AAC 会让实际输出采样率与初始值不同，随时校正
-        if (fi.samplerate) { if (rate) *rate = int(fi.samplerate); }
-    }
-
-    NeAACDecClose(dec);
-    MP4D_close(&mp4);
-    std::fclose(f);
-    if (ok && rate && *rate == 0) {
-        setErr(err, QStringLiteral("MP4 音轨没有任何可解码帧"));
-        return false;
-    }
-    return ok;
-}
-
-// --------------------------------------------------------------------------
-// 裸 ADTS AAC（faad2；先把 ADTS 头解析成 AudioSpecificConfig，再逐帧喂裸负载）
-// --------------------------------------------------------------------------
-bool decodeAdtsAac(const QString &path, const PcmSink &sink, int *rate, int *ch, QString *err)
-{
-    static const int kSampleRates[16] = {96000, 88200, 64000, 48000, 44100, 32000,
-                                         24000, 22050, 16000, 12000, 11025, 8000,
-                                         7350, 0, 0, 0};
-
-    // 第三方库都只吃 const char* 文件名，Windows 下 fopen 认的是「本地代码页」而不是 UTF-8，
-    // 所以统一走 QFile::encodeName（Windows 转本地 8bit，Linux 转 UTF-8），中文路径才不会挂
-    const QByteArray u8 = QFile::encodeName(path);
-    FILE *f = std::fopen(u8.constData(), "rb");
-    if (!f) {
-        setErr(err, QStringLiteral("AAC 打开失败"));
-        return false;
-    }
-    std::vector<unsigned char> all;
-    {
-        unsigned char tmp[65536];
-        size_t got;
-        while ((got = std::fread(tmp, 1, sizeof(tmp), f)) > 0)
-            all.insert(all.end(), tmp, tmp + got);
-    }
-    std::fclose(f);
-
-    // 跳过可能的 ID3v2
-    size_t pos = 0;
-    if (all.size() > 10 && std::memcmp(all.data(), "ID3", 3) == 0) {
-        size_t sz = (size_t(all[6] & 0x7F) << 21) | (size_t(all[7] & 0x7F) << 14) |
-                    (size_t(all[8] & 0x7F) << 7) | size_t(all[9] & 0x7F);
-        pos = 10 + sz;
-    }
-
-    // 找第一个 ADTS 帧头（同步字 FFF + layer==00）
-    size_t first = size_t(-1);
-    for (size_t i = pos; i + 7 <= all.size(); ++i) {
-        if (all[i] == 0xFF && (all[i + 1] & 0xF6) == 0xF0) { first = i; break; }
-    }
-    if (first == size_t(-1)) {
-        setErr(err, QStringLiteral("找不到 ADTS 帧头"));
-        return false;
-    }
-
-    // 由 ADTS 头拼出 AudioSpecificConfig（2 字节，无显式 SBR 信令）
-    const unsigned char b2 = all[first + 2];
-    const int profile = (b2 >> 6) & 0x03;      // MPEG-4 Audio Object Type - 1
-    const int sfIndex = (b2 >> 2) & 0x0F;
-    const int chanCfg = ((b2 & 0x01) << 2) | ((all[first + 3] >> 6) & 0x03);
-    if (kSampleRates[sfIndex] == 0) {
-        setErr(err, QStringLiteral("ADTS 采样率非法"));
-        return false;
-    }
-    unsigned char asc[2];
-    asc[0] = (unsigned char)(((profile + 1) << 3) | (sfIndex >> 1));
-    asc[1] = (unsigned char)(((sfIndex & 0x01) << 7) | (chanCfg << 3));
-
-    NeAACDecHandle dec = NeAACDecOpen();
-    if (!dec) {
-        setErr(err, QStringLiteral("AAC 解码器创建失败"));
-        return false;
-    }
-    NeAACDecConfigurationPtr cfg = NeAACDecGetCurrentConfiguration(dec);
-    if (cfg) {
-        cfg->outputFormat = FAAD_FMT_16BIT;
-        cfg->downMatrix   = 1;
-        NeAACDecSetConfiguration(dec, cfg);
-    }
-    unsigned long srcRate = 0;
-    unsigned char srcCh = 0;
-    if (NeAACDecInit2(dec, asc, 2, &srcRate, &srcCh) != 0) {
-        NeAACDecClose(dec);
-        setErr(err, QStringLiteral("AAC 初始化失败"));
-        return false;
-    }
-    if (rate) *rate = int(srcRate);
-    if (ch)   *ch   = int(srcCh);
-
-    std::vector<float> out;
-    bool ok = true;
-    size_t p = first;
-    while (ok && p + 7 <= all.size()) {
-        if (all[p] != 0xFF || (all[p + 1] & 0xF6) != 0xF0) {   // 失去同步：重新找帧头
-            size_t q = p + 1;
-            while (q + 7 <= all.size() && !(all[q] == 0xFF && (all[q + 1] & 0xF6) == 0xF0)) ++q;
-            if (q + 7 > all.size()) break;
-            p = q;
-        }
-        const int protAbsent = all[p + 1] & 0x01;
-        const int hdrLen = protAbsent ? 7 : 9;
-        const int frameLen = ((all[p + 3] & 0x03) << 11) | (all[p + 4] << 3) | (all[p + 5] >> 5);
-        if (frameLen < hdrLen || p + size_t(frameLen) > all.size()) break;   // 尾巴不完整：正常结束
-
-        NeAACDecFrameInfo fi;
-        std::memset(&fi, 0, sizeof(fi));
-        void *pcm = NeAACDecDecode(dec, &fi, all.data() + p + hdrLen, unsigned long(frameLen - hdrLen));
-        if (fi.error || !pcm || fi.samples == 0 || fi.channels == 0) {
-            p += size_t(frameLen);
-            continue;
-        }
-        const int frames = int(fi.samples / fi.channels);
-        const short *sp = static_cast<const short *>(pcm);
-        const size_t total = size_t(frames) * fi.channels;
-        if (frames > 0) {
-            if (out.size() < total) out.resize(total);
-            for (size_t i = 0; i < total; ++i) out[i] = float(sp[i]) / 32768.0f;
-            if (!sink(out.data(), frames, int(fi.channels))) ok = false;
-        }
-        p += size_t(frameLen);
-    }
-
-    NeAACDecClose(dec);
-    return ok;
 }
 
 // --------------------------------------------------------------------------
@@ -711,7 +493,9 @@ bool canDecodeAudioFile(const QString &path)
 {
     if (!QFile::exists(path)) return false;
     const Fmt fmt = sniffFormat(path);
-    return fmt != Fmt::None && fmt != Fmt::OggOpus;
+    // Mp4 / Adts 的解码已交给 libav，本层不算「能解」——免得调用方以为走进程内第①层就够。
+    return fmt != Fmt::None && fmt != Fmt::OggOpus
+        && fmt != Fmt::Mp4 && fmt != Fmt::Adts;
 }
 
 bool decodeAudioFile(const QString &path, const PcmSink &sink,
@@ -732,8 +516,12 @@ bool decodeAudioFile(const QString &path, const PcmSink &sink,
     case Fmt::Mp3:       return decodeMp3(path, sink, srcRate, srcChannels, error);
     case Fmt::Flac:      return decodeFlac(path, sink, srcRate, srcChannels, error);
     case Fmt::OggVorbis: return decodeOggVorbis(path, sink, srcRate, srcChannels, error);
-    case Fmt::Mp4:       return decodeMp4Aac(path, sink, srcRate, srcChannels, error);
-    case Fmt::Adts:      return decodeAdtsAac(path, sink, srcRate, srcChannels, error);
+    case Fmt::Mp4:
+    case Fmt::Adts:
+        // AAC 解码不在本层（原来靠 faad2）：返回 false，让上层回落到 libav。
+        // 时长探测 / 视频轨判定仍然由本层的 probeMp4Ms / probeAdtsMs 负责，不受影响。
+        setErr(error, QStringLiteral("本层不解 AAC：MP4/M4A 音轨与裸 ADTS 交给 libav"));
+        return false;
     case Fmt::OggOpus:
         setErr(error, QStringLiteral("输入已经是 Ogg Opus，本解码层不处理"));
         return false;

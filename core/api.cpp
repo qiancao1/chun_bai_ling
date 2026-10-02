@@ -28,6 +28,7 @@
 #include "global.h"
 #include "opusconvert.h"          // 进程内「任意音视频 → Ogg Opus」，替代反复起 ffmpeg
 #include "audiodecoder.h"         // 进程内解码层（含只读元数据的时长探测 probeAudioDurationMs）
+#include "libavio.h"              // 自编译 FFmpeg 动态库（libs/ffmpeg）：比自研层认得更多容器
 #include <QFile>
 #include <QCryptographicHash>
 #include <QJsonDocument>
@@ -3039,14 +3040,20 @@ static const int AUDIO_SEG_MAX_SEC = 298;
 static const bool kPreferInProcessOpus = true;
 
 // 「发送音频」链路是否允许回退到 ffmpeg —— 这一层决定要不要装/带 ffmpeg.exe。
-//   true（默认）= 进程内优先、ffmpeg 只做备用。只有代码自己搞不定的情况才起进程：
-//                 · 时长探测失败（认不出的容器）→ 交给 ffmpeg 探
-//                 · 进程内解不出的格式（amr/silk/wma/ac3/非 AAC 音轨）→ 交给 ffmpeg 转 m4a
+//   true（默认）= 进程内优先、ffmpeg 只做最后兜底。只有前面几层都搞不定的才起进程：
+//                 · 时长探测失败（自研 + libav 都认不出的容器）→ 交给 ffmpeg 探
+//                 · 自研解码层解不出、libav 也解不出的格式 → 交给 ffmpeg 转 m4a
 //                 · 超长 m4a → 交给 ffmpeg 流复制切段（无损、秒级，比重编码划算）
 //                 全部失败也不会卡住：探测返回 -1 不判超长、转换失败回原路径，照常发送。
 //   false        = 完全不带 ffmpeg 的部署：只走进程内 libopus，一次外部进程都不起。
 //                  认不出容器的按「时长未知」原样发，体积压不下来。
 // 注意上面第 3 条：m4a 切段在 ffmpeg 缺失/失败时会自动落到进程内重编码，不会兜不住。
+//
+// 链路层次（自上而下，每层只在前一层失败时介入）：
+//   ① 自研解码层  audiodecoder.{h,cpp} —— wav/mp3/flac/ogg/mp4(AAC)/adts，无第三方依赖
+//   ② 自编 libav  libs/ffmpeg（本文件用 libavio.h 调）—— 上面之外再加 amr/wma/ac3/mkv/avi/flv…
+//   ③ ffmpeg.exe  外部进程 —— 只剩「libav 也没编进来」或容器太古怪的情况
+// ② 是编译期可关的（CMake 的 QIANCAO_WITH_LIBAV），关掉后行为与接入前完全一致。
 static const bool kAllowFfmpegFallback = true;
 
 // 小于这个体积的音频直接原样发，不再转换 —— 转完也省不下一两百 KB，白跑一遍编解码。
@@ -3079,21 +3086,42 @@ static bool audioCanSendAsIs(const QString &path)
     if (sz <= 0 || sz >= kAudioSkipConvertBytes)
         return false;                              // 大文件本来就进转换，不必再判是不是视频
 
-    // 走到这里 = 「体积够小，本来打算原样发」。只有这种情况才值得读一次 moov：
+    // 走到这里 = 「体积够小，本来打算原样发」。只有这种情况才值得读一次文件头：
     // .mp4/.mov/.3gp 光看后缀分不出音视频（m4a 也是 mp4 容器），明确的视频后缀则直接命中。
+    // 先跑自研那版（只读 moov，最便宜）；它说「不是视频」再让 libav 复核一遍
+    // —— libav 连 mkv / avi / flv / webm 这些自研层压根不看内容的容器也认得。
     if (mediaFileHasVideoTrack(p))
+        return false;
+    if (libavHasVideoTrack(p))
         return false;
 
     return true;
 }
 
+// 首次用到 libav 时打一条日志：发布包万一漏带那几个 DLL，日志里一眼看得出来。
+static void logLibavOnce()
+{
+    static const bool once = [] {
+        const QString v = libavVersionString();
+        if (!v.isEmpty())
+            AppendEventLog(QStringLiteral("进程内 libav 已就绪：") + v);
+        return true;
+    }();
+    Q_UNUSED(once)
+}
+
 // 探测媒体时长（秒）；失败返回 -1。
-// 优先走进程内「只读元数据」（不解码、不起进程），只有它不认识的容器才回退 ffmpeg ——
-// 这样「发送音频」这条主线上一次外部进程都不用起。
+// 依次尝试三条**都不起外部进程**的只读路径，只有全都认不出才回落 ffmpeg：
+//   ① 自研 probeAudioDurationMs —— 只认 wav/mp3/flac/ogg/mp4(含 m4a)/adts，但最快
+//   ② libav 只读探测            —— amr / wma(asf) / mkv / avi / flv / ac3 … 归它
+//   ③ ffmpeg -i                 —— 最后兜底（kAllowFfmpegFallback = false 时直接放弃）
 static double probeAudioDurationSec(const QString &filePath)
 {
     qint64 ms = 0;
     if (probeAudioDurationMs(filePath, &ms))
+        return double(ms) / 1000.0;
+
+    if (libavProbeDurationMs(filePath, &ms))
         return double(ms) / 1000.0;
 
     // 彻底脱离 ffmpeg 时到此为止：认不出容器 = 时长未知 → 不判超长 → 原样发送
@@ -3266,6 +3294,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             if(needUpload && fileType==3)
             {
                 needUpload=true;
+                logLibavOnce();          // 只在第一次发音频时打一条「libav 已就绪」日志
 
                 // 之前 ffmpeg 转好的 <源>.m4a 还在 → 直接复用，不必再重转出一份 opus
                 const QString legacyM4a = filePath + ".m4a";
@@ -3291,12 +3320,19 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                         // ② 主链路：进程内解码（含从视频容器里提取音轨）+ 重采样 + libopus 编码，
                         //    一步出 Opus，超长时顺带切好段
                         QStringList opusOut;
-                        if (kPreferInProcessOpus) {
-                            QString opusErr;
+                        QString opusErr;
+                        if (kPreferInProcessOpus)
                             opusOut = convertAudioToOpusSegments(filePath, AUDIO_SEG_MAX_SEC, &opusErr);
-                            if (opusOut.isEmpty())
-                                qDebug() << "进程内 Opus 转换失败:" << opusErr;
-                        }
+
+                        // ②' 自研解码层不认识的容器（amr / wma / ac3 / 非 AAC 音轨 …）：
+                        //    只把「解出 PCM」这一步换成 libav（QIANCAO_WITH_LIBAV=ON 时才编进来），
+                        //    后面的单声道化 / 重采样 / libopus / Ogg 封装完全不变 ——
+                        //    产物依旧是与 ② 同规格的 .opus，不再多转一道 m4a。
+                        //    （转换层仍支持把分阶段耗时填进 OpusBenchStats 尾参，
+                        //      用来跑 libs/_qatest 的 --bench；正常运行不传，零计时开销）
+                        if (opusOut.isEmpty() && kPreferInProcessOpus && libavAvailable())
+                            opusOut = convertAudioToOpusSegmentsEx(filePath, AUDIO_SEG_MAX_SEC,
+                                                                   libavDecodeAudioFile, &opusErr);
 
                         if (!opusOut.isEmpty()) {
                             if (opusOut.size() == 1)
@@ -3304,8 +3340,9 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                             else
                                 audioSegs = opusOut;             // 超长：逐段上传，不进缓存
                         } else if (kAllowFfmpegFallback) {
-                            // ③ 备用兜底：进程内解不出的格式（amr/silk/wma/ac3/非 AAC 音轨…）
-                            //    交给 ffmpeg 转成 m4a 再发；超长的顺带切段
+                            qDebug() << "进程内转换失败，回退 ffmpeg:" << opusErr;
+                            // ③ 最后兜底：自研 + libav 都解不出的格式，交给 ffmpeg 转成 m4a 再发；
+                            //    超长的顺带切段
                             const QString newpath = filePath + ".m4a";
                             if (!QFile::exists(newpath)) //检查有没有有就不转换了
                                 filePath = convertAudioToSilk(filePath);

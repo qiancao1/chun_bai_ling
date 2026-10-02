@@ -26,6 +26,7 @@
 #include <QDir>
 #include <QRandomGenerator>
 #include <QByteArray>
+#include <QElapsedTimer>
 
 #include <cstdio>
 #include <cstring>
@@ -45,6 +46,10 @@ static const int kOpusRate     = 48000;
 static const int kOpusChannels = 1;      // Ogg Opus 输出统一单声道
 static const int kOpusBitrate  = 32000;
 static const int kOpusFrameMs  = 20;     // 20ms 帧（Opus 标准帧长）
+// 编码复杂度 0~10（10 = 质量最高、最慢）。**速度/质量的唯一旋钮就是这个数**：
+// 实测 49 分钟音频（2944 s）在 cx10 下编码 9.51 s（占整条链路 11.86 s 的 80%，310x 实时）；
+// 降到 5~6 约快 1.5~1.8 倍，而 32kbps 单声道这个码率下听感差异很小。
+static const int kOpusComplexity = 10;
 static const int kFrameSamples = kOpusRate / 1000 * kOpusFrameMs;   // 960
 static const int kMaxPacket    = 4000;   // 20ms 单声道远用不到
 
@@ -184,7 +189,7 @@ public:
         if (!m_enc || oerr != OPUS_OK) { m_error = QStringLiteral("libopus 编码器创建失败"); return false; }
         opus_encoder_ctl(m_enc, OPUS_SET_BITRATE(kOpusBitrate));
         opus_encoder_ctl(m_enc, OPUS_SET_VBR(1));
-        opus_encoder_ctl(m_enc, OPUS_SET_COMPLEXITY(10));
+        opus_encoder_ctl(m_enc, OPUS_SET_COMPLEXITY(kOpusComplexity));
         opus_encoder_ctl(m_enc, OPUS_SET_LSB_DEPTH(16));
         opus_int32 look = 0;
         if (opus_encoder_ctl(m_enc, OPUS_GET_LOOKAHEAD(&look)) == OPUS_OK && look > 0)
@@ -477,10 +482,17 @@ QStringList findExistingSegments(const QString &src)
 // ---------------------------------------------------------------------------
 // 顶层：解码 → 单声道化 → 重采样 48k → libopus 编码 → Ogg 封装（带分片）
 // ---------------------------------------------------------------------------
-QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, QString *error)
+QStringList convertAudioToOpusSegmentsEx(const QString &srcFilePath, int segSec,
+                                         const PcmDecoder &decoder, QString *error,
+                                         OpusBenchStats *stats)
 {
+    if (stats) *stats = OpusBenchStats{};
     setErr(error, QString());
     if (segSec <= 0) segSec = 298;
+    if (!decoder) {
+        setErr(error, QStringLiteral("没有提供解码器"));
+        return {};
+    }
     if (!QFile::exists(srcFilePath)) {
         setErr(error, QStringLiteral("源文件不存在"));
         return {};
@@ -488,13 +500,36 @@ QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, Q
 
     // 1) 已有分片 → 直接复用，一次解码都不做
     const QStringList exist = findExistingSegments(srcFilePath);
-    if (!exist.isEmpty()) return exist;
+    if (!exist.isEmpty()) {
+        if (stats) {
+            stats->reused   = true;
+            stats->segments = exist.size();
+            for (const QString &f : exist) stats->outBytes += QFileInfo(f).size();
+        }
+        return exist;
+    }
 
     // 2) 已有单文件 → 直接复用（见头文件里的不变式）
     const QString single = srcFilePath + QStringLiteral(".opus");
-    if (QFile::exists(single)) return QStringList{ single };
+    if (QFile::exists(single)) {
+        if (stats) {
+            stats->reused   = true;
+            stats->segments = 1;
+            stats->outBytes = QFileInfo(single).size();
+        }
+        return QStringList{ single };
+    }
 
     // 3) 真转一次
+    //    计时点只在传了 stats 时才跑：否则一行 QPC 都不查，热路径零开销。
+    const bool bench = (stats != nullptr);
+    QElapsedTimer tAll, tCb, tEnc;
+    // ⚠ 必须按**纳秒**累加：解码器每次回调只喂一小块（AAC 一帧 = 1024 样本 ≈ 21 ms），
+    //   回调里的重采样 + 编码只有几十微秒，毫秒分辨率的 elapsed() 会把它整成 0 ——
+    //   50 分钟音频会报成「编码 11 ms」，全部时间被兜进 decodeMs（2026-10-02 实测踩过）。
+    qint64 cbNs = 0, encNs = 0;
+    if (bench) tAll.start();
+
     OpusSegmenter seg(srcFilePath, segSec);
     MonoResampler rs;
 
@@ -506,8 +541,9 @@ QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, Q
     std::vector<float> frameBuf(size_t(kFrameSamples), 0.0f);
     int frameFill = 0;
 
-    const bool decOk = decodeAudioFile(srcFilePath,
+    const bool decOk = decoder(srcFilePath,
         [&](const float *samples, int frames, int channels) -> bool {
+            if (bench) tCb.start();
             if (!rsReady || rs.rate() != srcRate) {
                 if (srcRate <= 0) return false;
                 rs.init(srcRate);
@@ -515,6 +551,8 @@ QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, Q
             }
             bool keep = true;
             rs.process(samples, frames, channels, [&](const float *mono, int n) {
+                // 编码（libopus + Ogg 分页）单独计时；内层回调可能被多次调用，逐次累加
+                if (bench) tEnc.start();
                 int i = 0;
                 while (i < n && keep) {
                     const int need = kFrameSamples - frameFill;
@@ -530,7 +568,9 @@ QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, Q
                         }
                     }
                 }
+                if (bench) encNs += tEnc.nsecsElapsed();
             });
+            if (bench) cbNs += tCb.nsecsElapsed();
             return keep;
         }, &srcRate, &srcChannels, error);
 
@@ -548,18 +588,46 @@ QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, Q
         std::memset(frameBuf.data() + frameFill, 0, sizeof(float) * size_t(kFrameSamples - frameFill));
         const int real = frameFill;
         frameFill = 0;
-        if (!seg.pushFrame(frameBuf.data(), real)) {
+        if (bench) tEnc.start();
+        const bool okTail = seg.pushFrame(frameBuf.data(), real);
+        if (bench) encNs += tEnc.nsecsElapsed();
+        if (!okTail) {
             setErr(error, seg.error().isEmpty() ? QStringLiteral("Opus 编码失败") : seg.error());
             return {};
         }
     }
 
     QStringList out;
-    if (!seg.finish(&out)) {
+    if (bench) tEnc.start();
+    const bool okFin = seg.finish(&out);
+    if (bench) encNs += tEnc.nsecsElapsed();
+    if (!okFin) {
         setErr(error, seg.error().isEmpty() ? QStringLiteral("Opus 封装失败") : seg.error());
         return {};
     }
+
+    if (stats) {
+        // 统一在纳秒域算完、最后四舍五入成毫秒，保证 解 + 重采样 + 编码 ≈ 共
+        const qint64 totalNs = tAll.nsecsElapsed();
+        const auto nsToMs = [](qint64 ns) { return (ns + 500000) / 1000000; };
+        stats->totalMs     = nsToMs(totalNs);
+        stats->encodeMs    = nsToMs(encNs);
+        // 回调总时间 = 重采样 + 编码，扣掉编码就是重采样
+        stats->resampleMs  = nsToMs(cbNs > encNs ? (cbNs - encNs) : 0);
+        // 剩下的（墙钟 - 回调总时间）= 解码器内部（解封装 + 解码 + 格式归一化）
+        stats->decodeMs    = nsToMs(totalNs > cbNs ? (totalNs - cbNs) : 0);
+        stats->realSamples = seg.totalRealSamples();
+        stats->segments    = out.size();
+        for (const QString &f : out) stats->outBytes += QFileInfo(f).size();
+    }
     return out;
+}
+
+QStringList convertAudioToOpusSegments(const QString &srcFilePath, int segSec, QString *error,
+                                       OpusBenchStats *stats)
+{
+    // 默认用自研解码层（audiodecoder）；它不认识的容器由调用方改用 Ex 版本换解码器
+    return convertAudioToOpusSegmentsEx(srcFilePath, segSec, decodeAudioFile, error, stats);
 }
 
 QString convertAudioToOpus(const QString &srcFilePath, QString *error)
