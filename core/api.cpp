@@ -44,6 +44,7 @@
 #include <QUrl>
 #include <QMutex>
 #include <QElapsedTimer>
+#include <QCoreApplication>
 #include <thread>
 #include <memory>
 
@@ -2972,6 +2973,58 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
 }
 
 
+// ---------------------------------------------------------------------------
+// 定位 ffmpeg 可执行文件 —— 音频链路的三个调用点共用（转 m4a / 只读探时长 / m4a 流复制切段）
+//
+// 查找顺序（第一个命中就用），三条路都命中不了时返回裸名字、交给 QProcess 走 PATH：
+//   ① 设置界面里配的目录（g_config["ffmpeg"]，Windows 默认 "ffmpeg/"）
+//   ② 主程序自己所在目录 —— **随包携带的那份放这儿**
+//      Windows：和 qiancao.exe 同目录的 ffmpeg.exe
+//      Linux  ：和 AppRun 里 $HERE/qiancao 同目录的 ffmpeg
+//      ⚠ Linux 的 AppRun 只设 LD_LIBRARY_PATH / PYTHONHOME / PYTHONPATH，**没有改 PATH**，
+//        而安装目录是 $HOME/qiancao（不在 PATH 里）—— 所以裸名字 "ffmpeg" 找不到
+//        Gitee 补全包里的那份，必须靠这条命中。
+//   ③ 裸名字 → 系统 PATH：用户自己 apt/dnf install ffmpeg 的场景，保持原行为不变
+//
+// ⚠ ② 命中的文件如果丢了执行位（从 tar 包里解出来常见），这里顺手补一下 ——
+//   否则 QProcess 会以 "Permission denied" 静默失败，日志里只看到「ffmpeg 启动失败」。
+// ---------------------------------------------------------------------------
+static QString findFfmpegPath()
+{
+#ifdef Q_OS_WIN
+    const QString kExe = QStringLiteral("ffmpeg.exe");
+#else
+    const QString kExe = QStringLiteral("ffmpeg");
+#endif
+
+    // ① 设置里配的目录
+    if (!ffmpegdiv.isEmpty()) {
+        const QString p = QDir(ffmpegdiv).filePath(kExe);
+        if (QFileInfo(p).isFile())
+            return p;
+    }
+
+    // ② 主程序同目录（AppImage / 安装目录 / exe 旁边）
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        const QString beside = QDir(appDir).filePath(kExe);
+        const QFileInfo bi(beside);
+        if (bi.isFile()) {
+#ifndef Q_OS_WIN
+            if (!bi.isExecutable())
+                QFile::setPermissions(beside, bi.permissions()
+                                      | QFileDevice::ExeOwner
+                                      | QFileDevice::ExeGroup
+                                      | QFileDevice::ExeOther);
+#endif
+            return beside;
+        }
+    }
+
+    // ③ 交给系统 PATH
+    return kExe;
+}
+
 QString convertAudioToSilk(const QString &srcFilePath)
 {
     if (!QFile::exists(srcFilePath)) {
@@ -2982,11 +3035,7 @@ QString convertAudioToSilk(const QString &srcFilePath)
     // 去掉“小于1MB直接返回”的捷径（防止视频体积小但无音频的情况）
     // 无论大小，都走转换流程，确保输出格式统一
 
-#ifdef Q_OS_WIN
-    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
-#else
-    QString ffmpegPath = "ffmpeg";
-#endif
+    QString ffmpegPath = findFfmpegPath();
 
     QString outputFilePath = srcFilePath + ".m4a";
 
@@ -3129,11 +3178,7 @@ static double probeAudioDurationSec(const QString &filePath)
         return -1;
 
     // 兜底：ffmpeg -i 的输出（进程内解不出这容器时才走到这）
-#ifdef Q_OS_WIN
-    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
-#else
-    QString ffmpegPath = "ffmpeg";
-#endif
+    QString ffmpegPath = findFfmpegPath();
     QProcess p;
     p.start(ffmpegPath, {"-i", filePath});
     if (!p.waitForStarted())
@@ -3169,11 +3214,7 @@ static double probeAudioDurationSec(const QString &filePath)
         return out;
     }
 
-#ifdef Q_OS_WIN
-    QString ffmpegPath = QDir(ffmpegdiv).filePath("ffmpeg.exe");
-#else
-    QString ffmpegPath = "ffmpeg";
-#endif
+    QString ffmpegPath = findFfmpegPath();
     QProcess p;
     p.start(ffmpegPath, {
         "-y", "-i", m4aPath,

@@ -71,6 +71,11 @@
 #include <QNetworkReply>
 #include <QProgressDialog>
 #include <qmessagebox.h>
+#include <QDialog>
+#include <QGuiApplication>
+#include <QPushButton>
+#include <QTextBrowser>     // ⚠ 不能用 QTextEdit：本 TU 里被 #define 成 PlaceholderTextEdit
+#include <QScreen>
 
 
 #define APP_VERSION_STR "v1.3.7.89"
@@ -478,11 +483,12 @@ void MainWindow::xr()
     m_kantoumusume->setAttribute(Qt::WA_TransparentForMouseEvents);
 }
 
-void showClickableLicenseInfo() {
-    QMessageBox msgBox;
-    msgBox.setWindowTitle("关于");
-    msgBox.setIcon(QMessageBox::Information);
-
+// ══════════════════════════════════════════════════════════════════════════
+//  弹窗 2 的正文 —— 第三方组件与许可
+//  （内容长，单独一个可滚动窗口装，见下面的 showThirdPartyLicenseDialog）
+// ══════════════════════════════════════════════════════════════════════════
+static QString thirdPartyLicenseHtml()
+{
     // --- 根据平台选择 OpenSSL 许可证文本 ---
 #ifdef Q_OS_WIN
     // Windows 下使用 OpenSSL 1.1.1（OpenSSL + SSLeay 双重许可）
@@ -505,13 +511,7 @@ void showClickableLicenseInfo() {
         "https://www.openssl.org/source/</a><br><br>";
 #endif
 
-    QString richText =
-        "<h3>纯白铃铛 - QQ 机器人管理平台</h3>"
-        "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
-        "完整源代码（含所有修改）请访问：<br>"
-        "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
-        "<a href=\"https://gitee.com/linglan2/chun-bai-ling-dang\">Gitee</a><br><br>"
-
+    return QString(
         "<b>使用的第三方库及许可：</b><br><br>"
 
         "<b>Qt 5.15.3</b>（动态链接）<br>"
@@ -532,8 +532,105 @@ void showClickableLicenseInfo() {
         "Copyright (c) 2016 Yury Malkov and contributors.<br>"
         "采用 <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">Apache License, Version 2.0</a><br><br>"
 
+        "<b>FFmpeg 7.1.5</b>（自编译精简版，仅音频解封装 + 解码）<br>"
+        "Copyright (c) 2000-2024 the FFmpeg developers.<br>"
+        "采用 <a href=\"https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html\">GNU LGPL v2.1</a>"
+        "（未启用 --enable-gpl，非 GPL 构建）。<br>"
+        "• 本项目仅以 FFmpeg 官方源码配合自定义编译参数裁剪组件（去掉视频解码器、编码器与复用器），"
+        "未修改其源代码。<br>"
+        "• LGPL 义务：提供该库完整源代码，并允许用户以自行修改的版本重新链接本程序"
+        "（Windows 下为动态链接，直接替换 DLL 即可；Linux 下为静态链接，"
+        "可用随源码仓库提供的 libs/ffmpeg/build-linux.sh + 组件白名单重建后重新链接）。<br>"
+        "FFmpeg 源代码：<a href=\"https://ffmpeg.org/download.html\">https://ffmpeg.org/download.html</a>"
+        "（<a href=\"https://git.ffmpeg.org/ffmpeg.git\">git</a>，tag n7.1.5）<br><br>"
+
+        "<b>libopus 1.5.2</b><br>"
+        "Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, "
+        "CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon.<br>"
+        "采用 <a href=\"https://opensource.org/licenses/BSD-3-Clause\">BSD 3-Clause License</a>（含专利授权）<br>"
+        "libopus 源代码：<a href=\"https://opus-codec.org/downloads/\">https://opus-codec.org/downloads/</a><br><br>"
+
+        "<b>单文件音频解码库</b><br>"
+        "• <b>dr_libs</b>（dr_mp3 / dr_flac / dr_wav）：Copyright (c) mackron，"
+        "公共领域 / <a href=\"https://opensource.org/licenses/MIT-0\">MIT-0</a><br>"
+        "• <b>stb_vorbis</b>：Copyright (c) Sean Barrett and contributors，公共领域<br>"
+        "• <b>minimp4</b>：Copyright (c) lieff，"
+        "<a href=\"https://creativecommons.org/publicdomain/zero/1.0/\">CC0-1.0</a><br>"
+        "• <b>ogg_packer</b>：Copyright (c) 2017 Jean-Marc Valin / Xiph.Org Foundation，BSD 3-Clause<br><br>"
+
         // --- 插入 OpenSSL 许可证（已根据平台选择不同文本）---
         + opensslLicenseText +
+
+        "<b>可选的 ffmpeg.exe</b>（外部转码程序，LGPL-2.1）<br>"
+        "音频转码默认在程序内部完成，<b>无需</b>任何外部程序。<br>"
+        "仅在遇到少见容器格式、或需要对超长音频做无损切段时，才会调用可选的 ffmpeg 命令行程序"
+        "（设置中可指定其所在目录；也可从系统 PATH 获取）。<br>"
+        "随包分发的那份是第三方基于 FFmpeg 官方源码裁剪的音频版"
+        "（<a href=\"https://github.com/xihan123/FFmpeg-Audio\">xihan123/FFmpeg-Audio</a>，"
+        "LGPL-2.1，<b>非</b> GPL 构建），你可以自由删除或替换为自己编译的版本。<br><br>"
+        );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  弹窗 2：第三方组件与许可 —— 可滚动 / 可点链接 / 可选中复制
+//  用 QTextBrowser 而不是 QMessageBox，是因为 QMessageBox 的高度会被屏幕
+//  「挤」住：这一大段以前全塞在一个 QMessageBox 里，小屏直接显示不全且不能滚动。
+// ══════════════════════════════════════════════════════════════════════════
+static void showThirdPartyLicenseDialog()
+{
+    QDialog dlg;
+    dlg.setWindowTitle("第三方组件与许可");
+    dlg.setModal(true);
+
+    // 期望尺寸，再按屏幕可用区域收窄（小屏 / 高分屏缩放都不会顶出屏幕）
+    QSize want(860, 640);
+    if (const QScreen *scr = QGuiApplication::primaryScreen()) {
+        const QSize avail = scr->availableGeometry().size();
+        want.setWidth(qMin(want.width(), qMax(480, avail.width() - 80)));
+        want.setHeight(qMin(want.height(), qMax(360, avail.height() - 100)));
+    }
+    dlg.resize(want);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+
+    QTextBrowser *browser = new QTextBrowser(&dlg);
+    browser->setOpenExternalLinks(true);   // 点链接直接交给系统浏览器
+    browser->setHtml(thirdPartyLicenseHtml());
+    mainLayout->addWidget(browser, 1);
+
+    QHBoxLayout *btnLayout = new QHBoxLayout;
+    QLabel *hint = new QLabel("链接可直接点击，正文可选中复制", &dlg);
+    // ⚠ 全局样式表里有 QFrame{background:#FFFFFF}，会连带命中 QLabel（QLabel 继承 QFrame）
+    //   → 必须在自己身上声明透明，否则是白底方块
+    hint->setStyleSheet("color:#888; background: transparent;");
+    btnLayout->addWidget(hint);
+    btnLayout->addStretch();
+
+    QPushButton *closeBtn = new QPushButton("关闭", &dlg);
+    closeBtn->setDefault(true);
+    QObject::connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    btnLayout->addWidget(closeBtn);
+    mainLayout->addLayout(btnLayout);
+
+    dlg.exec();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  弹窗 1：关于（短）—— 项目主体 + 插件合规 + 其他资源
+//  底部多一个「第三方组件许可」按钮，点了才弹上面那个长窗口
+// ══════════════════════════════════════════════════════════════════════════
+void showClickableLicenseInfo()
+{
+    QMessageBox msgBox;
+    msgBox.setWindowTitle("关于");
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setTextFormat(Qt::RichText);
+    msgBox.setText(
+        "<h3>纯白铃铛 - QQ 机器人管理平台</h3>"
+        "本项目主体采用 <a href=\"https://www.gnu.org/licenses/lgpl-3.0.html\">LGPLv3 协议</a> 开源。<br>"
+        "完整源代码（含所有修改）请访问：<br>"
+        "<a href=\"https://github.com/qiancao1/chun_bai_ling\">GitHub</a> 或 "
+        "<a href=\"https://gitee.com/linglan2/chun-bai-ling-dang\">Gitee</a><br><br>"
 
         "<b>📦 关于 DLL 插件（LGPL 合规说明）：</b><br>"
         "本程序支持动态加载第三方 DLL 插件。<br>"
@@ -547,13 +644,18 @@ void showClickableLicenseInfo() {
         "AI 中转服务：<a href=\"https://allgpt.xianyuw.cn\">咸鱼Ai中转</a><br>"
         "官方 QQ 群：<a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a><br><br>"
 
-        "本软件为免费开源项目，仅供学习交流使用。";
-
-    msgBox.setTextFormat(Qt::RichText);
-    msgBox.setText(richText);
+        "本软件为免费开源项目，仅供学习交流使用。<br>"
+        "<i>本程序使用的第三方组件及其许可证，点下方「第三方组件许可」查看。</i>");
     msgBox.setTextInteractionFlags(Qt::TextBrowserInteraction);
-    msgBox.setCursor(Qt::PointingHandCursor);
+
+    QPushButton *licenseBtn = msgBox.addButton("第三方组件许可", QMessageBox::ActionRole);
+    QPushButton *closeBtn   = msgBox.addButton("关闭", QMessageBox::AcceptRole);
+    msgBox.setDefaultButton(closeBtn);
+    msgBox.setEscapeButton(closeBtn);   // 按 Esc 只关「关于」，不会误弹长窗口
+
     msgBox.exec();
+    if (msgBox.clickedButton() == licenseBtn)
+        showThirdPartyLicenseDialog();
 }
 
 MainWindow::~MainWindow()
