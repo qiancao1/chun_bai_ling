@@ -1,0 +1,80 @@
+# ============================================================================
+#  纯白铃铛 —— 自编译 FFmpeg 的「音频解码器」白名单（Windows / Linux 共用）
+#  由 ff-config-flags.sh 的 qc_ff_decoder_list() 读取后拼成 --enable-decoder=
+#
+#  ⚠ 只放**常用**的。别恢复成「全部音频解码器（178 个）」：
+#     全量名单会让 libavcodec 的 .def 生成命令涨到 10 KB+，
+#     而原生 make → MSYS sh 这一跳在 8192 字节处硬截断 → 编译必挂在 .def 那一步。
+#     详见 ff-config-flags.sh 顶部说明 + build-win.sh 里的长度自检。
+#
+#  加名字之前先对一遍源码（拼错的名字 configure 会**静默忽略**）：
+#     grep -o 'ff_[a-z0-9_]*_decoder' libavcodec/allcodecs.c \
+#       | sed 's/^ff_//;s/_decoder$//' | sort -u | grep -qx <要加的名字>
+# ============================================================================
+
+# ---- 主流有损 / 无损 ----
+aac
+aac_latm
+mp1
+mp2
+mp3
+mp3float
+flac
+vorbis
+opus
+alac
+wavpack
+ape
+tta
+mpc7
+mpc8
+
+# ---- 5.1 环绕 / 影院 ----
+ac3
+eac3
+dca
+truehd
+
+# ---- Windows Media ----
+wmav1
+wmav2
+wmapro
+wmalossless
+
+# ---- 语音 / 老格式 ----
+amrnb
+amrwb
+speex
+cook
+atrac3
+atrac3p
+gsm
+gsm_ms
+mace3
+mace6
+
+# ---- PCM（wav / aiff / caf / au 各种位深与端序）----
+pcm_s16le
+pcm_s16be
+pcm_s24le
+pcm_s24be
+pcm_s32le
+pcm_s32be
+pcm_u8
+pcm_s8
+pcm_f32le
+pcm_f32be
+pcm_f64le
+pcm_mulaw
+pcm_alaw
+
+# ---- ADPCM（游戏音源 / 老 wav）----
+adpcm_ima_wav
+adpcm_ima_qt
+adpcm_ms
+
+# ---- DSD（dsf）----
+dsd_lsbf
+dsd_msbf
+dsd_lsbf_planar
+dsd_msbf_planar

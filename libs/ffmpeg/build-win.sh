@@ -8,7 +8,7 @@
 #        而机器上那个 87MB 的 exe 是 gyan.dev 的 --enable-gpl 构建。
 #        这里编一份干净、可再分发的 x64 DLL，直接链进 qiancao.exe，不再起进程。
 #
-#  用法（在 Git Bash 中执行）：
+#  用法（在 Git Bash / MSYS2 shell 中执行；**双击 build-win.bat 也行**）：
 #      bash libs/ffmpeg/build-win.sh                   # 全流程
 #      STAGE=configure bash libs/ffmpeg/build-win.sh   # 只到 configure（快速验证环境）
 #      STAGE=make      bash libs/ffmpeg/build-win.sh   # 编译+安装（不重复 configure）
@@ -16,6 +16,14 @@
 #      STAGE=verify    bash libs/ffmpeg/build-win.sh   # 只重新体检产物 + 重生成 .def
 #      FFVER=8.1.3     bash libs/ffmpeg/build-win.sh   # 换 FFmpeg 版本
 #      JOBS=4          bash libs/ffmpeg/build-win.sh   # 限制并行数
+#  同一组键也可以当**命令行参数**传（脚本开头会认并 export，两写法等价）：
+#      bash libs/ffmpeg/build-win.sh STAGE=build JOBS=8 FFVER=8.0.1
+#
+#  工具链（按优先级自动探测，有哪个用哪个，不用改脚本）：
+#      ① C:\Strawberry        自带 MinGW-w64 gcc + gmake + nasm（开发机用的就是这套）
+#      ② C:\msys64            pacman -S mingw-w64-x86_64-gcc make nasm
+#      ③ PATH 里已有的 MinGW-w64（gcc 需为 x86_64-w64-mingw32）
+#      make 名字两边不同：Strawberry 只有 gmake，MSYS2 叫 make → 脚本两个都认。
 #
 #  产物（win-x64/）：
 #      bin/      avcodec-*.dll  avformat-*.dll  avutil-*.dll  swresample-*.dll
@@ -37,6 +45,18 @@
 
 set -euo pipefail
 
+# ---- 允许两种传参写法（两种都对，README 里两种都出现过）----
+#   STAGE=build bash build-win.sh        # 环境变量前缀（shell 语法）
+#   bash build-win.sh STAGE=build        # 命令行参数（给 .bat / 双击用户看的）
+# 只认下面这四个键，其它参数一律忽略（不会误吞文件路径）。
+for _a in "$@"; do
+    case "$_a" in
+        STAGE=*|FFVER=*|JOBS=*|PROBE_FILE=*) export "$_a" ;;
+        *) : ;;
+    esac
+done
+unset _a
+
 # ---- 路径（一律 POSIX 路径，configure 是在 MSYS sh 下跑的） ----
 _self="${BASH_SOURCE[0]}"
 case "$_self" in
@@ -56,8 +76,19 @@ STAGE="${STAGE:-all}"
 TARBALL="ffmpeg-$FFVER.tar.xz"
 FFSRC="$SRC/ffmpeg-$FFVER"
 
-# ---- 工具链：Strawberry 自带的 MinGW-w64（posix 线程 / ucrt / SEH） ----
-export PATH="/c/Strawberry/c/bin:/c/Strawberry/perl/bin:$PATH"
+# ---- 工具链：按优先级把候选目录补进 PATH（**有就加、没有就跳过**）----
+#   ① Strawberry Perl（本机这套：自带 MinGW-w64 posix 线程 / ucrt / SEH + nasm + gmake）
+#   ② MSYS2（别人机器上更常见：pacman -S mingw-w64-x86_64-gcc make nasm）
+#   ③ 什么都不加 → 直接认 PATH 里已有的（比如系统装了 MinGW-w64）
+# ⚠ 顺序不能反：后面 prepend 的会排在前面，所以这里一次性拼成一个前缀串。
+_qc_extra=""
+for _p in /c/Strawberry/c/bin /c/Strawberry/perl/bin \
+          /c/msys64/mingw64/bin /c/msys64/usr/bin \
+          /mingw64/bin /usr/bin; do
+    [ -d "$_p" ] && _qc_extra="$_qc_extra$_p:"
+done
+[ -n "$_qc_extra" ] && export PATH="$_qc_extra$PATH"
+unset _qc_extra _p
 
 # ⚠ Git Bash 下 TMPDIR/TEMP 可能是 Windows 反斜杠路径（C:\Users\...\Temp），
 # configure 的 sanity test 会把反斜杠当转义吃掉 → 变成 C:UsersAiruanAppDataLocalTemp
@@ -73,9 +104,11 @@ source "$HERE/ff-config-flags.sh"
 step_prepare() {
     echo "== [1/4] 准备：检查工具链 + 取源码 =="
 
-    command -v gcc   >/dev/null || die "找不到 gcc（应为 C:\\Strawberry\\c\\bin\\gcc.exe）"
-    command -v gmake >/dev/null || die "找不到 gmake"
-    command -v nasm  >/dev/null || die "找不到 nasm（x86 汇编优化需要）"
+    command -v gcc >/dev/null || die "找不到 gcc（Strawberry: C:\\Strawberry\\c\\bin\\gcc.exe；MSYS2: pacman -S mingw-w64-x86_64-gcc）"
+    # ⚠ make 的名字两边不同：Strawberry 只给 gmake，MSYS2/Cygwin 叫 make → 两个都认
+    QC_MAKE="$(command -v gmake || command -v make || true)"
+    [ -n "$QC_MAKE" ] || die "找不到 make / gmake（Strawberry 自带 gmake；MSYS2: pacman -S make）"
+    command -v nasm  >/dev/null || die "找不到 nasm（x86 汇编优化需要；Strawberry 自带；MSYS2: pacman -S nasm）"
 
     case "$(gcc -dumpmachine)" in
         x86_64-w64-mingw32) ;;
@@ -83,11 +116,13 @@ step_prepare() {
     esac
     echo "   gcc : $(gcc --version | head -1)"
 
-    # FFmpeg 的 Makefile 认死 'make' 这个命令名，本机只有 gmake → 就地造一个
+    # FFmpeg 的 Makefile 认死 'make' 这个命令名；Strawberry 只给了 gmake → 就地造一个
+    # （MSYS2 本来就有 make.exe，这里等于覆盖成同一份，无害）
     mkdir -p "$TMPBIN"
-    cp -f "$(command -v gmake)" "$TMPBIN/make.exe"
+    cp -f "$QC_MAKE" "$TMPBIN/make.exe"
     export PATH="$TMPBIN:$PATH"
-    echo "   make: $(make --version | head -1)"
+    echo "   make: $QC_MAKE"
+    "$QC_MAKE" --version | head -1 | sed 's/^/         /'
 
     mkdir -p "$SRC" "$BLD" "$OUT"
 
@@ -119,9 +154,15 @@ step_prepare() {
     # 用 configure 是否存在判断「解压完整」——中途被打断时能自动重来
     if [ ! -f "$FFSRC/configure" ]; then
         rm -rf "$FFSRC"
-        SEVENZA="$(command -v 7za || command -v 7z || true)"
-        if [ -z "$SEVENZA" ] && [ -x "/c/Users/Airuan/Documents/QTCode/7za.exe" ]; then
-            SEVENZA="/c/Users/Airuan/Documents/QTCode/7za.exe"
+        # 解 .tar.xz 的候选：PATH 里的 7za/7z/7zr → 脚本同目录旁 → 本机遗留路径
+        # （一个都没有就落到下面的 Python lzma 兜底，不会中断）
+        SEVENZA="$(command -v 7za || command -v 7z || command -v 7zr || true)"
+        if [ -z "$SEVENZA" ]; then
+            for _c in "$HERE/7za.exe" "$HERE/../7za.exe" \
+                      "/c/Users/Airuan/Documents/QTCode/7za.exe"; do
+                if [ -x "$_c" ]; then SEVENZA="$_c"; break; fi
+            done
+            unset _c
         fi
         if [ -n "$SEVENZA" ]; then
             echo "   解压（7za：.tar.xz → .tar → 目录）..."
@@ -200,7 +241,7 @@ step_configure() {
     while IFS= read -r _l; do
         _len=${#_l}
         if [ "$_len" -gt "$_worst" ]; then _worst=$_len; fi
-    done < <(gmake -n 2>/dev/null | grep 'windows/makedef' || true)
+    done < <("$QC_MAKE" -n 2>/dev/null | grep 'windows/makedef' || true)
     if [ "$_worst" -eq 0 ]; then
         echo "      （没抓到 makedef 命令行，跳过自检）"
     elif [ "$_worst" -gt 8000 ]; then
@@ -216,10 +257,10 @@ step_configure() {
 step_make() {
     echo "== [3/4] 编译（最慢的一步，视核数约 3~15 分钟）=="
     cd "$FFSRC"
-    gmake -j"$JOBS"
+    "$QC_MAKE" -j"$JOBS"
     echo
     echo "== 安装到 $OUT =="
-    gmake install
+    "$QC_MAKE" install
 }
 
 # ---------------------------------------------------------------------------
