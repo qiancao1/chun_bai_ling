@@ -1941,7 +1941,7 @@ void ChatPage::onSendAudio()
     if (currentContactId.isEmpty()) return;
     // 补全常见音频格式：mp3, wav, flac, m4a, ogg, aac, wma, amr, ape
     QString path = QFileDialog::getOpenFileName(this, "选择音频", "",
-                                                "音频文件 (*.mp3 *.wav *.flac *.m4a *.ogg *.aac *.wma *.amr *.ape);;所有文件 (*.*)");
+                                                "音频文件 (*.mp3 *.wav *.flac *.m4a *.ogg *.aac *.wma *.amr *.ape *.opus);;所有文件 (*.*)");
     if (path.isEmpty()) return;
     QString text = QString("[audio,path=%1]").arg(path);
     onSendmsg(text);

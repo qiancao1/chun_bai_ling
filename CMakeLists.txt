@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(qiancao VERSION 0.1 LANGUAGES CXX)
+project(qiancao VERSION 0.1 LANGUAGES C CXX)
 
 # ==================== 全局设置 ====================
 set(CMAKE_AUTOUIC ON)
@@ -180,6 +180,12 @@ set(PROJECT_SOURCES_ALL
     ui/ui_menupanelwidget.ui
     core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
+    core/audiodecoder.h core/audiodecoder.cpp
+    core/opusconvert.h core/opusconvert.cpp
+    # 第三方解码/封装（单文件库：实现只在 decoder_impl.c 里生成一次）
+    libs/decoders/decoder_impl.c
+    libs/decoders/stb_vorbis.c
+    libs/decoders/ogg_packer.c
 )
 
 
@@ -190,6 +196,49 @@ if(NOT WIN32)
         python/sharedmemorybridge.h
     )
 endif()
+# ==================== 进程内音频转码（Opus）用的第三方库 ====================
+# 源码全部随仓库走，Windows / Linux 都不需要另外装包：
+#   libs/opus     : libopus 1.5.2（Opus 编码，BSD-3）—— 直接用官方 CMake 编译
+#   libs/faad2    : FAAD2 2.11.2 的 libfaad（AAC 解码，GPL-2.0-or-later）
+#   libs/decoders : dr_mp3 / dr_flac / dr_wav / minimp4 / stb_vorbis（解封装+解码）
+#                   + ogg_packer.c（取自 libopusenc，BSD-3，负责 Ogg 分页与 CRC）
+# 故意不走 FetchContent：这些库版本不常动，随仓库走才能保证离线、可复现地编出来。
+if(NOT TARGET opus)
+    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_PROGRAMS       OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE   OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    # 1.5.x 的神经网络新特性（DRED/OSCE）用不到，关掉就不需要那 18MB 的 dnn/ 源码
+    set(OPUS_DRED OFF CACHE BOOL "" FORCE)
+    set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
+    # EXCLUDE_FROM_ALL：不拖慢默认构建，作为 qiancao 的依赖照常编译
+    add_subdirectory(libs/opus EXCLUDE_FROM_ALL)
+endif()
+
+if(NOT TARGET qa_faad2)
+    # faad2 自带的 CMake 会一次编出 faad / faad_drm / faad_fixed / faad_drm_fixed 四份，
+    # 这里只要最普通的一份，所以自己列源文件（libfaad 不依赖生成出来的 faad.h，只认 neaacdec.h）
+    file(GLOB QA_FAAD2_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/faad2/libfaad/*.c")
+    add_library(qa_faad2 STATIC ${QA_FAAD2_SOURCES})
+    target_include_directories(qa_faad2
+        PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/libs/faad2/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs/faad2/libfaad)
+    target_compile_definitions(qa_faad2 PRIVATE
+        HAVE_INTTYPES_H=1 HAVE_MEMCPY=1 HAVE_STRING_H=1 HAVE_STRINGS_H=1
+        HAVE_SYS_STAT_H=1 HAVE_SYS_TYPES_H=1 HAVE_LRINTF=1
+        APPLY_DRC PACKAGE_VERSION="2.11.2")
+    if(MSVC)
+        target_compile_options(qa_faad2 PRIVATE /wd4702 /wd4820 /wd5045)
+    else()
+        target_compile_options(qa_faad2 PRIVATE -ffloat-store -w)
+        find_library(QA_MATH_LIB m)
+        if(QA_MATH_LIB)
+            target_link_libraries(qa_faad2 PUBLIC ${QA_MATH_LIB})
+        endif()
+    endif()
+endif()
+
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
@@ -219,6 +268,8 @@ if(WIN32)
         ${Python_LIBRARIES}
         OpenSSL::Crypto          # 对应 libcrypto
         OpenSSL::SSL             # 对应 libssl
+        opus                     # 进程内 Opus 编码
+        qa_faad2                 # 进程内 AAC 解码
 
     )
 else()
@@ -237,6 +288,8 @@ else()
         ${Python_LIBRARIES}
         OpenSSL::Crypto          # 对应 libcrypto
         OpenSSL::SSL             # 对应 libssl
+        opus                     # 进程内 Opus 编码
+        qa_faad2                 # 进程内 AAC 解码
 
     )
 endif()
@@ -256,6 +309,7 @@ target_include_directories(qiancao PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/LMDB
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/hnswlib
+    ${CMAKE_CURRENT_SOURCE_DIR}/libs/decoders
     ${Python_INCLUDE_DIRS}
 )
 
