@@ -298,7 +298,7 @@ private:
 
     // flushPendingMessages 的后半段：决策结果出来之后（可能是异步回调里）接着走
     void flushPendingMessagesTail(const QString &openid, AccountInfo *info, int model_index,
-                                  QJsonObject baseContext, int oldMsgCount,
+                                  QJsonObject baseContext,
                                   bool juecejg, const QString &fh,
                                   const QList<PendingMessage> &pendings, const MessageEvent &ev);
 

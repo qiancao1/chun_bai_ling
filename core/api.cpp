@@ -903,113 +903,8 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
 }
 
 
-void QQBotClient::addmsglog(const QString &response,int index,const QString &pname,const QString &text,qint64 now_us, int type,const QString &openid)
-{
 
-    QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
-    QJsonObject obj = doc.object();
 
-    QString message = obj["message"].toString();
-
-    QString deleteid = obj["id"].toString();
-    QJsonObject obj2 =obj["ext_info"].toObject();
-    QString ref = obj2["ref_idx"].toString();
-
-    int tabIndex = mapTypeToTabIndex(type);
-    m_info->message_sent++;
-    m_info->sent++;
-    m_info->sent_day++;
-    double diff_ms=0;
-    bool ok=false;
-    if(index>0)
-    {
-        qint64 us = g_logdb[tabIndex]->setBuffer_255(index,ok);
-        qint64 diff_us = now_us - us;
-        diff_ms = diff_us / 1000.0;
-    }
-    if(openid == chatPage->currentContactId)
-    {
-        QMetaObject::invokeMethod(this, [=]() {
-            Message m("","",true, QDateTime::currentDateTime().toString("hh:mm:ss"),"","[ref,msg_idx="+ref+"]","");
-            if(pname.contains("%1"))
-                m.direction = pname.arg(diff_ms) + text;
-            else
-                m.direction = pname + text;
-            if (deleteid.isEmpty() && message != "消息提交安全审核成功")
-            {
-                m.direction+="\n\n--------------------------\n\n"+response;
-
-            }
-            m.plugin_ch =deleteid;
-            chatPage->addMessage(m);
-        });
-
-    }
-    Message msg;
-    if(ok)
-    {
-        g_logdb[tabIndex]->readLog(m_info->appid,openid,index,msg);
-        msg.plugin_ch = deleteid;
-
-        if(pname.contains("%1"))
-            msg.direction = pname.arg(diff_ms) + text;
-        else
-            msg.direction = pname + text;
-
-        msg.Color_0 = Color_0;
-        if (deleteid.isEmpty() && message != "消息提交安全审核成功")
-        {
-            msg.direction+="\n\n--------------------------\n\n"+response;
-            msg.Color_0 = 0xff0000;
-        }
-
-        g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
-        logPage->findRowBySeq(tabIndex,m_info->appid_int,index,msg.direction);
-        msg.isSelf=true;
-        msg.seq = index;
-        if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
-        return ;
-    }
-
-    msg.isSelf = true;
-    msg.plugin_ch = deleteid;
-    msg.Color_0 = Color_0;
-    if(!ref.isEmpty())
-        msg.hf="[ref,msg_idx="+ref+"]";
-    else
-        msg.hf.clear();
-
-    if(pname.contains("%1"))
-        msg.direction = pname.arg(diff_ms) + text;
-    else
-        msg.direction = pname + text;
-
-    if (deleteid.isEmpty() && message != "消息提交安全审核成功")
-    {
-        msg.direction+="\n\n--------------------------\n\n"+response;
-        msg.Color_0 = 0xff0000;
-    }
-
-    msg.seq = g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);
-    logPage->onNewLogAdded(tabIndex,0,m_info->appid_int,openid,msg);
-    if(ws_server) ws_server->broadcastMessage(msg,m_info->appid_int,type,openid);
-
-    DelFileSync_Cnb();
-    return ;
-}
-
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
-    if (wrapped.isEmpty()) return qMakePair(-1, QString());
-    int firstBar = wrapped.indexOf('|');
-    if (firstBar == -1) return qMakePair(-1, wrapped);
-    int secondBar = wrapped.indexOf('|', firstBar + 1);
-    if (secondBar == -1) return qMakePair(-1, wrapped);
-    bool ok;
-    int addr = QStringView(wrapped).mid(firstBar + 1, secondBar - firstBar - 1).toInt(&ok);
-    if (!ok) addr = -1;
-    QString realMsgId = wrapped.mid(secondBar + 1);
-    return qMakePair(addr, realMsgId);
-}
 
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString())
 {
@@ -1608,507 +1503,13 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
     return text;
 
 }
-
-
-QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok)
-{
-
-
-    qint64 expireTime=0;
-    QString md5,info,url;
-    if(filePath.startsWith("http"))
-    {
-        info = uploadRichMedia_url(targetType,openid,fileType,filePath,expireTime,ok);
-    }else{
-        info = uploadRichMedia(targetType,openid,fileType,filePath,expireTime,md5,ok,url);
-    }
-    if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
-}
-QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok)
-{
-    qint64 expireTime=0;
-    QString md5,url;
-    QString info = uploadRichMedia(targetType,openid,fileType,data,filename,expireTime,md5,ok,url);
-    if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
-}
-
-// uploadRichMediaA 的池子版：入参/返回格式与 A 完全一致，调用点可直接替换
-// http 链接 → uploadRichMedia_url（与 A 相同，不涉及 put 池）；本地文件 → uploadRichMediaPool
-QString QQBotClient::uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok, bool usePool)
-{
-    qint64 expireTime=0;
-    QString md5,info,url;
-    if(filePath.startsWith("http"))
-    {
-        info = uploadRichMedia_url(targetType,openid,fileType,filePath,expireTime,ok);
-    }else{
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly)) {
-            ok=false;
-            return QString();
-        }
-        QByteArray fileData = file.readAll();
-        file.close();
-        QString filename = QFileInfo(filePath).fileName();
-        info = uploadRichMediaPool(targetType,openid,fileType,fileData,filename,expireTime,md5,ok,url,usePool);
-    }
-    if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
-}
-
-//上传富媒体
-QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,int fileType, const QString& fileurl,
-                                     qint64& expireTime,bool &ok)
-{
-    ok=false;
-    if(!fileurl.startsWith("http"))return QString();
-    QJsonObject obj;
-    obj["file_type"]=fileType;
-    obj["url"]=fileurl;
-
-    QString url = get_url(targetType, openid, "files");
-    QString file_info,response;
-    for(int i=0;i<10;i++)
-    {
-        response =PostSync(url,obj,QString(),300000);
-        if (response.isEmpty()) return QString();
-        QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
-        if (respDoc.isNull()) return QString();
-        QJsonObject respObj = respDoc.object();
-        file_info = respObj["file_info"].toString();
-        if(!file_info.isEmpty())
-        {
-            ok=true;
-            expireTime = QDateTime::currentSecsSinceEpoch() + respObj["ttl"].toInt();
-            return file_info;
-        }
-        QString err = respObj["message"].toString();
-        if(err!="富媒体文件上传超时") return response;
-        QThread::msleep(128);
-
-    }
-    return response;
-}
-
-QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int fileType, const QString& filePath,
-                                     qint64& expireTime,QString &md5,bool &ok,QString &outurl) {
-    ok=false;
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        //qWarning() << "无法打开文件:" << filePath;
-        return QString();
-    }
-    QByteArray fileData = file.readAll();
-    file.close();
-    QFileInfo info(filePath);
-    QString filename = info.fileName();
-    return uploadRichMedia(targetType,openid,fileType,fileData,filename,expireTime,md5,ok,outurl);
-}
-
-QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
-                                    qint64& expireTime,QString &md5,bool &ok,QString &outurl) {
-
-
-    qint64 fileSize = data.size();
-     ok=false;
-
-    // 2. 计算哈希值
-    QCryptographicHash md5Hash(QCryptographicHash::Md5);
-    md5Hash.addData(data);
-    md5 = md5Hash.result().toHex();
-    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
-    sha1Hash.addData(data);
-    QString sha1 = sha1Hash.result().toHex();
-    int tenM = 10 * 1024 * 1024;
-    QByteArray first10M = data.left(tenM);
-    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
-    md5_10mHash.addData(first10M);
-    QString md5_10m = md5_10mHash.result().toHex();
-
-    // 视频分两路：
-    //   ≤80M → uploadSmallVideo：prepare 固定申请 1K（返回 1 个分片）→ 整段数据写入 put 链接 →
-    //          提交 → files 注册（视频处理可能「富媒体文件上传超时」，循环重试即可）
-    //   >80M → 当文件（file_type=4）走原版分片上传（有多大传多大，上限 200M）
-    if (fileType == 2) {
-        if (fileSize <= 80LL * 1024 * 1024)
-            return uploadSmallVideo(targetType, openid, data, filename, expireTime, md5, sha1, md5_10m, ok, outurl);
-        fileType = 4;
-    }
-
-    // 3. 准备上传准备请求
-    // 声明真实大小（有多大传多大）。
-    QJsonObject prepJson;
-    prepJson["file_type"] = fileType;
-    prepJson["file_name"] = filename;
-    prepJson["file_size"] = (qint64)fileSize;
-    prepJson["md5"] = md5;
-    prepJson["sha1"] = sha1;
-    prepJson["md5_10m"] = md5_10m;
-    //prepJson["block_size"] = fileSize;
-    QString url = get_url(targetType, openid, "upload_prepare");
-
-    QString response = PostSync(url, prepJson,QString(), 30000);
-
-    if (response.isEmpty()) return QString();
-
-    // 4. 解析响应获取 upload_id 和 parts
-    QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
-    if (respDoc.isNull()) return QString();
-    QJsonObject respObj = respDoc.object();
-    QString upload_id = respObj["upload_id"].toString();
-    if (upload_id.isEmpty()) return response; // 错误信息
-
-    QJsonArray parts = respObj["parts"].toArray();
-
-    // 5. 准备分片完成确认用的 JSON 基座
-    QJsonObject partFinishBase;
-    partFinishBase["upload_id"] = upload_id;
-    int start =0;
-    const int MAX_RETRIES = 3;
-    const int BASE_TIMEOUT_MS = 30000;
-    QString finishUrl = get_url(targetType, openid, "upload_part_finish");
-    if(g_neiw.isEmpty()){
-        for (int i = 0; i < parts.size(); ++i) {
-            QJsonObject part = parts[i].toObject();
-            int index = part["index"].toInt();
-            QString blockSize = part["block_size"].toString();
-            int blockSizeA=blockSize.toInt();
-            QString presignedUrl = part["presigned_url"].toString();
-
-
-            QByteArray chunk = data.mid(start, blockSizeA);
-            start += blockSizeA;
-            bool success = false;
-            int retry=0;
-            int currentTimeout = BASE_TIMEOUT_MS;
-            while (retry < MAX_RETRIES && !success) {
-                try {
-
-                    put(presignedUrl, chunk, "application/octet-stream", currentTimeout);
-
-                    success = true;
-                } catch (const std::exception &e) {
-                    //qWarning() << "分片" << index << "上传失败 (尝试" << retry+1 << "):" << e.what();
-                    retry++;
-                    if (retry < MAX_RETRIES) {
-                        int sleepMs = 1000 * (1 << (retry - 1));
-                        QThread::msleep(sleepMs);
-                        currentTimeout += 10000;
-                    }
-                }
-            }
-            if(success==false)
-            {
-                ok=false;
-                return QString("在上传%1分片时重试多次失败").arg(index);
-            }
-            QJsonObject finishJson;
-            finishJson["upload_id"] = upload_id;
-            finishJson["part_index"] = index;
-            finishJson["block_size"] = chunk.size();
-            QCryptographicHash chunkMd5(QCryptographicHash::Md5);
-            chunkMd5.addData(chunk);
-            finishJson["md5"] = QString(chunkMd5.result().toHex());
-
-
-            QString finishResp = PostSync(finishUrl, finishJson,QString(), 30000);
-
-        }
-    }else{
-
-        QElapsedTimer times;
-        times.start();
-        int totalParts = parts.size();
-        int startPos = 0;
-
-        std::vector<std::future<QByteArray>> futures;
-        QList<QByteArray> chunks;          // 保存分片数据
-        QList<QJsonObject> finishJsons;
-
-        for (int i = 0; i < totalParts; ++i) {
-            QJsonObject part = parts[i].toObject();
-            int index = part["index"].toInt();
-            int blockSize = part["block_size"].toString().toInt();
-            QString presignedUrl = part["presigned_url"].toString();
-            QByteArray chunk = data.mid(startPos, blockSize);
-            startPos += blockSize;
-            chunks.append(chunk);
-
-            std::future<QByteArray> fut = put2(presignedUrl, chunk, "application/octet-stream", BASE_TIMEOUT_MS);
-            futures.push_back(std::move(fut));
-            QJsonObject finishJson;
-            finishJson["upload_id"] = upload_id;
-            finishJson["part_index"] = index;
-            finishJson["block_size"] = chunk.size();
-            QCryptographicHash chunkMd5(QCryptographicHash::Md5);
-            chunkMd5.addData(chunk);
-            finishJson["md5"] = QString(chunkMd5.result().toHex());
-            finishJsons.append(finishJson);
-        }
-
-        for (int j = 0; j < futures.size(); ++j) {
-            bool success = false;
-            int retry = 0;
-            int currentTimeout = BASE_TIMEOUT_MS;
-            const QByteArray &chunk = chunks[j]; // 保存的数据，用于重试
-            while (retry < MAX_RETRIES && !success) {
-                try {
-
-                    QString resp;
-                    if (retry == 0) {
-                        // 第一次使用已存储的 future
-                        resp = futures[j].get();
-
-                    } else {
-
-                        std::future<QByteArray> newFut = put2(
-                            parts[j].toObject()["presigned_url"].toString(), // 直接用索引 j
-                            chunk,
-                            "application/octet-stream",
-                            currentTimeout
-                            );
-                        resp = newFut.get();
-                    }
-
-                    success = true;
-                } catch (const std::exception &e) {
-                    //qWarning() << "分片" << finishJsons[j]["part_index"].toInt()
-                    //    << "上传失败 (尝试" << retry+1 << "):" << e.what();
-                    retry++;
-                    if (retry < MAX_RETRIES) {
-                        QThread::msleep(1000 * (1 << (retry - 1)));
-                        currentTimeout += 10000;
-                    }
-                }
-            }
-            if (!success) {
-                ok = false;
-                return QString("分片%1重试多次失败").arg(finishJsons[j]["part_index"].toInt());
-            }
-            //QString finishResp = PostSync(finishUrl, finishJsons[j], QString(), 30000);
-        }
-        //AppendEventLog("分片上传完成 通知服务器："+QString::number(futures.size()));
-        for (int j = 0; j < futures.size(); ++j) {
-
-            QString finishResp = PostSync(finishUrl, finishJsons[j], QString(), 30000);
-
-        }
-
-
-        /*
-        int totalFinish = finishJsons.size();
-        int finishedCount = 0;
-        bool hasError = false;
-        QMutex mutex; // 保护计数器和错误标志（若回调在非主线程）
-        QEventLoop loop;
-
-        for (int j = 0; j < totalFinish; ++j) {
-            QJsonObject finishJson = finishJsons[j]; // 拷贝一份，避免引用失效
-            doWork(2000);
-
-            PostAsync(finishUrl, finishJson, QString(), 30000,
-                      [&, j](const QString& response, QNetworkReply::NetworkError error) {
-                          // 回调可能在任意线程，必须加锁
-                          QMutexLocker locker(&mutex);
-                          finishedCount++;
-                          if (error != QNetworkReply::NoError || response.isEmpty()) {
-                              hasError = true;
-                              AppendEventLog("分片" + QString::number(j) + "完成请求失败:" + response);
-
-                          }
-                          // 如果全部完成，退出事件循环
-                          if (finishedCount == totalFinish) {
-                              loop.quit();
-                          }
-                      });
-        }
-
-        // 等待所有完成请求结束
-        loop.exec();
-
-        if (hasError) {
-            ok = false;
-            return QString("部分分片完成请求失败");
-        }
-        */
-        //AppendEventLog("所有分片上传并完成 耗时："+QString::number(times.elapsed()));
-
-
-
-    }
-    // 7. 完成上传，请求 /files
-    // 服务端处理可能返回「富媒体文件上传超时」——数据已在 COS，重复提交同一请求
-    // 服务端会重新处理，无需重新上传。
-    QJsonObject filesJson;
-    filesJson["upload_id"] = upload_id;
-
-    QString filesUrl = get_url(targetType, openid, "files");
-    QString filesResp;
-    for (int attempt = 0; attempt < 10; ++attempt) {
-
-        filesResp = PostSync(filesUrl, filesJson,QString(), 30000);
-        if (filesResp.isEmpty()) return QString();
-
-        QJsonDocument filesRespDoc = QJsonDocument::fromJson(filesResp.toUtf8());
-        if (filesRespDoc.isNull()) return QString();
-        QJsonObject filesObj = filesRespDoc.object();
-        QString file_info = filesObj["file_info"].toString();
-
-        if (!file_info.isEmpty()) {
-            outurl = filesObj["raw_url"].toString();
-
-            // 获取过期时间（秒为单位）
-            expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
-            ok=true;
-            return file_info;
-        }
-        if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
-
-    }
-    return filesResp; // 重试耗尽，返回最后的错误
-}
-
-// 小视频（≤80M）快速上传：不走分片，prepare 固定申请 1K（服务端返回 1 个分片），
-// 整段视频写入 put 链接（链接实际可传任意大小）→ 按真实数据提交 → files 注册。
-// files 阶段视频处理可能返回「富媒体文件上传超时」——数据已在 COS，循环重试即可。
-QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
-                                      const QByteArray& data, const QString& filename,
-                                      qint64& expireTime, const QString& md5,
-                                      const QString& sha1, const QString& md5_10m,
-                                      bool& ok, QString& outurl)
-{
-    ok = false;
-    outurl.clear();
-    expireTime = 0;
-    const qint64 fileSize = data.size();
-
-    // 1. prepare：file_size 固定申请 1K（返回 1 个分片 + put 链接）
-    QJsonObject prepJson;
-    prepJson["file_type"] = 2;
-    prepJson["file_name"] = filename;
-    prepJson["file_size"] = (qint64)1024;
-    prepJson["md5"]     = md5;
-    prepJson["sha1"]    = sha1;
-    prepJson["md5_10m"] = md5_10m;
-    QString response = PostSync(get_url(targetType, openid, "upload_prepare"), prepJson, QString(), 30000);
-    if (response.isEmpty()) return QString();
-    QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
-    if (respDoc.isNull()) return QString();
-    QJsonObject respObj = respDoc.object();
-    QString upload_id = respObj["upload_id"].toString();
-    if (upload_id.isEmpty()) return response;   // 错误信息
-    QJsonArray parts = respObj["parts"].toArray();
-    if (parts.isEmpty()) return QString("upload_prepare 未返回分片");
-    QJsonObject part = parts[0].toObject();
-    const int partIndex = part["index"].toInt();
-    const QString presignedUrl = part["presigned_url"].toString();
-    if (presignedUrl.isEmpty()) return QString("upload_prepare 未返回 presigned_url");
-
-    // 2. 整段视频写入 put 链接
-    bool putOk = false;
-    int retry = 0;
-    int currentTimeout = 30000;
-    while (retry < 3 && !putOk) {
-        try {
-            put(presignedUrl, data, "application/octet-stream", currentTimeout);
-            putOk = true;
-        } catch (const std::exception &) {
-            retry++;
-            if (retry < 3) {
-                QThread::msleep(1000 * (1 << (retry - 1)));
-                currentTimeout += 10000;
-            }
-        }
-    }
-    if (!putOk) return QString("put 视频数据失败(重试3次)");
-
-    // 3. 提交（按真实数据）
-    QJsonObject finJson;
-    finJson["upload_id"]  = upload_id;
-    finJson["part_index"] = partIndex;
-    finJson["block_size"] = fileSize;
-    finJson["md5"]        = md5;
-    PostSync(get_url(targetType, openid, "upload_part_finish"), finJson, QString(), 30000);
-
-    // 4. files 注册：超时循环重试
-    QJsonObject filesJson;
-    filesJson["upload_id"] = upload_id;
-    QString filesUrl = get_url(targetType, openid, "files");
-    QString filesResp;
-    for (int attempt = 0; attempt < 10; ++attempt) {
-
-        filesResp = PostSync(filesUrl, filesJson, QString(), 30000);
-        if (filesResp.isEmpty()) return QString();
-        QJsonDocument filesDoc = QJsonDocument::fromJson(filesResp.toUtf8());
-        if (filesDoc.isNull()) return QString();
-        QJsonObject filesObj = filesDoc.object();
-        QString file_info = filesObj["file_info"].toString();
-
-        if (!file_info.isEmpty()) {
-            outurl = filesObj["raw_url"].toString();
-            expireTime = QDateTime::currentSecsSinceEpoch() + filesObj["ttl"].toInt();
-            ok = true;
-            return file_info;
-        }
-        if (filesObj["message"].toString() != "富媒体文件上传超时") return filesResp; // 其他错误
-
-    }
-    return filesResp; // 重试耗尽，返回最后的错误
-}
-
-// ==================== 复用 cos put 链接的快速上传池 ====================
-// 思路：upload_prepare 时 file_size 固定申请 100K（服务端只下发 1 个分片，流程快），
-// 但 cos 的 presigned put 链接实际可传任意大小 —— 把完整文件 put 上去即可。
-// put 链接 + upload_id 存入池子，cos 有效期 60 分钟 → 55 分钟超时删除；
-// 每次使用后 1 分钟内不再复用（冷却）；raw_url 加时间戳防 CDN/浏览器缓存。
-namespace {
-
-struct CosPutPoolEntry {
-    QString presignedUrl;   // 可重复 put 的 cos 链接
-    QString uploadId;       // upload_prepare 返回的 upload_id
-    int     partIndex = 0;  // 分片 index（100K 申请只有 1 片）
-    qint64  expireAt = 0;     // 链接诞生时刻 + 55 分钟（毫秒），cos 实际 60 分钟
-    QString fileInfo;         // 首次 /files 返回的 file_info —— 同 upload_id 固定不变，复用时直接用
-    QString rawUrl;           // 首次 /files 返回的原始 raw_url（不带时间戳，出参时再加工）
-    int     infoFileType = -1; // fileInfo 是哪类 fileType 上传后拿到的（捷径防跨类型误用）
-};
-
-// 可互换的 put 链接池：不按 targetType/openid 做 key（这俩基本固定，做 key 会退化成单条）。
-// 语义：取用即移出 → put 覆盖内容 → 消息发送完成（腾讯已下载图片）→ 立即回池，无 CD。
-// 暂存区（pending）在发送函数退出时统一回池；失败不回（坏/过期链接自然淘汰）。
 static QMutex g_cosPutPoolMutex;
 static QList<CosPutPoolEntry> g_cosPutPool;
 
 static const qint64 COS_POOL_TTL_MS   = 58 * 60 * 1000;  // 55 分钟超时删除
-// 防失控上限（不是预填数量，空池零开销，按需增长）。
-// 稳态条数 ≈ 发图速率 × 在途时间：1000张/秒 × 30s = 3 万条（约 30MB），故上限放大到 5 万。
+
 static const int    COS_POOL_MAX      = 10000;
+
 
 // 生成一张随机像素的小 PNG：合法图片（能过 file_type=1 的内容类型检查），
 // 像素随机 → 每次内容不同，避免缓存命中。池子新建链接的占位用。
@@ -2152,6 +1553,7 @@ void parkCosPutEntry(const CosPutPoolEntry &entry)
     t_cosPutPending.append(entry);
 }
 
+
 // 把一组链接回池：立即可复用（无 CD）。跨线程安全（池有锁）。
 void flushCosPutList(QList<CosPutPoolEntry> list)
 {
@@ -2173,6 +1575,9 @@ QList<CosPutPoolEntry> takeCosPutPending()
     return out;
 }
 
+
+
+
 // 消息发送完成后统一回池（同步路径用）
 void flushCosPutPending()
 {
@@ -2192,7 +1597,8 @@ QString bustRawUrlCache(const QString &rawUrl)
     return rawUrl + sep + "t=" + QString::number(QDateTime::currentMSecsSinceEpoch());
 }
 
-} // namespace
+
+
 
 // processImageTags 纯回调版（堵塞版不动；send_messagesAsync / send_messagesAsync2 接线用）：
 // 热路径（type==1 md 图片）全程零线程等待：
@@ -3022,6 +2428,27 @@ static QString findFfmpegPath()
     return kExe;
 }
 
+// 音频转换产物的统一路径：**源文件同目录下的 tmp/ 子目录**，文件名沿用源名再补 .m4a
+//   → /x/y/歌曲.mp3  ⇒  /x/y/tmp/歌曲.mp3.m4a
+// 为什么不放源文件旁边（老写法 srcFilePath + ".m4a"）：
+//   ui/chatpage.cpp 的「选择音频」文件对话框过滤器里有 *.m4a，产物放在同目录会被一起枚举出来，
+//   用户每转一次就多看见一个中间产物。放进子目录后 QFileDialog 不展开子目录，就看不见了。
+//   （文件名保留原后缀，顺带保证不同源文件不会互相覆盖）
+// ⚠ 「产物路径」这个约定只有这一个出处：转换、复用检查、切段三处都必须走它，
+//   否则复用失效（每次都重转），或者二次拼接出 <源>.m4a.m4a。
+// ⚠ 返回空串 = 「这条链路不适用」：source 是 http URL（远程音频直传）或路径为空。
+// ⚠ 这些产物**不做清理**（2026-10-03 拍板）：源音频可能在任意目录，程序压根不知道用户的音频文件
+//   都放在哪，更不该替用户去删东西；`tmp/` 攒多了让用户自己删。别自作聪明加清理逻辑。
+static QString audioM4aPathFor(const QString &srcFilePath)
+{
+    if (srcFilePath.isEmpty()
+        || srcFilePath.startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+        return {};
+    const QFileInfo fi(srcFilePath);
+    return fi.absoluteDir().filePath(QStringLiteral("tmp/") + fi.fileName()
+                                     + QStringLiteral(".m4a"));
+}
+
 QString convertAudioToSilk(const QString &srcFilePath)
 {
     if (!QFile::exists(srcFilePath)) {
@@ -3034,7 +2461,18 @@ QString convertAudioToSilk(const QString &srcFilePath)
 
     QString ffmpegPath = findFfmpegPath();
 
-    QString outputFilePath = srcFilePath + ".m4a";
+    // 产物放 <源目录>/tmp/<源名>.m4a（见 audioM4aPathFor 的注释）
+    const QString outputFilePath = audioM4aPathFor(srcFilePath);
+    if (outputFilePath.isEmpty())          // 非本地文件（http URL）→ 不适用，原样发
+        return srcFilePath;
+
+    // ⚠ ffmpeg **不会**自己创建输出目录（实测：`Error opening output nodir/out.m4a:
+    //   No such file or directory`，退出码 127，目录也不会被建出来）。少了这句 mkpath，
+    //   就会静默走到下面的「exitCode() != 0 → 返回源路径」分支，表现成「音频怎么都压不下来」。
+    if (!QDir().mkpath(QFileInfo(outputFilePath).absolutePath())) {
+        AppendEventLog("音频转换目录创建失败: " + QFileInfo(outputFilePath).absolutePath());
+        return srcFilePath;
+    }
 
     QStringList ffmpegArgs = {
         "-y",                      // 覆盖输出
@@ -3078,34 +2516,12 @@ QString convertAudioToSilk(const QString &srcFilePath)
     return outputFilePath;
 }
 
-// 语音时长限制实测 4 分 59 秒 → 每片切到 4:58（298 秒），留 1 秒余量：
-// ffmpeg 的切点只能落在 AAC 帧边界上，实际段长会略大于设定值。
+
 static const int AUDIO_SEG_MAX_SEC = 298;
 
-// 音频发送链路 —— 2026-10-02 拍板：**统一走外部 ffmpeg**，不再有进程内解码/编码那一层。
-// （此前那套进程内链路要长期维护 libs/{opus,decoders,ffmpeg} 三套库 + 两平台构建脚本 +
-//   LGPL 声明，源文件数比主程序自己的全部源码还多 3.8 倍，维护成本远高于收益。）
-//
-// 现在自上而下只有四步，每步都能失败降级、不会卡住发送：
-//   ① 原样发   audioCanSendAsIs() —— 已是小体积容器（opus/m4a/amr/silk/ogg/aac），
-//              或体积本身就不大且容器里没有视频轨 → 直接发，一次 ffmpeg 都不起。
-//   ② 只读探测 probeAudioDurationSec() —— 自研读文件头（最便宜），认不出再用 `ffmpeg -i`。
-//              只用来判断「这条看着不大的音频会不会其实超长」。失败返回 -1 = 不判超长。
-//   ③ 转码     convertAudioToSilk() —— `ffmpeg -c:a aac -b:a 32k -ar 24000 -ac 1` → .m4a。
-//              与原来的进程内 Opus 同为 32kbps 单声道，所以**产物体积基本不变**
-//              （QQ 只校验时长与大小，不校验容器格式）。
-//   ④ 切段     splitM4aSegments() —— 超长的 .m4a 用 `-c copy` 流复制（无损、秒级）。
-//
-// ⚠ **ffmpeg 现在是硬依赖**：不再有进程内兜底。找不到它时音频只能按原样发（体积压不下来、
-//   超长也切不了，可能被 QQ 的 4:59 上限拒绝）。查找顺序见上面的 findFfmpegPath()：
-//   ① 设置里的 ffmpeg 目录 → ② 主程序同目录（Linux 的 ~/qiancao、Windows 的 exe 旁）→ ③ PATH。
-//   打包时别忘带：Windows 发布包里有 5.7MB 的 ffmpeg.exe；Linux 需用户自装或放程序同目录。
-
-// 小于这个体积的音频直接原样发，不再转换 —— 转完也省不下一两百 KB，白跑一遍编解码。
 static const qint64 kAudioSkipConvertBytes = 1024 * 1024;
 
-// 「本来就是小体积」的音频容器：转成 Opus 省不下多少，直接原样发。
-// ⚠ 故意不含 mp3 / wav / flac —— 压这些大块头正是这套转换存在的意义。
+
 static bool isCompactAudioContainer(const QString &suffix)
 {
     static const QStringList kList = {
@@ -3347,10 +2763,15 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             {
                 needUpload=true;
 
-                // 之前 ffmpeg 转好的 <源>.m4a 还在 → 直接复用，不必再重转一份
-                const QString legacyM4a = filePath + ".m4a";
-                if (QFile::exists(legacyM4a))
-                    filePath = legacyM4a;
+                // 源文件路径单独留一份：产物路径一律由「源」推导。
+                // （filePath 下面会被替换成产物路径，再拿它去推就会拼出 <源>.m4a.m4a）
+                const QString srcPath = filePath;
+                // 产物路径：<源目录>/tmp/<源名>.m4a；空串 = 非本地文件（http URL），整条转换链路不适用
+                const QString m4aPath = audioM4aPathFor(srcPath);
+
+                // 之前 ffmpeg 转好的产物还在 → 直接复用，不必再重转一份
+                if (!m4aPath.isEmpty() && QFile::exists(m4aPath))
+                    filePath = m4aPath;
 
                 // 已经是小体积容器（opus/m4a/amr…）或本身就不大 → 原样发，转换纯属浪费算力。
                 // 只有这种「看着够小」的才值得花一次只读探测：小容器也可能是超长低码率音频。
@@ -3363,15 +2784,20 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                     if (filePath.endsWith(QStringLiteral(".m4a"), Qt::CaseInsensitive))
                         audioSegs = splitM4aSegments(filePath, AUDIO_SEG_MAX_SEC);
 
-                    if (audioSegs.isEmpty()) {
+                    // ⚠ 只对本地文件走转码/切段：m4aPath 为空 = 源是 http URL，
+                    //   那种情况直接原样上传（远程音频我们本地没有文件可转）
+                    if (audioSegs.isEmpty() && !m4aPath.isEmpty()) {
                         // ② 转码：ffmpeg → 32kbps 单声道 .m4a。
                         //    码率/采样率/声道数与原来的进程内 Opus 完全一致，产物体积也就基本不变
                         //    （QQ 只校验时长和大小，不校验容器格式）。
-                        const QString newpath = filePath + ".m4a";
-                        if (!QFile::exists(newpath)) //检查有没有有就不转换了
-                            filePath = convertAudioToSilk(filePath);
-                        else
-                            filePath = newpath;
+                        if (QFile::exists(m4aPath)) {
+                            filePath = m4aPath;                  // 已有产物（复用检查那步之外再兜一次）
+                        } else {
+                            const QString converted = convertAudioToSilk(srcPath);
+                            // 转换失败时它返回源路径本身；为空（理论上不会）就保持原样发
+                            if (!converted.isEmpty())
+                                filePath = converted;
+                        }
 
                         // 超长音频 → 切成多段，走下面的循环逐段上传发送
                         // （splitM4aSegments 只对 .m4a 生效：转换失败时 filePath 还是原文件，
@@ -3437,51 +2863,6 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
     return response;
 }
 
-QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
-                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx)
-{
-    QJsonObject json;
-    json["msg_type"] = 7;
-    if (info.isEmpty()) return R"({"msg":"要发送的富媒体标签码为空"})";
-    QString info2=extractBetween(info,"path=",",");
-    if (info2.isEmpty()) return R"({"msg":"无法从path获取info"})";
-    QJsonObject refObj;
-    refObj["file_info"] = info2;
-    json["media"] = refObj;
-    json["noref"] = noref;
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    ctx.index=index;
-    int seq_index=0;
-    bool ok=false;
-    if(index>=0){
-
-        g_logdb[type+1]->setBuffer_250(index,ok);
-    }
-    if(ok)
-        seq_index = 1;
-    else if(noref) return "{}";
-    else seq_index = 2;
-    initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index);
-    QString url= get_url(type,openid,"messages");
-    if(ctx.openid.isEmpty()){
-        QString response= PostSync(url, json,QString(), 5000);
-
-        addmsglog(response,index,pname,info,now_us,type,openid);
-
-        return response;
-
-    }
-    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
-                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
-                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
-                    if(ctx.cb)
-                      ctx.cb(resp,err);
-              });
-    return "{}";
-}
 
 
 void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup,int logindex)
@@ -3840,94 +3221,9 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
     }
 }
 
-QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, const QString &content, const QString &imagePath,
-                                      const QString &message_reference, int seq_index,const MessageLogContext ctx,bool noref)
-{
-    QByteArray postData;
-    QString headers;
-    bool useJson = imagePath.isEmpty() || imagePath.startsWith("http", Qt::CaseInsensitive);
 
-    if (useJson) {
-        QJsonObject obj;
-        if (!imagePath.isEmpty() && imagePath.startsWith("http")) {
-            obj["image"] = imagePath;
-        }
-        if (!content.isEmpty()) {
-            obj["content"] = content;
-        }
-        obj["noref"] = noref;
-        if (msgId.contains("INTERACTION") || msgId.contains("FRIEND_ADD") || msgId.contains("GROUP_MEMBER")) //GROUP_MEMBER_ADD
-            obj["event_id"] = msgId;
-        else
-            obj["msg_id"] = msgId;
-
-        if (!message_reference.isEmpty()) {
-            QJsonObject refObj;
-            refObj["message_id"] = message_reference;
-            refObj["ignore_get_message_error"] = false;
-            obj["message_reference"] = refObj;
-        }
-        headers = "application/json";
-        postData = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-    } else {
-        QString boundary = QString("----WebKitFormBoundary%1")
-        .arg(QString::number(QRandomGenerator::global()->generate(), 16));
-        QByteArray body;
-        if (!content.isEmpty()) {
-            QByteArray contentData = content.toUtf8();
-            body += "--" + boundary.toUtf8() + "\r\n";
-            body += "Content-Disposition: form-data; name=\"content\"\r\n";
-            body += "Content-Length: " + QByteArray::number(contentData.size()) + "\r\n";
-            body += "\r\n";
-            body += contentData + "\r\n";
-        }
-        if (!imagePath.isEmpty() && QFile::exists(imagePath)) {
-            QFile file(imagePath);
-            if (file.open(QIODevice::ReadOnly)) {
-                QByteArray imageData = file.readAll();
-                file.close();
-                body += "--" + boundary.toUtf8() + "\r\n";
-                body += "Content-Disposition: form-data; name=\"file_image\"; filename=\"image.jpeg\"\r\n";
-                body += "Content-Type: image/jpeg\r\n";
-                body += "\r\n";
-                body += imageData + "\r\n";
-            }
-        }
-        QString idFieldName;
-        if (msgId.contains("INTERACTION") || msgId.contains("FRIEND_ADD") || msgId.contains("GROUP_MEMBER"))
-            idFieldName = "event_id";
-        else
-            idFieldName = "msg_id";
-
-        QByteArray idData = msgId.toUtf8();
-        body += "--" + boundary.toUtf8() + "\r\n";
-        body += "Content-Disposition: form-data; name=\"" + idFieldName.toUtf8() + "\"\r\n";
-        body += "Content-Length: " + QByteArray::number(idData.size()) + "\r\n";
-        body += "\r\n";
-        body += idData + "\r\n";
-        body += "--" + boundary.toUtf8() + "--\r\n";
-        headers = QString("multipart/form-data; boundary=%1").arg(boundary);
-        postData = body;
-    }
-
-    if (ctx.openid.isEmpty()) {
-        return PostSync(url, postData, headers, 10000);
-    } else {
-        QHash<QString, QString> headers2;
-        headers2.insert("X-Union-Appid", m_info->appid);
-        headers2.insert("Authorization", "QQBot " + m_accessToken);
-        headers2.insert("Content-Type", headers);
-
-        postRawAsync(url, postData, headers2, 20000,
-                     [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
-                         addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                                   ctx.now_us, ctx.type, ctx.openid);
-                     });
-        return QString();
-    }
-}
 QString processText(const QString &text, int timeoutMs = 30000);
-
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
                               const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
 {
@@ -4296,466 +3592,4 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     }
     return response;
 }
-
-
-QString QQBotClient::send_messages(int type, const QString &openid, const QString &text, const QString &info,
-                                   const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid,
-                                   bool is_wakeup, int seq_index, const MessageLogContext ctx,bool noref)
-{
-    QJsonObject json;
-    if(info.isEmpty())
-    {
-        json["msg_type"] = 0;
-    }else{
-        json["msg_type"] = 7;
-        json["media"] =QJsonObject{{"file_info",info}};
-    }
-    json["noref"] = noref;
-    json["content"] = text;
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
-    QString url = get_url(type, openid, "messages");
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
-    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
-                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
-                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
-                    if(ctx.cb) ctx.cb(resp,err);
-              });
-    return QString();
-}
-
-
-QString QQBotClient::send_messages_ark(int type, const QString &openid,const QString &pname,
-                                       const QJsonObject &ark, const QString &msgid,
-                                       bool is_wakeup, int seq_index,const MessageLogContext ctx)
-{
-    QJsonArray prompt_keyboard;
-    auto now = std::chrono::steady_clock::now();
-    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
-
-    QJsonObject json;
-    json["msg_type"] = 3;
-    json["ark"] = ark;
-
-    initjgt(json, prompt_keyboard, "", realMsgId, is_wakeup, seq_index);
-    QString url = get_url(type, openid, "messages");
-
-    if (!ctx.openid.isEmpty())
-    {
-        QString pnameCopy = pname;                     // 引用转为拷贝
-        QString jsonString = QJsonDocument(ark).toJson(QJsonDocument::Compact);
-        int indexCopy = index;
-        qint64 now_us_copy = now_us;
-        int typeCopy = type;
-        QString openidCopy = openid;
-        PostAsync(url, json, "", 5000,
-                  [this, pnameCopy, jsonString, indexCopy, now_us_copy,
-                   typeCopy, openidCopy,cb = ctx.cb]
-                  (const QString &resp, QNetworkReply::NetworkError err) {
-                      // 如果担心 this 被销毁，可以用 QPointer 检查（可选）
-                      addmsglog(resp, indexCopy, pnameCopy, jsonString,
-                                now_us_copy, typeCopy, openidCopy);
-                      if(cb) cb(resp,err);
-                  });
-        return QString();   // 立即返回，结果通过回调处理
-    }
-    else
-    {
-        QString response = PostSync(url, json, QString(), 5000);
-        QJsonDocument doc(ark);
-        QString jsonString = doc.toJson(QJsonDocument::Compact);
-        addmsglog(response, index, pname, jsonString, now_us, type, openid);
-        return response;
-    }
-}
-
-QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
-                                            const QJsonValue &keyboard,const QString &message_reference,
-                                            const QString &msgid,bool is_wakeup,int seq_index,const MessageLogContext ctx,bool noref)
-{
-    QJsonObject json;
-    json["msg_type"] = 2;
-    json["markdown"] = QJsonObject{{"content", markdown}};
-    json["noref"] = noref;
-    if (keyboard.isArray()) {
-        QJsonArray arr = keyboard.toArray();
-        // 根据你的完整示例，标准格式是 {"content":{"rows": arr}}
-        json["keyboard"] = QJsonObject{
-            {"content", QJsonObject{{"rows", arr}}}
-        };
-    }
-    // 如果传入的是对象，保留你原来的判断逻辑
-    else if (keyboard.isObject()) {
-        QJsonObject obj = keyboard.toObject();
-        if (obj.contains("keyboard")) {
-            json["keyboard"] = obj["keyboard"];
-        } else if (obj.contains("content")) {
-            json["keyboard"] = obj;
-        } else if (obj.contains("rows")) {
-            json["keyboard"] = QJsonObject{{"content", obj}};
-        } else if (obj.contains("buttons")) {
-            json["keyboard"] = QJsonObject{
-                {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
-            };
-        } else {
-            // 兜底：默认忽略或按原样赋值
-            json["keyboard"] = obj;
-        }
-    }
-
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
-    QString url= get_url(type,openid,"messages");
-
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
-    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
-                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
-                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
-                    if(ctx.cb) ctx.cb(resp,err);
-              });
-    return QString();
-}
-QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
-                                            const QJsonValue  &keyboard,const QString &message_reference,
-                                            const QString &msgid,bool is_wakeup, int seq_index,const MessageLogContext ctx,bool noref)
-{
-    QJsonObject json;
-    json["msg_type"] = 2;
-    QJsonParseError err;
-    QJsonDocument dom =QJsonDocument::fromJson(markdown.toUtf8(),&err);
-    if(err.error !=QJsonParseError::NoError)
-    {
-        return QString();
-    }
-
-    json["markdown"] = dom.object();
-    json["noref"] = noref;
-    if (keyboard.isArray()) {
-        QJsonArray arr = keyboard.toArray();
-        // 根据你的完整示例，标准格式是 {"content":{"rows": arr}}
-        json["keyboard"] = QJsonObject{
-            {"content", QJsonObject{{"rows", arr}}}
-        };
-    }
-    // 如果传入的是对象，保留你原来的判断逻辑
-    else if (keyboard.isObject()) {
-        QJsonObject obj = keyboard.toObject();
-        if (obj.contains("keyboard")) {
-            json["keyboard"] = obj["keyboard"];
-        } else if (obj.contains("content")) {
-            json["keyboard"] = obj;
-        } else if (obj.contains("rows")) {
-            json["keyboard"] = QJsonObject{{"content", obj}};
-        } else if (obj.contains("buttons")) {
-            json["keyboard"] = QJsonObject{
-                {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
-            };
-        } else {
-            // 兜底：默认忽略或按原样赋值
-            json["keyboard"] = obj;
-        }
-    }
-
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
-    QString url= get_url(type,openid,"messages");
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
-    QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
-                  flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
-                  addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
-        if(ctx.cb) ctx.cb(resp,err);
-
-              });
-    return QString();
-}
-
-
-QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid,Callback callbacks)
-{
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    QString url = get_url(type, openid, "messages", realMsgId);
-    return Delete(url,QJsonObject(),QString(),10000,callbacks);
-}
-// 生成邀请链接
-QString QQBotClient::generate_share_link(const QString& callback_data,Callback callbacks)
-{
-    QJsonObject json;
-    if (!callback_data.isEmpty()) {
-        QByteArray utf8Data = callback_data.toUtf8();
-        if (utf8Data.size() > 32) {
-            utf8Data = utf8Data.left(32);   // 截断到32字节
-        }
-        json["callback_data"] = QString::fromUtf8(utf8Data);
-    }else{
-        json["callback_data"] = m_info->appid;
-    }
-    return Post("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000,callbacks);
-}
-
-//获取 群成员列表 频道成员列表
-QString QQBotClient::get_members_list(const QString& group,const QString &cursor,Callback callbacks)
-{
-    QString url= get_url(0,group,"members?cursor=",cursor);
-    return Get(url,"", 10000,callbacks);
-}
-
-
-QString QQBotClient::get_groups_list(const QString & cursor,Callback callbacks)
-{
-    QString url="https://api.bot.qq.com/users/@me/groups?cursor="+cursor;
-    return Get(url,"", 10000,callbacks);
-}
-QString QQBotClient::get_users_list(const QString & cursor,Callback callbacks)
-{
-
-    QString url="https://api.bot.qq.com/users/@me/users?cursor="+cursor;
-    return Get(url,"", 10000,callbacks);
-}
-QString QQBotClient::get_groups_members(const QString& group,const QString &user,Callback callbacks)
-{
-    return Get(get_url(0,group,"members",user),QString(), 10000,callbacks);
-}
-
-//回应回调
-QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data)
-{
-    QString url = "https://api.bot.qq.com/interactions/" + interaction_id;
-
-    QJsonObject json;
-    json["code"] = code;
-    if (!data.isEmpty()) {
-        json["data"] = data;
-    }
-    QByteArray body = QJsonDocument(json).toJson(QJsonDocument::Compact);
-    try {
-       return put(url,body,QString(),5000);
-    } catch (const std::exception &e) {
-        return e.what();  // 失败返回空字符串
-    }
-
-}
-QString QQBotClient::get_groups_info(const QString& group,Callback callbacks)
-{
-    return Get(get_url(0,group,"info"),QString(), 10000,callbacks);
-}
-QString QQBotClient::get_groups_bot_state(const QString& group,Callback callbacks)
-{
-    return Get(get_url(0,group,"bot_state"),QString(), 10000,callbacks);
-}
-QString QQBotClient::del_members (const QString& group,const QString &user_list,bool add_blacklist,Callback callbacks)
-{
-
-    QString url = get_url(0,group,"batch_remove_members");
-    QJsonObject obj;
-    QStringList list = user_list.split(",");
-    obj["member_openids"] = QJsonArray::fromStringList(list);
-    obj["add_to_member_blacklist"]=add_blacklist;
-    return Post(url,obj,QString(),300000,callbacks);
-
-}
-
-QString QQBotClient::get_member_blacklist (const QString& group,const QString &cursor,Callback callbacks)
-{
-
-    QString url  = get_url(0,group,"member_blacklist?limit=100&cursor=",cursor);
-    return Get(url,QString(),300000,callbacks);
-}
-QString QQBotClient::member_blacklist (const QString& group,const QString &user_list,bool op,Callback callbacks)
-{
-
-    QString url = get_url(0,group,"batch_remove_members");
-    QJsonObject obj;
-    QStringList list = user_list.split(",");
-    obj["member_openids"] = QJsonArray::fromStringList(list);
-    obj["op"]=op;
-    return Post(url,obj,QString(),300000,callbacks);
-
-}
-
-QString QQBotClient::approveGroupJoinRequest(const QString& group,const QString& user, bool op,const QString& joinRequestId,
-                                             const QString& rejectReason,bool addToBlacklist,Callback callbacks)
-{
-    // 1. 构造 URL（替换路径参数）
-    if(joinRequestId.isEmpty())
-    {
-        QString result=R"({"message":"joinRequestId 为空"})";
-        if(callbacks)
-         callbacks(result,QNetworkReply::NetworkError());
-        return result;
-    }
-    QString url =get_url(0,group,"approval_join_request",user);
-
-    // 2. 构建请求体 JSON
-    QJsonObject requestBody;
-    requestBody["op"] = op? "approve" : "decline";
-
-    // 可选字段：只在有值时添加
-    if (!joinRequestId.isEmpty()) {
-        requestBody["join_request_id"] = joinRequestId;
-    }
-    if(!op){
-        if (!rejectReason.isEmpty()) {
-            requestBody["reject_reason"] = rejectReason;
-        }
-        requestBody["add_to_member_blacklist"] = addToBlacklist;
-    }
-
-    return Post(url, requestBody, QString(), 10000,callbacks);
-}
-// 在您的 Client 类中新增重载
-
-QString QQBotClient::setGroupRestrictChatSetting(const QString& groupOpenId,const QString& memberOpenId,
-                                                 int muteSeconds,Callback callbacks)
-{
-    // 1. 构造 URL
-    QString url =get_url(0,groupOpenId,"restrict_chat_setting");;
-    if(muteSeconds<0)
-        muteSeconds=30;
-    if(muteSeconds>=30*1440*60)
-    {
-        muteSeconds=30*1440*60-1;
-    }
-    QJsonObject memberObj;
-
-    memberObj["member_openid"] = memberOpenId;
-
-    if(muteSeconds!=0)
-    {
-        memberObj["op"] = "add";
-        QDateTime expireTime = QDateTime::currentDateTime().addSecs(muteSeconds);
-        QString expireStr = expireTime.toString(Qt::ISODate);
-        int offsetSecs = expireTime.offsetFromUtc();
-        int offsetHours = offsetSecs / 3600;
-        int offsetMinutes = qAbs(offsetSecs % 3600) / 60;
-        QString timezoneStr = (offsetSecs >= 0) ?
-                                  QString("+%1:%2").arg(offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0')) :
-                                  QString("-%1:%2").arg(-offsetHours, 2, 10, QChar('0')).arg(offsetMinutes, 2, 10, QChar('0'));
-        QString rfc3339 = expireStr + timezoneStr;
-        memberObj["mute_expire_at"] = rfc3339;
-    }else{
-        memberObj["op"] = "del";
-    }
-
-    QJsonArray membersArray;
-    membersArray.append(memberObj);
-    QJsonObject requestBody;
-    requestBody["members"] = membersArray;
-
-
-    return Post(url, requestBody, QString(), 10000,callbacks);
-}
-//设置禁言
-QString QQBotClient::setGroupRestrictChatSetting(const QString& group, const QJsonArray& membersJson,Callback callbacks)
-{
-    QString url = get_url(0,group,"restrict_chat_setting");
-    QJsonObject requestBody;
-    requestBody["members"] = membersJson;
-    return Post (url, requestBody, QString(), 10000,callbacks);
-}
-
-//获取加群列表
-QString QQBotClient::getjoin_request_list(const QString& group,int limit,const QString &cursor,Callback callbacks)
-{
-    return Get(get_url(0,group,"join_request_list"), QString(), 10000,callbacks);
-}
-
-//获取禁言列表
-QString QQBotClient::getGroupRestrictChatSetting(const QString& group,Callback callbacks)
-{
-    return Get(get_url(0,group,"restrict_chat_setting"), QString(), 10000,callbacks);
-}
-
-//设置禁言——频道
-QString QQBotClient::set_mute(const QString& group,const QString &user,qint64 mute_seconds)
-{
-
-    QString url = QString("https://api.bot.qq.com/guilds/%1/mute").arg(group);
-    QJsonObject obj;
-    if(mute_seconds>31104000)//判定为时间戳
-        obj["mute_end_timestamp"]=mute_seconds;
-    else
-        obj["mute_seconds"] = mute_seconds;
-    if(!user.isEmpty()){
-        QStringList list = user.split(",");
-        obj["user_ids"] = QJsonArray::fromStringList(list);
-    }
-
-    return PatchSync(url,obj,QString(),10000) ;
-}
-
-
-// ==================== 自定义菜单接口 ====================
-
-// 1. 查询菜单 (GET)
-QString QQBotClient::getMenu(Callback callbacks)
-{
-    return Get("https://api.bot.qq.com/v2/menu", QString(), 10000, callbacks);
-}
-
-// 2. 创建/更新菜单 (POST)
-QString QQBotClient::updateMenu(const QJsonObject& menuData, Callback callbacks)
-{
-
-    return put2("https://api.bot.qq.com/v2/menu", QJsonDocument(menuData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
-}
-
-// ==================== 指令面板接口 ====================
-
-// 4. 创建面板 (POST)
-QString QQBotClient::createPanel(const QJsonObject& panelData, Callback callbacks)
-{
-    //qDebug() << panelData;
-    return Post("https://api.bot.qq.com/v2/panels", panelData, QString(), 10000, callbacks);
-}
-
-// 5. 查询面板列表 (GET)
-QString QQBotClient::listPanels(const QString& scope, int limit, const QString& cursor, Callback callbacks)
-{
-    QString url = "https://api.bot.qq.com/v2/panels?scope=" + scope;
-    if (limit > 0) url += "&limit=" + QString::number(limit);
-    if (!cursor.isEmpty()) url += "&cursor=" + cursor;
-    return Get(url, QString(), 10000, callbacks);
-}
-
-// 6. 查询面板详情 (GET)
-QString QQBotClient::getPanel(const QString& panelId, Callback callbacks)
-{
-    return Get("https://api.bot.qq.com/v2/panels/" + panelId, QString(), 10000, callbacks);
-}
-
-// 7. 修改面板 (PATCH)
-QString QQBotClient::updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks)
-{
-    //qDebug() << panelData;
-    return put2("https://api.bot.qq.com/v2/panels/" + panelId, QJsonDocument(panelData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
-}
-
-// 8. 删除面板 (DELETE)
-QString QQBotClient::deletePanel(const QString& panelId, Callback callbacks)
-{
-    return Delete("https://api.bot.qq.com/v2/panels/" + panelId,QJsonObject() ,QString(), 10000, callbacks);
-}
-
-// 9. 修改面板关联对象 (PATCH)
-QString QQBotClient::updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks)
-{
-    return put2("https://api.bot.qq.com/v2/panels/" + panelId + "/target", QJsonDocument(targetData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
-}
-
-
-
-
-
-
-
-
-
-
 

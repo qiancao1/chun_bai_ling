@@ -53,7 +53,7 @@ void CardWidget::setupUI() {
     m_nicknameLabel = new QLabel;
     m_nicknameLabel->setStyleSheet("background: transparent; color: #17202A; font-weight: 800; font-size: 13px;");
     m_typeLabel = new QLabel;
-    m_typeLabel->setStyleSheet("color: #6E7D92; font-size: 10px; background-color: #EDF3F8; padding: 1px 7px; border-radius: 8px;");
+    m_typeLabel->setStyleSheet("color: #000; font-size: 10px; background-color: #FF9E90; padding: 1px 7px; border-radius: 8px;");
     m_appidLabel = new QLabel;
     m_appidLabel->setStyleSheet("background: transparent; color: #8A94A6; font-size: 10px;");
     m_appidLabel->hide();
@@ -146,11 +146,13 @@ void CardWidget::mousePressEvent(QMouseEvent *event) {
 }
 
 void CardWidget::updateBorder() {
+
     QString borderColor = m_info->online ? "#A8D89B" : "#F0C7B8";
     QString bgColor = m_info->online ? "#F7FFF2" : "#FFF7F0";
+
     if (m_selected) {
         borderColor = "#FF914D";
-        bgColor = "#FFF1E2";
+        bgColor = "#A7CFEA";
     }
     QString style = QString(
                         "CardWidget {"
@@ -180,7 +182,14 @@ void CardWidget::refreshDisplay() {
     m_avatarLabel->setPixmap(pix.scaled(42, 42, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
 
     m_nicknameLabel->setText(m_info->nickname.isEmpty() ? "未命名" : m_info->nickname);
-    m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");
+
+    if(m_info->type == 0 && m_info->sandbox){
+         m_typeLabel->setText("ws (沙箱模式)");
+    }else
+    {
+         m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");
+    }
+
 
     onTimeRefresh();  // 刷新时长
     m_loginBtn->setText(m_deletePending ? "下线中…" : (m_info->online ? "登出" : "登录"));

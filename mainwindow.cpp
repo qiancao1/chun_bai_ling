@@ -78,11 +78,18 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.3.7.89"
-#define APP_BUILD_NUMBER 89
+#define APP_VERSION_STR "v1.3.9.93"
+#define APP_BUILD_NUMBER 93
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.3.9.93 (2026-10-04)
+- 优化 聊天室 显示机器人是否被踢出
+- 修复 全量 在部分情况不显示群名字
+- 修复 ai重复上下文问题
+- 优化 账号列表 是否链接沙盒的显示 以及选中颜色
+
+
 ## v1.3.7.89 (2026-10-01)
 - 修复 上传富媒体 url 重试 延迟耗时过久问题
 - 修改 插件UI 增加 简单 配置项快速调整开关

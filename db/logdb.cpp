@@ -224,8 +224,10 @@ bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString&
             if (appidFromKey == appid && groupIdFromKey == groupId) {
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
                 deserializeMessage(blob, msg);
-                mdb_cursor_close(cursor);
-                return true;
+                if(!msg.Gname.isEmpty()){
+                    mdb_cursor_close(cursor);
+                    return true;
+                }
 
             }
             i++;
@@ -268,9 +270,13 @@ bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &
             if (appidFromKey == appid && groupIdFromKey == groupId) {
                 QByteArray blob((const char*)value.mv_data, value.mv_size);
                 deserializeMessage(blob, msg);
-                mdb_cursor_close(cursor);
-                mdb_txn_abort(txn);
-                return true;
+                if(!msg.Gname.isEmpty()){
+                    mdb_cursor_close(cursor);
+                    mdb_txn_abort(txn);
+                    return true;
+                }
+
+
 
             }
         }

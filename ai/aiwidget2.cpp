@@ -422,17 +422,30 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
             QQBotClient *bot = m_botClients.value(ev.appid);
 
             if (bot) {
+                // 异步串行发送：上一条的回调回来了再发下一条，全程不阻塞当前线程
+                // （原来是 send_msgAsync + doWork(1000) 同步等）。bot 用 QPointer 兜底：
+                // 回调要等一个网络往返，期间机器人可能被删/切换，裸指针会变野指针。
+                QPointer<QQBotClient> botSafe(bot);
+                auto texts = std::make_shared<QStringList>();
                 if (bot->m_info->niren) {
-                    QStringList list = text.split("|#|#|");
-                    for (auto & s : list)
-                    {
-                        if(s.isEmpty()) continue;
-                        bot->send_messages(ev.type, ev.groupId, "[AI系统]", s, ev.msgId, false, false);
-                        doWork(1000);
-                    }
-                }else{
-                    bot->send_messages(ev.type, ev.groupId, "[AI系统]", text, ev.msgId, false, false);
+                    for (const QString &s : text.split("|#|#|"))
+                        if (!s.isEmpty()) texts->append(s);
+                } else if (!text.isEmpty()) {
+                    texts->append(text);
                 }
+
+                auto sendStep = std::make_shared<AsyncStep>();
+                sendStep->fn = [botSafe, ev, texts](const AsyncStepPtr &self, int i, int) {
+                    if (!botSafe) return;              // 机器人已失效，整链结束
+                    if (i >= texts->size()) return;    // 全部发完
+                    QString t = texts->at(i);
+                    botSafe->send_msgAsync(ev.type, ev.groupId, "[AI系统]", t, ev.msgId,
+                                           false, false, 0, false,
+                        [self, i](const QString &, QNetworkReply::NetworkError) {
+                            self->fn(self, i + 1, 0);  // 无论成败都继续下一条（与旧行为一致）
+                        });
+                };
+                sendStep->fn(sendStep, 0, 0);
                 text = QString();
             }
         }
@@ -678,10 +691,18 @@ void AiWidget::Ai_postsAsyncCore(const MessageEvent &ev, int model_index,
                (const std::shared_ptr<AsyncStep> &self, int n1, int i2) {
         auto next = [self](int a, int b) { self->fn(self, a, b); };
 
-        if (model_index >= modelList.size()) { if (cb) cb(*err); return; }
+        if (model_index >= modelList.size()) {
+            QString iserr = "【err】" + *err;
+            if (cb)
+                cb(iserr);
+            return;
+        }
         const QList<int> indices = modelList.at(model_index).enabledInterfaceIndices;
         if (n1 >= indices.size()) {
-            if (cb) cb(*err);
+            QString iserr = "【err】模型："+modelList.at(model_index).name+" 错误信息"+*err;
+            if (cb)
+                cb(iserr);
+
             return;
         }
 
@@ -755,10 +776,6 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     if (!send) pendings = session.pendingMessages;
 
     QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
-    int oldMsgCount = 0;
-    if (baseContext.contains("messages") && baseContext["messages"].isArray()) {
-        oldMsgCount = baseContext["messages"].toArray().size();
-    }
 
     // 构造空 MessageEvent
     MessageEvent ev;
@@ -789,7 +806,8 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                                "3.或者你的上下文正在聊天"
                                "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他"
                                "5.不能长期不回复，所以偶尔 决策 【提到】"
-                               "如果提到了 请回复'【提到】'文本 我会判定 你返回的内容有没有这个字符"
+                               "6.出现<@id> 等内容 不是艾特你"
+                               "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符"
                                "下面是用户给你的角色设定：\n"+setting;
         msgs[0] = systemMsg;
         QJsonObject systemMsg2;
@@ -808,20 +826,21 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         // 先占住 isProcessing，避免回调回来之前定时器又触发一轮
         setSessionProcessing(openid, true);
         Ai_postsAsync(MessageEvent(), model_index, juece_mode, 60000,
-            [this, openid, info, model_index, baseContext, oldMsgCount, pendings, ev](const QString &fh) {
-                flushPendingMessagesTail(openid, info, model_index, baseContext, oldMsgCount,
+            [this, openid, info, model_index, baseContext, pendings, ev](const QString &fh) {
+            qDebug() << "ai决策："<<fh << "|"<<ev.msg;
+                flushPendingMessagesTail(openid, info, model_index, baseContext,
                                          fh.contains("【提到】"), fh, pendings, ev);
             });
         return;
     }
 
-    flushPendingMessagesTail(openid, info, model_index, baseContext, oldMsgCount,
+    flushPendingMessagesTail(openid, info, model_index, baseContext,
                              true, QString(), pendings, ev);
 }
 
 // flushPendingMessages 的后半段：可能是紧跟在上面同步执行，也可能在决策请求的回调里执行
 void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info, int model_index,
-                                       QJsonObject baseContext, int oldMsgCount,
+                                       QJsonObject baseContext,
                                        bool juecejg, const QString &fh,
                                        const QList<PendingMessage> &pendings, const MessageEvent &ev)
 {
@@ -851,6 +870,13 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
     if(info->context_len<5)
         info->context_len=5;
     trimContextByMessageCount(baseContext, info->context_len); //限制上下文
+
+    // 本次请求的「已入上下文」基线条数：onAsyncReply 以它为界，只补齐请求期间新增的消息。
+    // 必须在 appendPendingMessageToContext 之后取 —— 待发的用户消息在这一步才进上下文，
+    // 并随即随下面的 aidb->put 一起落库。若仍沿用进本函数前的旧值（不含这批用户消息），
+    // 回调里就会把它们当成「本轮新增」再补一遍 → 同一条消息在上下文里出现两次。
+    const int savedMsgCount = baseContext["messages"].toArray().size();
+
     aidb->put(info->appid+":"+openid, QJsonDocument(baseContext).toJson(QJsonDocument::Compact));
     convertContextImagesToBase64(baseContext);//图片转b64
 
@@ -952,10 +978,14 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
     // 回调里原样交给 onAsyncReply 存上下文（和同步版传引用等价）。
     auto ctxPtr = std::make_shared<QJsonObject>(baseContext);
     Ai_postsAsyncCore(ev, model_index, ctxPtr, timeoutMs,
-        [this, openid, ev, ctxPtr, oldMsgCount, info](const QString &reply2) {
+        [this, openid, ev, ctxPtr, savedMsgCount, info](const QString &reply2) {
             QString reply = reply2;
-            emit asyncReplyReceived(openid, reply, *ctxPtr, oldMsgCount);
 
+            emit asyncReplyReceived(openid, reply, *ctxPtr, savedMsgCount);
+            if(reply.startsWith("【err】") && (ev.bitmap & BIT_Ainiren)){
+                AppendEventLog("【ai请求错误】："+reply);
+                return;
+            }
             QQBotClient *bot = m_botClients.value(ev.appid);
             if (!bot) return;
             BotDB *db = g_botdb.value(ev.appid);

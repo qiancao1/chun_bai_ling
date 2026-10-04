@@ -88,7 +88,15 @@ struct MessageLogContext {
 
 
 };
-
+struct CosPutPoolEntry {
+    QString presignedUrl;   // 可重复 put 的 cos 链接
+    QString uploadId;       // upload_prepare 返回的 upload_id
+    int     partIndex = 0;  // 分片 index（100K 申请只有 1 片）
+    qint64  expireAt = 0;     // 链接诞生时刻 + 55 分钟（毫秒），cos 实际 60 分钟
+    QString fileInfo;         // 首次 /files 返回的 file_info —— 同 upload_id 固定不变，复用时直接用
+    QString rawUrl;           // 首次 /files 返回的原始 raw_url（不带时间戳，出参时再加工）
+    int     infoFileType = -1; // fileInfo 是哪类 fileType 上传后拿到的（捷径防跨类型误用）
+};
 using Callback2 = std::function<void()>;
 
 Q_DECLARE_METATYPE(MessageEvent)   // 这行必须加在结构体定义之后

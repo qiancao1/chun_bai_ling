@@ -165,6 +165,7 @@ void QQBotClient::start()
 
 void QQBotClient::stop()
 {
+
     m_invalidHeartbeatCount = 0;
     m_seq = 0;
     m_sessionId.clear();
@@ -320,7 +321,7 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
         break;
     case 4: // 群事件
         ev.msg = QString("[群事件] %1 操作者:%2")
-                      .arg(ev.subType == 4 ? "被邀请进群" : "被踢出群", ev.user);
+                      .arg(ev.subType == 4 ? "被邀请进群" : "机器人被踢出群", ev.user);
         break;
     case 5: // 好友事件
 
@@ -926,6 +927,48 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
     logMessageEvent(m_info->nickname,ev);
 
+
+    if(ev.type ==4 )
+    {
+        if(ev.subType==4 || ev.subType==5){
+            if(g_botdb.contains(ev.appid))
+            {
+                BotDB *db = g_botdb[ev.appid];
+                if(ev.subType==4)
+                {
+                    QString name;
+                    QString json =  get_groups_info(ev.groupId);
+                    QJsonParseError err;
+                    QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+                    if (err.error == QJsonParseError::NoError) {
+                        QJsonObject obj = doc.object();
+                        name = obj["group_name"].toString();
+                    }
+
+                    db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0,name);
+                }
+                else{
+                    db->deleteGroup(ev.groupId);
+                    tabIndex = 1;
+                }
+            }
+        }
+    }
+    if(ev.type ==5)
+    {
+        if( ev.subType==6 || ev.subType==7){
+            if(g_botdb.contains(ev.appid))
+            {
+                BotDB *db = g_botdb[ev.appid];
+                if(ev.subType==6)
+                    db->addFriend(ev.user_int,QDateTime::currentSecsSinceEpoch()/60);
+                else{
+                    db->removeFriend(ev.user_int);
+                    tabIndex = 3;
+                }
+            }
+        }
+    }
     QString tiems = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
     Message mes{ev.user,ev.msg,false,tiems,"",ev.replyTo,ev.msgId};
     mes.Gname =ev.groupname;
@@ -969,39 +1012,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
 
-    if(ev.type ==4 && ev.subType==4 || ev.subType==5)
-    {
-        if(g_botdb.contains(ev.appid))
-        {
-            BotDB *db = g_botdb[ev.appid];
-            if(ev.subType==4)
-            {
-                QString name;
-                QString json =  get_groups_info(ev.groupId);
-                QJsonParseError err;
-                QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
-                if (err.error == QJsonParseError::NoError) {
-                    QJsonObject obj = doc.object();
-                    name = obj["group_name"].toString();
-                }
 
-                db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0,name);
-            }
-            else
-                db->deleteGroup(ev.groupId);
-        }
-    }
-    if(ev.type ==5 && ev.subType==6 || ev.subType==7)
-    {
-        if(g_botdb.contains(ev.appid))
-        {
-            BotDB *db = g_botdb[ev.appid];
-            if(ev.subType==6)
-                db->addFriend(ev.user_int,QDateTime::currentSecsSinceEpoch()/60);
-            else
-                db->removeFriend(ev.user_int);
-        }
-    }
 
     if (ev.type == 0 && (ev.bitmap & BIT_SHUA_P))
     {

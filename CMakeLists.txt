@@ -205,6 +205,8 @@ endif()
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
+        core/api2.cpp
+        core/cnbuploader.cpp
 
 
 
