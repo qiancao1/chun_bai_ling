@@ -180,6 +180,8 @@ set(PROJECT_SOURCES_ALL
     ui/ui_menupanelwidget.ui
     core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
+    core/api2.cpp
+    core/cnbuploader.cpp
 )
 
 
@@ -205,8 +207,7 @@ endif()
 # ==================== 构建目标 ====================
 if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
-        core/api2.cpp
-        core/cnbuploader.cpp
+
 
 
 

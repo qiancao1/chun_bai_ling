@@ -714,7 +714,7 @@ void NickReviewWidget::onAiApprove()
     QFutureWatcher<QString> *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this, [=]() {
         QString aiResult = watcher->result();
-        qDebug() << aiResult;
+        //qDebug() << aiResult;
         watcher->deleteLater();
         if(aiResult.isEmpty()) {
             QMessageBox::information(this, "AI 建议", "ai似乎返回报错 或接口为空");

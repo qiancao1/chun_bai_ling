@@ -827,7 +827,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         setSessionProcessing(openid, true);
         Ai_postsAsync(MessageEvent(), model_index, juece_mode, 60000,
             [this, openid, info, model_index, baseContext, pendings, ev](const QString &fh) {
-            qDebug() << "ai决策："<<fh << "|"<<ev.msg;
+            //qDebug() << "ai决策："<<fh << "|"<<ev.msg;
                 flushPendingMessagesTail(openid, info, model_index, baseContext,
                                          fh.contains("【提到】"), fh, pendings, ev);
             });
