@@ -370,6 +370,97 @@ std::future<QByteArray> NetManager::get(const QString &url,const QHash<QString, 
     return future; // 毫秒级返回
 }
 
+// 把「下载完成」回调交出去执行。分发规则与 dispatchCallback 完全一致（见上），
+// 只是携带的是二进制 data + tooBig。必须在网络线程里调用。
+void NetManager::dispatchDownloadCallback(CallbackThread where,
+                                          const QByteArray &data, bool tooBig,
+                                          QNetworkReply::NetworkError err,
+                                          DownloadCallback cb)
+{
+    if (!cb)
+        return;
+
+    if (where == CallbackOnNetThread) {
+        cb(data, tooBig, err);
+        return;
+    }
+
+    QRunnable *task = QRunnable::create([cb, data, tooBig, err]() {
+        cb(data, tooBig, err);
+    });
+    QThreadPool::globalInstance()->start(task);
+}
+
+// ── 异步下载（带体积上限）──
+// 请求在池化 NAM 所在线程建立 / 收完，**不阻塞调用方**，回调按 where 分发。
+//
+// 为什么不再在调用方栈上 new 一个 QNAM + QEventLoop：
+//   1. reply->deleteLater() 只有在线程的事件循环里跑到 DeferredDelete 才会真正删；
+//      调用方 QEventLoop::exec() 一返回就没人转事件循环了 → 那个 QNAM/reply 上下文
+//      及其内部线程、socket 就一直挂着，每次下载漏一份（这就是原先的泄漏点）。
+//      这里 reply 挂在网络线程上，那条线程的 exec() 一直在跑，deleteLater 必定执行。
+//   2. QNAM 从池里复用，不再每次下载都新建/销毁一整套连接池与内部线程。
+//   3. 网络线程只负责收字节，落盘 / 转码等重活全在回调线程（线程池）里做。
+void NetManager::downloadAsync(const QString &url, qint64 maxBytes, int timeoutMs,
+                               DownloadCallback callback, CallbackThread where)
+{
+    NetManager *self = this;
+    QNetworkAccessManager *mgr = pickManager(url);
+    if (!mgr) {                          // pickManager 未计入在途，无需 notifyFinished
+        dispatchDownloadCallback(where, QByteArray(), false,
+                                 QNetworkReply::UnknownNetworkError, callback);
+        return;
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        // 有些直链按 UA 拦（空 UA / 爬虫 UA 直接 403）
+        request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (qiancao)"));
+
+        QNetworkReply *reply = mgr->get(request);
+        auto bigFlag = std::make_shared<bool>(false);
+
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError> &) {
+            reply->ignoreSslErrors();
+        });
+
+        // 边收边判体积：任一时刻「已收」或「Content-Length」超过上限就立刻掐断，
+        // 不让它把整个大文件读完（这才是「先检查大小，超限就不下载」的落点）。
+        if (maxBytes > 0) {
+            QObject::connect(reply, &QNetworkReply::downloadProgress, reply,
+                             [reply, maxBytes, bigFlag](qint64 received, qint64 total) {
+                                 if (*bigFlag)
+                                     return;
+                                 if (received > maxBytes || (total > 0 && total > maxBytes)) {
+                                     *bigFlag = true;
+                                     reply->abort();
+                                 }
+                             });
+        }
+
+        QObject::connect(reply, &QNetworkReply::finished,
+                         [self, url, reply, bigFlag, callback, where]() {
+            self->notifyFinished(url);
+            const QByteArray body = reply->readAll();
+            const QNetworkReply::NetworkError err = reply->error();
+            const bool tooBig = *bigFlag;
+            reply->deleteLater();
+            // 超限 / 网络错误 / 超时（abort）→ 一律回空 data，由 tooBig 区分原因
+            const bool netOk = (err == QNetworkReply::NoError);
+            dispatchDownloadCallback(where, (tooBig || !netOk) ? QByteArray() : body,
+                                     tooBig, err, callback);
+        });
+    }, Qt::QueuedConnection);
+}
+
 void NetManager::getAsync(const QString &url,const QHash<QString, QString> &headers, int timeoutMs,
                           Callback callbacks, CallbackThread where) {
 

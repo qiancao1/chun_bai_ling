@@ -233,6 +233,7 @@ private:
     QTableWidget *modelListTable;      // 左侧：模型名
     QPushButton *modelListAddBtn;      // 左侧：添加新行
     QPushButton *modelListDelBtn;      // 左侧：删除选中
+    QPushButton *modelListFetchBtn;    // 左侧：拉取选中接口的模型列表并加入
 
     QTableWidget *interfaceTable;      // 中间：备注、接口
     QPushButton *interfaceAddBtn;      // 中间：添加新行
@@ -250,6 +251,19 @@ private:
 
     void onModelAdd();
     void onModelDelete();
+    // 用「接口列表」里选中的接口去请求它的 /models，用户在弹窗里挑一个 →
+    // 加入左侧模型列表，并自动勾选（启用）这个接口。
+    void onModelFetchFromInterface();
+    void fetchModelListStep();          // 依次尝试候选 models 地址（异步，回调已切回 GUI 线程）
+    // 上面那条异步链的中间状态（只在 GUI 线程读写）
+    struct FetchModelState {
+        bool        inFlight = false;
+        int         iface    = -1;
+        QString     key;
+        QStringList urls;
+        int         pos      = 0;
+        QString     lastErr;
+    } m_fetchModel;
     void onModelCurrentCellChanged(int currentRow, int currentCol,int previousRow, int previousCol);
     void refreshInterfaceTableForModel(int modelIndex);
     void onInterfaceAdd();

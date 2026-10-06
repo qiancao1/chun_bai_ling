@@ -1065,12 +1065,12 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         if(!__cqkj) return "请发送 [#更新框架]() 来检查是否需要更新";
 
             QString appDir = QCoreApplication::applicationDirPath();
-            QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
+            QString exePath = QDir(appDir).filePath("纯白铃32.exe");
             if (!QFile::exists(exePath))
-                return "纯白铃铛-下崽器 不存在 或 运行失败 需要这个才能更新框架";
+                return "纯白铃32.exe 不存在 或 运行失败 需要这个才能更新框架";
 
             std::wstring exe = exePath.toStdWString();
-            std::wstring args = L" 啥也没";   // 注意参数前有空格
+            std::wstring args = L" http";   // 注意参数前有空格
             std::wstring cmdLine = exe + args;
 
             STARTUPINFOW si = { sizeof(si) };

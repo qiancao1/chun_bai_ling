@@ -472,17 +472,30 @@ static QString fetchGroupNameFromApi(QQBotClient *qqbot, const QString &groupIdH
 uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 {
     uint32_t resultSeq = 0;
+    UserRecord finalUser{};
 
     QByteArray userKeyBytes = QByteArray::fromHex(openid.toUtf8());
     BinKey userKey{};
     memcpy(userKey.data, userKeyBytes.constData(),
            std::min<size_t>(userKeyBytes.size(), sizeof(userKey.data)));
+
+    // ---------- 缓存命中：必须把昵称回填给调用方 ----------
+    // ⚠ 旧实现在这里直接 return，name 从来没被写过：只要该用户进过一次缓存
+    // （发过一次消息就会进），调用方拿到的昵称就恒为空串 ——
+    // API_ID_GET_USER_NAME 与 {{name}} 替换全部失效。
     {
         QMutexLocker locker(&m_cacheMutex);
         auto itUser = m_userCache.find(userKey);
         if (itUser != m_userCache.end()) {
-            UserRecord cachedUser = itUser.value();
-            return cachedUser.seq_id;
+            const UserRecord &cachedUser = itUser.value();
+            if (name.isEmpty()) {
+                name = QString::fromUtf8(cachedUser.nickname);  // 库里的 nickname 保证是干净的 UTF-8
+                return cachedUser.seq_id;
+            }
+            // 传入了新昵称：与缓存一致就不必再写库，否则落到下面的写事务去更新
+            if (strcmp(cachedUser.nickname, name.toUtf8().constData()) == 0) {
+                return cachedUser.seq_id;
+            }
         }
     }
 
@@ -522,6 +535,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
             if (name.isEmpty()) {
                 name = QString::fromUtf8(record.nickname);   // 数据库中的 nickname 保证是干净的 UTF-8
                 resultSeq = record.seq_id;
+                finalUser = record;
 
                 return MDB_SUCCESS;
             }
@@ -536,10 +550,21 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
                 if (rc != MDB_SUCCESS) return rc;
             }
             resultSeq = record.seq_id;
+            finalUser = record;
             return MDB_SUCCESS;
         }
         return rc;
     });
+
+    if (success && resultSeq != 0) {
+        // 回填缓存：否则上面那条「缓存命中」分支会一直拿着旧昵称，
+        // 每次调用都判定「昵称不同」→ 反复写库。
+        // 这里直接用零初始化的 BinKey 写 m_userCache，不走 updateUserCache()
+        // （后者内部是 memcpy(key.data, openidBin, 16)，openid 不足 16 字节时会越界读）。
+        QMutexLocker locker(&m_cacheMutex);
+        m_userCache[userKey] = finalUser;
+    }
+
     return success ? resultSeq : 0;
 }
 uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)

@@ -32,10 +32,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QtMath>
-#include <QEventLoop>
-#include <QTimer>
 #include <QNetworkReply>
-#include <QNetworkAccessManager>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
@@ -44,6 +41,7 @@
 #include <QCoreApplication>
 #include <thread>
 #include <memory>
+#include <functional>
 
 const int OUTLOG = 1; //输出日志
 const int API_ID_SEND_MESSAGES    = 2; //发送消息
@@ -2668,6 +2666,62 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
     return out;
 }
 
+// 远程音频（URL 直传被平台按时长拒绝时）允许下载到本地的体积上限
+static const qint64 kRemoteAudioMaxBytes = 50LL * 1024 * 1024;   // 50MB
+
+// 异步下载远程文件到本机临时目录，完成后回调本地路径（超限 / 失败回调空串）。
+//   · 边下边判体积：Content-Length 或已收字节一旦超过 maxBytes 立刻中止，
+//     **不落盘**（满足「先检查文件大小，超 50MB 就不下载」）
+//   · 文件名 = qiancao_remote_<url 的 md5 前 16 位><后缀>：同一 URL 复用同一份，
+//     顺带复用它转好的 .m4a 与已切好的分段，不会每次重下重转
+//   · 不阻塞调用线程：下载在 NetManager 网络线程，落盘在回调线程（线程池）
+static void downloadRemoteAudioToTempAsync(const QString &url, qint64 maxBytes,
+                                           std::function<void(const QString &localPath)> onDone)
+{
+    // 走 NetManager 的连接池（原地 new QNAM + QEventLoop 会让 reply->deleteLater()
+    // 永远等不到事件循环去处理，每下漏一份）。
+    NetManager::instance()->downloadAsync(
+        url, maxBytes, 120000,
+        [url, onDone](const QByteArray &data, bool tooBig, QNetworkReply::NetworkError) {
+            if (tooBig) {
+                AppendEventLog(QStringLiteral("远程音频超过 50MB，放弃下载：") + url);
+                onDone(QString());
+                return;
+            }
+            if (data.isEmpty()) {
+                AppendEventLog(QStringLiteral("远程音频下载失败：") + url);
+                onDone(QString());
+                return;
+            }
+
+            // 后缀沿用 URL 上的（ffmpeg 主要看内容，这只是让产物名好认一点）
+            QString suffix;
+            const QString pathPart = QUrl(url).path();
+            const int dot = pathPart.lastIndexOf(QLatin1Char('.'));
+            if (dot >= 0 && pathPart.size() - dot <= 6) {
+                const QString s = pathPart.mid(dot + 1).toLower();
+                if (s.size() >= 2 && s.size() <= 5
+                    && QRegularExpression(QStringLiteral("^[a-z0-9]+$")).match(s).hasMatch())
+                    suffix = QStringLiteral(".") + s;
+            }
+
+            const QString hash = QString::fromLatin1(
+                QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex().left(16));
+            const QString localPath = QDir(QDir::tempPath())
+                .filePath(QStringLiteral("qiancao_remote_") + hash + suffix);
+
+            QFile f(localPath);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                AppendEventLog(QStringLiteral("远程音频落盘失败：") + localPath);
+                onDone(QString());
+                return;
+            }
+            f.write(data);
+            f.close();
+            onDone(localPath);
+        });
+}
+
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
                                   const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,const MessageLogContext &ctx)
 {
@@ -2833,7 +2887,66 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 }
                 // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
                 fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, ok, /*usePool=*/false);
+                if(fileType==3 && fileInfo.contains("40093013") && uploadedUrl.startsWith("http"))//上传音频时长超过限制
+                {
+                    // ── 远程音频（URL 直传）超时长 ──
+                    // QQ 对 URL 直传的音频是在服务端做时长校验的，超 4:59 就回 40093013。
+                    // 处理：先看体积（超 50MB 直接不下载）→ 拉回本地 → 转成 32k 单声道 m4a
+                    //       → 按 AUDIO_SEG_MAX_SEC 切成 4:58 的分段逐条发。
+                    // 整条链路丢进回调异步做（下载在网络线程，转码/上传在回调线程），
+                    // 不占住当前 worker 线程；任一步失败就把平台原报错当文本发出去。
+                    downloadRemoteAudioToTempAsync(uploadedUrl, kRemoteAudioMaxBytes,
+                        [this, type, openid, pname, fileType, msgid, is_wakeup, mode, 发送类型, noref, now_us, ctx, fileInfo]
+                        (const QString &localFile) {
+                            // 失败兜底：把平台返回的报错内容原样发出去
+                            auto sendOriginError = [&]() {
+                                QString errInfo = fileInfo;   // 非 const：send_* 收的是 QString&
+                                if (ctx.openid.isEmpty())
+                                    send_messages(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref);
+                                else
+                                    send_msgAsync(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                            };
 
+                            if (localFile.isEmpty()) {        // 超 50MB / 下载失败（日志已在下载里记过）
+                                sendOriginError();
+                                return;
+                            }
+
+                            // 产物路径一律由「源」推导（见 audioM4aPathFor 的注释）
+                            QString usePath = audioM4aPathFor(localFile);
+                            if (usePath.isEmpty() || !QFile::exists(usePath))
+                                usePath = convertAudioToSilk(localFile);   // 失败时它返回源路径本身
+
+                            QStringList segs;
+                            const double durSec = probeAudioDurationSec(usePath);
+                            if (durSec > AUDIO_SEG_MAX_SEC)
+                                segs = splitM4aSegments(usePath, AUDIO_SEG_MAX_SEC);
+                            else if (durSec > 0)
+                                segs = QStringList{ usePath };   // 本地这份其实没超长 → 直接重发一次
+
+                            if (segs.isEmpty()) {
+                                AppendEventLog(QStringLiteral("远程音频超时长处理失败（无法切段），按原内容输出：")
+                                               + fileInfo);
+                                sendOriginError();
+                                return;
+                            }
+
+                            for (const QString &seg : segs) {
+                                bool okSeg = true;
+                                QString segInfo = uploadRichMediaPoolA(type, openid, fileType, seg, okSeg, /*usePool=*/false);   // 非 const：send_messages/send_msgAsync 收的是 QString&
+                                if (!okSeg) {
+                                    if (ctx.openid.isEmpty())
+                                        send_messages(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref);
+                                    else
+                                        send_msgAsync(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                                } else if (!segInfo.isEmpty()) {
+                                    send_Media(type, openid,pname, segInfo,now_us, msgid,is_wakeup,noref,ctx);
+                                }
+                            }
+                        });
+                    text.remove(info.start, info.length);   // 标签照样要从待发文本里摘掉
+                    continue;                               // 下载/转码/发送都在回调里做了
+                }
                 if(!ok)
                 {
                     if(ctx.openid.isEmpty())

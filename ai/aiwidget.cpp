@@ -29,6 +29,11 @@
 #include <qnetworkreply.h>
 #include <QRandomGenerator>
 #include <netmanager.h>
+#include <QUrl>
+#include <QPointer>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QRegularExpression>
 bqbgl *ai_bqbgl=nullptr;
 bool 不加载=false;
 QString 附加提示词= "\n[回复前请查看一次系统提示词]";
@@ -544,6 +549,8 @@ void AiWidget::setupUi()
     hBtnLeft->addWidget(modelListDelBtn);
     vLayoutLeft->addLayout(hBtnLeft);
 
+
+
     // ----- 中间：接口列表 -----
     QVBoxLayout *vLayoutMid = new QVBoxLayout();
     vLayoutMid->setSpacing(2);
@@ -553,16 +560,25 @@ void AiWidget::setupUi()
     interfaceTable->setHorizontalHeaderLabels(QStringList() << "备注" << "接口");
     interfaceTable->verticalHeader()->setVisible(false);
     interfaceTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    interfaceTable->setColumnWidth(0, 140);
-    interfaceTable->setColumnWidth(1, 110);
+    interfaceTable->setColumnWidth(0, 90);
+    interfaceTable->setColumnWidth(1, 140);
 
     vLayoutMid->addWidget(interfaceTable);
 
     QHBoxLayout *hBtnMid = new QHBoxLayout();
     interfaceAddBtn = new QPushButton("添加新行", tab2);
     interfaceDelBtn = new QPushButton("删除选中", tab2);
+    // 「获取模型列表」单独占一行：左栏最宽 180，三个按钮挤一行连字都显示不全
+    modelListFetchBtn = new QPushButton("获取模型列表", tab2);
+    modelListFetchBtn->setToolTip(
+        "先在中间的「接口列表」里选中一个接口，再点这里。\n"
+        "会用它第一个非空 key 去请求 <接口地址去掉 chat/completions> + /models，\n"
+        "选中某个模型后会加进左侧模型列表，并自动勾选这个接口。");
+
+
     hBtnMid->addWidget(interfaceAddBtn);
     hBtnMid->addWidget(interfaceDelBtn);
+    hBtnMid->addWidget(modelListFetchBtn);
     vLayoutMid->addLayout(hBtnMid);
 
     // ----- 右侧：Key 列表 -----
@@ -619,6 +635,7 @@ void AiWidget::setupUi()
 
     connect(modelListAddBtn, &QPushButton::clicked, this, &AiWidget::onModelAdd);
     connect(modelListDelBtn, &QPushButton::clicked, this, &AiWidget::onModelDelete);
+    connect(modelListFetchBtn, &QPushButton::clicked, this, &AiWidget::onModelFetchFromInterface);
     connect(interfaceAddBtn, &QPushButton::clicked, this, &AiWidget::onInterfaceAdd);
     connect(interfaceDelBtn, &QPushButton::clicked, this, &AiWidget::onInterfaceDelete);
     connect(keyAddBtn, &QPushButton::clicked, this, &AiWidget::onKeyAdd);
@@ -1341,7 +1358,7 @@ void AiWidget::onModelDelete() {
     modelListTable->removeRow(row);
 
     if (!modelList.isEmpty()) {
-        modelListTable->selectRow(0);
+        modelListTable->selectRow(row);
     } else {
         interfaceTable->setRowCount(0);
         keyTable->setRowCount(0);
@@ -1352,6 +1369,409 @@ void AiWidget::onModelDelete() {
 
     saveToFile2();
 }
+//======================== 从接口获取模型列表 ========================
+
+// 由「对话接口」地址推「模型列表」地址，返回按优先级排好的候选（逐个试）。
+//   https://allgpt.xianyuw.cn/v1/chat/completions → https://allgpt.xianyuw.cn/v1/models
+// 有的站对话地址不带版本段（https://api.deepseek.com/chat/completions），
+// 这种就把 /models 和 /v1/models 都试一下。
+static QStringList modelsUrlsFor(const QString &chatUrl)
+{
+    QStringList out;
+    const QUrl u(chatUrl.trimmed());
+    if (!u.isValid() || u.host().isEmpty())
+        return out;
+
+    // 去掉结尾的 chat/completions（末尾斜杠有或没有都认）
+    QString base = u.path();
+    static const QRegularExpression tail(QStringLiteral("(?:^|/)chat/completions?/?$"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    base.remove(tail);
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+
+    const auto makeUrl = [&u](const QString &prefix) {
+        QUrl m(u);
+        m.setPath(prefix + QStringLiteral("/models"));
+        m.setQuery(QString());
+        m.setFragment(QString());
+        return m.toString();
+    };
+
+    out << makeUrl(base);
+
+    // base 里没有版本段（/v1、/v4 这种）才补一个 /v1/models
+    static const QRegularExpression ver(QStringLiteral("/v\\d+(?:/|$)"),
+                                        QRegularExpression::CaseInsensitiveOption);
+    if (!ver.match(base).hasMatch())
+        out << makeUrl(base + QStringLiteral("/v1"));
+
+    out.removeDuplicates();
+    return out;
+}
+
+// 从 /models 的响应里抠出模型 id，兼容三种写法：
+//   {"data":[{"id":"gpt-4o"},...]} / {"data":["gpt-4o",...]} / ["gpt-4o",...]
+static bool parseModelIds(const QString &body, QStringList &ids, QString &err)
+{
+    QJsonParseError pe{};
+    const QJsonDocument doc = QJsonDocument::fromJson(body.toUtf8(), &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        err = QStringLiteral("返回不是合法 JSON：") + body.trimmed().left(200);
+        return false;
+    }
+
+    QJsonArray arr;
+    if (doc.isArray()) {
+        arr = doc.array();
+    } else if (doc.isObject()) {
+        const QJsonObject o = doc.object();
+        if (o.value(QStringLiteral("data")).isArray()) {
+            arr = o.value(QStringLiteral("data")).toArray();
+        } else if (o.value(QStringLiteral("models")).isArray()) {
+            arr = o.value(QStringLiteral("models")).toArray();
+        } else if (o.contains(QStringLiteral("error"))) {
+            const QJsonValue e = o.value(QStringLiteral("error"));
+            err = QStringLiteral("接口返回错误：")
+                  + (e.isString() ? e.toString()
+                                  : QString::fromUtf8(QJsonDocument(e.toObject())
+                                                          .toJson(QJsonDocument::Compact)));
+            err = err.left(240);
+            return false;
+        } else {
+            err = QStringLiteral("返回里没有 data 数组：") + body.trimmed().left(200);
+            return false;
+        }
+    } else {
+        err = QStringLiteral("返回既不是对象也不是数组：") + body.trimmed().left(200);
+        return false;
+    }
+
+    for (const QJsonValue &v : std::as_const(arr)) {
+        if (v.isString()) {
+            ids << v.toString();
+        } else if (v.isObject()) {
+            const QJsonObject o = v.toObject();
+            QString id = o.value(QStringLiteral("id")).toString();
+            if (id.isEmpty()) id = o.value(QStringLiteral("model")).toString();
+            if (!id.isEmpty()) ids << id;
+        }
+    }
+    ids.removeDuplicates();
+    if (ids.isEmpty()) {
+        err = QStringLiteral("接口没返回任何模型");
+        return false;
+    }
+    return true;
+}
+
+// 弹一个带过滤框的列表让用户挑一个模型 id；取消返回空串。
+// chatUrl / key 是来源接口的对话地址与 key —— 给弹窗里的「测试」按钮用。
+static QString pickModelFromList(QWidget *parent, const QString &ifaceName,
+                                 const QStringList &ids,
+                                 const QString &chatUrl, const QString &key)
+{
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QStringLiteral("选择模型"));
+    dlg.resize(460, 620);
+
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    lay->setSpacing(4);
+
+    QLabel *tip = new QLabel(QStringLiteral("接口：%1     共 %2 个模型").arg(ifaceName).arg(ids.size()), &dlg);
+    lay->addWidget(tip);
+
+    PlaceholderLineEdit *filter = new PlaceholderLineEdit(&dlg);
+    filter->setPlaceholderText(QStringLiteral("输入关键字过滤，双击直接选…"));
+    lay->addWidget(filter);
+
+    QListWidget *list = new QListWidget(&dlg);
+    list->addItems(ids);
+    lay->addWidget(list, 1);
+
+    // 「测试」结果就地显示，不再弹二级对话框
+    QLabel *result = new QLabel(&dlg);
+    result->setWordWrap(true);
+    result->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    result->setMinimumHeight(32);
+    lay->addWidget(result);
+
+    QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    box->button(QDialogButtonBox::Ok)->setText(QStringLiteral("添加"));
+    box->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    QPushButton *testBtn = box->addButton(QStringLiteral("测试"), QDialogButtonBox::ActionRole);
+    testBtn->setToolTip(QStringLiteral("拿选中的模型对「%1」发一次最小请求（max_tokens=16），\n"
+                                       "看这个站到底能不能用它").arg(ifaceName));
+    lay->addWidget(box);
+
+    // 过滤后顺手选中第一个可见项，免得按回车选到一个已经被过滤掉的行
+    QObject::connect(filter, &QLineEdit::textChanged, list, [list](const QString &t) {
+        QListWidgetItem *first = nullptr;
+        for (int i = 0; i < list->count(); ++i) {
+            QListWidgetItem *it = list->item(i);
+            const bool hide = !t.isEmpty() && !it->text().contains(t, Qt::CaseInsensitive);
+            it->setHidden(hide);
+            if (!hide && !first) first = it;
+        }
+        if (first) list->setCurrentItem(first);
+        else        list->setCurrentRow(-1);
+    });
+    QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+    QObject::connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    // 「测试」：把这个模型对来源接口发一次 chat/completions，max_tokens 给一点点少花钱
+    // （捕获 &dlg 是安全的：这个连接挂 &dlg 上，弹窗一销毁就跟着没了）
+    QObject::connect(testBtn, &QPushButton::clicked, &dlg,
+                     [list, result, testBtn, chatUrl, key, &dlg]() {
+        QListWidgetItem *cur = list->currentItem();
+        if (!cur || cur->isHidden()) {
+            result->setText(QStringLiteral("先在上面选一个模型再测"));
+            return;
+        }
+        if (chatUrl.isEmpty()) {
+            result->setText(QStringLiteral("这个接口没有对话地址，没法测"));
+            return;
+        }
+        const QString model = cur->text();
+
+        QJsonObject um;
+        um["role"]    = QStringLiteral("user");
+        um["content"] = QStringLiteral("hi");
+        QJsonArray msgs;
+        msgs.append(um);
+
+        QJsonObject body;
+        body["model"]      = model;
+        body["messages"]   = msgs;
+        body["max_tokens"] = 16;          // 只要它肯开口就行
+        body["stream"]     = false;
+
+        QHash<QString, QString> h;
+        h["Authorization"] = "Bearer " + key;
+        h["Content-Type"]  = "application/json";
+        h["Accept"]        = "application/json";
+
+        result->setText(QStringLiteral("正在测试 %1 …").arg(model));
+        testBtn->setEnabled(false);
+
+        // 弹窗可能被关掉、请求还在飞 → 全程 QPointer 挡着
+        QPointer<QDialog>     dlgG(&dlg);
+        QPointer<QLabel>      resG(result);
+        QPointer<QPushButton> btnG(testBtn);
+
+        NetManager::instance()->postAsync(
+            chatUrl, QJsonDocument(body).toJson(QJsonDocument::Compact), h, 60000,
+            [dlgG, resG, btnG, model](const QString &resp, QNetworkReply::NetworkError err) {
+                // 回调在线程池线程 → 切回 GUI 线程再写控件
+                if (!dlgG) return;
+                QMetaObject::invokeMethod(dlgG.data(), [dlgG, resG, btnG, model, resp, err]() {
+                    if (!dlgG || !resG) return;
+                    if (btnG) btnG->setEnabled(true);
+
+                    if (err != QNetworkReply::NoError) {
+                        resG->setText(QStringLiteral("测试失败：%1\n%2")
+                                          .arg(model, resp.trimmed().left(400)));
+                        return;
+                    }
+
+                    const QJsonObject o = QJsonDocument::fromJson(resp.toUtf8()).object();
+                    if (o.value(QStringLiteral("choices")).isArray()) {
+                        QString say;
+                        const QJsonArray chs = o.value(QStringLiteral("choices")).toArray();
+                        if (!chs.isEmpty()) {
+                            say = chs.at(0).toObject()
+                                      .value(QStringLiteral("message")).toObject()
+                                      .value(QStringLiteral("content")).toString().trimmed().left(60);
+                        }
+                        resG->setText(QStringLiteral("测试通过：%1 可用%2")
+                                          .arg(model, say.isEmpty()
+                                                          ? QString()
+                                                          : QStringLiteral("（它回了：") + say
+                                                                + QStringLiteral("）")));
+                    } else if (o.contains(QStringLiteral("error"))) {
+                        const QJsonValue e = o.value(QStringLiteral("error"));
+                        resG->setText(QStringLiteral("测试失败：%1\n%2")
+                                          .arg(model,
+                                               (e.isString()
+                                                    ? e.toString()
+                                                    : QString::fromUtf8(QJsonDocument(e.toObject())
+                                                                            .toJson(QJsonDocument::Compact)))
+                                                   .left(400)));
+                    } else {
+                        resG->setText(QStringLiteral("没按标准格式回（可能能用）：%1\n%2")
+                                          .arg(model, resp.trimmed().left(300)));
+                    }
+                }, Qt::QueuedConnection);
+            },
+            NetManager::CallbackOnPoolThread);
+    });
+
+    if (list->count() > 0) list->setCurrentRow(0);
+    filter->setFocus();
+
+    if (dlg.exec() != QDialog::Accepted) return QString();
+    QListWidgetItem *cur = list->currentItem();
+    return (cur && !cur->isHidden()) ? cur->text() : QString();
+}
+
+// 当前要用的接口名（备注优先，没有就用地址）
+static QString ifaceDisplayName(const QList<InterfaceData> &ifaces, int idx)
+{
+    if (idx < 0 || idx >= ifaces.size()) return QString();
+    const InterfaceData &f = ifaces.at(idx);
+    return f.remark.trimmed().isEmpty() ? f.url : f.remark.trimmed();
+}
+
+void AiWidget::onModelFetchFromInterface()
+{
+    if (m_fetchModel.inFlight) {
+        QMessageBox::information(this, "提示", "上一次获取还没回来，稍等一下…");
+        return;
+    }
+
+    // 1) 用「接口列表」里当前选中的那一行（行号 == globalInterfaces 下标）
+    const int ifIdx = interfaceTable->currentRow();
+    if (globalInterfaces.isEmpty() || ifIdx < 0 || ifIdx >= globalInterfaces.size()) {
+        QMessageBox::warning(this, "提示", "请先在中间的「接口列表」里选中一个接口");
+        return;
+    }
+    const QString ifaceName = ifaceDisplayName(globalInterfaces, ifIdx);
+
+    // 2) 取该接口第一个非空 key
+    QString key;
+    for (const KeyData &k : std::as_const(globalInterfaces.at(ifIdx).keys)) {
+        if (!k.key.trimmed().isEmpty()) { key = k.key.trimmed(); break; }
+    }
+    if (key.isEmpty()) {
+        QMessageBox::warning(this, "提示",
+            QString("接口「%1」还没配 key，请先在右边给它加一个 key").arg(ifaceName));
+        return;
+    }
+
+    // 3) 候选 models 地址
+    const QStringList urls = modelsUrlsFor(globalInterfaces.at(ifIdx).url);
+    if (urls.isEmpty()) {
+        QMessageBox::warning(this, "提示",
+            QString("接口「%1」的地址没法解析：\n%2").arg(ifaceName, globalInterfaces.at(ifIdx).url));
+        return;
+    }
+
+    // 4) 记下状态后异步逐个试（别在 GUI 线程里同步等网络）
+    m_fetchModel.inFlight = true;
+    m_fetchModel.iface    = ifIdx;
+    m_fetchModel.key      = key;
+    m_fetchModel.urls     = urls;
+    m_fetchModel.pos      = 0;
+    m_fetchModel.lastErr.clear();
+    fetchModelListStep();
+}
+
+void AiWidget::fetchModelListStep()
+{
+    if (!m_fetchModel.inFlight) return;
+
+    // 候选地址都试完了 → 汇报最后一次的失败原因
+    if (m_fetchModel.pos >= m_fetchModel.urls.size()) {
+        m_fetchModel.inFlight = false;
+        QMessageBox::warning(this, "获取模型列表失败",
+            QString("接口「%1」没能取到模型列表。\n\n最后一次尝试：\n%2")
+                .arg(ifaceDisplayName(globalInterfaces, m_fetchModel.iface),
+                     m_fetchModel.lastErr));
+        return;
+    }
+
+    const QString url = m_fetchModel.urls.at(m_fetchModel.pos++);
+    const QString key = m_fetchModel.key;
+
+    QHash<QString, QString> h;
+    h["Authorization"] = "Bearer " + key;
+    h["Content-Type"]  = "application/json";
+    h["Accept"]        = "application/json";
+
+    QPointer<AiWidget> guard(this);
+    NetManager::instance()->getAsync(url, h, 20000,
+        [guard, url](const QString &body, QNetworkReply::NetworkError err) {
+            // ⚠ 回调在线程池线程跑 → 一律丢回 GUI 线程再碰 UI / 成员
+            if (!guard) return;
+            QMetaObject::invokeMethod(guard.data(), [guard, url, body, err]() {
+                if (!guard) return;
+                AiWidget *w = guard.data();
+
+                QStringList ids;
+                QString why;
+                if (err != QNetworkReply::NoError)
+                    why = QString("网络/HTTP 错误(%1)：%2").arg(int(err)).arg(body.trimmed().left(200));
+                else
+                    parseModelIds(body, ids, why);
+
+                if (ids.isEmpty()) {                       // 这个地址不行，试下一个
+                    w->m_fetchModel.lastErr = url + "\n  → "
+                        + (why.isEmpty() ? QStringLiteral("返回内容无法识别") : why);
+                    w->fetchModelListStep();
+                    return;
+                }
+
+                w->m_fetchModel.inFlight = false;          // 拿到列表了，流程结束
+
+                const int ifIdx = w->m_fetchModel.iface;
+                const QString ifaceName = ifaceDisplayName(w->globalInterfaces, ifIdx);
+                const QString chatUrl = (ifIdx >= 0 && ifIdx < w->globalInterfaces.size())
+                                        ? w->globalInterfaces.at(ifIdx).url : QString();
+                // 弹窗里的「测试」要拿这个接口的地址 + key 真发一次请求
+                const QString picked = pickModelFromList(w, ifaceName, ids, chatUrl, w->m_fetchModel.key);
+                if (picked.isEmpty()) return;              // 用户取消
+
+                ModelData m;
+                m.name = picked.trimmed();
+                if (m.name.isEmpty()) return;
+
+                // 已经存在同名模型 → 不新增行，直接复用它（把来源接口并进去）
+                int row = -1;
+                for (int i = 0; i < w->modelList.size(); ++i) {
+                    if (w->modelList.at(i).name == m.name) { row = i; break; }
+                }
+                if (row >= 0) {
+                    bool linked = false;
+                    if (ifIdx >= 0 && !w->modelList[row].enabledInterfaceIndices.contains(ifIdx)) {
+                        w->modelList[row].enabledInterfaceIndices.append(ifIdx);
+                        linked = true;
+                        w->saveToFile2();
+                    }
+                    w->modelListTable->selectRow(row);
+                    w->modelListTable->setCurrentCell(row, 0);
+                    if (ifIdx >= 0 && ifIdx < w->interfaceTable->rowCount())
+                        w->interfaceTable->selectRow(ifIdx);
+                    QMessageBox::information(w, "提示",
+                        QString("模型「%1」已经在列表里了%2").arg(
+                            m.name,
+                            linked ? QStringLiteral("，已把它和这个接口关联上")
+                                   : QStringLiteral("，而且这个接口早就勾上了")));
+                    return;
+                }
+
+                if (ifIdx >= 0 && !m.enabledInterfaceIndices.contains(ifIdx))
+                    m.enabledInterfaceIndices.append(ifIdx);   // 勾上来源接口
+                w->modelList.append(m);
+                row = w->modelList.size() - 1;
+
+                const bool oldFlag = 不加载;
+                不加载 = true;                              // 别让 setItem 触发的 cellChanged 回头再写一遍
+                w->modelListTable->insertRow(row);
+                w->modelListTable->setItem(row, 0, new QTableWidgetItem(m.name));
+                不加载 = oldFlag;
+
+                w->刷新模型();
+                w->saveToFile2();
+
+                w->modelListTable->selectRow(row);          // 选中新加的模型（会顺带刷新中间表格的勾选）
+                w->modelListTable->setCurrentCell(row, 0);
+                if (ifIdx >= 0 && ifIdx < w->interfaceTable->rowCount())
+                    w->interfaceTable->selectRow(ifIdx);    // 顺手把来源接口选中，一眼能看到它已勾上
+            }, Qt::QueuedConnection);
+        },
+        NetManager::CallbackOnPoolThread);
+}
+
 void AiWidget::onModelCurrentCellChanged(int currentRow, int currentCol,
                                          int previousRow, int previousCol) {
     Q_UNUSED(currentCol); Q_UNUSED(previousRow); Q_UNUSED(previousCol);

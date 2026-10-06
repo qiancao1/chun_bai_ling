@@ -424,7 +424,7 @@ int main(int argc, char *argv[]) {
         cache_db = new LmdbKV("botdb/file_db");
         initDBs();
         #ifdef _WIN32
-            if (QFile::exists("miaomiao32.exe")) {
+            if (QFile::exists("纯白铃32.exe")) {
                 bridge = new SharedMemoryBridge;
                 bridge->setCallback(myCallback);
                 if (!bridge->startServer(false)) qCritical("Bridge start failed");

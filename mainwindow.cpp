@@ -78,11 +78,16 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.3.9.93"
-#define APP_BUILD_NUMBER 93
+#define APP_VERSION_STR "v1.4.0.90"
+#define APP_BUILD_NUMBER 90
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.0.96 (2026-10-05)
+- 增加 ai获取模型列表 并且测试模型
+- 重写 32位插件加载器
+- 修复 获取用户昵称 用不了问题
+
 ## v1.3.9.93 (2026-10-04)
 - 优化 聊天室 显示机器人是否被踢出
 - 修复 全量 在部分情况不显示群名字
@@ -438,7 +443,7 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
         if (!bridge) return;
         if (miaomiao32 >= 2)
             AppendEventLog("与加载器通讯失败了.." + QString::number(miaomiao32));
-        bridge->writeResponseToBlock(1, "{\"type\":7}");
+        bridge->writeResponseToBlock(0, "{\"type\":7}");
         miaomiao32++;
         miaomiao++;
         if (miaomiao32 >= 4) {
@@ -1599,12 +1604,12 @@ QString getLatestDownloadUrl() {
 QString startDownloadAndReplace() {
     #ifdef _WIN32
     QString appDir = QCoreApplication::applicationDirPath();
-    QString exePath = QDir(appDir).filePath("纯白铃铛-下崽器.exe");
+    QString exePath = QDir(appDir).filePath("纯白铃32.exe");
     if (!QFile::exists(exePath))
-        return "纯白铃铛-下崽器 不存在 或 运行失败 需要这个才能更新框架";
+        return "纯白铃32 不存在 或 运行失败 需要这个才能更新框架";
 
     std::wstring exe = exePath.toStdWString();
-    std::wstring args = L" 啥也没";   // 注意参数前有空格
+    std::wstring args = L" http";   // 注意参数前有空格
     std::wstring cmdLine = exe + args;
 
     STARTUPINFOW si = { sizeof(si) };

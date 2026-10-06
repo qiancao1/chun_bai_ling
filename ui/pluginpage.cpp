@@ -2465,7 +2465,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
 {
     #ifdef _WIN32
-    // bridge 只在 miaomiao32.exe 存在时才创建（main.cpp），
+    // bridge 只在 纯白铃32.exe 存在时才创建（main.cpp），
     // 没装 32 位模块时这里必须直接返回，否则解引用空指针会直接崩掉。
     if (!bridge) return QString();
     QJsonObject reqJson;

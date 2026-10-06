@@ -61,6 +61,19 @@ public:
     std::future<QByteArray> post(const QString &url, const QByteArray &jsonData,
                               const QHash<QString, QString> &headers, int timeoutMs);
     std::future<QByteArray> get(const QString &url,const QHash<QString, QString> &headers=QHash<QString, QString>(), int timeoutMs=30000) ;
+
+    // ── 异步下载（带体积上限），复用连接池 ──
+    // 与 get()/getAsync() 的差别：
+    //   ① 边收边判体积 —— Content-Length 或已收字节一旦超过 maxBytes 立刻 abort
+    //      （maxBytes <= 0 表示不限），用于「文件太大就别下了」这类场景；
+    //   ② 回调额外带 tooBig，让调用方区分「超限」与「网络失败」（两者都返回空 data）。
+    // 回调线程由 where 决定，默认丢线程池（与 postAsync/getAsync 一致），
+    // **不阻塞调用方线程**。
+    using DownloadCallback = std::function<void(const QByteArray &data, bool tooBig,
+                                                QNetworkReply::NetworkError err)>;
+    void downloadAsync(const QString &url, qint64 maxBytes, int timeoutMs,
+                       DownloadCallback callback,
+                       CallbackThread where = CallbackOnPoolThread);
     std::future<QByteArray> Patch (const QString &url, const QByteArray &jsonData,
                                const QHash<QString, QString> &headers, int timeoutMs);
     std::future<QByteArray> put(const QString &url, const QByteArray &jsonData,
@@ -111,6 +124,12 @@ private:
                                  const QString &response,
                                  QNetworkReply::NetworkError err,
                                  Callback cb);
+
+    // 同 dispatchCallback，只是携带的是二进制 data + tooBig（下载专用）
+    static void dispatchDownloadCallback(CallbackThread where,
+                                         const QByteArray &data, bool tooBig,
+                                         QNetworkReply::NetworkError err,
+                                         DownloadCallback cb);
 
     int m_index;
     QThread *m_netThread = nullptr;
