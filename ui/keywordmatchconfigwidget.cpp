@@ -14,6 +14,7 @@
 #include <QComboBox>
 
 #include <QQueue>
+#include <qevent.h>
 std::string g_keyuuid;
 char* g_keyuuid2 = nullptr;
 // ---------- KeywordMatchRule 序列化 ----------

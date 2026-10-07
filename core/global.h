@@ -54,7 +54,7 @@
 #include "botdb.h"
 #include "lmdbkv.h"
 #include <QPointer>
-#include "sandboxwindow.h"
+
 #include "set.h"
 #include "websocketserver.h"
 #include "pluginmarketwindow.h"
@@ -117,7 +117,7 @@ extern AccountPage *accountPage;
 extern LogPage *logPage;
 extern PluginPage *pluginPage;
 extern ChatPage *chatPage;
-extern SandboxWindow *Sandbox;
+
 extern KeywordMatchConfigWidget *keyword;
 extern KeywordPunishConfigWidget *keyword_Punish;
 extern set *setA;

@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
+#include <qevent.h>
 
 
 // ---------- TextReplaceRule 序列化 ----------

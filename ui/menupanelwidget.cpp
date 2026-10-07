@@ -15,6 +15,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <qbuttongroup.h>
+#include <qevent.h>
 
 
 

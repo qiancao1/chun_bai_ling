@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QComboBox>          // <-- 新增
+#include <qevent.h>
 
 
 // ---------- BotRuleItem 序列化 ----------

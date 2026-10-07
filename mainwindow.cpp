@@ -63,7 +63,6 @@
 #include "menupanelwidget.h"
 #include "plts.h"
 #include "qunguan.h"
-#include "sandboxwindow.h"
 #include "set.h"
 #include "themecolors.h"
 #include "textreplaceconfigwidget.h"
@@ -87,6 +86,7 @@ QString Homev=R"(
 - 增加 ai获取模型列表 并且测试模型
 - 重写 32位插件加载器
 - 修复 获取用户昵称 用不了问题
+- 移除 沙盒页面 因为没啥用
 
 ## v1.3.9.93 (2026-10-04)
 - 优化 聊天室 显示机器人是否被踢出
@@ -343,7 +343,7 @@ AccountPage *accountPage = nullptr;
 LogPage *logPage = nullptr;
 PluginPage *pluginPage = nullptr;
 ChatPage *chatPage = nullptr;
-SandboxWindow *Sandbox = nullptr;
+
 ButtonEditor *buttonEditorPage=nullptr;
 BotRuleConfigWidget *RuleConfigWidget=nullptr;
 TextReplaceConfigWidget *TextReplace=nullptr;
@@ -674,8 +674,6 @@ MainWindow::~MainWindow()
     delete buttonEditorPage;
     buttonEditorPage = nullptr;
 
-    delete Sandbox;
-    Sandbox = nullptr;
 
     delete ui_qunguan;
     ui_qunguan = nullptr;
@@ -723,7 +721,7 @@ void MainWindow::setupUi()
     logPage = new LogPage(this);
     pluginPage = new PluginPage;
     chatPage = new ChatPage;
-    Sandbox = new SandboxWindow;
+
     setA = new set;
     buttonEditorPage = new ButtonEditor;
     RuleConfigWidget = new BotRuleConfigWidget;
@@ -884,7 +882,7 @@ void MainWindow::setupUi()
     stackedWidget->addWidget(logPage);           // index 2
     stackedWidget->addWidget(pluginPage);        // index 3
     stackedWidget->addWidget(chatPage);          // index 4
-    stackedWidget->addWidget(Sandbox);           // index 5
+
     stackedWidget->addWidget(configGroupBox); // index 6
 
     stackedWidget->setObjectName("contentStack");
@@ -928,7 +926,7 @@ void MainWindow::setupUi()
     btnLog = createNavButton("日志", QIcon(":/icons/log.png"));
     btnPlugin = createNavButton("插件", QIcon(":/icons/plugin.png"));
     btnChat = createNavButton("聊天", QIcon(":/icons/chat.png"));
-    QPushButton *Sandbox2 = createNavButton("沙盒", QIcon(":/icons/sandbox.png"));
+
 
     QPushButton *btnAdvancedConfig = createNavButton("高级配置", QIcon(":/icons/advanced.png"));
     // *btn_newui = createNavButton("扩展页面", QIcon(":/icons/advanced.png"));
@@ -939,8 +937,8 @@ void MainWindow::setupUi()
     btnGroup->addButton(btnLog, 2);
     btnGroup->addButton(btnPlugin, 3);
     btnGroup->addButton(btnChat, 4);
-    btnGroup->addButton(Sandbox2, 5);
-    btnGroup->addButton(btnAdvancedConfig, 6);
+
+    btnGroup->addButton(btnAdvancedConfig, 5);
     //btnGroup->addButton(btn_newui, 7);
 
     connect(btnGroup, QOverload<int>::of(&QButtonGroup::idClicked),
@@ -982,7 +980,7 @@ void MainWindow::setupUi()
     sideLayout->addWidget(btnLog);
     sideLayout->addWidget(btnPlugin);
     sideLayout->addWidget(btnChat);
-    sideLayout->addWidget(Sandbox2);
+
     sideLayout->addWidget(btnAdvancedConfig);   // 新按钮
     //QLabel *kzui = new QLabel("———————");
     //kzui->setAlignment(Qt::AlignCenter);
