@@ -12,6 +12,7 @@
 #include <QInputDialog>
 #include <QDateTime>
 #include "global.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 
 int Color_0=0;
 int Color_1=0;
@@ -847,7 +848,8 @@ void LogPage::setupUi()
 void LogPage::applyStyleSheet()
 {
     setObjectName("logPage");
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QWidget#logPage {
             background: #FFF8EF;
         }
@@ -946,5 +948,5 @@ void LogPage::applyStyleSheet()
         QPushButton#clearBtn:hover {
             background-color: #FF7F32;
         }
-    )");
+    )"));
 }

@@ -20,6 +20,8 @@
 #include <QColor>
 #include <functional>
 
+class QWidget;
+
 // 样式表里的一处替换：把 text 片段里的 color 换成用户当前选的颜色
 struct ThemeSeed {
     QString text;    // 要替换的原文（含属性名，如 "background: #FFF0DE"）
@@ -67,6 +69,16 @@ void resetToDefault();
 
 // 把基础样式表里的默认色替换成当前配色（没改过的一项都不动，保证零改动时输出一致）
 QString apply(const QString &baseQss);
+
+// 把一段「基础样式表」套到某个控件上：立即套用 + 以后每次换配色自动重套。
+//
+// 自带样式表的页面（首页 / 账号 / 日志 / 聊天 / 插件市场 / 沙箱 …）原来的
+//     setStyleSheet(R"(...颜色是写死的...)");
+// 换成
+//     ThemeColors::applyTo(this, QString::fromUtf8(R"(...原样不动...)"));
+// 就跟着全局配色走了；基础样式表里没改过的项一个字节都不会动。
+// 控件析构时自动注销，不需要手动清理。
+void applyTo(QWidget *widget, const QString &baseQss);
 
 } // namespace ThemeColors
 

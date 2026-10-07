@@ -1,6 +1,7 @@
 #include "pluginmarketwindow.h"
 #include "global.h"
 #include "plugininstaller.h"   // 解压工具定位（平台差异只在这一处）
+#include "themecolors.h"       // 本窗口自带样式表也要跟着主题走
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
@@ -891,7 +892,8 @@ void PluginMarketWindow::onReplyFinished(QNetworkReply *reply)
 }
 void PluginMarketWindow::applyStyleSheet()
 {
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QMainWindow {
             background: transparent;
         }
@@ -1092,5 +1094,5 @@ void PluginMarketWindow::applyStyleSheet()
 }
         QTableWidget { border: 1px solid #AE8AB1; gridline-color: #d0d0d0; }
         QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
-    )");
+    )"));
 }

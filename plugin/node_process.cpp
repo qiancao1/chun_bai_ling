@@ -23,6 +23,8 @@
 #include "global.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QDebug>
@@ -42,184 +44,235 @@ static QString getNodePath() {
     return "node";
 }
 
-NodeProcess::NodeProcess(const QString& uuid, const QString& pluginPath, QObject* parent)
-    : QObject(parent), m_uuid(uuid), m_pluginPath(pluginPath), m_enabled(false), m_nextId(1),
-    m_restartCount(0), m_autoRestart(true)
+QString NodeProcess::hostScriptPath()
+{
+    return QCoreApplication::applicationDirPath() + "/node_host/host.js";
+}
+
+// 把 qrc 里的脚本释放到磁盘（内容没变就不重写，省得每次都动时间戳）
+static bool dumpHostScript(const QString& resPath, const QString& outPath)
+{
+    QFile in(resPath);
+    if (!in.exists() || !in.open(QIODevice::ReadOnly)) return false;
+    const QByteArray data = in.readAll();
+    in.close();
+
+    QFileInfo fi(outPath);
+    if (!fi.absoluteDir().exists() && !QDir().mkpath(fi.absolutePath())) return false;
+
+    QFile old(outPath);
+    if (old.open(QIODevice::ReadOnly)) {
+        const QByteArray cur = old.readAll();
+        old.close();
+        if (cur == data) return true;
+    }
+
+    QFile out(outPath);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    const bool ok = (out.write(data) == data.size());
+    out.close();
+    return ok;
+}
+
+void NodeProcess::ensureScriptsOnDisk()
+{
+    const QString dir = QCoreApplication::applicationDirPath() + "/node_host";
+    const QStringList names = { "host.js", "worker.js" };
+    for (const QString& name : names) {
+        const QString outPath = dir + "/" + name;
+        // 优先用内嵌资源（分发时只发 exe 就行）；没有内嵌资源就要求磁盘上已经有
+        if (dumpHostScript(":/node_host/" + name, outPath)) continue;
+        if (QFile::exists(outPath)) continue;
+        AppendEventLog("[JS宿主] 缺少 " + outPath + "，请确认 resources.qrc 里有 node_host/" + name, 0xff0000);
+    }
+}
+
+NodeProcess::NodeProcess(QObject* parent)
+    : QObject(parent)
 {
     m_process = new QProcess(this);
     m_restartTimer = new QTimer(this);
     m_restartTimer->setSingleShot(true);
 
-
-
-
     connect(m_restartTimer, &QTimer::timeout, this, &NodeProcess::onRestartTimer);
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, &NodeProcess::onReadyRead);
-    connect(m_process, &QProcess::readyReadStandardError, this, [this](){
-        for (auto &p : m_pluginList) {
-            if(p.uuid == m_uuid) {
-                AppendEventLog("["+p.name+"]信息：" + m_process->readAllStandardError(), 0xff0000);
-                return;
-            }
-        }
-    });
+    connect(m_process, &QProcess::readyReadStandardError, this, &NodeProcess::onStdErr);
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &NodeProcess::onProcessFinished);
-    connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error){
-        Q_UNUSED(error)
-        for (auto &p : m_pluginList) {
-            if(p.uuid == m_uuid) {
-                AppendEventLog("["+p.name+"]信息：" + m_process->readAllStandardError(), 0xff0000);
-                return;
-            }
-        }
-    });
+    connect(m_process, &QProcess::errorOccurred, this, &NodeProcess::onProcessError);
 }
 
 NodeProcess::~NodeProcess() { stop(); }
 
-bool NodeProcess::start(bool isManual) {
+bool NodeProcess::start(bool isManual)
+{
+    if (isRunning()) return true;
 
-    stop();
+    ensureScriptsOnDisk();
+
     m_readBuffer.clear();
-    m_pendingCallbacks.clear();
-    m_nextId = 1;
-
     if (isManual) {
-
         m_restartCount = 0;
         m_autoRestart = true;
     }
 
-    QString program = getNodePath();
-    QString scriptPath = QDir(m_pluginPath).absoluteFilePath("main.js");
-    m_process->setWorkingDirectory(m_pluginPath);
+    const QString program = getNodePath();
+    const QString script = hostScriptPath();
+    const QString workDir = QCoreApplication::applicationDirPath();
 
-    m_process->start(program, QStringList() << scriptPath  <<  QString::number(QCoreApplication::applicationPid()));
-    if (!m_process->waitForStarted(3000)) {
-        AppendEventLog("NodeProcess start failed:" + m_process->errorString(), 0xff0000);
+    // 宿主工作目录固定为「框架运行目录」：Worker 里 process.chdir 不可用，
+    // 所以插件相对路径的基准就是这个目录（和旧的「每插件一个进程、cwd=插件目录」不同）。
+    m_process->setWorkingDirectory(workDir);
+    m_process->start(program, QStringList() << script << QString::number(QCoreApplication::applicationPid()));
+
+    if (!m_process->waitForStarted(5000)) {
+        AppendEventLog("[JS宿主] node 启动失败：" + m_process->errorString(), 0xff0000);
         return false;
     }
 
-    // 启动成功，重置重启计数（表示已稳定运行一次）
     m_restartCount = 0;
     return true;
 }
 
-void NodeProcess::stop() {
+void NodeProcess::stop()
+{
     m_autoRestart = false;
-    if (m_restartTimer && m_restartTimer->isActive())
-        m_restartTimer->stop();
+    if (m_restartTimer && m_restartTimer->isActive()) m_restartTimer->stop();
     m_restartCount = 0;
+    m_pendingCallbacks.clear();
 
-    if (m_process->state() == QProcess::Running) {
+    if (m_process && m_process->state() == QProcess::Running) {
         m_process->terminate();
-        m_process->waitForFinished(1000);
-        m_process->kill();
+        if (!m_process->waitForFinished(1500)) m_process->kill();
     }
 }
 
-void NodeProcess::writeMessage(const QByteArray& jsonMsg) {
-    if (m_process->state() != QProcess::Running) return;
+void NodeProcess::writeMessage(const QByteArray& jsonMsg)
+{
+    if (!isRunning()) return;
     QByteArray data;
-    quint32 len = jsonMsg.size();
+    const quint32 len = jsonMsg.size();
     data.append((char)(len >> 24)).append((char)(len >> 16))
         .append((char)(len >> 8)).append((char)len);
     data.append(jsonMsg);
     m_process->write(data);
 }
 
-int NodeProcess::sendRequest(const QString& method, const QJsonArray& params,
-                             std::function<void(const QJsonObject&)> callback) {
-    int id = m_nextId++;
-    m_pendingCallbacks.insert(id, callback);
-    QJsonObject req;
+int NodeProcess::sendRequest(const QString& method, const QJsonObject& extra,
+                            std::function<void(const QJsonValue&, const QString&)> callback)
+{
+    const int id = m_nextId++;          // 从 REQ_ID_BASE 起，避开插件自己的 id 空间
+    if (callback) m_pendingCallbacks.insert(id, callback);
+
+    QJsonObject req = extra;
     req["id"] = id;
     req["method"] = method;
-    req["params"] = params;
     writeMessage(QJsonDocument(req).toJson(QJsonDocument::Compact));
     return id;
 }
 
-void NodeProcess::sendResponse(int id, const QString& result, const QString& error) {
+void NodeProcess::forgetRequest(int id)
+{
+    m_pendingCallbacks.remove(id);
+}
+
+void NodeProcess::sendResponse(int id, const QString& uuid, const QString& result, const QString& error)
+{
     QJsonObject response;
     response["id"] = id;
-    if (error.isEmpty())
-        response["result"] = result;
-    else
-        response["error"] = error;
+    // uuid 必须带：宿主靠它把回包转回对应的 Worker
+    response["uuid"] = uuid;
+    if (error.isEmpty()) response["result"] = result;
+    else                 response["error"] = error;
     writeMessage(QJsonDocument(response).toJson(QJsonDocument::Compact));
 }
 
-void NodeProcess::setEnabled(bool enabled) {
-    if (m_enabled == enabled) return;
-    m_enabled = enabled;
-    QJsonObject ev;
-    ev["type"] = enabled ? "on_enable" : "on_disable";
-    writeMessage(QJsonDocument(ev).toJson(QJsonDocument::Compact));
-}
-
-void NodeProcess::onReadyRead() {
+void NodeProcess::onReadyRead()
+{
     m_readBuffer.append(m_process->readAllStandardOutput());
     while (m_readBuffer.size() >= 4) {
-        quint32 len = ((quint8)m_readBuffer[0] << 24) |
-                      ((quint8)m_readBuffer[1] << 16) |
-                      ((quint8)m_readBuffer[2] << 8)  |
-                      (quint8)m_readBuffer[3];
-        if (m_readBuffer.size() < 4 + len) break;
-        QByteArray jsonData = m_readBuffer.mid(4, len);
-        m_readBuffer.remove(0, 4 + len);
+        const quint32 len = ((quint8)m_readBuffer[0] << 24) |
+                            ((quint8)m_readBuffer[1] << 16) |
+                            ((quint8)m_readBuffer[2] << 8)  |
+                            (quint8)m_readBuffer[3];
+        if (len > 64u * 1024u * 1024u) {           // 明显不是帧，丢弃重同步
+            qWarning() << "[JS宿主] 收到异常帧头，丢弃" << m_readBuffer.size() << "字节";
+            m_readBuffer.clear();
+            break;
+        }
+        if (m_readBuffer.size() < int(4 + len)) break;
+        const QByteArray jsonData = m_readBuffer.mid(4, int(len));
+        m_readBuffer.remove(0, int(4 + len));
+
         QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(jsonData, &err);
+        const QJsonDocument doc = QJsonDocument::fromJson(jsonData, &err);
         if (err.error != QJsonParseError::NoError) {
-            qWarning() << "JSON parse error:" << err.errorString();
+            qWarning() << "[JS宿主] JSON parse error:" << err.errorString();
             continue;
         }
-        QJsonObject obj = doc.object();
-        if (obj.contains("id") && obj.contains("result")) {
-            int id = obj["id"].toInt();
+        const QJsonObject obj = doc.object();
+
+        // 回包：{id, result, error}。result 可能是对象也可能是字符串，原样交给回调自己判；
+        // error 非空 = 插件侧抛异常或方法不存在（{id, method, params} 那种请求不带 result/error）
+        if (obj.contains("id") && (obj.contains("result") || obj.contains("error"))) {
+            const int id = obj["id"].toInt();
             if (auto it = m_pendingCallbacks.find(id); it != m_pendingCallbacks.end()) {
-                it.value()(obj["result"].toObject());
+                auto cb = it.value();
                 m_pendingCallbacks.erase(it);
+                cb(obj["result"], obj["error"].toString());
             }
         } else if (obj.contains("id") && obj.contains("method")) {
-            int id = obj["id"].toInt();
-            QString method = obj["method"].toString();
-            QJsonArray params = obj["params"].toArray();
-            emit requestReceived(id, method, params);
+            emit requestReceived(obj["id"].toInt(),
+                                 obj["uuid"].toString(),
+                                 obj["method"].toString(),
+                                 obj["params"].toArray());
         }
     }
 }
 
-void NodeProcess::onProcessFinished(int exitCode, QProcess::ExitStatus status) {
-    qDebug() << "Node process finished, code:" << exitCode << "status:" << status;
+void NodeProcess::onStdErr()
+{
+    const QByteArray raw = m_process->readAllStandardError();
+    if (raw.trimmed().isEmpty()) return;
+    for (const QByteArray& line : raw.split('\n')) {
+        const QByteArray t = line.trimmed();
+        if (!t.isEmpty()) AppendEventLog(QString::fromUtf8(t), 0xff0000);
+    }
+}
+
+void NodeProcess::onProcessError()
+{
+    qWarning() << "[JS宿主] QProcess error:" << m_process->errorString();
+}
+
+void NodeProcess::onProcessFinished(int exitCode, QProcess::ExitStatus status)
+{
+    qDebug() << "Node host finished, code:" << exitCode << "status:" << status;
+    m_pendingCallbacks.clear();
     emit exited();
 
-    // 只有允许自动重启时才进行重启逻辑
-    if (!m_autoRestart)
-        return;
+    if (!m_autoRestart) return;
 
-    // 超过最大重启次数则停止自动重启
     if (m_restartCount >= MAX_RESTART_COUNT) {
-        AppendEventLog("Node进程频繁崩溃，已达最大重启次数(" + QString::number(MAX_RESTART_COUNT) + ")，停止自动重启", 0xff0000);
+        AppendEventLog("[JS宿主] node 宿主频繁崩溃，已达最大重启次数("
+                       + QString::number(MAX_RESTART_COUNT) + ")，停止自动重启", 0xff0000);
         m_autoRestart = false;
         return;
     }
 
     m_restartCount++;
-    // 延迟2秒后重启，避免瞬间疯狂重启
     m_restartTimer->start(2000);
 }
 
-void NodeProcess::onRestartTimer() {
-    // 重启前再次检查是否允许自动重启（可能在等待期间被 stop() 禁止）
-    if (!m_autoRestart)
-        return;
-
+void NodeProcess::onRestartTimer()
+{
+    if (!m_autoRestart) return;
     if (!start(false)) {
-        AppendEventLog("Node进程自动重启失败", 0xff0000);
-        // 启动失败不再继续尝试，避免无限循环
+        AppendEventLog("[JS宿主] node 宿主自动重启失败", 0xff0000);
         m_autoRestart = false;
+        return;
     }
+    m_autoRestart = true;         // 重启成功 → 下次崩了还能再拉起来
+    emit restarted();
 }

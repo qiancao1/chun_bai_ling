@@ -21,6 +21,7 @@
 #include <QSet>
 #include <QPair>
 #include "global.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 #include <QCache>
 #include <qpainterpath.h>
 #include <QNetworkRequest>
@@ -853,7 +854,8 @@ QStandardItemModel *m_model=nullptr;
 void ChatPage::initUI()
 {
     setObjectName("chatPage");
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QWidget#chatPage {
             background: #FFF8EF;
         }
@@ -960,7 +962,7 @@ void ChatPage::initUI()
             background: #FFF0DE;
             color: #FF7F32;
         }
-    )");
+    )"));
 
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
     mainLayout->setContentsMargins(4, 4, 4, 4);
@@ -1118,7 +1120,7 @@ void ChatPage::initUI()
         btn->setCheckable(true);
         btn->setMinimumHeight(20);
         btn->setToolTip(tooltip);
-        btn->setStyleSheet(
+        ThemeColors::applyTo(btn,
             "QPushButton { background-color: white; border: none; margin: 0px; padding: 2px; }"
             "QPushButton:hover { background-color: #e0e0e0; }"
             "QPushButton:pressed { background-color: #c0c0c0; }"

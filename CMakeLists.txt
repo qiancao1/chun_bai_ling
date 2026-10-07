@@ -209,9 +209,6 @@ if(WIN32)
     add_executable(qiancao WIN32 ${PROJECT_SOURCES_ALL}
 
 
-
-
-
     )
 else()
     add_executable(qiancao ${PROJECT_SOURCES_ALL})

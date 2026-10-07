@@ -181,7 +181,7 @@ public:
     void savePlugins();
     void loadPlugins();
     void dispatch_message(const QString &text, MessageEvent &msg);
-    void dispatch_message2(const QString &text, MessageEvent &msg, int &_32, const QByteArray &utf8);
+
     void initPluginList(const QList<PluginInfo> &plugins);
     void appendPlugin(const PluginInfo &info);
     void insertPlugin(int index, const PluginInfo &info);
@@ -243,7 +243,7 @@ private:
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
     void onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
-    // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
+    // ---- 插件配置（get_config_list / set_config_value，四种类型插件都可实现）----
     void rebuildConfigPanel(int index);
     void clearConfigPanel();
     void updateConfigScrollHeight();          // 按可用宽度重算配置区高度（不超过 5 行）

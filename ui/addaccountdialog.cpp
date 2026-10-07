@@ -1,6 +1,7 @@
 #include "addaccountdialog.h"
 #include "pluginpage.h"
 #include "qq_bind_login.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -102,7 +103,8 @@ void AddAccountDialog::setupUI() {
     setModal(true);
 
 
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         AddAccountDialog {
             background: #F7EFE5;
         }
@@ -209,7 +211,7 @@ void AddAccountDialog::setupUI() {
             background: #EAB2B6;      /* 选中时的圆点颜色（橙色） */
             border: 1px solid #FF7F32;
         }
-    )");
+    )"));
     QVBoxLayout *outerLayout = new QVBoxLayout(this);
     outerLayout->setContentsMargins(0, 0, 0, 0);
     outerLayout->setSpacing(0);

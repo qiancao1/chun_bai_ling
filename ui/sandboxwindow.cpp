@@ -4,6 +4,7 @@
 
 #include "sandboxwindow.h"
 #include "global.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 #include <QtWidgets>
 
 #include <QPainter>
@@ -481,7 +482,8 @@ void SandboxWindow::clearChat()
 
 void SandboxWindow::applyStyleSheet()
 {
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QMainWindow { background: transparent; }
         QWidget#centralRoot { background: #f7efe5; border-radius: 10px; }
         QWidget { color: #263241; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; }
@@ -495,7 +497,7 @@ void SandboxWindow::applyStyleSheet()
         QScrollBar:vertical { background: transparent; width: 8px; margin: 4px 2px; }
         QScrollBar::handle:vertical { background: #E7D9C8; border-radius: 4px; min-height: 40px; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-    )");
+    )"));
 }
 
 

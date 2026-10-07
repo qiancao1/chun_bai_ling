@@ -373,7 +373,7 @@ void PluginPage::setupUi()
         );
     rightMainLayout->addWidget(detailDescLabel, 1);
 
-    // ---- 插件配置（get_config_list / set_config_value，仅 Python 与 x64 原生库实现）----
+    // ---- 插件配置（get_config_list / set_config_value，四种类型插件都可实现）----
     configContainer = new QWidget;
     // 同上：必须带 #objectName 限定，否则 `* { background: transparent; }` 会让配置区里
     // 所有 QPushButton 丢掉全局底色（看起来就是「白按钮」）。
@@ -1055,10 +1055,15 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
     }
 
 }
-void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_32,const QByteArray &utf8)
+
+
+void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 {
 
+    QByteArray utf8 = text.toUtf8();
+    int _32=0;
     std::optional<py::gil_scoped_acquire> gil;
+    QJsonArray jsTargets;    // 本轮命中的 JS 插件（uuid + 命中规则名），遍历结束后合成**一帧**投给 node 宿主
     for (const auto & p:std::as_const(m_pluginList)) {
         if (!p.enabled) continue;
         if(p.appid.contains(msg.appid)) continue; //这个插件禁用
@@ -1067,23 +1072,41 @@ void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_
             onMessageReceived(msg,p,gil);
             continue;
         }
-        else if(p.type == 2)
+        else if(p.type == 2) //统计 是否需要发送
         {
-            _32++;
+            if(_32>0) continue;
+            if(p.DLL.rules.size()>0){
+                for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
+                    if (matchRule2(rule, msg)) {
+                        _32++;
+
+                    }
+                }
+            }else{
+                _32++;
+            }
+
             continue;
         }else if (p.type == 3) {
 
+            // 规则表为空 = 每条消息都喂给它（保持原语义）；
+            // 否则把**所有命中**的规则名（fun）收集起来一起下发 —— 框架既然已经匹配过了，
+            // node 侧直接按名字执行即可，不用再匹配一遍（也顺带让 regex 规则可用）。
+            bool hit = p.js.rules.isEmpty();
+            QJsonArray funs;
             for (const Rule_js &rule : std::as_const(p.js.rules)) {
-                if (matchRule3(rule, msg)) {
-                    NodePluginManager::instance().postEventAsync(p.uuid,"on_message", text,rule.fun);
-                }
+                if (matchRule3(rule, msg)) { hit = true; funs.append(rule.fun); }
             }
-            if(p.js.rules.size()==0)
-                NodePluginManager::instance().postEventAsync(p.uuid,"on_message", text,QString());
+            if (hit) {
+                QJsonObject item;
+                item["uuid"] = p.uuid;
+                item["funs"] = funs;
+                jsTargets.append(item);
+            }
             continue;
         }
 
-       try {
+        try {
             if (p.DLL.onMessage2) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
                     if (matchRule2(rule, msg)) {
@@ -1107,21 +1130,19 @@ void PluginPage::dispatch_message2(const QString &text, MessageEvent &msg,int &_
         }
     }
 
-}
+    // JS 插件：把本轮命中的插件（uuid + 各自命中的规则名）合成**一帧**投给 node 宿主，
+    // 宿主按 uuid 逐个分发给对应 Worker，并把 funs 交给插件**直接执行**。
+    // 好处：① `text`（消息原文）只序列化/跨进程传一次；② 匹配只在框架侧做一次，node 侧零匹配。
+    if (!jsTargets.isEmpty())
+        NodePluginManager::instance().postEventBatchAsync(jsTargets, "on_message", text, QString());
 
-void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
-{
-    int _32=0;
-    QByteArray utf8 = text.toUtf8();
-    dispatch_message2(text,msg,_32,utf8);
-
-    #ifdef _WIN32
+#ifdef _WIN32
     if(_32!=0 && bridge)
         bridge->writeResponseToBlock(2, utf8.constData());
-    #endif
+
+#endif
     if(msg.at_you && msg.subType==0)
-        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
-    if(msg.at_you && msg.subType==0) botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId);
+        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId,_32);
 
 }
 
@@ -1325,7 +1346,11 @@ static QLayout *createConfigLayout(QWidget *parent)
 }
 
 // ==================== 插件配置区（get_config_list / set_config_value）====================
-// 只有 Python（type 0）与 x64 原生库（type 1）才可能实现这两个函数：
+// 四种类型的插件都可以实现这两个函数（是否实现由插件自己决定，没实现就不显示配置区）：
+//   type 0 Python    -> 进程内直接调 py 对象
+//   type 1 x64 DLL   -> 进程内直接调导出函数
+//   type 2 32 位 DLL -> 共享内存桥发给 miaomiao32.exe（sendData32 12/13）
+//   type 3 JS        -> 请 node 宿主转发给对应 Worker（NodePluginManager::callXxx，跨进程阻塞等待）
 //   get_config_list()            -> JSON 文本：
 //        [{"desc":"配置说明","type":"input|checkbox|button","id":"cookie","default":"xxx"}]
 //   set_config_value(id, value)  -> 文本；空串 = 成功，非空 = 失败原因
@@ -1349,6 +1374,10 @@ QString PluginPage::callGetConfigList(int index)
 
         return sendData32(12,info);
     }
+    if (info.type == 3) {
+        // JS 插件在 node 宿主的 Worker 线程里，跨进程请求（内部超时 3 秒）
+        return NodePluginManager::instance().callGetConfigList(info.uuid);
+    }
     if (info.type == 0) {
         try {
             py::gil_scoped_acquire gil;
@@ -1366,7 +1395,7 @@ QString PluginPage::callGetConfigList(int index)
         }
     }
 
-    return QString();   // 32 位原生库 / JS 暂无此接口
+    return QString();   // 其它类型 / 未实现 get_config_list
 }
 
 // 写配置项：返回空串表示成功，非空是插件给的失败原因
@@ -1385,6 +1414,10 @@ QString PluginPage::callSetConfigValue(int index, const QString &id, const QStri
     if (info.type == 2) {
 
         return sendData32(13,info,id,value);
+    }
+    if (info.type == 3) {
+        // 返回空串 = 成功；超时 / 未实现会给出可读原因（框架会弹窗提示）
+        return NodePluginManager::instance().callSetConfigValue(info.uuid, id, value);
     }
     if (info.type == 0) {
         try {
@@ -1745,6 +1778,9 @@ void PluginPage::foruninstall_Plugin()
     for(int i=0;i<m_pluginList.size();++i)
         uninstall_Plugin(m_pluginList[i]);
 
+    // JS 插件现在共用一个常驻 node 宿主进程：上面对每个插件的 unloadPlugin 只是结束了
+    // 它的 Worker，宿主本身还在。退出前必须显式关掉，否则会留一个孤儿 node 进程。
+    NodePluginManager::instance().shutdown();
 }
 
 bool PluginPage::uninstall_Plugin(PluginInfo &info)
@@ -2470,7 +2506,7 @@ QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlis
     if (!bridge) return QString();
     QJsonObject reqJson;
     reqJson["type"] = type;                       // 加载插件
-    reqJson["path"] = info.loadedDllPath;      // 新路径（临时目录）
+    reqJson["path"] = info.path;      // 路径
     reqJson["uuid"] = info.uuid;              // 插件唯一标识（可能为空，由易语言处理）
     reqJson["e"]    = info.enabled;           // 是否启用（bool 型，易语言取逻辑值）
     reqJson["appid"]=appidlist;

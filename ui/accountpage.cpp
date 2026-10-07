@@ -2,6 +2,7 @@
 #include "cardwidget.h"
 #include "addaccountdialog.h"
 #include "global.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 #include "homepage.h"
 #include "qqbotclient.h"
 #include <QVBoxLayout>
@@ -115,7 +116,8 @@ AccountPage::AccountPage(QWidget *parent)
     QTimer::singleShot(1000, this, &AccountPage::onStatTick);
     setObjectName("accountPage");
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QWidget#accountPage {
             background: #F7EFE5;
         }
@@ -168,7 +170,7 @@ AccountPage::AccountPage(QWidget *parent)
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
         }
-    )");
+    )"));
 
     QHBoxLayout *rootLayout = new QHBoxLayout(this);
     rootLayout->setContentsMargins(6, 6, 6, 6);

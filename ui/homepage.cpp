@@ -18,6 +18,7 @@
 #include <QPair>
 #include <algorithm>
 #include "global.h"
+#include "themecolors.h"   // 页面自带样式表也要跟着主题走
 
 // 「插件消息统计」面板最多展示的插件数（按发送量降序取前 N）
 static constexpr int kTopPluginCount = 6;
@@ -96,7 +97,8 @@ HomePage::HomePage(QWidget *parent)
 
 void HomePage::setStyleSheetA()
 {
-    setStyleSheet(R"(
+    // 走 ThemeColors::applyTo：颜色仍是下面写死的默认色，但用户换配色时会自动重套
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
         QWidget#homePage {
             background: #FFF8EF;
         }
@@ -183,7 +185,7 @@ void HomePage::setStyleSheetA()
             background: #FFB066;
             border-radius: 6px;
         }
-    )");
+    )"));
 
 }
 
@@ -353,13 +355,13 @@ QFrame* HomePage::createRecentPanel() {
 QFrame* HomePage::createStatusPanel() {
     QFrame* container = createPanel("statusContainer");
     container->setObjectName("statusMainContainer");
-    container->setStyleSheet(
+    ThemeColors::applyTo(container, QString(
         "QFrame#statusMainContainer {"
         "    background: #F7EFE5;"
         "    border-radius: 18px;"
         "    border: 1px solid #F3E7DA;"
         "}"
-        );
+        ));
     QHBoxLayout* mainLayout = new QHBoxLayout(container);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(10);
@@ -401,7 +403,7 @@ QFrame* HomePage::createStatusPanel() {
     m_cpuProgressBar->setTextVisible(true);
     m_cpuProgressBar->setFormat("%p%");
     m_cpuProgressBar->setFixedHeight(12);
-    m_cpuProgressBar->setStyleSheet(
+    ThemeColors::applyTo(m_cpuProgressBar,
         "QProgressBar { border: none; background-color: #E0D6CC; border-radius: 6px; "
         "text-align: center; color: #5D4037; font-size: 10px; }"
         "QProgressBar::chunk { background-color: #FFA726; border-radius: 6px; }"
@@ -422,7 +424,7 @@ QFrame* HomePage::createStatusPanel() {
     m_ramProgressBar->setTextVisible(true);
     m_ramProgressBar->setFormat("%p%");
     m_ramProgressBar->setFixedHeight(12);
-    m_ramProgressBar->setStyleSheet(
+    ThemeColors::applyTo(m_ramProgressBar,
         "QProgressBar { border: none; background-color: #E0D6CC; border-radius: 6px; "
         "text-align: center; color: #5D4037; font-size: 10px; }"
         "QProgressBar::chunk { background-color: #66BB6A; border-radius: 6px; }"
@@ -458,7 +460,7 @@ QFrame* HomePage::createStatusPanel() {
     QTextBrowser* changelogEdit = new QTextBrowser(this);
     changelogEdit->setReadOnly(true);
     changelogEdit->setObjectName("changelogTextEdit");
-    changelogEdit->setStyleSheet(
+    ThemeColors::applyTo(changelogEdit,
         "QTextEdit { background-color: #f8f8f8; border: 1px solid #ddd; "
         "border-radius: 4px; padding: 8px; font-family: monospace; }"
         );
@@ -868,7 +870,7 @@ void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
         auto iconLabel = createLabel("🔌", "statIcon"); // 可以根据需要用插件图片替代
         iconLabel->setAlignment(Qt::AlignCenter);
         iconLabel->setFixedSize(16, 16);
-        iconLabel->setStyleSheet("QLabel#statIcon { background: #EEF9E9; font-size: 16px; border-radius: 3px; }");
+        ThemeColors::applyTo(iconLabel, "QLabel#statIcon { background: #EEF9E9; font-size: 16px; border-radius: 3px; }");
 
         
         auto right = new QVBoxLayout;

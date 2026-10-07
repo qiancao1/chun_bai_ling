@@ -56,7 +56,7 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 int plugin_n=0;
 
-void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
+void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int _32)
 {
     if (!m_botClients.contains(appid)) return;
     QQBotClient *c = m_botClients[appid];
@@ -66,6 +66,8 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     if(index<0) return;
     int n = g_logdb [tabIndex]->incrementBufferStatus(index);
+    if(_32!=0) n = g_logdb [tabIndex]->incrementBufferStatus(index); //32位额外+1
+
     if(n >= 250) return; //255代表被处理了
     //qDebug()<< "未回应计数：" <<entry.n;
     if(n>=plugin_n)
@@ -83,7 +85,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid)
             // 2. 创建新的单次定时器
             QTimer *timer = new QTimer();
             timer->setSingleShot(true);
-            timer->setInterval(8000);
+            timer->setInterval(6000);
 
             // 3. 连接回调（注意 lambda 捕获所有需要的变量）
             QObject::connect(timer, &QTimer::timeout, qApp, [=]() {

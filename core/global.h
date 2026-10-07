@@ -186,7 +186,7 @@ QString replaceFileTag(const QString &content, const QString &format = "[文件]
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
-void botnomsg(int appid,int type, const QString &openid, const QString &msgid);
+void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int _32=0);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms
@@ -272,10 +272,12 @@ public:
         QString result = m_mgr->processApiRequest(m_uuid, m_method, m_params);
 
         // 将响应发送回主线程（因为 QProcess::write 必须在主线程）
-        QMetaObject::invokeMethod(qApp, [weakProc = m_proc, id = m_id, result]() {
+        // ⚠ 必须把 uuid 一起带回去：现在整个程序只有一个 node 宿主进程，
+        //   宿主靠 uuid 才能把这个回包转给发起调用的那个插件 Worker。
+        QMetaObject::invokeMethod(qApp, [weakProc = m_proc, id = m_id, uuid = m_uuid, result]() {
             NodeProcess* proc = weakProc.data();
             if (proc && proc->isRunning()) {  // 此时在主线程，安全
-                proc->sendResponse(id, result);
+                proc->sendResponse(id, uuid, result);
             }
         }, Qt::QueuedConnection);
     }
