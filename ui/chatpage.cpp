@@ -56,7 +56,61 @@ static QNetworkAccessManager *getNetworkManager() {
 // 记录正在下载的媒体 URL 和对应的临时文件路径
 static QMap<QString, QString> mediaDownloadingMap; // url -> tempFilePath
 static QSet<QString> mediaDownloadingSet; // 避免重复下载
+// ---------- Markdown 图片识别 ----------
+// QQ 官方 markdown 的图片写成 `[Img #1200px #1476px](url)`（**没有感叹号**），
+// 本框架发送侧 core/api.cpp 生成的是 `![alt #Wpx #Hpx](url)`，两种都要认出来渲染成图片。
+// 它跟普通链接 `[文字](http://...)` 形状完全一样，所以只认两种特征：
+//   ① 前面有 `!`；② alt 里带 `#数字px` 尺寸标记 或 以 `Img` 开头。
+// 不这样区分就会把任何带链接的文字误判成图片。
+struct MdImageSpan {
+    int start;   // 片段起点（含前面的 '!'）
+    int end;     // 片段终点（含 ')'）
+    QString url;
+};
+
+static QList<MdImageSpan> findMarkdownImages(const QString &s)
+{
+    QList<MdImageSpan> out;
+    int from = 0;
+    while (from < s.size()) {
+        const int lb = s.indexOf(QLatin1Char('['), from);
+        if (lb < 0) break;
+        const int rb = s.indexOf(QLatin1String("]("), lb + 1);
+        if (rb < 0) break;
+        const int rp = s.indexOf(QLatin1Char(')'), rb + 2);
+        if (rp < 0) break;
+
+        const QString alt  = s.mid(lb + 1, rb - lb - 1);
+        const QString link = s.mid(rb + 2, rp - rb - 2).trimmed();
+        const bool bang  = (lb > 0 && s.at(lb - 1) == QLatin1Char('!'));
+        const bool sized = alt.contains(QLatin1Char('#')) && alt.contains(QLatin1String("px"));
+        const bool named = alt.startsWith(QLatin1String("Img"));
+        const bool http  = link.startsWith(QLatin1String("http://"))
+                        || link.startsWith(QLatin1String("https://"));
+
+        if (http && (bang || sized || named)) {
+            MdImageSpan sp;
+            sp.start = bang ? lb - 1 : lb;
+            sp.end   = rp;
+            sp.url   = link;
+            out.append(sp);
+        }
+        from = lb + 1;
+    }
+    return out;
+}
+
 static bool extractImageInfo(const QString &content, bool &isLocalPath, QString &source) {
+    // 先认 Markdown 图片语法（![alt](url) / [Img #Wpx #Hpx](url)）——
+    // 第三方机器人发的 QQ 官方 markdown 图走的就是这条
+    {
+        const QList<MdImageSpan> imgs = findMarkdownImages(content);
+        if (!imgs.isEmpty() && !imgs.first().url.isEmpty()) {
+            isLocalPath = false;
+            source = imgs.first().url;
+            return true;
+        }
+    }
     if(!content.contains("[image,")) return false;
     QString tag = extractBetween(content, "path=", ",");
     QString tag2 = extractBetween(content, "path=", "]");
@@ -137,17 +191,22 @@ static bool extractMediaInfo(const QString &content, QString &url, int &mediaTyp
         tag = extractBetween(content, "path=", ",");
     if(tag.isEmpty())
         tag = extractBetween(content, "path=", "]");
-    if(tag.isEmpty()) return false ;
-    if(content.contains("[video,")){
-        url = tag;
-        mediaType = 1;
-        return true;
+    // 视频 / 音频：必须有 url= / path=，没有就跳过（下面还会接着试图片）
+    if(!tag.isEmpty()){
+        if(content.contains("[video,")){
+            url = tag;
+            mediaType = 1;
+            return true;
+        }
+        if(content.contains("[audio,")){
+            url = tag;
+            mediaType = 2;
+            return true;
+        }
     }
-    if(content.contains("[audio,")){
-        url = tag;
-        mediaType = 2;
-        return true;
-    }
+
+    // 图片：含 Markdown 语法（![alt](url) / [Img #Wpx #Hpx](url)）——
+    // 它没有 url= / path=，所以不能跟上面共用那个「tag 为空就 return」的提前返回
     bool isLocal;
     if (extractImageInfo(content, isLocal, url)) {
         mediaType = 3;
@@ -218,59 +277,98 @@ static void downloadAvatarIfNeeded(int appid, const QString &openid) {
 }
 
 
-QString BubbleDelegate::downloadImageIfNeeded(const QString &url) const{
+// ---------- 构造：把缓存容量抬上去 ----------
+// QCache 默认 maxCost = 100。聊天记录几百条时，排版缓存会被反复挤爆，
+// 滚动时每帧都要重算换行 —— 这是「滚动卡」的元凶之一。
+BubbleDelegate::BubbleDelegate(QObject *parent)
+    : QStyledItemDelegate(parent)
+{
+    m_cache.setMaxCost(4000);       // 单条消息的排版结果
+    m_imageCache.setMaxCost(600);   // 图片（key = URL）
+    m_avatarCache.setMaxCost(600);  // 头像
+}
+
+// 只查内存/磁盘，绝不发请求 —— 专供 prepareMessageData 使用
+QString BubbleDelegate::resolveImageFile(const QString &url) const
+{
     if (url.isEmpty()) return QString();
-
-
-    // 1. 计算 MD5 并构造本地文件路径
     QString md5 = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex();
     QString filePath = QString("tmp/聊天图片/%1.png").arg(md5);
-    if (m_imageCache.contains(url)) return filePath;
-    if (downloadingSet().contains(url)) return QString();
-    QFileInfo fileInfo(filePath);
+    return QFileInfo::exists(filePath) ? filePath : QString();
+}
 
-    // 2. 若本地文件存在，直接加载并缓存
-    if (fileInfo.exists()) {
-        QPixmap pix;
-        if (pix.load(filePath)) {
-            // 保持与下载后一致的缩放逻辑（若文件已缩放则不会改变）
-            if (pix.width() > 128 || pix.height() > 128) {
-                pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            }
-            m_imageCache.insert(url, new QPixmap(pix));
-        }
-        return filePath;
+// 取像素：内存缓存优先（key 统一用 URL），其次磁盘文件
+QPixmap BubbleDelegate::imagePixmapFor(const QString &url, const QString &localFile) const
+{
+    if (QPixmap *p = m_imageCache[url]) {
+        if (!p->isNull()) return *p;
     }
+    if (localFile.isEmpty() || !QFile::exists(localFile)) return QPixmap();
 
-    // 3. 确保目录存在
-    QDir dir(fileInfo.absolutePath());
-    if (!dir.exists()) {
-        dir.mkpath(".");
-    }
+    QPixmap pix(localFile);
+    if (pix.isNull()) return QPixmap();
+    if (pix.width() > 128 || pix.height() > 128)
+        pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    m_imageCache.insert(url, new QPixmap(pix));
+    return pix;
+}
 
-    // 4. 开始下载（原有逻辑，增加保存文件）
+// 真正的下载，只由 prefetchImages 调用
+void BubbleDelegate::startImageDownload(const QString &url)
+{
+    if (url.isEmpty()) return;
+    if (m_imageCache.contains(url)) return;
+    if (downloadingSet().contains(url)) return;
+
+    QString md5 = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex();
+    QString filePath = QString("tmp/聊天图片/%1.png").arg(md5);
+    if (QFileInfo::exists(filePath)) return;   // 已落盘，交给 imagePixmapFor 去读
+
+    QDir dir(QFileInfo(filePath).absolutePath());
+    if (!dir.exists()) dir.mkpath(".");
+
     downloadingSet().insert(url);
     QNetworkReply *reply = getNetworkManager()->get(QNetworkRequest(QUrl(url)));
-    QObject::connect(reply, &QNetworkReply::finished, [this,reply, url, filePath]() {
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, url, filePath]() {
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray data = reply->readAll();
             QPixmap pix;
             if (pix.loadFromData(data)) {
-                // 限制最大 128x128，保持比例
-                if (pix.width() > 128 || pix.height() > 128) {
+                if (pix.width() > 128 || pix.height() > 128)
                     pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                }
                 m_imageCache.insert(url, new QPixmap(pix));
-                // 保存到本地文件
-                if (!pix.save(filePath, "PNG")) {
-                    // 可选：记录保存失败日志
-                }
+                pix.save(filePath, "PNG");
             }
         }
         downloadingSet().remove(url);
         reply->deleteLater();
+
+        // 图片真实高度到手 → 旧的排版高度作废，通知视图重排
+        m_cache.clear();
+        emit imageLoaded();
     });
-    return QString();
+}
+
+// 预取：在模型填充时调用，把该消息里的图片先拉起来（paint 时只读内存）
+void BubbleDelegate::prefetchImages(const QString &rawContent)
+{
+    bool isLocal = false;
+    QString src;
+    if (!extractImageInfo(rawContent, isLocal, src) || src.isEmpty()) return;
+    if (m_imageCache.contains(src)) return;
+
+    if (isLocal) {
+        if (!QFile::exists(src)) return;
+        QPixmap pix(src);
+        if (pix.isNull()) return;
+        if (pix.width() > 128 || pix.height() > 128)
+            pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        m_imageCache.insert(src, new QPixmap(pix));
+        m_cache.clear();
+        emit imageLoaded();
+        return;
+    }
+    startImageDownload(src);
 }
 
 
@@ -404,36 +502,38 @@ void BubbleDelegate::drawDefaultAvatar(QPainter* painter, const QRect& rect, con
     painter->drawText(rect, Qt::AlignCenter, text);
 }
 
+// 相邻消息之间的垂直间距（px）——sizeHint 用它撑开，paint 不画它
+static const int kItemGap = 12;
+
 BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &rawContent, bool isSelf, const QString &timestamp) const
 {
     CachedData data;
     QString content = rawContent;
 
-    // 1. 提取图片信息（如果有）
-    bool isLocal = true;
-    QString imagePath;
-    bool hasImage = extractImageInfo(content, isLocal, imagePath);
+    // 1. 提取图片信息（如果有）——这里只做解析，绝不下载、不发请求
+    bool isLocal = false;
+    QString imageSrc;
+    bool hasImage = extractImageInfo(content, isLocal, imageSrc);
     data.hasImage = hasImage;
-    data.imagePath = imagePath;
-    data.imageIsLocal = true;
-    if(!isLocal){
-        data.imagePath = downloadImageIfNeeded(imagePath);
-
-    }
+    data.imagePath = imageSrc;        // 原始来源：本地路径 或 URL
+    data.imageIsLocal = isLocal;
+    data.imageLocalFile = isLocal ? imageSrc : resolveImageFile(imageSrc);
     // 2. 去除图片、视频、音频等标签，得到纯文本
     // 这里复用您原来的 replaceBetweenAll 等逻辑
     if (content.contains("[image,"))
         content = replaceBetweenAll(content, "[image,", "]","");
-    else if (content.contains("[video,"))
-        content = replaceBetweenAll(content, "[video,", "]", "[视频]");
-    else if (content.contains("[audio,"))
-        content = replaceBetweenAll(content, "[audio,", "]", "[语音]");
-    else if (content.contains("[v,"))
-        content = replaceBetweenAll(content, "[v,", "]", "[视频]");
-    else if (content.contains("[a,"))
-        content = replaceBetweenAll(content, "[a,", "]", "[语音]");
-    else if (content.contains("[file,"))
-        content = replaceFileTag(content);  // 您已有的函数
+
+    // Markdown 图片：图已单独取出来渲染，正文里不该再留 alt / 尺寸 / url
+    {
+        const QList<MdImageSpan> imgs = findMarkdownImages(content);
+        for (int i = imgs.size() - 1; i >= 0; --i)
+            content.remove(imgs.at(i).start, imgs.at(i).end - imgs.at(i).start + 1);
+    }
+
+    // URL 里的百分号编码转回可读文字
+    // （mqqapi://...?command=%E8%AF%A2%E9%97%AE... → command=询问...）
+    content = QUrl::fromPercentEncoding(content.toUtf8());
+
     data.displayText = content;
 
     // 3. 文本换行计算（与原 paint 完全一致）
@@ -482,13 +582,21 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     data.textWidth = qMin(qMax(textWidth, 48), maxBubbleWidth);
     data.textHeight = lines.size() * m_textFm->height() + 4;
 
-    // 5. 计算总高度（用于 sizeHint）
+    // 5. 计算高度 —— sizeHint 与 paint 共用这一份，保证两者永远一致
     int nameHeight = isSelf ? 0 : m_nameFm->height() + 4;
     int timeHeight = m_timeFm->height();
-    int imageHeight = hasImage ? 128 + 8 : 0;  // 默认图片占位高度，实际绘制时会调整
-    int bubbleHeight = nameHeight + data.textHeight + imageHeight + timeHeight + 8;
-    data.totalHeight = qMax(bubbleHeight, 30);
-    if (isSelf) data.totalHeight += 16;
+
+    // 图片高度：能拿到真实尺寸就用真实的，否则退回占位高度
+    data.imageHeight = 0;
+    if (hasImage) {
+        QPixmap pix = imagePixmapFor(data.imagePath, data.imageLocalFile);
+        data.imageHeight = (pix.isNull() ? 128 : pix.height()) + 8;
+    }
+
+    data.bubbleHeight = qMax(nameHeight + data.textHeight + data.imageHeight + timeHeight + 8, 30);
+    // 每条消息在气泡下方统一留出间距，否则相邻气泡会紧贴在一起
+    // （sizeHint 与 paint 共用这一份：item 高 = 气泡高 + 间隙，paint 只画气泡高）
+    data.totalHeight = data.bubbleHeight + kItemGap;
 
     return data;
 }
@@ -546,9 +654,6 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     int textWidth = cached->textWidth;
     bool hasImage = cached->hasImage;
     QString imagePath = cached->imagePath;
-    bool imageIsLocal = cached->imageIsLocal;
-
-
     //painter->setRenderHint(QPainter::TextAntialiasing);
     painter->setRenderHint(QPainter::Antialiasing, false);
     painter->setRenderHint(QPainter::TextAntialiasing, false);
@@ -556,39 +661,15 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const int margin = 20;
     const int maxBubbleWidth = 460;
 
-    int textHeight = lines.size() * m_textFm->height() + 4;
-
-    // 图片高度处理
-    int imageHeight = 0;
+    // 图片像素与高度全部来自缓存的排版结果：paint 里不再读盘、不再发请求
+    int imageHeight = cached->imageHeight;
     QPixmap imgPixmap;
     if (hasImage) {
-        // 从缓存获取图片（若已加载）
-        if (m_imageCache.contains(imagePath)) {
-            imgPixmap = *m_imageCache[imagePath];
-            if (!imgPixmap.isNull())
-                imageHeight = imgPixmap.height() + 8;
-        } else if (imageIsLocal && QFile::exists(imagePath)) {
-            QPixmap original(imagePath);
-            if (!original.isNull()) {
-                QPixmap scaled = original.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                m_imageCache.insert(imagePath, new QPixmap(scaled));
-                imgPixmap = scaled;
-                imageHeight = imgPixmap.height() + 8;
-            } else {
-                imageHeight = 128 + 8; // 占位
-            }
-        } else {
-            imageHeight = 128 + 8; // 网络图片占位
-        }
+        imgPixmap = imagePixmapFor(imagePath, cached->imageLocalFile);
     }
 
-    // 名字和时间高度
-    int nameHeight = isSelf ? 0 : m_nameFm->height() + 4;
-    int timeHeight = m_timeFm->height();
-
-    int bubbleHeight = nameHeight + textHeight + imageHeight + timeHeight + 8;
-    int totalHeight = qMax(bubbleHeight, 30);
-    totalHeight += -2;
+    // 气泡高度直接用缓存里那一份（与 sizeHint 同源，保证不会「跳过某条」）
+    const int bubbleHeight = cached->bubbleHeight;
 
     QRect rect = option.rect;
     int bubbleWidth = qMin(textWidth + 28, maxBubbleWidth);
@@ -602,10 +683,10 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const int avatarTopMargin = 4;
     if (isSelf) {
         avatarRect = QRect(rect.right() - avatarSize - margin, rect.top() + avatarTopMargin, avatarSize, avatarSize);
-        bubbleRect = QRect(rect.right() - bubbleWidth - avatarSize - margin*2, rect.top(), bubbleWidth, totalHeight);
+        bubbleRect = QRect(rect.right() - bubbleWidth - avatarSize - margin*2, rect.top(), bubbleWidth, bubbleHeight);
     } else {
         avatarRect = QRect(rect.left() + margin, rect.top() + avatarTopMargin, avatarSize, avatarSize);
-        bubbleRect = QRect(rect.left() + avatarSize + margin*2, rect.top(), bubbleWidth, totalHeight);
+        bubbleRect = QRect(rect.left() + avatarSize + margin*2, rect.top(), bubbleWidth, bubbleHeight);
     }
 
     // ---------- 绘制头像（使用缓存） ----------
@@ -660,6 +741,7 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
 
     int yOffset = 0;
     if (!isSelf) {
+        const int nameHeight = m_nameFm->height() + 4;   // 与 prepareMessageData 保持一致
         painter->setFont(m_nameFont);
         painter->setPen(QColor(136,136,136));
         painter->drawText(0, yOffset + m_nameFm->ascent()-2, name);
@@ -680,14 +762,11 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     if (hasImage) {
         if (!imgPixmap.isNull()) {
             painter->drawPixmap(0, yOffset, imgPixmap);
-            yOffset += imgPixmap.height() + 4;
         } else {
-            // 占位
-
             painter->setPen(QColor(150,150,150));
             painter->drawText(0, yOffset + 20, "图片加载中...");
-            yOffset += 128 + 4;
         }
+        yOffset += imageHeight;   // 与预留高度一致，时间戳不会错位
     }
 
     // 时间
@@ -1075,17 +1154,26 @@ void ChatPage::initUI()
     msgListView = new QListView;
     msgListView->setObjectName("messageList");
     msgListView->setModel(msgModel);
-    msgListView->setItemDelegate(new BubbleDelegate(this));
-    msgListView->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
-    msgListView->verticalScrollBar()->setSingleStep(8);
+    m_bubbleDelegate = new BubbleDelegate(this);
+    msgListView->setItemDelegate(m_bubbleDelegate);
+    // ScrollPerItem 会让滚轮一格「跳过整条消息」（长消息尤其明显），且 singleStep 失效
+    msgListView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    msgListView->verticalScrollBar()->setSingleStep(30);
+    // 图片就绪后需要重排一次（多次就绪合并成一次，避免抖动）
+    connect(m_bubbleDelegate, &BubbleDelegate::imageLoaded, this, [this]() {
+        if (m_relayoutPending) return;
+        m_relayoutPending = true;
+        QTimer::singleShot(0, this, [this]() {
+            m_relayoutPending = false;
+            if (!msgListView) return;
+            msgListView->doItemsLayout();
+            msgListView->viewport()->update();
+        });
+    });
 
     // ================================================================
 
     msgListView->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(msgListView, &QListView::customContextMenuRequested, this, &ChatPage::showMessageContextMenu);
-    connect(msgListView, &QListView::doubleClicked, this, &ChatPage::onMessageDoubleClicked);
-    rightLayout->addWidget(msgListView, 1);
-
     connect(msgListView, &QListView::customContextMenuRequested, this, &ChatPage::showMessageContextMenu);
     connect(msgListView, &QListView::doubleClicked, this, &ChatPage::onMessageDoubleClicked);
     rightLayout->addWidget(msgListView, 1);
@@ -1837,6 +1925,11 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
             }
         }
         name= msg[0].Gname;
+        // 先把这 100 条里的图片拉起来，paint 时只读内存，滚动才不会卡
+        if (m_bubbleDelegate) {
+            for (const Message &m : std::as_const(msg))
+                m_bubbleDelegate->prefetchImages(m.msg);
+        }
         msgModel->setMessages(std::move(msg));
 
 
@@ -1850,6 +1943,7 @@ void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
 
 void ChatPage::addMessage(const Message &msg)
 {
+        if (m_bubbleDelegate) m_bubbleDelegate->prefetchImages(msg.msg);
         msgModel->addMessage(msg);
         msgListView->scrollToBottom();
 }
@@ -1897,15 +1991,43 @@ void ChatPage::onSendmsg(QString &text)
         QMessageBox::warning(this, "提示", QString("群来源机器人未在线 appid:%1 昵称：%2 请登录机器人后再试试").arg(appid).arg(client->m_info->nickname));
         return;
     }
-    QString contactId = currentContactId;
-    QString msgText = text;
-    QString msgIdNormal = m_msgid;   // 第一次发送用的 msgId
+    chatPage->inputEdit->setText("正在发送...请勿输入内容会被清空");
+    client->send_msgAsync(msgType,currentContactId,"[聊天室]", text, m_msgid,false,true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
+        if(resp.contains("\"id\""))
+        {
+            QMetaObject::invokeMethod(qApp, []() {
+                chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
+            });
+            return ;
+        }
+        QString t2=text;
+        client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, "",false,true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
+            if(resp.contains("\"id\""))
+            {
+                QMetaObject::invokeMethod(qApp, []() {
+                    chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
+                });
+                return ;
+            }
+            if(msgType==2){
+                QString t2=text;
+                client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, m_msgid,true,true ,聊天发送模式,false,[](const QString &resp,auto){
+                    QMetaObject::invokeMethod(qApp, []() {
+                        chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
+                    });
+                });
+            }else {
+                QMetaObject::invokeMethod(qApp, []() {
+                    chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
+                });
+            }
+        });
+    });
 
 
 
-    SendMessageTask *task = new SendMessageTask(client, msgType, contactId, msgText,
-                                                msgIdNormal,"[聊天室]",true);
-    QThreadPool::globalInstance()->start(task);
+
+
 }
 
 void ChatPage::onSendClicked()

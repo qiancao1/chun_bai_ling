@@ -1,8 +1,63 @@
+import asyncio
+import base64
 import json
 import qq_api
 import random
 import string
 from typing import Optional, Union, Dict, List, Any
+
+
+def _parse_resp(raw) -> Dict:
+    """把框架返回的原始响应统一解析成 dict。
+
+    框架的 api 回包是 **JSON 文本**（字符串）；解析失败时原样包成 {"raw": ...}，
+    保证调用方拿到的永远是 dict，可以直接 .get(...)。
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, dict) else {"raw": raw}
+        except Exception:
+            return {"raw": raw}
+    return {}
+
+
+# ---------------------------------------------------------------
+# 异步发送的「回执」通道（C++ 回调 → 唤醒协程）
+# ---------------------------------------------------------------
+# 发送走框架的 PostAsync（回调式，谁都不阻塞）。框架在发送完成时会回调进本模块的
+# _deliver()，把响应送回等待中的协程。key = req_id（每次调用现生成的随机串）。
+_PENDING: Dict[str, Any] = {}
+_ASYNC_TIMEOUT = 60.0      # 秒；回执迟迟不来时的兜底，避免协程永久挂起
+
+
+def _deliver(req_id: str, resp: str) -> None:
+    """由框架在「发送完成」的回调线程里调用（调用方已持有 GIL）。
+
+    ⚠ 这里**不能**直接 `fut.set_result()` —— 当前线程是 Qt 的线程池 worker，
+    不是那条事件循环线程，直接改 Future 会破坏 asyncio 的线程模型。
+    统一用 `loop.call_soon_threadsafe` 把结果排进事件循环的待办队列。
+    """
+    fut = _PENDING.get(req_id)
+    if fut is None or fut.done():
+        return
+    try:
+        fut.get_loop().call_soon_threadsafe(_resolve, fut, req_id, resp)
+    except Exception:
+        pass
+
+
+def _resolve(fut, req_id: str, resp: str) -> None:
+    _PENDING.pop(req_id, None)
+    if not fut.done():
+        fut.set_result(resp)
+
+
+def _new_req_id() -> str:
+    """回执标识：只需要在本进程内唯一，随机 16 位足够。"""
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
 
 
 class QQApi:
@@ -45,12 +100,17 @@ class QQApi:
     def outlog(self, text: str, color_rgb: Optional[int] = None) -> Dict:
         return self._callback(self.API_OUTLOG,0, text, str(color_rgb) if color_rgb is not None else None)
         
-    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False, wait: bool = False) -> Dict:
+        """发送消息（传入 MessageEvent）。
+        默认**异步**：调用立刻返回 {}，不堵塞当前线程，框架自己在后台发。
+        wait=True 才同步堵塞、返回真实响应。"""
         return self._callback(self.API_SEND_MESSAGES,msg.appid,
                               msg.type, msg.groupid, text,msg.msgid,
-                              "true" if is_wakeup else "false", None, None)
+                              "true" if is_wakeup else "false",
+                              "false" if wait else "true",   # _6：异步开关，默认 true
+                              None)
                               
-    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:
+    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False, wait: bool = False) -> Dict:
         """
         发送普通消息。
         :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
@@ -59,50 +119,68 @@ class QQApi:
         :param message_reference: 引用消息ID（可选）
         :param msgid: 消息ID，空字符串表示主动模式
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
+        :param wait: 默认 False = **异步**：调用立刻返回 {}，框架在后台发送，插件线程不堵塞；
+                     True = 同步堵塞，等发送完成并返回真实响应（需要判断发送成败时才用）。
         """
-        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _7=None, _8=None
+        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _6=异步开关
         return self._callback(self.API_SEND_MESSAGES,appid,
                               type_, openid, text, msgid,
-                              "true" if is_wakeup else "false", None, None)
+                              "true" if is_wakeup else "false",
+                              "false" if wait else "true",   # _6：默认异步
+                              None)
 
-    async def send_message_async(self, appid: int, type_: int, openid: str, text: str, 
+    async def send_message_async(self, appid: int, type_: int, openid: str, text: str,
                                  msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """**真异步**发送：等框架的回调回来，再继续执行后面的 py 代码。
+
+        底层走的是框架的 **PostAsync（回调式）**：最后那次 HTTP 发送投出去就返回，
+        不占用那条「所有 Python 插件共享」的 asyncio 线程；发完之后框架回调进来，
+        协程才被唤醒继续往下跑。
+
+        ⚠ **只有纯文本才是全程不阻塞**。消息里带 ``[image]/[video]/[audio]/[file]``
+        标签时，框架会先在 **同步阶段** 把媒体转码（调 ffmpeg，超时上限 120s）、切段、
+        上传（``qqbotclient::sendOneMedia``，见 api.cpp）—— 这一段仍然会占住调用线程，
+        对 Python 来说就是事件循环线程。要发大媒体又想不卡，就自己在
+        ``asyncio.to_thread`` 里发。
+
+        用法（handler 必须写成 ``async def``）::
+
+            @equals("查询")
+            async def 查询(msg):
+                r = await api.send_message_async(msg.appid, msg.type, msg.groupid, "正在查询…", msg.msgid)
+                if r.get("id"):          # ← 这里已经拿到「真实响应」了，可以继续做后续逻辑
+                    ...
+
+        :return: 已解析的 dict（框架回的是 JSON 文本，这里自动 json.loads；
+                 解析失败时返回 ``{"raw": 原始字符串}``）。
+                 超时仍没等到回执时返回 ``{"error": "timeout", "req_id": ...}``。
         """
-        伪异步发送普通消息（新版插件请使用此方法）。
-        """
-        return await asyncio.to_thread(
-            self.send_message,
-            appid, type_, openid, text, msgid, is_wakeup
-        )
+        loop = asyncio.get_running_loop()
+        req_id = _new_req_id()
+        fut = loop.create_future()
+        _PENDING[req_id] = fut
+        try:
+            # _6="true" → 走异步（PostAsync 回调）；_7=req_id → 框架凭它把回执送回来
+            self._callback(self.API_SEND_MESSAGES, appid,
+                           type_, openid, text, msgid,
+                           "true" if is_wakeup else "false",
+                           "true",
+                           req_id)
+            raw = await asyncio.wait_for(fut, _ASYNC_TIMEOUT)
+        except asyncio.TimeoutError:
+            return {"error": "timeout", "req_id": req_id}
+        finally:
+            _PENDING.pop(req_id, None)
+        return _parse_resp(raw)
 
     async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+        """**真异步**发送（传入 MessageEvent），等框架回调回来再继续。用法同 send_message_async。
+
+        :return: 已解析的 dict（同上）。
         """
-        伪异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
-        """
-        return await asyncio.to_thread(
-            self.send_messageEx,
-            msg, text, is_wakeup
-        )
+        return await self.send_message_async(msg.appid, msg.type, msg.groupid,
+                                             text, msg.msgid, is_wakeup)
         
-    def send_msgEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
-        return self._callback(self.API_SEND_MESSAGES,msg.appid,
-                              msg.type, msg.groupid, text,msg.msgid,
-                              "true" if is_wakeup else "false", "true", None)
-                              
-    def send_msg(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:
-        """
-        发送普通消息。不返回结果 
-        :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
-        :param openid: 接收者的 openid
-        :param text: 消息内容
-        :param message_reference: 引用消息ID（可选）
-        :param msgid: 消息ID，空字符串表示主动模式
-        :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
-        """
-        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _7=None, _8=None
-        return self._callback(self.API_SEND_MESSAGES,appid,
-                              type_, openid, text, msgid,
-                              "true" if is_wakeup else "false", "true", None) 
                               
     def send_ark(self, appid: int,type_: int, openid: str, ark: Union[Dict, str],
                  msgid: str = "", is_wakeup: bool = False) -> Dict:

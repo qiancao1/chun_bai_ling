@@ -163,7 +163,8 @@ def ping(msg):
 
 @equals("ping2")
 async def ping2(msg):
-    msg_id = await api.send_message_async(msg, "这是异步消息 因为本api会堵塞等待返回值 先转移线程权")
+    # send_messageEx 默认异步：立刻返回{}，不堵塞；要真实返回值(消息ID)才传 wait=True
+    msg_id = await api.send_messageEx(msg, "这条要拿返回值 所以 wait=True", wait=True)
     return f"发送成功，消息 ID 是: {msg_id}"
 """
 def set_plugin_path(path):
@@ -234,10 +235,29 @@ def on_echo(msg):
 )"
 R"(
 ================提供的api=============
-#qiancao_sdk.py 以下api都是 同步返回 不是异步 调用api时自动释放gil
+#qiancao_sdk.py 调用api时自动释放gil。
+#发送类接口(send_message/send_messageEx/send_msgEx/send_msg)默认**异步**：立刻返回{}且不堵塞插件线程，
+#要等发送完成并拿到真实响应就显式传 wait=True；其余api都是同步返回。
+#想「等发送完再继续跑后面的python代码」，用 async def handler + await send_message_async(...)，
+#返回的是已解析好的 dict。底层走 PostAsync 回调：发送完成后框架回调进来唤醒协程，
+#既不占事件循环线程、也不占线程池线程。
+import asyncio
 import json
 import qq_api
 from typing import Optional, Union, Dict, List, Any
+
+
+def _parse_resp(raw) -> Dict:
+    """框架 api 回包是 JSON **文本**；统一解析成 dict，失败时包成 {"raw": ...}。"""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, dict) else {"raw": raw}
+        except Exception:
+            return {"raw": raw}
+    return {}
 
 class QQApi:
     API_OUTLOG = 1
@@ -254,12 +274,14 @@ class QQApi:
     def outlog(self, text: str, color_rgb: Optional[int] = None) -> Dict:
         return self._callback(self.API_OUTLOG,0, text, str(color_rgb) if color_rgb is not None else None)
 
-    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False, wait: bool = False) -> Dict:
+        """默认异步：立即返回{}不堵塞；wait=True 才同步等真实响应"""
         return self._callback(self.API_SEND_MESSAGES,msg.appid,
                               msg.type, msg.groupid, text,msg.msgid,
-                              "true" if is_wakeup else "false", None, None)
+                              "true" if is_wakeup else "false",
+                              "false" if wait else "true", None)
 
-    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:
+    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False, wait: bool = False) -> Dict:
         """
         发送普通消息。
         :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
@@ -268,29 +290,32 @@ class QQApi:
         :param message_reference: 引用消息ID（可选）
         :param msgid: 消息ID，空字符串表示主动模式
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
+        :param wait: 默认False=异步，立刻返回{}不堵塞；True=同步等真实响应
         """
         ...
     async def send_message_async(self, appid: int, type_: int, openid: str, text: str,
                                  msgid: str = "", is_wakeup: bool = False) -> Dict:
         """
-        异步发送普通消息（新版插件请使用此方法）。
+        **真异步**发送：等框架回调回来，再继续执行后面的 py 代码。
+        必须写在 async def handler 里，用法：
+            r = await api.send_message_async(appid, type_, openid, text, msgid)
+            if r.get("id"):   # 已经拿到真实响应
+                ...
+        底层走框架的 PostAsync（回调式）：最后那次 HTTP 发送投出去就返回，发送完成后
+        框架在回调线程里把响应送回来唤醒协程 —— 不占那条所有 Python 插件共享的 asyncio 线程。
+        带 [file]/[audio]/[video] 媒体标签的消息**同样不占**：框架那条链已经全回调化 ——
+        ffmpeg 转码/探测/切段走 QProcess 的进程退出回调（最长 120s 也不卡任何线程），
+        上传走 PostAsync + 回调式 put，所以调用线程照旧立刻返回（正文等媒体处理完再发）。
+        返回已解析好的 dict，超时没等到回执则返回 {"error": "timeout"}。
         """
-        return await asyncio.to_thread(
-            self.send_message,
-            appid, type_, openid, text, msgid, is_wakeup
-        )
+        ...（实现在 qiancao_sdk.py）
 
     async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
-        """
-        异步发送消息（传入 MessageEvent 对象，新版插件请使用此方法）。
-        """
-        return await asyncio.to_thread(
-            self.send_messageEx,
-            msg, text, is_wakeup
-        )
+        """**真异步**发送（传 MessageEvent），等框架回调回来再继续。返回已解析的 dict。"""
+        ...
     #推荐本API
     def send_msgEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
-        """发送消息立即返回 上面的api都是堵塞返回结果 这个是立即返回不获取结果"""
+        """发送消息并立即返回（异步不取结果）。等价于 send_messageEx(..., wait=False)。"""
         ...
 
     def send_msg(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False) -> Dict:

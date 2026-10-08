@@ -199,63 +199,7 @@ QString python_code(const QString &py_code);
 QString python_code(const QString &py_code,const MessageEvent &msg);
 
 
-class SendMessageTask : public QRunnable {
-public:
-    SendMessageTask(QQBotClient* client,
-                    int msgType,                     // 改为 int
-                    const QString& contactId,
-                    const QString& text,
-                    const QString& msgIdFirst,
 
-                    const QString& pname,
-                    bool mode)              // 参数名 chatPage
-        : m_client(client),
-        m_msgType(msgType),
-        m_contactId(contactId),
-        m_text(text),
-        m_msgIdFirst(msgIdFirst),
-        m_pname(pname),
-        mode(mode)
-    {
-        setAutoDelete(true);
-    }
-    void run() override {
-
-        QQBotClient* client = m_client;
-        bool success = false;
-        QString deleteid,ref;
-        bool zh=false;
-        for (int attempt = 0; attempt < 3; ++attempt) {
-            if(attempt==2 && m_msgType!=2) continue;
-            QString currentMsgId = (attempt == 0) ? m_msgIdFirst : "";
-            QString rawData = client->send_messages(m_msgType,m_contactId,m_pname, m_text, currentMsgId,zh,mode,聊天发送模式);
-            if(rawData.isEmpty()) break;
-            if (rawData.contains("ROBOT") || rawData.contains("消息提交安全审核成功")) { //检查发送成功 或主动推送
-                success = true;
-                break;
-            }
-            if(attempt==1 && m_msgType==2)
-            {
-                zh = true; //召回
-            }
-            continue;
-        }
-        QMetaObject::invokeMethod(qApp, [ success]() {
-            if (success) {
-                chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
-            }
-        });
-    }
-
-private:
-    QQBotClient* m_client;
-    int m_msgType;                  // 整数类型
-    QString m_contactId;
-    QString m_text;
-    QString m_msgIdFirst;
-    QString m_pname;
-    bool mode;
-};
 
 class JsApiTask : public QRunnable {
 public:

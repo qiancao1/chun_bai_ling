@@ -1146,6 +1146,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         if(m_info->autoht) respond_interaction(ev.callbackId,0);
     }
+
     return ;//3736 ms
 }
 // QElapsedTimer __t;

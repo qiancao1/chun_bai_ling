@@ -28,8 +28,18 @@
 #include "accountinfo.h"
 #include <QColor>
 #include <future>
+#include <memory>
 #include <qnetworkreply.h>
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
+
+// 「上传富媒体」异步链的统一回调（同步版靠出参 ok / expireTime / md5 / outurl 回值，异步版改走这里）
+//   result     ：成功 = file_info；失败 = 平台错误文本（原样发给用户即可）
+//   expireTime ：链接过期时间（秒）；URL 直传那条没有 raw_url，恒为 0
+//   md5        ：本地文件上传的真实 md5；URL 直传为空
+//   ok         ：成败
+//   outurl     ：加过时间戳的 raw_url（只有走 prepare/finish/files 的本地文件才有）
+using MediaUploadDone = std::function<void(const QString &result, qint64 expireTime,
+                                           const QString &md5, bool ok, const QString &outurl)>;
 struct logdb
 {
     QString groupId;     // 群id / 子频道id / 私聊对方的id
@@ -236,6 +246,62 @@ private:
     // 在 GCC/Clang 下报 “cannot bind non-const lvalue reference to an rvalue”，
     // MSVC 把这个当语言扩展放过了，所以 Windows 能过、Linux 不能。
     QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, const MessageLogContext &ctx);
+    // sendOneMedia 的**纯回调版**：整条链没有任何阻塞点，也不新建线程（给 send_messagesAsync 用）。
+    //   无 [file|audio|video,...] 媒体标签 → 直接同步回调（绝大多数发送走这条）；
+    //   有媒体标签 → md5/缓存 → ffmpeg 探测/转码/切段（QProcess 异步，进程退出才回调）
+    //     → 上传（PostAsync / 回调式 put）→ send_Media，逐条标签推进，最后才回调 onDone。
+    // ⚠ 只做「发媒体」这一件事：文本摘除后的正文发送仍由调用方在 onDone 里继续（见 send_messagesAsync）。
+    // onDone(textOut, mediaResp)：textOut = 摘掉媒体标签后的文本；mediaResp = 本条链最后一次 send_Media 的返回
+    //   （纯媒体、正文被吃光时非空；否则为空串）。text 按值传入，链内改动不影响调用方。
+    void sendOneMediaAsync(int type, const QString &openid, const QString &pname, QString text, qint64 now_us,
+                           const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref,
+                           const MessageLogContext &ctx,
+                           std::function<void(const QString &, const QString &)> onDone);
+
+    // ── 上传的异步回调版（与同名同步函数逐段对应；把 PostSync / put 换成 PostAsync / 回调式 put）──
+    // 递归一律写成「成员函数 + shared_ptr 状态」，**不用**自引用的 std::function（那会形成引用环永不释放）。
+    void uploadRichMedia_urlAsync(int targetType, const QString &openid, int fileType,
+                                  const QString &fileurl, MediaUploadDone onDone);
+    void uploadSmallVideoAsync(int targetType, const QString &openid, const QByteArray &data,
+                               const QString &filename, const QString &md5, const QString &sha1,
+                               const QString &md5_10m, MediaUploadDone onDone);
+    void uploadRichMediaAsync(int targetType, const QString &openid, int fileType,
+                              const QByteArray &data, const QString &filename, MediaUploadDone onDone);
+    // uploadRichMediaPoolA 的异步版：URL → 注册链接；本地文件 → 读进内存后交给上面的异步上传器。
+    // ⚠ 出参与同步版**对齐**：成功时 result 是整串 "[<类型>,path=<file_info>,md5=<md5>,Time=<过期秒>]"
+    //   （底层三个上传器只回裸 file_info，由这里补包装）；失败时不包装，原样透传平台报错文本。
+    //   两个下游都只认这个格式：send_Media 要 extractBetween(info,"path=",",")，媒体缓存要 ",Time="。
+    void uploadRichMediaPoolAAsync(int targetType, const QString &openid, int fileType,
+                                   const QString &filePath, bool usePool, MediaUploadDone onDone);
+
+    // 状态结构体的定义在 api.cpp，这里只前向声明
+    struct FilesRegJob;      // 通用「POST /files 直到拿到 file_info」重试器
+    struct RichUploadJob;    // 本地文件多分片上传
+    struct SmallVideoJob;    // ≤80M 视频快传
+    // 通用 /files 注册重试器（同步版里那几处「重试 10 次」的循环全归它）
+    void filesRegStep(std::shared_ptr<FilesRegJob> job);
+    void richUploadReport(std::shared_ptr<RichUploadJob> job, const QString &result,
+                          qint64 expireTime, bool ok, const QString &outurl);
+    void richUploadPrepareDone(std::shared_ptr<RichUploadJob> job, const QString &response);
+    void richUploadPutNext(std::shared_ptr<RichUploadJob> job);
+    void richUploadFinishAll(std::shared_ptr<RichUploadJob> job);
+    void richUploadFinishAllFiles(std::shared_ptr<RichUploadJob> job);
+    void smallVideoReport(std::shared_ptr<SmallVideoJob> job, const QString &result,
+                          qint64 expireTime, bool ok, const QString &outurl);
+    void smallVideoPrepareDone(std::shared_ptr<SmallVideoJob> job, const QString &response);
+    void smallVideoSubmit(std::shared_ptr<SmallVideoJob> job);
+
+    // ── 媒体标签异步链（三个状态结构体的定义在 api.cpp，这里只前向声明，实现细节不外露）──
+    struct MediaSendChain;
+    struct MediaTagCtx;
+    struct MediaSegJob;
+    void mediaChainStep(std::shared_ptr<MediaSendChain> st);
+    void mediaChainFinishTag(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc);
+    void mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc);
+    void mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc,
+                           std::shared_ptr<MediaSegJob> job);
+    void mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc,
+                                  const QString &url, const QString &errInfo);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);

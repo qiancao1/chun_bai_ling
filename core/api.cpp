@@ -39,6 +39,10 @@
 #include <QMutex>
 #include <QElapsedTimer>
 #include <QCoreApplication>
+#include <QThread>
+#include <QProcess>
+#include <QTimer>
+#include <QDir>
 #include <thread>
 #include <memory>
 #include <functional>
@@ -328,6 +332,26 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
 }
 
 
+// 异步发送的「回执投递」：把框架完成回调里的响应，送回发起它的 Python 插件协程。
+//
+// 调用现场是 QThreadPool 的 worker（既不是网络线程也不是主线程，**没有事件循环**），
+// 所以这里只做一件事：拿到 GIL，把结果交给 qiancao_sdk._deliver ——
+// 由它用 loop.call_soon_threadsafe 把结果排进事件循环（跨线程改 Future 的唯一安全姿势）。
+static void deliverPluginAsyncResult(const QString &reqId, const QString &resp)
+{
+    if (reqId.isEmpty()) return;
+    if (!Py_IsInitialized()) return;      // 解释器已在收尾 → 直接丢，别在关停阶段崩
+    py::gil_scoped_acquire gil;
+    try {
+        py::module_ m = py::module_::import("qiancao_sdk");
+        if (py::hasattr(m, "_deliver"))
+            m.attr("_deliver")(reqId.toStdString(), resp.toStdString());
+    } catch (const py::error_already_set &e) {
+        qWarning() << "[qiancao] 异步回执投递失败 reqId=" << reqId << ":" << e.what();
+    }
+}
+
+
 // 主回调函数
 const char* myCallbackA(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
@@ -437,8 +461,21 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QString msgid = toQString(_4);
         bool is_wakeup = toBool(_5);
         QString ret;
+        // _7 = 异步回执标识，只有 Python SDK 的 *_async 会传。
+        // 传了它 → 走 PostAsync 回调路径，发送完成后把响应送回插件协程；
+        // 不传（JS / DLL / 老的同步调用）→ 行为与以前完全一致。
+        const QString reqId = (_7 == nullptr) ? QString() : toQString(_7);
         if(toBool(_6))
-            ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup);
+        {
+            if(reqId.isEmpty())
+                ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup);
+            else
+                ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup,
+                                            false, 0, false,
+                                            [reqId](const QString &resp, QNetworkReply::NetworkError) {
+                                                deliverPluginAsyncResult(reqId, resp);
+                                            });
+        }
         else
             ret = client->send_messages(type, openid,pname, text,msgid, is_wakeup);
         result = ret.toStdString();
@@ -2063,6 +2100,155 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     return file_info;
 }
 
+// ===========================================================================
+// 媒体异步执行器 —— 一条常驻线程 + Qt 事件循环
+// ---------------------------------------------------------------------------
+// 为什么必须有它：QProcess 的 finished / errorOccurred 是**信号**，只有在「有 Qt 事件循环」
+// 的线程里才会被投递。而本文件的调用方五花八门，全都没有事件循环：
+//   · QThreadPool 的 worker —— `onTextMessageReceived` 就是把消息丢进全局线程池处理的
+//   · Python 的 asyncio 后台线程（pluginpage 的 m_loop）
+//   · 插件自己的线程（JS 宿主 / DLL 插件）
+// 所以在调用方线程上 new 一个 QProcess 再等信号，等于永远收不到 —— 这就是原来只能
+// `waitForFinished` 卡着的原因。
+//
+// 于是：起一条常驻线程跑 Qt 事件循环，所有「外部进程」和「需要延时的重试」都投到它上面：
+//   · ffmpeg 探测/转码/切段 → QProcess 异步启动，进程退出才回调（不再 waitForFinished 卡 120s）
+//   · 重试退避 → QTimer::singleShot，不 sleep 任何线程
+// 调用方线程从头到尾**零阻塞**，也不再每次发送新建一条线程。
+//
+// 线程只做「解析输出 / 拼 JSON / 派发下一步」这类微秒级的事，耗时的都在 QProcess 或
+// NetManager 的线程上，所以一条线程够用，不需要池子。
+// ===========================================================================
+static QThread *g_mediaThread = nullptr;
+static QObject *g_mediaCtx    = nullptr;
+
+static void ensureMediaThread()
+{
+    if (g_mediaThread) return;
+    // 进程级常驻，不设 parent、不销毁（与 NetManager 的网络线程同款）
+    g_mediaThread = new QThread();
+    g_mediaThread->setObjectName(QStringLiteral("qiancao-media"));
+    g_mediaThread->start();
+    // 哨兵对象：只当 invokeMethod 的 context（决定任务落在哪个线程）。
+    // 不需要 Q_OBJECT —— invokeMethod 的 functor 重载直接存拷贝并调用，不经过 moc。
+    g_mediaCtx = new QObject();
+    g_mediaCtx->moveToThread(g_mediaThread);
+}
+
+// 把任务投到媒体线程执行（已经在媒体线程则就地跑，省一次事件循环往返）
+static void postToMedia(std::function<void()> fn)
+{
+    if (!fn) return;
+    ensureMediaThread();
+    if (QThread::currentThread() == g_mediaThread) { fn(); return; }
+    QMetaObject::invokeMethod(g_mediaCtx, std::move(fn), Qt::QueuedConnection);
+}
+
+// 在媒体线程上延时执行（重试退避用；不 sleep 任何线程）
+static void delayOnMedia(int ms, std::function<void()> fn)
+{
+    if (!fn) return;
+    postToMedia([ms, fn]() {
+        QTimer::singleShot(ms, g_mediaCtx, [fn]() { fn(); });
+    });
+}
+
+// 异步链（上传 / 媒体标签）跨多轮回调，中途账号或客户端可能已被销毁 ——
+// 每一步进门都要先确认「自己还挂在全局表里」。
+// ⚠ 必须是**自由函数**，且 appid 由调用方按值存进链状态后传进来：
+//   写成成员函数会先解引用 this 去取 m_info->appid_int，而那一刻 this 可能已经析构（悬空访问）。
+//   与本文件既有的 processImageTagsAsync / doPost 同款保护。
+// ⚠ 守卫能成立的前提：销毁方是「先 m_botClients.take(appid) 再 deleteLater()」（见 accountpage.cpp），
+//   所以表里查不到 == 这个指针已经不能再碰；value() 只比较指针，不解引用 self。
+static bool clientAlive(const QQBotClient *self, int appid)
+{
+    return self && m_botClients.value(appid) == self;
+}
+
+// 把「网络回调」统一搬回媒体线程 —— 于是整条链的逻辑都是单线程的（不用操心锁），
+// 同时手里有事件循环（重试退避 QTimer / 起 ffmpeg 都要）。
+// ⚠ NetManager 的回调默认丢全局线程池，那些 worker 没有事件循环。
+// ⚠ 进门第一件事就是 clientAlive 复检：请求在飞行途中（put 30s + 退避、prepare 30s…）
+//   客户端完全可能已经被摘表销毁，那时再跑续写 lambda 就是往已析构对象上打。
+//   查不到就静默丢掉这一步 —— 整条链已经没人等了，回调出去也无处可去。
+//   ⚠ 这里是**唯一**的收口点：所有续写回调都套了 onMedia，所以不用每个 lambda 各写一遍。
+static Callback onMedia(const QQBotClient *self, int appid, Callback cb)
+{
+    if (!cb) return cb;
+    return [self, appid, cb](const QString &resp, QNetworkReply::NetworkError err) {
+        postToMedia([self, appid, cb, resp, err]() {
+            if (!clientAlive(self, appid)) return;
+            cb(resp, err);
+        });
+    };
+}
+
+// 在媒体线程上跑一次外部进程；进程退出（或启动失败 / 超时被 kill）时**在媒体线程**回调 onDone。
+//   code    ：退出码；<0 = 进程没能启动
+//   err     ：stderr 全文（ffmpeg 的媒体信息就打在这里）
+//   timedOut：是否超时被 kill
+static void runProcessAsync(const QString &program, const QStringList &args, int timeoutMs,
+                            std::function<void(int code, const QByteArray &err, bool timedOut)> onDone)
+{
+    if (!onDone) return;
+    postToMedia([program, args, timeoutMs, onDone]() {
+        QProcess *p = new QProcess();
+        auto fired    = std::make_shared<bool>(false);
+        auto timedOut = std::make_shared<bool>(false);
+
+        // 统一出口：errorOccurred 与 finished 谁先到算谁，之后忽略（启动失败时只有 errorOccurred）
+        auto finish = [p, fired, timedOut, onDone](int code) {
+            if (*fired) return;
+            *fired = true;
+            const QByteArray err = p->readAllStandardError();
+            p->deleteLater();                 // 媒体线程有事件循环，deleteLater 会被处理
+            onDone(code, err, *timedOut);
+        };
+
+        QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
+                         [finish](int code, QProcess::ExitStatus) { finish(code); });
+        QObject::connect(p, &QProcess::errorOccurred, p,
+                         [finish](QProcess::ProcessError) { finish(-1); });
+
+        p->start(program, args);
+        if (timeoutMs > 0) {
+            QTimer::singleShot(timeoutMs, p, [p, timedOut]() {
+                *timedOut = true;
+                p->kill();               // kill 会走 finished(CrashExit)，靠 fired 去重
+            });
+        }
+    });
+}
+
+// 带退避重试的异步 put：失败（err != NoError）按 1s/2s/4s 退避重试，最多 3 次。
+// doPut(timeoutMs, cb) 负责发起一次 put（通常就是包一层 put2）。
+// 对照同步版：那边是 try { put(...) } catch(...) 的循环，但 NetManager::put 出错时是
+// set_value(空) 而不是抛异常，所以那段 catch 实际是死代码 —— 这里按注释写的「重试 3 次」的真实意图实现。
+// ⚠ 写成自由函数递归（而不是自引用的 shared_ptr<std::function>）——后者会形成引用环永不释放。
+// ⚠ 每轮进门先 clientAlive：put + 退避加起来可能几十秒，这期间账号/客户端可能已被销毁，
+//   那时再调 doPut 就是往已析构对象上打（self 只做指针比较，不解引用）。
+static void putRetryStep(int appid, const QQBotClient *self,
+                         std::function<void(int timeoutMs, Callback)> doPut,
+                         std::function<void(bool ok)> onDone, int used, int timeoutMs)
+{
+    if (!clientAlive(self, appid)) return;    // 客户端已销毁 → 整条链放弃（不再回调，也没人等了）
+    doPut(timeoutMs, onMedia(self, appid, [doPut, onDone, used, timeoutMs, appid, self]
+                             (const QString &, QNetworkReply::NetworkError err) {
+        if (err == QNetworkReply::NoError) { onDone(true); return; }
+        if (used + 1 >= 3)                 { onDone(false); return; }
+        delayOnMedia(1000 * (1 << used), [doPut, onDone, used, timeoutMs, appid, self]() {
+            putRetryStep(appid, self, doPut, onDone, used + 1, timeoutMs + 10000);
+        });
+    }));
+}
+
+static void putRetryAsync(int appid, const QQBotClient *self,
+                          std::function<void(int timeoutMs, Callback)> doPut,
+                          std::function<void(bool ok)> onDone)
+{
+    putRetryStep(appid, self, std::move(doPut), std::move(onDone), 0, 30000);
+}
+
 // uploadRichMediaPool 的纯回调版：prepare → put → finish → files 全链路异步，零线程零阻塞。
 // 与阻塞版逻辑逐行对应（取池/复用捷径/暂存回池机制完全一致），仅把三个 PostSync 换成 PostAsync、
 // 阻塞 put 换成 put2（NetManager::putAsync，已具备 cos 内网直连）。
@@ -2076,17 +2262,10 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
     if (!onDone) return;
     if (data.isEmpty()) { onDone(QString(), 0, QString(), false, QString()); return; }
 
-    // targetType==4 不支持 100K 申请/池子流程；音视频/文件（usePool=false）复用实测报文件格式不对
-    // → 都回退原始分片上传（阻塞型，罕见路径临时线程兜底）
+    // targetType==4 不支持 100K 申请/池子流程；音视频/文件（usePool=false）复用池链接实测报文件格式不对
+    // → 都改走「原始分片上传」的**异步版**（uploadRichMediaAsync），同样零线程零阻塞。
     if (targetType == 4 || !usePool) {
-        std::thread([this, appid, targetType, openid, fileType, data, filename, onDone]() mutable {
-            QQBotClient *c = m_botClients.value(appid);
-            if (!c) return;
-            qint64 expireTime = 0; QString md5; bool ok = false; QString outurl;
-            QString result = c->uploadRichMedia(targetType, openid, fileType, data, filename, expireTime, md5, ok, outurl);
-            if (m_botClients.value(appid) != c) return;
-            onDone(result, expireTime, md5, ok, outurl);
-        }).detach();
+        uploadRichMediaAsync(targetType, openid, fileType, data, filename, onDone);
         return;
     }
 
@@ -2238,6 +2417,423 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         });
 }
 
+
+// ===========================================================================
+// 上传的异步回调版
+// 与同名同步函数逐段对应，只是把 PostSync → PostAsync、put → put2(回调)；
+// 所有续写逻辑都经 onMedia() 回到媒体线程，所以整条链只有一条线程在跑，不用加锁。
+// ===========================================================================
+
+// 通用「POST /files 直到拿到 file_info」重试器 —— 同步版里那几处「重试 10 次」的循环都在这里。
+// 对应语义（三处调用完全一致）：
+//   response 空 / JSON 解析失败 → 直接失败；file_info 有值 → 成功；
+//   其余：message == "富媒体文件上传超时" 才值得重试，否则立刻把平台错误原样交出去；耗尽同样交出最后一次响应。
+struct QQBotClient::FilesRegJob {
+    int         appid      = 0;    // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
+    int         targetType = 0;
+    QString     openid;
+    QJsonObject body;
+    int         timeoutMs = 30000;
+    int         backoffMs = 0;     // >0 时每次重试前延时（URL 注册那条是 128ms）
+    int         left      = 10;
+    QString     md5;               // 原样透传给 onDone
+    MediaUploadDone onDone;
+};
+
+void QQBotClient::filesRegStep(std::shared_ptr<FilesRegJob> job)
+{
+    if (!clientAlive(this, job->appid)) return;
+    const QString url = get_url(job->targetType, job->openid, "files");
+    PostAsync(url, job->body, QString(), job->timeoutMs,
+        onMedia(this, job->appid, [this, job](const QString &response, QNetworkReply::NetworkError) {
+            if (response.isEmpty()) { job->onDone(QString(), 0, job->md5, false, QString()); return; }
+            QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+            if (doc.isNull())       { job->onDone(QString(), 0, job->md5, false, QString()); return; }
+            const QJsonObject r = doc.object();
+            const QString fileInfo = r["file_info"].toString();
+            if (!fileInfo.isEmpty()) {
+                job->onDone(fileInfo, QDateTime::currentSecsSinceEpoch() + r["ttl"].toInt(),
+                            job->md5, true, r["raw_url"].toString());
+                return;
+            }
+            if (r["message"].toString() != QStringLiteral("富媒体文件上传超时") || job->left <= 1) {
+                job->onDone(response, 0, job->md5, false, QString());   // 其它错误 / 重试耗尽
+                return;
+            }
+            job->left -= 1;
+            if (job->backoffMs > 0) delayOnMedia(job->backoffMs, [this, job]() { filesRegStep(job); });
+            else                    filesRegStep(job);
+        }));
+}
+
+// uploadRichMedia_url 的异步版：POST /files 注册外链。
+// 出参：result = file_info / 平台错误文本；expireTime 由 ttl 推算；md5、outurl 恒空（外链没有 raw_url）。
+void QQBotClient::uploadRichMedia_urlAsync(int targetType, const QString &openid, int fileType,
+                                           const QString &fileurl, MediaUploadDone onDone)
+{
+    if (!onDone) return;
+    if (!fileurl.startsWith(QLatin1String("http"))) { onDone(QString(), 0, QString(), false, QString()); return; }
+
+    auto job = std::make_shared<FilesRegJob>();
+    job->appid      = m_info->appid_int;
+    job->targetType = targetType;
+    job->openid     = openid;
+    job->body       = QJsonObject{{"file_type", fileType}, {"url", fileurl}};
+    job->timeoutMs  = 300000;
+    job->backoffMs  = 128;      // 与同步版 uploadRichMedia_url 里的 msleep(128) 一致
+    job->left       = 10;
+    job->onDone     = onDone;
+    filesRegStep(job);
+}
+
+// ── 本地文件多分片上传（uploadRichMedia 的异步版）──
+struct QQBotClient::RichUploadJob {
+    int     appid      = 0;          // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
+    int     targetType = 0;
+    QString openid;
+    QByteArray data;
+    QString md5;
+    QString uploadId;
+    QString finishUrl;
+    QList<QByteArray>  chunks;       // 各分片数据（按 parts 顺序切）
+    QList<QString>     partUrls;     // 各分片的 presigned_url
+    QList<QJsonObject> finishJsons;  // 各分片的 finish 请求体
+    MediaUploadDone onDone;
+    bool finished = false;           // 保证 onDone 只回调一次
+    int  partIdx  = 0;               // 串行推进用
+    int  pending  = 0;               // 并发计数用
+};
+
+void QQBotClient::richUploadReport(std::shared_ptr<RichUploadJob> job, const QString &result,
+                                   qint64 expireTime, bool ok, const QString &outurl)
+{
+    if (job->finished) return;
+    job->finished = true;
+    auto cb = job->onDone;
+    if (cb) cb(result, expireTime, job->md5, ok, outurl);
+}
+
+void QQBotClient::richUploadPrepareDone(std::shared_ptr<RichUploadJob> job, const QString &response)
+{
+    if (!clientAlive(this, job->appid)) return;
+    if (response.isEmpty()) { richUploadReport(job, QString(), 0, false, QString()); return; }
+    QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+    if (doc.isNull())       { richUploadReport(job, QString(), 0, false, QString()); return; }
+    const QJsonObject r = doc.object();
+    job->uploadId = r["upload_id"].toString();
+    if (job->uploadId.isEmpty()) { richUploadReport(job, response, 0, false, QString()); return; }   // 错误信息
+
+    // 切分片 + 备好每片的 finish 体（顺序、切片方式与同步版逐个对应）
+    int start = 0;
+    const QJsonArray parts = r["parts"].toArray();
+    for (const QJsonValue &pv : parts) {
+        const QJsonObject part = pv.toObject();
+        const int blockSizeA = part["block_size"].toString().toInt();
+        const QByteArray chunk = job->data.mid(start, blockSizeA);
+        start += blockSizeA;
+        job->chunks.append(chunk);
+        job->partUrls.append(part["presigned_url"].toString());
+        QJsonObject finishJson;
+        finishJson["upload_id"]  = job->uploadId;
+        finishJson["part_index"] = part["index"].toInt();
+        finishJson["block_size"] = chunk.size();
+        QCryptographicHash chunkMd5(QCryptographicHash::Md5);
+        chunkMd5.addData(chunk);
+        finishJson["md5"] = QString(chunkMd5.result().toHex());
+        job->finishJsons.append(finishJson);
+    }
+    if (job->chunks.isEmpty()) { richUploadReport(job, QStringLiteral("upload_prepare 未返回分片"), 0, false, QString()); return; }
+
+    if (g_neiw.isEmpty()) {
+        // 公网：与同步版一致 —— 逐分片「put → finish」串行推进
+        job->partIdx = 0;
+        richUploadPutNext(job);
+    } else {
+        // 内网：与同步版一致 —— 先并发 put 全部分片，全部成功后再并发提交 finish
+        job->pending = job->chunks.size();
+        for (int i = 0; i < job->chunks.size(); ++i) {
+            const QString partUrl = job->partUrls[i];
+            const QByteArray chunk = job->chunks[i];
+            putRetryAsync(job->appid, this,
+                          [this, partUrl, chunk](int timeoutMs, Callback cb) {
+                              put2(partUrl, chunk, QStringLiteral("application/octet-stream"), timeoutMs, cb);
+                          },
+                          [this, job, i](bool putOk) {
+                              if (!putOk) {
+                                  richUploadReport(job, QStringLiteral("分片%1重试多次失败")
+                                                        .arg(job->finishJsons[i]["part_index"].toInt()), 0, false, QString());
+                                  return;
+                              }
+                              if (--job->pending == 0) richUploadFinishAll(job);
+                          });
+        }
+    }
+}
+
+// 串行分支：传第 partIdx 片 → 提交它 → 下一片
+void QQBotClient::richUploadPutNext(std::shared_ptr<RichUploadJob> job)
+{
+    if (job->finished) return;
+    if (job->partIdx >= job->chunks.size()) { richUploadFinishAll(job); return; }
+    const int i = job->partIdx;
+    const QString partUrl = job->partUrls[i];
+    const QByteArray chunk = job->chunks[i];
+    putRetryAsync(job->appid, this,
+                  [this, partUrl, chunk](int timeoutMs, Callback cb) {
+                      put2(partUrl, chunk, QStringLiteral("application/octet-stream"), timeoutMs, cb);
+                  },
+                  [this, job, i](bool putOk) {
+                      if (!putOk) {
+                          richUploadReport(job, QStringLiteral("在上传%1分片时重试多次失败")
+                                                .arg(job->finishJsons[i]["part_index"].toInt()), 0, false, QString());
+                          return;
+                      }
+                      PostAsync(job->finishUrl, job->finishJsons[i], QString(), 30000,
+                          onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
+                              job->partIdx += 1;
+                              richUploadPutNext(job);
+                          }));
+                  });
+}
+
+// 所有 put 完成 → 并发提交全部分片的 finish → 去 /files 注册
+void QQBotClient::richUploadFinishAll(std::shared_ptr<RichUploadJob> job)
+{
+    if (job->finished) return;
+    if (job->finishJsons.isEmpty()) { richUploadFinishAllFiles(job); return; }
+    job->pending = job->finishJsons.size();
+    for (const QJsonObject &fj : job->finishJsons) {
+        PostAsync(job->finishUrl, fj, QString(), 30000,
+            onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
+                if (--job->pending == 0) richUploadFinishAllFiles(job);
+            }));
+    }
+}
+
+void QQBotClient::richUploadFinishAllFiles(std::shared_ptr<RichUploadJob> job)
+{
+    if (job->finished) return;
+    auto fr = std::make_shared<FilesRegJob>();
+    fr->appid      = job->appid;
+    fr->targetType = job->targetType;
+    fr->openid     = job->openid;
+    fr->body       = QJsonObject{{"upload_id", job->uploadId}};
+    fr->timeoutMs  = 30000;
+    fr->left       = 10;
+    fr->md5        = job->md5;
+    fr->onDone     = [this, job](const QString &result, qint64 expire, const QString &, bool ok, const QString &outurl) {
+        richUploadReport(job, result, expire, ok, outurl);
+    };
+    filesRegStep(fr);
+}
+
+void QQBotClient::uploadRichMediaAsync(int targetType, const QString &openid, int fileType,
+                                       const QByteArray &data, const QString &filename,
+                                       MediaUploadDone onDone)
+{
+    if (!onDone) return;
+    const qint64 fileSize = data.size();
+
+    // 2. 计算哈希值（本地摘要，微秒~毫秒级，留在当前线程）
+    QCryptographicHash md5Hash(QCryptographicHash::Md5);
+    md5Hash.addData(data);
+    const QString md5 = md5Hash.result().toHex();
+    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
+    sha1Hash.addData(data);
+    const QString sha1 = sha1Hash.result().toHex();
+    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+    md5_10mHash.addData(data.left(10 * 1024 * 1024));
+    const QString md5_10m = md5_10mHash.result().toHex();
+
+    // 视频分两路（与同步版一致）：≤80M 走快传；>80M 当文件（file_type=4）走分片
+    if (fileType == 2) {
+        if (fileSize <= 80LL * 1024 * 1024) {
+            uploadSmallVideoAsync(targetType, openid, data, filename, md5, sha1, md5_10m, onDone);
+            return;
+        }
+        fileType = 4;
+    }
+
+    // 3. prepare：声明真实大小（有多大传多大）
+    QJsonObject prepJson;
+    prepJson["file_type"] = fileType;
+    prepJson["file_name"] = filename;
+    prepJson["file_size"] = (qint64)fileSize;
+    prepJson["md5"]       = md5;
+    prepJson["sha1"]      = sha1;
+    prepJson["md5_10m"]   = md5_10m;
+
+    auto job = std::make_shared<RichUploadJob>();
+    job->appid      = m_info->appid_int;
+    job->targetType = targetType;
+    job->openid     = openid;
+    job->data       = data;
+    job->md5        = md5;
+    job->finishUrl  = get_url(targetType, openid, "upload_part_finish");
+    job->onDone     = onDone;
+
+    PostAsync(get_url(targetType, openid, "upload_prepare"), prepJson, QString(), 30000,
+        onMedia(this, job->appid, [this, job](const QString &response, QNetworkReply::NetworkError) {
+            richUploadPrepareDone(job, response);
+        }));
+}
+
+// ── ≤80M 视频快传（uploadSmallVideo 的异步版）──
+struct QQBotClient::SmallVideoJob {
+    int     appid      = 0;          // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
+    int     targetType = 0;
+    QString openid;
+    QByteArray data;
+    QString md5;
+    QString uploadId;
+    QString finishUrl;
+    int     partIndex = 0;
+    MediaUploadDone onDone;
+    bool finished = false;
+};
+
+// 入口：prepare 固定申请 1K（返回 1 个分片 + put 链接）→ 整段写入 → 提交 → files 注册
+void QQBotClient::uploadSmallVideoAsync(int targetType, const QString &openid, const QByteArray &data,
+                                        const QString &filename, const QString &md5, const QString &sha1,
+                                        const QString &md5_10m, MediaUploadDone onDone)
+{
+    if (!onDone) return;
+
+    QJsonObject prepJson;
+    prepJson["file_type"] = 2;
+    prepJson["file_name"] = filename;
+    prepJson["file_size"] = (qint64)1024;      // 固定申请 1K，cos 实际可传任意大小
+    prepJson["md5"]       = md5;
+    prepJson["sha1"]      = sha1;
+    prepJson["md5_10m"]   = md5_10m;
+
+    auto job = std::make_shared<SmallVideoJob>();
+    job->appid      = m_info->appid_int;
+    job->targetType = targetType;
+    job->openid     = openid;
+    job->data       = data;
+    job->md5        = md5;
+    job->finishUrl  = get_url(targetType, openid, "upload_part_finish");
+    job->onDone     = onDone;
+
+    PostAsync(get_url(targetType, openid, "upload_prepare"), prepJson, QString(), 30000,
+        onMedia(this, job->appid, [this, job](const QString &response, QNetworkReply::NetworkError) {
+            smallVideoPrepareDone(job, response);
+        }));
+}
+
+void QQBotClient::smallVideoReport(std::shared_ptr<SmallVideoJob> job, const QString &result,
+                                   qint64 expireTime, bool ok, const QString &outurl)
+{
+    if (job->finished) return;
+    job->finished = true;
+    auto cb = job->onDone;
+    if (cb) cb(result, expireTime, job->md5, ok, outurl);
+}
+
+void QQBotClient::smallVideoPrepareDone(std::shared_ptr<SmallVideoJob> job, const QString &response)
+{
+    if (!clientAlive(this, job->appid)) return;
+    if (response.isEmpty()) { smallVideoReport(job, QString(), 0, false, QString()); return; }
+    QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
+    if (doc.isNull())       { smallVideoReport(job, QString(), 0, false, QString()); return; }
+    const QJsonObject r = doc.object();
+    job->uploadId = r["upload_id"].toString();
+    if (job->uploadId.isEmpty()) { smallVideoReport(job, response, 0, false, QString()); return; }   // 错误信息
+
+    const QJsonArray parts = r["parts"].toArray();
+    if (parts.isEmpty()) { smallVideoReport(job, QStringLiteral("upload_prepare 未返回分片"), 0, false, QString()); return; }
+    const QJsonObject part = parts[0].toObject();
+    const QString presignedUrl = part["presigned_url"].toString();
+    if (presignedUrl.isEmpty()) { smallVideoReport(job, QStringLiteral("upload_prepare 未返回 presigned_url"), 0, false, QString()); return; }
+    job->partIndex = part["index"].toInt();
+
+    // 2. 整段视频写入 put 链接（重试 3 次，退避 1s/2s）
+    const QByteArray data = job->data;
+    putRetryAsync(job->appid, this,
+                  [this, presignedUrl, data](int timeoutMs, Callback cb) {
+                      put2(presignedUrl, data, QStringLiteral("application/octet-stream"), timeoutMs, cb);
+                  },
+                  [this, job](bool putOk) {
+                      if (!putOk) { smallVideoReport(job, QStringLiteral("put 视频数据失败(重试3次)"), 0, false, QString()); return; }
+                      smallVideoSubmit(job);
+                  });
+}
+
+void QQBotClient::smallVideoSubmit(std::shared_ptr<SmallVideoJob> job)
+{
+    if (job->finished) return;
+    // 3. 按真实数据提交
+    QJsonObject finJson;
+    finJson["upload_id"]  = job->uploadId;
+    finJson["part_index"] = job->partIndex;
+    finJson["block_size"] = job->data.size();
+    finJson["md5"]        = job->md5;
+    PostAsync(job->finishUrl, finJson, QString(), 30000,
+        onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
+            // 4. files 注册（超时循环重试 10 次）
+            auto fr = std::make_shared<FilesRegJob>();
+            fr->appid      = job->appid;
+            fr->targetType = job->targetType;
+            fr->openid     = job->openid;
+            fr->body       = QJsonObject{{"upload_id", job->uploadId}};
+            fr->timeoutMs  = 30000;
+            fr->left       = 10;
+            fr->md5        = job->md5;
+            fr->onDone     = [this, job](const QString &result, qint64 expire, const QString &, bool ok, const QString &outurl) {
+                smallVideoReport(job, result, expire, ok, outurl);
+            };
+            filesRegStep(fr);
+        }));
+}
+
+// uploadRichMediaPoolA 的异步版：与同步版同款分流 —— URL 走注册，本地文件读进内存后交给异步上传器。
+// ⚠ **这里也是「包装层」**：底层上传器（uploadRichMediaPoolAsync / uploadRichMediaAsync /
+//   uploadRichMedia_urlAsync）回的都是**裸 file_info**（失败时是平台报错文本），
+//   而同步版 uploadRichMediaA/PoolA 会把它包成整串
+//       "[<类型>,path=<file_info>,md5=<md5>,Time=<过期秒>]"
+//   两个下游**都**只认这个格式，所以必须在这里补上：
+//     · send_Media 靠 extractBetween(info,"path=",",") 取回 file_info（裸 token 会直接被判成
+//       "无法从path获取info" 而根本发不出去）；
+//     · 媒体的上传缓存整串存、读取侧靠 ",Time=" 反推过期时间（裸 token 会让 timeIdx==-1）。
+//   ⚠ 失败时**不包装**，原样把平台报错交出去（与同步版 `if(!ok) return info;` 一致）——
+//     远程音频超时长的判定就靠这个裸报错里的 "40093013"。
+void QQBotClient::uploadRichMediaPoolAAsync(int targetType, const QString &openid, int fileType,
+                                            const QString &filePath, bool usePool, MediaUploadDone onDone)
+{
+    if (!onDone) return;
+
+    auto wrap = [fileType, onDone](const QString &result, qint64 expireTime,
+                                   const QString &md5, bool ok, const QString &outurl) {
+        if (!ok || result.isEmpty()) { onDone(result, expireTime, md5, ok, outurl); return; }
+        QString typeStr;
+        switch (fileType) {
+        case 1:  typeStr = QStringLiteral("image");   break;
+        case 2:  typeStr = QStringLiteral("video");   break;
+        case 3:  typeStr = QStringLiteral("audio");   break;
+        case 4:  typeStr = QStringLiteral("file");    break;
+        default: typeStr = QStringLiteral("unknown"); break;
+        }
+        onDone(QStringLiteral("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr, result, md5).arg(expireTime),
+               expireTime, md5, ok, outurl);
+    };
+
+    if (filePath.startsWith(QLatin1String("http"))) {
+        uploadRichMedia_urlAsync(targetType, openid, fileType, filePath, wrap);
+        return;
+    }
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) { wrap(QString(), 0, QString(), false, QString()); return; }
+    const QByteArray data = file.readAll();
+    file.close();
+    const QString filename = QFileInfo(filePath).fileName();
+    // 池子只服务图片（targetType==4 不支持 100K 申请流程）；其余走原始分片上传的异步版
+    if (usePool && targetType != 4) {
+        uploadRichMediaPoolAsync(targetType, openid, fileType, data, filename, true, wrap);
+        return;
+    }
+    uploadRichMediaAsync(targetType, openid, fileType, data, filename, wrap);
+}
 
 // ---------------------------------------------------------------------------
 // 定位 ffmpeg 可执行文件 —— 音频链路的三个调用点共用（转 m4a / 只读探时长 / m4a 流复制切段）
@@ -2531,6 +3127,147 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
     return out;
 }
 
+// ===========================================================================
+// ffmpeg 三个链路的**异步回调版** —— 解析逻辑与上面的同步版逐个对应，
+// 唯一区别是把「启动进程 + waitForFinished(最长 120s)」换成 runProcessAsync（进程退出才回调）。
+// 回调统一落在媒体线程。
+// ===========================================================================
+
+// 探测：一次 `ffmpeg -i` 同时拿到「时长」与「容器里有没有视频轨」（同 probeMediaInfo）
+static void probeMediaInfoAsync(const QString &filePath, std::function<void(MediaProbe)> onDone)
+{
+    runProcessAsync(findFfmpegPath(), {"-i", filePath}, 10000,
+        [onDone](int, const QByteArray &errBytes, bool) {
+            MediaProbe info;
+            const QString err = QString::fromLocal8Bit(errBytes);
+            static QRegularExpression reDur("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+            const auto m = reDur.match(err);
+            if (m.hasMatch())
+                info.durationSec = m.captured(1).toInt() * 3600
+                                 + m.captured(2).toInt() * 60
+                                 + m.captured(3).toDouble();
+            // 形如 "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, ..."
+            // （音频轨是 "Audio:"、字幕轨是 "Subtitle:"，不会误命中）
+            static QRegularExpression reVid(QStringLiteral("Stream #\\d+:\\d+.*:\\s*Video:"));
+            info.hasVideo = reVid.match(err).hasMatch();
+            onDone(info);
+        });
+}
+
+// 探测媒体时长（秒）；失败返回 -1（同 probeAudioDurationSec）
+static void probeAudioDurationSecAsync(const QString &filePath, std::function<void(double)> onDone)
+{
+    probeMediaInfoAsync(filePath, [onDone](MediaProbe mi) { onDone(mi.durationSec); });
+}
+
+// 这个音频能否原样发送（同 audioCanSendAsIs）。
+// 能一眼判定的分支（体积不合适 / silk / 明确视频后缀）直接同步回调，不白起一次 ffmpeg 进程。
+static void audioCanSendAsIsAsync(const QString &path, std::function<void(bool)> onDone)
+{
+    QString p = path;
+    const int cut = p.indexOf(QLatin1Char('?'));   // URL 可能带 query，别把它算进后缀
+    if (cut >= 0) p.truncate(cut);
+    const QFileInfo fi(p);
+
+    const qint64 sz = fi.size();                   // 不存在 / URL → 0，不会误判成「小」
+    if (sz <= 0 || sz >= kAudioSkipConvertBytes) { onDone(false); return; }
+
+    // SILK 是 QQ 自己的语音格式，ffmpeg 完全不认（连时长都读不出来）→ 直接原样发
+    if (fi.suffix().compare(QLatin1String("silk"), Qt::CaseInsensitive) == 0) { onDone(true); return; }
+
+    if (isCompactAudioContainer(fi.suffix())) {
+        // 紧凑容器里不可能有画面，只判时长（低码率小体积也能拖很久）
+        probeAudioDurationSecAsync(p, [onDone](double sec) { onDone(sec <= AUDIO_SEG_MAX_SEC); });
+        return;
+    }
+    if (hasDefiniteVideoExtension(fi.suffix())) { onDone(false); return; }   // 视频当音频发必须先转码
+
+    probeMediaInfoAsync(p, [onDone](MediaProbe mi) {
+        onDone(!mi.hasVideo && mi.durationSec <= AUDIO_SEG_MAX_SEC);
+    });
+}
+
+// 转成 32k 单声道 m4a（同 convertAudioToSilk）；失败/超时一律回调「源路径本身」，不把路径改坏
+static void convertAudioToSilkAsync(const QString &srcFilePath, std::function<void(QString)> onDone)
+{
+    if (!QFile::exists(srcFilePath)) { onDone(QString()); return; }
+
+    const QString ffmpegPath = findFfmpegPath();
+    const QString outputFilePath = audioM4aPathFor(srcFilePath);
+    if (outputFilePath.isEmpty()) { onDone(srcFilePath); return; }   // 非本地文件（http URL）→ 不适用
+
+    // ⚠ ffmpeg 不会自己创建输出目录（退出码 127），少了这句会静默走到「失败 → 原样发」
+    if (!QDir().mkpath(QFileInfo(outputFilePath).absolutePath())) {
+        AppendEventLog("音频转换目录创建失败: " + QFileInfo(outputFilePath).absolutePath());
+        onDone(srcFilePath);
+        return;
+    }
+
+    QStringList ffmpegArgs = {
+        "-y",                      // 覆盖输出
+        "-i", srcFilePath,         // 输入（支持视频/音频）
+        "-map", "0:a:0?",          // 明确取第一个音频轨，若无音频则跳过不报错
+        "-vn",                     // 剔除视频画面
+        "-c:a", "aac",
+        "-b:a", "32k",
+        "-ar", "24000",
+        "-ac", "1",
+        outputFilePath
+    };
+
+    runProcessAsync(ffmpegPath, ffmpegArgs, 120000,
+        [srcFilePath, outputFilePath, onDone](int code, const QByteArray &errBytes, bool timedOut) {
+            if (timedOut) { AppendEventLog("ffmpeg 超时"); onDone(srcFilePath); return; }
+            if (code < 0) { AppendEventLog("ffmpeg 启动失败"); onDone(srcFilePath); return; }
+            if (code != 0) {
+                const QString err = QString::fromLocal8Bit(errBytes);
+                // 「没有音频流」不算错误：按原文件返回即可
+                if (!err.contains("Output file does not contain any stream"))
+                    AppendEventLog("ffmpeg 转换失败:" + err);
+                onDone(srcFilePath);
+                return;
+            }
+            onDone(outputFilePath);
+        });
+}
+
+// 把 m4a 按 segSec 秒流复制切段（同 splitM4aSegments）；已有同名段文件直接复用，不起进程
+static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::function<void(QStringList)> onDone)
+{
+    if (!m4aPath.endsWith(".m4a")) { onDone(QStringList()); return; }   // 只切转换产物
+    const QString base = m4aPath.left(m4aPath.size() - 4);
+    const QString filter = QFileInfo(base).fileName() + "_seg*.m4a";
+
+    {
+        QDir dir = QFileInfo(m4aPath).absoluteDir();
+        const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
+        if (!exist.isEmpty()) {                    // 之前切过，直接复用
+            QStringList out;
+            for (const QString &f : exist) out << dir.filePath(f);
+            onDone(out);
+            return;
+        }
+    }
+
+    runProcessAsync(findFfmpegPath(),
+        { "-y", "-i", m4aPath,
+          "-c", "copy",                            // AAC 直接流复制，秒级完成
+          "-f", "segment",
+          "-segment_time", QString::number(segSec),
+          "-reset_timestamps", "1",
+          base + "_seg%03d.m4a" },
+        60000,
+        [m4aPath, filter, onDone](int code, const QByteArray &, bool timedOut) {
+            if (timedOut || code != 0) { onDone(QStringList()); return; }
+            QDir d = QFileInfo(m4aPath).absoluteDir();
+            const QStringList files = d.entryList(QStringList{filter}, QDir::Files, QDir::Name);
+            if (files.size() < 2) { onDone(QStringList()); return; }   // 只切出 1 段没意义，按失败算
+            QStringList out;
+            for (const QString &f : files) out << d.filePath(f);
+            onDone(out);
+        });
+}
+
 // 远程音频（URL 直传被平台按时长拒绝时）允许下载到本地的体积上限
 static const qint64 kRemoteAudioMaxBytes = 50LL * 1024 * 1024;   // 50MB
 
@@ -2585,6 +3322,399 @@ static void downloadRemoteAudioToTempAsync(const QString &url, qint64 maxBytes,
             f.close();
             onDone(localPath);
         });
+}
+
+// ===========================================================================
+// 媒体标签异步链 —— sendOneMedia 的纯回调版
+// ---------------------------------------------------------------------------
+// 与同步版 sendOneMedia 逐段对应，区别只在「等待」全部换成回调：
+//   md5/缓存 →（音频）ffmpeg 探测/转码/切段 → 上传 → send_Media，逐条标签推进。
+// 这里面**没有任何阻塞点、也不新建线程**：ffmpeg 走 QProcess 的进程退出回调，
+// 上传走 PostAsync/put2，延时的重试走 QTimer。
+//
+// 线程：链条每跨一步都经 onMedia() 回到媒体线程，所以下面的状态只在一条线程上读写，
+//       不需要加锁；调用方线程在第一行就返回了。
+// 顺序：与同步版一致 —— 标签从后往前处理（这样从 text 里删标签不会影响前面的索引）。
+// ===========================================================================
+struct MediaTagMatch {              // 与 sendOneMedia 内部的 MatchInfo 同构
+    int     start  = 0;
+    int     length = 0;
+    QString type;                   // "f"/"a"/"v"/"flie"…
+    QString params;
+};
+
+// 单条标签的处理状态
+struct QQBotClient::MediaTagCtx {
+    QString     mediaType;          // file / audio / video
+    int         fileType = 1;       // 1图片 2视频 3音频 4文件（本链只可能出现 2/3/4）
+    QString     srcPath;            // 原始 path（或 URL）；产物路径一律由它推导
+    QString     filePath;           // 会被替换成产物路径
+    QString     m4aPath;
+    QString     fileInfo;
+    QString     fileMd5;
+    QStringList audioSegs;          // 音频超长切段列表；空 = 单文件直传
+    bool        needUpload = true;
+    bool        done = false;       // 这条标签是否已收尾（防重复摘标签 / 重复推进）
+};
+
+// 整条链的状态
+struct QQBotClient::MediaSendChain {
+    int                  appid = 0;  // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
+    std::function<void(const QString &, const QString &)> onDone;
+    QString              text;      // 逐条摘掉媒体标签后的文本
+    QList<MediaTagMatch> matches;
+    int                  idx = 0;   // 从 matches.size()-1 往前
+    QString              response;  // 最终返回给调用方（= 最后一条标签的 send_Media 返回）
+    int                  type = 0;
+    QString              openid, pname, msgid;
+    qint64               now_us = 0;
+    bool                 is_wakeup = false, mode = false, noref = false;
+    int                  sendType = 0;
+    MessageLogContext    ctx;
+    bool                 finished = false;
+};
+
+// 分段发送的推进状态（音频切段 / 远程音频兜底 共用）
+struct QQBotClient::MediaSegJob {
+    QStringList paths;
+    int         idx = 0;
+};
+
+// 一条标签处理完：从待发文本里摘掉它 → 推进到下一条（全部处理完则收尾回调）
+void QQBotClient::mediaChainFinishTag(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc)
+{
+    if (!tc || tc->done) return;
+    tc->done = true;
+    if (st->idx >= 0 && st->idx < st->matches.size()) {
+        const MediaTagMatch &m = st->matches[st->idx];
+        st->text.remove(m.start, m.length);
+    }
+    st->idx -= 1;
+    mediaChainStep(st);
+}
+
+// 处理第 st->idx 条标签
+void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
+{
+    if (!clientAlive(this, st->appid)) return;
+
+    // ── 全部标签处理完 → 收尾 ──
+    if (st->idx < 0) {
+        if (st->finished) return;
+        st->finished = true;
+        auto cb = st->onDone;
+        st->onDone = nullptr;
+        //if (cb) cb(st->text, st->response);
+        return;
+    }
+
+    const MediaTagMatch m = st->matches[st->idx];
+
+    // 规范化类型
+    QString mediaType;
+    if (m.type == "f" || m.type == "file" || m.type == "flie") mediaType = "file";
+    else if (m.type == "a" || m.type == "audio") mediaType = "audio";
+    else if (m.type == "v" || m.type == "video") mediaType = "video";
+    else {                                   // 认不出的类型：直接摘掉，推进
+        st->text.remove(m.start, m.length);
+        st->idx -= 1;
+        mediaChainStep(st);
+        return;
+    }
+
+    static QRegularExpression pathRe(R"(path\s*=\s*([^,\]]+))");
+    static QRegularExpression urlRe(R"(url\s*=\s*([^,\]]+))");
+    QString pathArg = pathRe.match(m.params).captured(1).trimmed();
+    const QString urlArg = urlRe.match(m.params).captured(1).trimmed();
+
+    if (pathArg.isEmpty() && urlArg.isEmpty()) {   // 既没路径也没 URL：摘掉标签，推进
+        st->text.remove(m.start, m.length);
+        st->idx -= 1;
+        mediaChainStep(st);
+        return;
+    }
+    if (!urlArg.isEmpty() && urlArg.startsWith("http")) pathArg = urlArg;
+
+    auto tc = std::make_shared<MediaTagCtx>();
+    tc->mediaType = mediaType;
+    tc->fileType  = (mediaType == "video") ? 2 : (mediaType == "audio") ? 3 : 4;
+    tc->srcPath   = pathArg;
+    tc->filePath  = pathArg;
+
+    // ── 本地文件：md5 + 查上传缓存（命中就不用再传了）──
+    if (!tc->filePath.startsWith("http")) {
+        int w = 0, h = 0;
+        calculateFileMD5AndSize(tc->filePath, tc->fileMd5, w, h);
+        if (cache_db && !tc->fileMd5.isEmpty()) {
+            const QString cacheKey = QString("%1_%2").arg(mediaType, tc->fileMd5);
+            const QString cached = cache_db->get(cacheKey);
+            if (!cached.isEmpty()) {
+                const int timeIdx = cached.lastIndexOf(",Time=");
+                if (timeIdx != -1) {
+                    // ⚠ 缓存串形如 "[audio,path=...,md5=...,Time=1790086656]"，末尾还有个 ']'；
+                    //   toLongLong() 要求整串都是数字，遇到 ']' 会整体转换失败返回 0 →
+                    //   缓存永远判过期 → 每次都重传。先切掉 ']' 再转，并用 okNum 判成功。
+                    QString expireStr = cached.mid(timeIdx + 6);
+                    const int rbIdx = expireStr.indexOf(']');
+                    if (rbIdx >= 0) expireStr.truncate(rbIdx);
+                    bool okNum = false;
+                    const qint64 expire = expireStr.trimmed().toLongLong(&okNum);
+                    if (okNum && QDateTime::currentSecsSinceEpoch() < expire) {
+                        tc->fileInfo = cached.left(timeIdx) + "]";   // 补回被切掉的收尾 ']'
+                        tc->needUpload = false;
+                    }
+                } else {
+                    tc->fileInfo = cached;
+                    tc->needUpload = false;
+                }
+            }
+        }
+    }
+
+    // ── 本地音频：探测 →（必要时）转码 →（超长）切段 → 上传 ──
+    // 对应同步版的 sendAsIs 判断 + 「先试切段、否则转码、再判超长」三连
+    if (tc->needUpload && tc->fileType == 3 && !tc->srcPath.startsWith("http")) {
+        const QString srcPath = tc->srcPath;
+        tc->m4aPath = audioM4aPathFor(srcPath);
+        if (!tc->m4aPath.isEmpty() && QFile::exists(tc->m4aPath))
+            tc->filePath = tc->m4aPath;          // 上次转好的产物还在 → 直接复用
+
+        audioCanSendAsIsAsync(tc->filePath, [this, st, tc, srcPath](bool sendAsIs) {
+            if (!clientAlive(this, st->appid)) return;
+            if (sendAsIs) { mediaChainUploadAndSend(st, tc); return; }   // 小体积容器/短视频 → 原样发
+
+            // 时长探完：超长就切段（切不出多段则按单文件发）
+            auto probeThenSplit = [this, st, tc](QStringList segs) {
+                tc->audioSegs = segs;
+                mediaChainUploadAndSend(st, tc);
+            };
+            // 判超长 → 超了再切段
+            auto probeStep = [this, st, tc, probeThenSplit]() {
+                probeAudioDurationSecAsync(tc->filePath, [this, st, tc, probeThenSplit](double d) {
+                    if (!clientAlive(this, st->appid)) return;
+                    if (d > AUDIO_SEG_MAX_SEC)
+                        splitM4aSegmentsAsync(tc->filePath, AUDIO_SEG_MAX_SEC, probeThenSplit);
+                    else
+                        probeThenSplit(QStringList());       // 没超长 → 单文件直传
+                });
+            };
+            auto convertStep = [this, st, tc, srcPath, probeStep]() {
+                // ① 已经是 .m4a（多半就是上次转好的产物）→ 先试流复制切段（无损、秒级）
+                if (tc->audioSegs.isEmpty() && tc->filePath.endsWith(QStringLiteral(".m4a"), Qt::CaseInsensitive)) {
+                    splitM4aSegmentsAsync(tc->filePath, AUDIO_SEG_MAX_SEC,
+                        [this, st, tc, probeStep](QStringList segs) {
+                            tc->audioSegs = segs;
+                            if (!tc->audioSegs.isEmpty()) { mediaChainUploadAndSend(st, tc); return; }
+                            probeStep();     // 只切出 1 段 → 落到时长判断
+                        });
+                    return;
+                }
+                // ② 没有产物 → 转码（失败/超时它返回源路径本身，不会把路径改坏）
+                if (tc->audioSegs.isEmpty() && !tc->m4aPath.isEmpty()) {
+                    if (QFile::exists(tc->m4aPath)) {
+                        tc->filePath = tc->m4aPath;
+                        probeStep();
+                    } else {
+                        convertAudioToSilkAsync(srcPath, [this, st, tc, probeStep](const QString &converted) {
+                            if (!converted.isEmpty()) tc->filePath = converted;
+                            probeStep();
+                        });
+                    }
+                    return;
+                }
+                probeStep();
+            };
+            convertStep();
+        });
+        return;
+    }
+
+    // 其余（视频 / 文件 / http 外链）直接进上传
+    mediaChainUploadAndSend(st, tc);
+}
+
+// 进入「上传 + 发送」：paths 为空表示缓存命中，直接发 tc->fileInfo
+void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc)
+{
+    if (!clientAlive(this, st->appid)) return;
+
+    if (!tc->needUpload) {
+        if (!tc->fileInfo.isEmpty())
+            st->response = send_Media(st->type, st->openid, st->pname, tc->fileInfo,
+                                      st->now_us, st->msgid, st->is_wakeup, st->noref, st->ctx);
+        mediaChainFinishTag(st, tc);
+        return;
+    }
+
+    auto job = std::make_shared<MediaSegJob>();
+    job->paths = tc->audioSegs.isEmpty() ? QStringList{tc->filePath} : tc->audioSegs;
+    mediaChainSegLoop(st, tc, job);
+}
+
+// 逐段串行上传并发送（与同步版的分段循环一致）
+void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc,
+                                    std::shared_ptr<MediaSegJob> job)
+{
+    if (!clientAlive(this, st->appid)) return;
+    if (job->idx >= job->paths.size()) { mediaChainFinishTag(st, tc); return; }
+
+    const QString upPath = job->paths[job->idx];
+    job->idx += 1;
+
+    uploadRichMediaPoolAAsync(st->type, st->openid, tc->fileType, upPath, /*usePool=*/false,
+        [this, st, tc, job, upPath](const QString &fileInfo, qint64, const QString &, bool ok, const QString &) {
+            if (!clientAlive(this, st->appid)) return;
+
+            // ⚠ 顺序必须与同步版一致：**先**判远程音频超时长，**后**判 ok。
+            //   超时长时平台回的是报错文本（ok=false）；要是先 `if(!ok)` 就把报错当正文发掉了，
+            //   下面这个兜底分支永远执行不到 —— 整条兜底链等于死代码。
+            if (tc->fileType == 3 && fileInfo.contains("40093013") && upPath.startsWith(QLatin1String("http"))) {
+                mediaRemoteAudioFallback(st, tc, upPath, fileInfo);
+                return;
+            }
+
+            if (!ok) {
+                // 上传失败 → 把平台报错当文本发出去（与同步版一致）
+                QString errInfo = fileInfo;          // 非 const：send_* 收的是 QString&
+                if (st->ctx.openid.isEmpty())
+                    send_messages(st->type, st->openid, st->pname, errInfo, st->msgid,
+                                  st->is_wakeup, st->mode, st->sendType, st->noref);
+                else
+                    send_msgAsync(st->type, st->openid, st->pname, errInfo, st->msgid,
+                                  st->is_wakeup, st->mode, st->sendType, st->noref, st->ctx.cb);
+                mediaChainSegLoop(st, tc, job);
+                return;
+            }
+
+            // 成功：写缓存（分段结果不进缓存）+ 发送
+            // fileInfo 已是 uploadRichMediaPoolAAsync 包好的整串 "[audio,path=...,md5=...,Time=...]"，
+            // 原样存即可（读取侧靠 ",Time=" 反推过期时间）；分段结果不缓存，与同步版一致。
+            if (!fileInfo.isEmpty() && cache_db && !tc->fileMd5.isEmpty() && tc->audioSegs.isEmpty())
+                cache_db->put(QString("%1_%2").arg(tc->mediaType, tc->fileMd5), fileInfo);
+            if (!fileInfo.isEmpty())
+                st->response = send_Media(st->type, st->openid, st->pname, fileInfo,
+                                          st->now_us, st->msgid, st->is_wakeup, st->noref, st->ctx);
+            mediaChainSegLoop(st, tc, job);
+        });
+}
+
+// 远程音频超时长的兜底链（全部异步）：
+//   下载（≤50MB）→ 转码 32k 单声道 m4a → 按 4:58 切段 → 逐段上传发送。
+// 任一步失败就把平台原报错当文本发出去（与同步版一致）。
+void QQBotClient::mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc,
+                                           const QString &url, const QString &errInfo)
+{
+    if (!clientAlive(this, st->appid)) return;
+
+    downloadRemoteAudioToTempAsync(url, kRemoteAudioMaxBytes,
+        [this, st, tc, errInfo](const QString &localFile) {
+            // 下载回调在线程池线程（还顺手落了个盘）→ 搬回媒体线程再继续
+            postToMedia([this, st, tc, errInfo, localFile]() {
+                if (!clientAlive(this, st->appid)) return;
+
+                auto sendOriginError = [this, st, errInfo]() {
+                    QString e = errInfo;             // 非 const：send_* 收的是 QString&
+                    if (st->ctx.openid.isEmpty())
+                        send_messages(st->type, st->openid, st->pname, e, st->msgid,
+                                      st->is_wakeup, st->mode, st->sendType, st->noref);
+                    else
+                        send_msgAsync(st->type, st->openid, st->pname, e, st->msgid,
+                                      st->is_wakeup, st->mode, st->sendType, st->noref, st->ctx.cb);
+                };
+
+                if (localFile.isEmpty()) {           // 超 50MB / 下载失败（日志已在下载里记过）
+                    sendOriginError();
+                    mediaChainFinishTag(st, tc);
+                    return;
+                }
+
+                // 切好段 → 复用主链的分段发送循环
+                auto afterSplit = [this, st, tc, errInfo, sendOriginError](QStringList segs) {
+                    if (!clientAlive(this, st->appid)) return;
+                    if (segs.isEmpty()) {
+                        AppendEventLog(QStringLiteral("远程音频超时长处理失败（无法切段），按原内容输出：") + errInfo);
+                        sendOriginError();
+                        mediaChainFinishTag(st, tc);
+                        return;
+                    }
+                    auto job = std::make_shared<MediaSegJob>();
+                    job->paths = segs;
+                    mediaChainSegLoop(st, tc, job);
+                };
+
+                // 拿到可用的本地音频 → 探时长 → 切段（或直接用本地这份重发）
+                auto afterConvert = [this, st, tc, afterSplit](const QString &usePath) {
+                    if (!clientAlive(this, st->appid)) return;
+                    probeAudioDurationSecAsync(usePath, [this, st, tc, afterSplit, usePath](double durSec) {
+                        if (!clientAlive(this, st->appid)) return;
+                        if (durSec > AUDIO_SEG_MAX_SEC)
+                            splitM4aSegmentsAsync(usePath, AUDIO_SEG_MAX_SEC, afterSplit);
+                        else if (durSec > 0)
+                            afterSplit(QStringList{ usePath });   // 本地这份其实没超长 → 直接重发一次
+                        else
+                            afterSplit(QStringList());            // 探不到时长 → 走失败兜底
+                    });
+                };
+
+                // 产物路径一律由「源」推导；已有产物直接复用，否则异步转码
+                const QString m4a = audioM4aPathFor(localFile);
+                if (!m4a.isEmpty() && QFile::exists(m4a))
+                    afterConvert(m4a);
+                else
+                    convertAudioToSilkAsync(localFile, afterConvert);
+            });
+        });
+}
+
+// sendOneMedia 的纯回调版入口：扫出全部媒体标签，逐条推进，最后回调 onDone。
+//   没有媒体标签 → 直接同步回调（零线程零等待，绝大多数发送走这条）
+//   有媒体标签 → 交给媒体线程上的异步链（调用方线程立刻返回）
+void QQBotClient::sendOneMediaAsync(int type, const QString &openid, const QString &pname, QString text,
+                                    qint64 now_us, const QString &msgid, bool is_wakeup, bool mode,
+                                    int sendType, bool noref, const MessageLogContext &ctx,
+                                    std::function<void(const QString &, const QString &)> onDone)
+{
+    if (!onDone) return;
+
+    // 与 sendOneMedia 内部**同一份**正则（改一处必须改另一处）
+    static QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
+                                 QRegularExpression::CaseInsensitiveOption);
+
+    auto st = std::make_shared<MediaSendChain>();
+    st->appid    = m_info->appid_int;
+    st->onDone   = onDone;
+    st->text     = text;
+    st->type     = type;
+    st->openid   = openid;
+    st->pname    = pname;
+    st->msgid    = msgid;
+    st->now_us   = now_us;
+    st->is_wakeup = is_wakeup;
+    st->mode     = mode;
+    st->sendType = sendType;
+    st->noref    = noref;
+    st->ctx      = ctx;
+
+    {
+        QRegularExpressionMatchIterator it = re.globalMatch(text);
+        while (it.hasNext()) {
+            QRegularExpressionMatch mm = it.next();
+            MediaTagMatch mt;
+            mt.start  = static_cast<int>(mm.capturedStart());
+            mt.length = static_cast<int>(mm.capturedLength());
+            mt.type   = mm.captured(1).toLower();
+            mt.params = mm.captured(2);
+            st->matches.append(mt);
+        }
+    }
+
+    if (st->matches.isEmpty()) {          // 无媒体标签 → 零线程零等待
+        onDone(text, QString());
+        return;
+    }
+
+    st->idx = st->matches.size() - 1;     // 与同步版一致：从后往前处理
+    postToMedia([this, st]() { mediaChainStep(st); });
 }
 
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
@@ -2796,7 +3926,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                                 return;
                             }
 
-                            for (const QString &seg : segs) {
+                            for (const QString &seg : std::as_const(segs)) {
                                 bool okSeg = true;
                                 QString segInfo = uploadRichMediaPoolA(type, openid, fileType, seg, okSeg, /*usePool=*/false);   // 非 const：send_messages/send_msgAsync 收的是 QString&
                                 if (!okSeg) {
@@ -3289,10 +4419,16 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         return response;
     }
     int seq_index=0;
+    bool ok=false;
     if(index>=0){
-        seq_index=g_logdb[type+1]->incrementBufferStatus(index);
+
+        g_logdb[type+1]->setBuffer_250(index,ok);
     }
-    if(noref) seq_index =1;
+    if(ok)
+        seq_index = 1;
+    else if(noref) return "{}";
+    else seq_index = 2;
+    qDebug()<<"堵塞 " << seq_index;
     QString response,fileinfo;
     if(type==1 || type ==3)
     {
@@ -3383,44 +4519,99 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
 
 
 
-    QString newtext2 = sendOneMedia(type,openid,pname,textB,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
-
-    if (textB.isEmpty()) return newtext2;
-
-    bool mbise= mb.isEmpty();
-    if(textB.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
-    int seq_index=0;
-    bool ok=false;
-    if(index>=0){
-
-          g_logdb[type+1]->setBuffer_250(index,ok);
-    }
-    if(ok)
-        seq_index = 1;
-    else if(noref) return "{}";
-    else seq_index = 2;
-
-    QString response="{}",fileinfo;
+    // ── 媒体标签：异步（回调版）；正文发送挪进回调，等媒体处理完再走 ──
+    // 原先是同步 sendOneMedia —— 带媒体的异步发送会把**调用线程**（Python 那条共享 asyncio 线程、
+    // 插件页线程等）堵在 ffmpeg 转码 / 上传网络等待里。改成回调版后本函数立刻返回 "{}"。
+    // ⚠ 回调契约：**每条路径都必须把 ctx.cb 触发恰好一次** —— send_messages* 是唯一会触发它的地方，
+    //   所以凡是不派发 send_messages* 就返回的路径（纯媒体 / noref / 模板不支持），都在下面手工补一次。
     const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
-    if(type==1 || type ==3)
-    {
-        if(!mbise)
+    const int indexCopy = index;
+    const QString mbCopy = mb;
+
+    auto sendTextPart = [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, indexCopy, mbCopy,
+                         is_wakeup, mode, sendType, noref, ctx](const QString &textB, const QString &mediaResp) {
+        // 正文被媒体标签吃光：媒体那步已经在 sendOneMediaAsync 里发完了，但下面**所有**分支都以
+        // send_messages* 结尾，ctx.cb 只在那些函数里被触发 —— 直接 return 的话调用方的回调
+        // 永远不会来（插件按 _ASYNC_TIMEOUT 干等 60s，Python 的 await 同理）。
+        // 这里把媒体那次的响应原样交出去；mediaResp 为空 = 压根没有媒体（消息本来就是空的）→ 回 {} 当作"已处理"。
+        if (textB.isEmpty()) {
+            if (ctx.cb) ctx.cb(mediaResp.isEmpty() ? QStringLiteral("{}") : mediaResp,
+                               QNetworkReply::NoError);
+            return;
+        }
+
+        bool mbise= mbCopy.isEmpty();
+        int seq_index=0;
+        bool ok=false;
+        if(indexCopy>=0){
+
+              g_logdb[type+1]->setBuffer_250(indexCopy,ok);
+        }
+        if(ok)
+            seq_index = 1;
+        else if(noref) {
+            // 与上面纯媒体同理：这条路径不派发 send_messages*，ctx.cb 不会被触发 → 调用方干等超时
+            if (ctx.cb) ctx.cb(QStringLiteral("{}"), QNetworkReply::NoError);
+            return;
+        }
+        else seq_index = 2;
+        qDebug()<<"异步 " << seq_index;
+        QString fileinfo;
+        if(type==1 || type ==3)
         {
-            processImageTagsAsync(mb,1,type,openid,
+            if(!mbise)
+            {
+                processImageTagsAsync(mbCopy,1,type,openid,
+                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                    (const QString &tb, const QString &, const QString &mr) {
+                        QString textA = forbidden->filterText(tb);
+                        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
+                    });
+                return;
+            }
+            if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
+            {
+                // 与同步版一致：模板方式暂不支持（同步版这里返回 {"message":"暂时不支持模板方式"}，
+                // 异步版无返回值，记一条日志）
+                QString tbTpl = textB;
+                QString fiTpl, mrTpl;
+                (void)processImageTags(tbTpl,1,fiTpl,type,openid,mrTpl);//处理图片 + 回复
+                QString textA = forbidden->filterText(tbTpl);
+                Q_UNUSED(textA);
+                AppendEventLog(QStringLiteral("异步发送：模板方式（markdown_pd_mb / sendType==2）暂不支持，已跳过正文发送"));
+                // 同上：没有派发 send_messages*，必须自己把本次的「响应」交出去（与同步版返回值对齐）
+                if (ctx.cb) ctx.cb(QStringLiteral(R"({"message":"暂时不支持模板方式"})"),
+                                   QNetworkReply::NoError);
+            }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
+            {
+                processImageTagsAsync(textB,1,type,openid,
+                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                    (const QString &tb, const QString &, const QString &mr) {
+                        QString textA = forbidden->filterText(tb);//违禁词过滤
+                        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                    });
+            }else {
+                processImageTagsAsync(textB,2,type,openid,
+                    [this, type, openid, msgIdCopy, seq_index, ctx, noref]
+                    (const QString &tb, const QString &fi, const QString &mr) {
+                        QString textA = forbidden->filterText(tb);//违禁词过滤
+                        QString url = get_url(type, openid, "messages");
+                        send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
+                    });
+            }
+            return;
+        }
+
+        if(!mbise) //模板 一般用不到
+        {
+            processImageTagsAsync(textB,1,type,openid,
                 [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
                 (const QString &tb, const QString &, const QString &mr) {
                     QString textA = forbidden->filterText(tb);
-                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
+                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
                 });
-            return response;
         }
-        if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
-        {
-            textB = processImageTags(textB,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(textB);
-            //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            response = R"({"message":"暂时不支持模板方式"})";
-        }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
+        if(!mode && m_info->markdown || mode && sendType==1)
         {
             processImageTagsAsync(textB,1,type,openid,
                 [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
@@ -3428,44 +4619,21 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
                     QString textA = forbidden->filterText(tb);//违禁词过滤
                     send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
                 });
-        }else {
-            processImageTagsAsync(textB,2,type,openid,
-                [this, type, openid, msgIdCopy, seq_index, ctx, noref]
+        }else{
+            processImageTagsAsync(textB,0,type,openid,
+                [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
                 (const QString &tb, const QString &fi, const QString &mr) {
                     QString textA = forbidden->filterText(tb);//违禁词过滤
-                    QString url = get_url(type, openid, "messages");
-                    send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
+                    send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
                 });
         }
-        return response;
-    }
+    };
 
-    if(!mbise) //模板 一般用不到
-    {
-        processImageTagsAsync(textB,1,type,openid,
-            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &, const QString &mr) {
-                QString textA = forbidden->filterText(tb);
-                send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }
-    if(!mode && m_info->markdown || mode && sendType==1)
-    {
-        processImageTagsAsync(textB,1,type,openid,
-            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &, const QString &mr) {
-                QString textA = forbidden->filterText(tb);//违禁词过滤
-                send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }else{
-        processImageTagsAsync(textB,0,type,openid,
-            [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &fi, const QString &mr) {
-                QString textA = forbidden->filterText(tb);//违禁词过滤
-                send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }
-    return response;
+    sendOneMediaAsync(type, openid, pname, textB, now_us, msgid, is_wakeup, mode, sendType, noref, ctx,
+                      [sendTextPart](const QString &textOut, const QString &mediaResp) {
+                          sendTextPart(textOut, mediaResp);
+                      });
+    return "{}";
 }
 QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
                                          const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
@@ -3488,7 +4656,13 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     QString message_reference;
     QString newtext2 = sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
 
-    if (text.isEmpty()) return newtext2;
+    // 纯媒体（正文被媒体标签吃光）：sendOneMedia 已经把媒体发完了，而下面**所有**分支都以
+    // send_messages* 结尾才触发 ctx.cb —— 直接 return 的话调用方的回调永远不会来（干等超时）。
+    // 这里把媒体那次的响应交出去；newtext2 为空 = 压根没内容，回 {} 当作"已处理"。
+    if (text.isEmpty()) {
+        if (ctx.cb) ctx.cb(newtext2.isEmpty() ? QStringLiteral("{}") : newtext2, QNetworkReply::NoError);
+        return newtext2;
+    }
 
     bool mbise= mb.isEmpty();
     if(text.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
@@ -3500,7 +4674,11 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     }
     if(ok)
         seq_index = 1;
-    else if(noref) return "{}";
+    else if(noref) {
+        // 与纯媒体同理：这条路径不派发 send_messages*，必须自己给回执，否则调用方干等超时
+        if (ctx.cb) ctx.cb(QStringLiteral("{}"), QNetworkReply::NoError);
+        return "{}";
+    }
     else seq_index = 2;
 
     QString response="{}",fileinfo;

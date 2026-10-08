@@ -96,7 +96,7 @@ class BubbleDelegate : public QStyledItemDelegate
 {
     Q_OBJECT
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    explicit BubbleDelegate(QObject *parent = nullptr);
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override;
     struct CachedData {
@@ -104,24 +104,35 @@ public:
         int textWidth;             // 文本最大宽度
         int textHeight;            // 文本总高度（不含名字和时间）
         bool hasImage;             // 是否包含图片标签
-        QString imagePath;         // 图片路径（如果有）
-        bool imageIsLocal;         // 是否本地图片
+        QString imagePath;         // 图片原始来源（本地路径 或 URL）
+        QString imageLocalFile;    // 已落盘的本地文件（没有则为空）
+        bool imageIsLocal;         // 是否本地文件
         QString displayText;       // 纯文本（去除标签后）
-        int totalHeight;           // 整条消息的总高度（用于 sizeHint）
+        int imageHeight;           // 图片区高度（含下方间距，0=无图）
+        int bubbleHeight;          // 气泡框高度
+        int totalHeight;           // item 总高度（气泡高 + self 的底部留白）
     };
     CachedData prepareMessageData(const QString &rawContent, bool isSelf, const QString &timestamp) const;
+
+    // 预取一条消息里的图片：只在模型填充时调用，paint 里绝不再发请求/读盘
+    void prefetchImages(const QString &rawContent);
+
+signals:
+    void imageLoaded();   // 有图片就绪，视图需要重排版
 
 private:
     mutable QCache<QString, CachedData> m_cache; // 用消息内容作为 key
     mutable QCache<QString, QPixmap> m_avatarCache;  // 头像缓存
-    mutable QCache<QString, QPixmap> m_imageCache;   // 图片缓存
+    mutable QCache<QString, QPixmap> m_imageCache;   // 图片缓存（key = 图片 URL）
     mutable QFont m_textFont;
     mutable QFont m_nameFont;
     mutable QFont m_timeFont;
     mutable QFontMetrics* m_textFm = nullptr;
     mutable QFontMetrics* m_nameFm = nullptr;
     mutable QFontMetrics* m_timeFm = nullptr;
-    QString downloadImageIfNeeded(const QString &url) const;
+    QString resolveImageFile(const QString &url) const;     // 只查内存/磁盘，绝不发请求
+    void startImageDownload(const QString &url);            // 发请求，完成后 emit imageLoaded
+    QPixmap imagePixmapFor(const QString &url, const QString &localFile) const; // 取图（key = URL）
     // 辅助：绘制占位头像
     void drawDefaultAvatar(QPainter* painter, const QRect& rect, const QString& text, bool isSelf) const;
 };
@@ -184,6 +195,8 @@ private:
 
     QListView *msgListView;
     MessageListModel *msgModel;
+    BubbleDelegate *m_bubbleDelegate = nullptr;  // 填充模型时用它预取图片
+    bool m_relayoutPending = false;              // 合并多次「图片就绪」引起的重排
 
     QPushButton *btnSendImage, *btnSendAudio, *btnSendVideo, *btnSendFile;
     QComboBox *comboSendType;

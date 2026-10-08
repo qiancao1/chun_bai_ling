@@ -77,17 +77,18 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.0.90"
-#define APP_BUILD_NUMBER 90
+#define APP_VERSION_STR "v1.4.0.98"
+#define APP_BUILD_NUMBER 98
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.0.96 (2026-10-05)
+## v1.4.0.98 (2026-10-05)
 - 增加 ai获取模型列表 并且测试模型
 - 重写 32位插件加载器
 - 重写 JS 插件相关
 - 修复 获取用户昵称 用不了问题
 - 移除 沙盒页面 因为没啥用
+- 优化 发送视频 语音 文件 等回调方法
 
 ## v1.3.9.93 (2026-10-04)
 - 优化 聊天室 显示机器人是否被踢出
