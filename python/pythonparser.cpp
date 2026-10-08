@@ -96,7 +96,7 @@ QList<PythonFunction> extractFunctions(const QString &filePath)
                     // 去掉类型注解（: 后面的部分）
                     paramPart = paramPart.split(':').first().trimmed();
                     // 如果是 *args 或 **kwargs，保留原样
-                    if (paramPart.startsWith('*') || paramPart.startsWith('**')) {
+                    if (paramPart.startsWith(QStringLiteral("**")) || paramPart.startsWith(QStringLiteral("*"))) {
                         func.params << paramPart;
                     } else {
                         // 提取第一个标识符

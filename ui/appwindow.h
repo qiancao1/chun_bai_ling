@@ -14,6 +14,7 @@
 #include <QComboBox>
 #include <QSyntaxHighlighter>
 #include <qplaintextedit.h>
+#include <QThread>            // m_execThread 需要完整类型（QThread::create/start）
 
 
 class PythonHighlighter : public QSyntaxHighlighter

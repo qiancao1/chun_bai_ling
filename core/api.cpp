@@ -251,7 +251,10 @@ QString botlist()
         obj["online"] = info->online;
         obj["id"] = info->pduid; //频道id
         obj["union_openid"]=info->unid;   //QQid
-        obj["time"] = formatDuration(now-info->startup_time);
+        if(info->online)
+            obj["time"] = formatDuration(now-info->startup_time);
+        else
+            obj["time"] = "未在线";
         obj["admin"] = info->admin;
         if(g_botdb.contains(info->appid_int)){
             auto *db = g_botdb[info->appid_int];

@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include "global.h"
 #include <QRandomGenerator>
+#include <QThread>            // QThread::msleep 需要完整类型
 
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString());
 void flushCosPutList(QList<CosPutPoolEntry> list);
