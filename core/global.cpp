@@ -2768,7 +2768,10 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         return QString(); // 不立即回复
     }
     if (ev.subType == 3) {
-        if (!chatPage->全量群.contains(ev.groupId)) return QString();
+        {
+            QMutexLocker locker(&chatPage->m_GMutex);
+            if (!chatPage->全量群.contains(ev.groupId)) return QString();
+        }
         if (info->tqhy.isEmpty()) return QString();
 
         if (ev.bitmap & BIT_tuiqun) return QString(); // 已关闭退群提示

@@ -181,7 +181,7 @@ public:
 
     QString get_users_list(const QString &cursor, Callback callbacks=Callback());
     //回应回调
-    QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString());
+    QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString(), Callback callbacks = Callback());
     QString get_groups_info(const QString& group,Callback callbacks=Callback());
     QString get_groups_bot_state(const QString& group,Callback callbacks=Callback());
     QString set_mute(const QString& group, const QString &user, qint64 mute_seconds);

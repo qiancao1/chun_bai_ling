@@ -352,6 +352,22 @@ static void deliverPluginAsyncResult(const QString &reqId, const QString &resp)
 }
 
 
+// 把插件 API 的第 7 参（`_7`）直接变成底层要的 Callback —— 各 case 通用。
+//   `_7` 非空 = Python SDK 的 `xxx_async()` 调用 → 底层（Get/Post/Delete/put2）见到 Callback 就走
+//            PostAsync/GetAsync 等异步分支，完成后由 deliverPluginAsyncResult 唤醒等待中的协程；
+//   `_7` 为空（JS / DLL 插件、老的同步调用）→ 返回**空 Callback**，底层原样走同步，行为一字不变。
+// ⚠ 回调只按值捕获 reqId，**绝不捕获 this** —— 请求飞行途中客户端被摘表销毁也不会悬空。
+static Callback pluginAsyncCb(const char *_7)
+{
+    if (_7 == nullptr) return Callback();
+    const QString reqId = toQString(_7);
+    if (reqId.isEmpty()) return Callback();
+    return [reqId](const QString &resp, QNetworkReply::NetworkError) {
+        deliverPluginAsyncResult(reqId, resp);
+    };
+}
+
+
 // 主回调函数
 const char* myCallbackA(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
@@ -488,7 +504,11 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QJsonObject ark = toJsonObject(_3);
         QString msgid = toQString(_4);
         bool is_wakeup = toBool(_5);
-        QString ret = client->send_messages_ark(type, openid,pname, ark, msgid, is_wakeup);
+        // _7 = 异步回执标识（Python SDK 的 send_ark_async 才传）。
+        // 非空 → 传一个带 cb 且 openid 非空的 ctx，send_messages_ark 便走 PostAsync 分支。
+        MessageLogContext ctx;
+        if (Callback cb = pluginAsyncCb(_7)) { ctx.cb = cb; ctx.openid = openid; }
+        QString ret = client->send_messages_ark(type, openid,pname, ark, msgid, is_wakeup, 0, ctx);
         result = ret.toStdString();
         break;
     }
@@ -497,13 +517,13 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QString openid = toQString(_2);
         QString msgid = toQString(_3);
 
-        QString ret = client->delete_messages(type, openid, msgid);
+        QString ret = client->delete_messages(type, openid, msgid, pluginAsyncCb(_7));
         result = ret.toStdString();
         break;
     }
     case API_ID_GENERATE_SHARE_LINK: {
         QString callback_data = toQString(_1);
-        QString ret = client->generate_share_link(callback_data);
+        QString ret = client->generate_share_link(callback_data, pluginAsyncCb(_7));
         result = ret.toStdString();
         break;
     }
@@ -511,7 +531,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QString interaction_id = toQString(_1);
         int code = toInt(_2);
         QString data = toQString(_3);
-        QString ret = client->respond_interaction(interaction_id, code, data);
+        QString ret = client->respond_interaction(interaction_id, code, data, pluginAsyncCb(_7));
         result = ret.toStdString();
         break;
     }
@@ -646,7 +666,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取用户信息 参数2 用户id 内容不能是空";
             break;
         }
-        result = client->get_groups_members(text,text2).toStdString();
+        result = client->get_groups_members(text,text2, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_groups_info: {
@@ -657,7 +677,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             break;
         }
 
-        result = client->get_groups_info(text).toStdString();
+        result = client->get_groups_info(text, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_groups_bot_state: {
@@ -668,7 +688,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             break;
         }
 
-        result = client->get_groups_bot_state(text).toStdString();
+        result = client->get_groups_bot_state(text, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_MEMBER_LIST: {
@@ -681,7 +701,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         }
         QString cursor = toQString(_2);
 
-        result = client->get_members_list(text, cursor).toStdString();
+        result = client->get_members_list(text, cursor, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_SET_JOIN_REQUEST: {
@@ -702,7 +722,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         QString id = toQString(_4);
         QString reject = toQString(_5);
         bool bilack = toBool(_6);
-        result = client->approveGroupJoinRequest(text,user,op,id,reject,bilack).toStdString();
+        result = client->approveGroupJoinRequest(text,user,op,id,reject,bilack, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_SET_MUTE_G: {
@@ -726,7 +746,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             break  ;
         }
         QJsonArray membersArray = doc.array();
-        result = client->setGroupRestrictChatSetting(text,membersArray).toStdString();
+        result = client->setGroupRestrictChatSetting(text,membersArray, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_MUTE_LIST_G: {
@@ -737,7 +757,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取禁言列表 参数1 群id不能是空";
             break;
         }
-        result = client->getGroupRestrictChatSetting(text).toStdString();
+        result = client->getGroupRestrictChatSetting(text, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_JOIN_REQUEST_LIST: {
@@ -748,7 +768,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             result ="获取加群列表 参数1 群id不能是空";
             break;
         }
-        result = client->getjoin_request_list(text).toStdString();
+        result = client->getjoin_request_list(text, 20, QString(), pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GET_GROUP_BLCKLIST: {
@@ -761,7 +781,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         }
         QString cursor = toQString(_1);
 
-        result = client->get_member_blacklist(text,cursor).toStdString();
+        result = client->get_member_blacklist(text,cursor, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_GROUP_BLCKLIST: {
@@ -773,7 +793,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         }
         QString user_list = toQString(_1);
         bool op = toBool(_3);
-        result = client->member_blacklist(text,user_list,op).toStdString();
+        result = client->member_blacklist(text,user_list,op, pluginAsyncCb(_7)).toStdString();
         break;
     }
     case API_ID_REMOV_MEMBER: {
@@ -790,7 +810,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             break;
         }
         bool add_blacklist = toBool(_3);
-        result = client->del_members(text,user_list,add_blacklist).toStdString();
+        result = client->del_members(text,user_list,add_blacklist, pluginAsyncCb(_7)).toStdString();
         break;
     }
 
@@ -4427,8 +4447,8 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(ok)
         seq_index = 1;
     else if(noref) return "{}";
-    else seq_index = 2;
-    qDebug()<<"堵塞 " << seq_index;
+    else seq_index = QRandomGenerator::global()->bounded(2,100);
+
     QString response,fileinfo;
     if(type==1 || type ==3)
     {
@@ -4554,8 +4574,8 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
             if (ctx.cb) ctx.cb(QStringLiteral("{}"), QNetworkReply::NoError);
             return;
         }
-        else seq_index = 2;
-        qDebug()<<"异步 " << seq_index;
+        else seq_index = QRandomGenerator::global()->bounded(2,100);
+
         QString fileinfo;
         if(type==1 || type ==3)
         {

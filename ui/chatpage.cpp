@@ -100,6 +100,93 @@ static QList<MdImageSpan> findMarkdownImages(const QString &s)
     return out;
 }
 
+// `[官网](mqqapi://aio/inlinecmd?command=%E5%AE%98%E7%BD%91&enter=false&reply=true)` → `[官网](官网)`
+// 这类 mqqapi:// / qagent:// 是 QQ 的内联指令按钮，URL 又长又乱（还带百分号编码），
+// 一条消息里几十个直接刷屏 —— 把 URL 换成按钮文字本身即可，形状还是 [文字](文字)。
+static QString simplifyCommandLinks(const QString &content)
+{
+    QString out = content;
+    int from = 0;
+    while (from < out.size()) {
+        const int lb = out.indexOf(QLatin1Char('['), from);
+        if (lb < 0) break;
+        const int rb = out.indexOf(QLatin1String("]("), lb + 1);
+        if (rb < 0) break;
+        const int rp = out.indexOf(QLatin1Char(')'), rb + 2);
+        if (rp < 0) break;
+
+        const QString text = out.mid(lb + 1, rb - lb - 1);
+        const QString link = out.mid(rb + 2, rp - rb - 2).trimmed();
+        const bool cmd = link.startsWith(QLatin1String("mqqapi://"), Qt::CaseInsensitive)
+                      || link.startsWith(QLatin1String("qagent://"), Qt::CaseInsensitive);
+
+        if (cmd && !text.isEmpty()) {
+            out.replace(lb, rp - lb + 1, QString("[%1](%1)").arg(text));
+            from = lb + text.size() * 2 + 4;   // 跳过刚换好的 [文字](文字)
+        } else {
+            from = lb + 1;
+        }
+    }
+    return out;
+}
+
+// 去掉消息里的媒体标签本体：[image,…] [video,…] [audio,…] [file,…] [f,…] [record,…]
+// 这些标签的内容长这样（直接显示就是一坨 URL 文本）：
+//   [image,size=4059,url=https://multimedia.nt.qq.com.cn/download?appid=…&spec=0]
+// 媒体本身另有渲染/双击逻辑，正文里不该再留标签。
+static QString stripMediaTags(const QString &content)
+{
+    static const char *kTags[] = {
+        "[image,", "[video,", "[audio,", "[file,", "[record,", "[img,", "[f,"
+    };
+    QString out = content;
+    for (const char *raw : kTags) {
+        const QString tag = QString::fromLatin1(raw);
+        if (out.contains(tag))
+            out = replaceBetweenAll(out, tag, "]", "");
+    }
+    return out;
+}
+
+// QQ 表情标签：`<faceType=3,faceId="498",ext="eyJ0ZXh0Ijoi…">`
+// ext 是 base64 的 JSON（`{"text":"…"}`），text 才是这个表情的说明，整串直接显示没法看
+// → 换成 `<表情:说明>`；解不出来就退化成 `<表情>`。
+static QString simplifyFaceTags(const QString &content)
+{
+    static const QString kOpen = QStringLiteral("<faceType=");
+    QString out = content;
+    int from = 0;
+    while (from < out.size()) {
+        const int lt = out.indexOf(kOpen, from);
+        if (lt < 0) break;
+        const int gt = out.indexOf(QLatin1Char('>'), lt);
+        if (gt < 0) break;
+
+        QString desc;
+        const int ext = out.indexOf(QLatin1String("ext=\""), lt);
+        if (ext > 0 && ext < gt) {
+            const int es = ext + 5;
+            const int ee = out.indexOf(QLatin1Char('"'), es);
+            if (ee > es && ee < gt) {
+                const QString json =
+                    QString::fromUtf8(QByteArray::fromBase64(out.mid(es, ee - es).toLatin1()));
+                const int tp = json.indexOf(QLatin1String("\"text\":\""));
+                if (tp >= 0) {
+                    const int ts = tp + 8;
+                    const int te = json.indexOf(QLatin1Char('"'), ts);
+                    if (te > ts) desc = json.mid(ts, te - ts);
+                }
+            }
+        }
+
+        const QString repl = desc.isEmpty() ? QStringLiteral("<表情>")
+                                            : QStringLiteral("<表情:%1>").arg(desc);
+        out.replace(lt, gt - lt + 1, repl);
+        from = lt + repl.size();
+    }
+    return out;
+}
+
 static bool extractImageInfo(const QString &content, bool &isLocalPath, QString &source) {
     // 先认 Markdown 图片语法（![alt](url) / [Img #Wpx #Hpx](url)）——
     // 第三方机器人发的 QQ 官方 markdown 图走的就是这条
@@ -328,7 +415,12 @@ void BubbleDelegate::startImageDownload(const QString &url)
     if (!dir.exists()) dir.mkpath(".");
 
     downloadingSet().insert(url);
-    QNetworkReply *reply = getNetworkManager()->get(QNetworkRequest(QUrl(url)));
+    // 腾讯的图床（multimedia.nt.qq.com.cn / qqbot.ugcimg.cn）对裸请求会拒，
+    // 表现就是永远停在「图片加载中…」——带个浏览器 UA 更稳
+    QNetworkRequest imgReq((QUrl(url)));
+    imgReq.setHeader(QNetworkRequest::UserAgentHeader,
+                     QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"));
+    QNetworkReply *reply = getNetworkManager()->get(imgReq);
     QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, url, filePath]() {
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray data = reply->readAll();
@@ -510,6 +602,11 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     CachedData data;
     QString content = rawContent;
 
+    // 0. 统一换行符 —— 这类消息常拿 \r 当换行（有的还混着 \r\n），
+    //    只 split('\n') 的话整条会被挤成一行
+    content.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    content.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
     // 1. 提取图片信息（如果有）——这里只做解析，绝不下载、不发请求
     bool isLocal = false;
     QString imageSrc;
@@ -518,10 +615,9 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     data.imagePath = imageSrc;        // 原始来源：本地路径 或 URL
     data.imageIsLocal = isLocal;
     data.imageLocalFile = isLocal ? imageSrc : resolveImageFile(imageSrc);
-    // 2. 去除图片、视频、音频等标签，得到纯文本
-    // 这里复用您原来的 replaceBetweenAll 等逻辑
-    if (content.contains("[image,"))
-        content = replaceBetweenAll(content, "[image,", "]","");
+    // 2. 去掉媒体标签本体（[image,…] / [video,…] / [file,…] …），只留纯文本
+    //    —— 只清理 [image, 的话，视频/语音/文件标签会整段留在正文里变成一坨 URL
+    content = stripMediaTags(content);
 
     // Markdown 图片：图已单独取出来渲染，正文里不该再留 alt / 尺寸 / url
     {
@@ -530,8 +626,13 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
             content.remove(imgs.at(i).start, imgs.at(i).end - imgs.at(i).start + 1);
     }
 
-    // URL 里的百分号编码转回可读文字
-    // （mqqapi://...?command=%E8%AF%A2%E9%97%AE... → command=询问...）
+    // 内联指令按钮 [官网](mqqapi://…)：URL 又长又乱，换成按钮文字本身 [官网](官网)
+    content = simplifyCommandLinks(content);
+
+    // QQ 表情标签 <faceType=…,ext="base64"> → <表情:说明>
+    content = simplifyFaceTags(content);
+
+    // 剩下文本里的百分号编码转回可读文字（%E5%AE%98%E7%BD%91 → 官网）
     content = QUrl::fromPercentEncoding(content.toUtf8());
 
     data.displayText = content;
@@ -911,12 +1012,15 @@ ChatPage::ChatPage(QWidget *parent)
     : QWidget(parent), isGroupMode(1)  // 默认群聊模式
 {
     initUI();
-    QFile file("data/全量群.hash");
-    if (file.open(QIODevice::ReadOnly)) {
-        QDataStream in(&file);
-        in.setVersion(QDataStream::Qt_5_15);
-        in >> 全量群;
-        file.close();
+    {
+        QMutexLocker locker(&m_GMutex);
+        QFile file("data/全量群.hash");
+        if (file.open(QIODevice::ReadOnly)) {
+            QDataStream in(&file);
+            in.setVersion(QDataStream::Qt_5_15);
+            in >> 全量群;
+            file.close();
+        }
     }
 
     QFile file3("data/最近对话.hash");
@@ -1413,11 +1517,16 @@ void ChatPage::updateAllContactLists(int index)
     bool sw=false;
 
     switch (index) {
-    case 0: // 全量群
+    case 0: { // 全量群
         sw = g_logdb[1]->beginTransaction(true);
         contactList->setUpdatesEnabled(false);
+        QHash<QString,int> fullGroups;   // 先拷快照：循环里有 DB 读，避免长期持锁
+        {
+            QMutexLocker locker(&m_GMutex);
+            fullGroups = 全量群;
+        }
 
-        for (auto it = 全量群.begin(); it != 全量群.end(); ++it) {
+        for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it) {
             Contact c;
             c.id = it.key();//群id
 
@@ -1458,6 +1567,7 @@ void ChatPage::updateAllContactLists(int index)
         contactList->setUpdatesEnabled(true);
         if(sw) g_logdb[1]->commitTransaction();
         return;
+    }
     case 1: bufferIdx=1;break;// 普通群
     case 2: bufferIdx=2;break;// 私聊
     case 3: bufferIdx=3;break;// 频道
@@ -1664,6 +1774,8 @@ void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)
         }
         if(type==0)
         {
+            // 写文件必须和哈希在同一把锁内，否则并发插入会把旧内容覆盖回去
+            QMutexLocker locker(&m_GMutex);
             if(全量群.contains(ev.groupId)) return;
             全量群.insert(ev.groupId,ev.appid);
             QFile file("data/全量群.hash");
@@ -1952,7 +2064,11 @@ void ChatPage::onSendmsg(QString &text)
 {
     if (text.isEmpty()) return;
 
-    int appid = (isGroupMode == 0) ? 全量群.value(currentContactId, m_appid) : m_appid;
+    int appid = m_appid;
+    if (isGroupMode == 0) {
+        QMutexLocker locker(&m_GMutex);
+        appid = 全量群.value(currentContactId, m_appid);
+    }
     int msgType=0;
 
     if(最近对话.contains(currentContactId)) //有点懵逼真的 写这个

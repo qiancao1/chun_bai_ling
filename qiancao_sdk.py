@@ -96,6 +96,31 @@ class QQApi:
         padded = [str(x) if x is not None else "" for x in padded]
         return qq_api.Callback(self.uuid, api_id, appid, *padded)
 
+    async def _call_async(self, api_id: int, appid: int, *args) -> Dict:
+        """通用「真异步」调用：把 req_id 塞进第 7 参（``_7``），等框架回调回来再继续。
+
+        与 ``send_message_async`` 共用同一套回执通道：框架见到 ``_7`` 非空就走
+        PostAsync / GetAsync 等回调分支（不占调用线程），完成后回调进 ``_deliver()``
+        唤醒本协程。所以 handler 必须写成 ``async def``。
+
+        :param args: 最多 6 个普通参数，依次落到框架的 _1.._6（不足补空串）。
+        :return: 已解析的 dict；超时返回 ``{"error": "timeout", "req_id": ...}``。
+        """
+        loop = asyncio.get_running_loop()
+        req_id = _new_req_id()
+        fut = loop.create_future()
+        _PENDING[req_id] = fut
+        try:
+            head = list(args)[:6]
+            head += [""] * (6 - len(head))     # 前 6 位补齐，第 7 位固定放 req_id
+            self._callback(api_id, appid, *head, req_id)
+            raw = await asyncio.wait_for(fut, _ASYNC_TIMEOUT)
+        except asyncio.TimeoutError:
+            return {"error": "timeout", "req_id": req_id}
+        finally:
+            _PENDING.pop(req_id, None)
+        return _parse_resp(raw)
+
     # ---------- 具体 API 封装 ----------
     def outlog(self, text: str, color_rgb: Optional[int] = None) -> Dict:
         return self._callback(self.API_OUTLOG,0, text, str(color_rgb) if color_rgb is not None else None)
@@ -429,6 +454,96 @@ class QQApi:
         :param op ,True 为添加
         """
         return self._callback(self.API_ID_GROUP_BLCKLIST, appid, group_openid,user_list,"true" if op else "false",) 
+
+    # ---------------------------------------------------------------
+    # *_async 版：await 到框架的回调回来，再继续执行后面的 py 代码
+    # ---------------------------------------------------------------
+    # 与同名同步版的入参完全一致，只是返回前会「等结果」。handler 必须写成 async def：
+    #
+    #     @equals("查群")
+    #     async def 查群(msg):
+    #         info = await api.get_groups_info_async(msg.appid, msg.groupid)
+    #         if info.get("group_name"):        # ← 这里已经是「真实响应」了
+    #             ...
+    #
+    # 底层走框架的 GetAsync / PostAsync / DeleteAsync / putAsync（回调式），
+    # 不占那条「所有 Python 插件共享」的 asyncio 线程。
+
+    async def send_ark_async(self, appid: int, type_: int, openid: str, ark: Union[Dict, str],
+                             msgid: str = "", is_wakeup: bool = False) -> Dict:
+        """异步发 ARK 卡片，等发送完成再继续。"""
+        ark_str = ark if isinstance(ark, str) else json.dumps(ark, ensure_ascii=False)
+        return await self._call_async(self.API_SEND_MESSAGES_ARK, appid,
+                                      type_, openid, ark_str, msgid,
+                                      "true" if is_wakeup else "false")
+
+    async def delete_message_async(self, appid: int, type_: int, openid: str, msgid: str) -> Dict:
+        """异步撤回消息。"""
+        return await self._call_async(self.API_DELETE_MESSAGES, appid, type_, openid, msgid)
+
+    async def generate_share_link_async(self, appid: int, callback_data: str) -> Dict:
+        """异步生成分享链接。"""
+        return await self._call_async(self.API_GENERATE_SHARE_LINK, appid, callback_data)
+
+    async def respond_interaction_async(self, appid: int, interaction_id: str, code: int, data: str) -> Dict:
+        """异步响应交互事件。"""
+        return await self._call_async(self.API_RESPOND_INTERACTION, appid,
+                                      interaction_id, str(code), data)
+
+    async def get_member_async(self, appid: int, openid: str, uset: str) -> Dict:
+        """异步查询某用户在该群的昵称/身份。"""
+        return await self._call_async(self.API_ID_GET_MEMBER, appid, openid, uset)
+
+    async def get_member_list_async(self, appid: int, openid: str, cursor: str) -> Dict:
+        """异步获取群成员列表（每次 30 个，cursor 续取）。"""
+        return await self._call_async(self.API_ID_GET_MEMBER_LIST, appid, openid, cursor)
+
+    async def get_groups_info_async(self, appid: int, group_openid: str) -> Dict:
+        """异步获取群基本信息。"""
+        return await self._call_async(self.API_ID_GET_GROUPS_INFO, appid, group_openid)
+
+    async def get_groups_bot_state_async(self, appid: int, group_openid: str) -> Dict:
+        """异步获取机器人在群内的状态。"""
+        return await self._call_async(self.API_ID_GET_GROUPS_BOT_STATE, appid, group_openid)
+
+    async def set_join_request_async(self, appid: int, group_openid: str, user_openid: str,
+                                     approve: bool, request_id: str = "",
+                                     reject_reason: str = "", blacklist: bool = False) -> Dict:
+        """异步处理加群请求（同意/拒绝）。"""
+        return await self._call_async(self.API_ID_SET_JOIN_REQUEST, appid,
+                                      group_openid, user_openid,
+                                      "true" if approve else "false",
+                                      request_id, reject_reason,
+                                      "true" if blacklist else "false")
+
+    async def get_join_request_list_async(self, appid: int, group_openid: str) -> Dict:
+        """异步获取加群请求列表。"""
+        return await self._call_async(self.API_ID_GET_JOIN_REQUEST_LIST, appid, group_openid)
+
+    async def set_mute_g_async(self, appid: int, group_openid: str, members: Union[List[Dict], str]) -> Dict:
+        """异步设置群成员禁言（批量）。"""
+        members_json = json.dumps(members, ensure_ascii=False) if isinstance(members, list) else members
+        return await self._call_async(self.API_ID_SET_MUTE_G, appid, group_openid, members_json)
+
+    async def get_mute_list_g_async(self, appid: int, group_openid: str) -> Dict:
+        """异步获取群禁言列表。"""
+        return await self._call_async(self.API_ID_GET_MUTE_LIST_G, appid, group_openid)
+
+    async def remov_members_async(self, appid: int, group_openid: str, user_list: str,
+                                  add_to_member_blacklist: bool) -> Dict:
+        """异步批量移除成员。"""
+        return await self._call_async(self.API_ID_REMOV_MEMBER, appid, group_openid, user_list,
+                                      "true" if add_to_member_blacklist else "false")
+
+    async def get_grout_blacklist_async(self, appid: int, group_openid: str, cursor: str) -> Dict:
+        """异步查询群黑名单。"""
+        return await self._call_async(self.API_ID_GET_GROUP_BLCKLIST, appid, group_openid, cursor)
+
+    async def set_grout_blacklist_async(self, appid: int, group_openid: str, user_list: str, op: bool) -> Dict:
+        """异步设置群黑名单（op=True 为添加）。"""
+        return await self._call_async(self.API_ID_GROUP_BLCKLIST, appid, group_openid, user_list,
+                                      "true" if op else "false")
+
 
 class ButtonGroup:
     def __init__(self):

@@ -684,8 +684,14 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
 
     switch (type) {
     case 0: {
+        QHash<QString,int> fullGroups;
+        {
+            // 先拷快照：循环里有 DB 读，避免长期持锁
+            QMutexLocker locker(&chatPage->m_GMutex);
+            fullGroups = chatPage->全量群;
+        }
         bool sw = g_logdb[1]->beginTransaction(true);
-        for (auto it = chatPage->全量群.begin(); it != chatPage->全量群.end(); ++it) {
+        for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it) {
             QString groupId = it.key();
             int appid = it.value();
 

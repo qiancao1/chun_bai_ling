@@ -112,7 +112,13 @@ void plts::on_sctswj_2_clicked()
     ts_m_groupStatus.clear();
     if(ui->checkBox_tsq->checkState())
     {
-        for (auto it = chatPage->全量群.begin(); it != chatPage->全量群.end(); ++it) {
+        QHash<QString,int> fullGroups;
+        {
+            // 先拷快照：避免遍历期间长期持锁
+            QMutexLocker locker(&chatPage->m_GMutex);
+            fullGroups = chatPage->全量群;
+        }
+        for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it) {
             int appid =it.value();
             if (g_appid != appid) continue;
             ts_m_groupStatus.append(it.key());

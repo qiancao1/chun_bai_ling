@@ -944,7 +944,7 @@ QString QQBotClient::get_groups_members(const QString& group,const QString &user
 }
 
 //回应回调
-QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data)
+QString QQBotClient::respond_interaction(const QString &interaction_id, int code, const QString &data, Callback callbacks)
 {
     QString url = "https://api.bot.qq.com/interactions/" + interaction_id;
 
@@ -954,6 +954,9 @@ QString QQBotClient::respond_interaction(const QString &interaction_id, int code
         json["data"] = data;
     }
     QByteArray body = QJsonDocument(json).toJson(QJsonDocument::Compact);
+    // 传了回调 → 走 putAsync（回调式，不阻塞调用线程）；没传 → 保持原样同步 + try/catch
+    if (callbacks)
+        return put2(url, body, QString(), 5000, callbacks);
     try {
         return put(url,body,QString(),5000);
     } catch (const std::exception &e) {

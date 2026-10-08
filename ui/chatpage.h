@@ -15,6 +15,7 @@
 #include "qqbotclient.h"
 #include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
 #include <QCache>
+#include <QMutex>
 #include <qstandarditemmodel.h>
 
 // 消息结构
@@ -153,7 +154,7 @@ public:
     void addMessage(const Message &msg);
     PlaceholderTextEdit *inputEdit;
     QHash<QString,int> 全量群;
-
+    QMutex m_GMutex;        // 保护 全量群：GUI 线程 / webui 线程 / 机器人线程都会访问
     QHash<QString,qint64> 最近对话;
     QString currentContactId;
     int isGroupMode=0;

@@ -928,7 +928,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     logMessageEvent(m_info->nickname,ev);
 
 
-    if(ev.type ==4 )
+    if(ev.type ==4)
     {
         if(ev.subType==4 || ev.subType==5){
             if(g_botdb.contains(ev.appid))
@@ -948,6 +948,18 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
                     db->addGroup(ev.groupId,QDateTime::currentSecsSinceEpoch()/60,ev.user_int,0,name);
                 }
                 else{
+                    QMutexLocker locker(&chatPage->m_GMutex);
+                    if(chatPage->全量群 .contains(ev.groupId))
+                    {
+                        chatPage->全量群.remove(ev.groupId);
+                        QFile file("data/全量群.hash");
+                        if (file.open(QIODevice::WriteOnly)) {
+                            QDataStream out(&file);
+                            out.setVersion(QDataStream::Qt_5_15);
+                            out << chatPage->全量群;   // 直接序列化整个 QHash
+                            file.close();
+                        }
+                    }
                     db->deleteGroup(ev.groupId);
                     tabIndex = 1;
                 }
