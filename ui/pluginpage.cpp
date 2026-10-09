@@ -19,10 +19,14 @@
 #include <QPointer>
 #include <QTimer>
 #include <QApplication>
+#include <QEventLoop>       // 32 位命令的同步外壳：GUI 线程上用局部事件循环跑 100ms 轮询
+#include <QElapsedTimer>
+#include <QThread>
 #include <qlibrary.h>
 #include "appwindow.h"
 
 #include "pluginmarketwindow.h"
+#include "ruleeditdialog.h"   // 「编辑指令」独立页面
 #include "global.h"
 #include "node_plugin_manager.h"
 #include "scrolltextdialog.h"   // 可滚动的只读文本弹窗（内容多的提示用它替代 QMessageBox）
@@ -60,6 +64,16 @@ static QString pluginTypeColor(int type)
 // 配置区布局的工厂：ConfigFlowLayout 定义在下面的「配置区」段里（本文件后半部分），
 // setupUi 在同一文件更靠前的位置，没法直接 new，所以走一个前置声明的工厂函数。
 static QLayout *createConfigLayout(QWidget *parent);
+
+// 「指令」列表弹窗里每条规则的显示文字：改过名 / 被停用都直接标出来
+template <typename RuleT>
+static QString ruleDisplayText(const RuleT &rule)
+{
+    QString s = rule.key;
+    if (!rule.newKey.isEmpty()) s += " → " + rule.newKey;
+    if (!rule.enabled)          s += "（停用）";
+    return s;
+}
 
 static void safeCall(const py::object &func) {
     if (func.is_none()) return;
@@ -162,6 +176,9 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
 
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
+    // 指令配置（勾选启用 / 重命名）要在插件开始载入之前就拿到，载入时才能套用
+    m_ruleCfg = g_config.value("plugin_rules").toObject();
+
     setupUi();
     initPython();
 
@@ -401,8 +418,11 @@ void PluginPage::setupUi()
 
     ai_c_j = new QPushButton("AI生成插件");
 
+    bj_zl = new QPushButton("编辑指令");   // 勾选启用 / 重命名插件注册的指令
+
     editBtnLayout->addWidget(ai_b_j);
     editBtnLayout->addWidget(ai_c_j);
+    editBtnLayout->addWidget(bj_zl);
 
     rightMainLayout->addLayout(editBtnLayout);
 
@@ -545,7 +565,7 @@ void PluginPage::setupUi()
                     // 1. 按类型分组
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.python.rules) {
-                        groups[rule.type].append(rule.key);
+                        groups[rule.type].append(ruleDisplayText(rule));
                     }
                     // 2. 记录类型首次出现的顺序（保持注册顺序）
                     QList<MatchType> typeOrder;
@@ -579,7 +599,7 @@ void PluginPage::setupUi()
                     QList<MatchType> typeOrder;
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.DLL.rules) {
-                        groups[rule.type].append(rule.key);
+                        groups[rule.type].append(ruleDisplayText(rule));
                         if (!typeOrder.contains(rule.type))
                             typeOrder.append(rule.type);
                     }
@@ -610,7 +630,7 @@ void PluginPage::setupUi()
                     // 1. 按类型分组
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.js.rules) {
-                        groups[rule.type].append(rule.key);
+                        groups[rule.type].append(ruleDisplayText(rule));
                     }
                     // 2. 记录类型首次出现的顺序（保持注册顺序）
                     QList<MatchType> typeOrder;
@@ -646,6 +666,17 @@ void PluginPage::setupUi()
         auto *w = new AppWindow();
         w->setAttribute(Qt::WA_DeleteOnClose);
         w->show();
+    });
+
+    // 编辑指令：打开独立页面，左侧插件列表 + 右侧 [启用][指令名][新指令名][匹配方式]
+    connect(bj_zl, &QPushButton::clicked, this, [this]() {
+        if (currentSelected_index < 0 || currentSelected_index >= m_pluginList.size()) {
+            QMessageBox::warning(this, "", "请先选择一个插件");
+            return;
+        }
+        auto *dlg = new RuleEditDialog(this, currentSelected_index, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
     });
 
     connect(ai_b_j, &QPushButton::clicked,this, [this]() {
@@ -772,7 +803,8 @@ void PluginPage::onAccountCheckStateChanged(QListWidgetItem *item)
         if (!info.appid.contains(appid))
             info.appid.append(appid);
     }
-    sendData32(11,info,joinIntListFast(info.appid,","));
+    // 只是通知 32 位侧刷新账号列表，返回值没人看 → 只发不等（原来是每次都白等最多 5 秒）
+    sendData32NoWait(11, info, joinIntListFast(info.appid, ","));
     savePlugins();
 }
 //================================================================================================================================================
@@ -925,78 +957,123 @@ QString python_code(const QString &py_code,const MessageEvent &msg)
     return QString();
 }
 
+// ==================== 指令启用 / 重命名 的公共小工具 ====================
+// 命中的实际匹配键：配了重命名就用 newKey，否则用插件注册的 key
+static inline QString ruleMatchKey(const QString &key, const QString &newKey)
+{
+    return newKey.isEmpty() ? key : newKey;
+}
+
+// 探测 Python 处理函数是否接受第 2 个参数「生效命令词」（形参 >= 2 个，或带 *args）。
+// 用于「老插件只写 1 个形参（def on_x(msg)）→ 仍按 1 参调用」的兼容，避免多传实参
+// 触发 TypeError 被吞、插件静默失效。探测失败一律按 1 参（旧行为，最安全）。
+static bool pyFuncWantsCmd(const py::object &fn)
+{
+    try {
+        py::object inspect = py::module_::import("inspect");
+        py::object params  = inspect.attr("signature")(fn).attr("parameters");
+        py::object vals    = params.attr("values")();   // 参数对象序列（不是键）
+        py::object P       = inspect.attr("Parameter");
+        py::object kPosOnly = P.attr("POSITIONAL_ONLY");
+        py::object kPosOrKw = P.attr("POSITIONAL_OR_KEYWORD");
+        py::object kVarPos  = P.attr("VAR_POSITIONAL");
+        int pos = 0;
+        for (auto v : vals) {
+            py::object kind = v.attr("kind");
+            if (kind.equal(kVarPos)) return true;                       // *args：多传也收
+            if (kind.equal(kPosOnly) || kind.equal(kPosOrKw)) pos++;
+        }
+        return pos >= 2;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ⚠ 这里**不做任何正文替换**（2026-10-09 定稿）。
+//   改名后的「用户实输」原样留在正文里，框架只额外把这条指令的「**生效命令词**」
+//   （= 界面上改过名就是新名、没改就是原名，**绝不为空**）用**参数 / 数据**带下去：
+//   四条落点：原生库 → onMessagev3 第 3 个参数；32 位 → 帧里的 plugins[].cmd；
+//   Python → 处理函数第 2 个参数；JS → on_message 第 3 个参数（funs ↔ cmds 一一对应）。
+//   没配过改名的插件走的是与改动前逐字节相同的路径（不拷贝、不重编码）。
+
 bool matchRule(const Rule &rule, const MessageEvent &ev) {
+    if (!rule.enabled) return false;          // 被停用的指令不参与匹配
+    const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
-        return rule.caseSensitive ? (msg == rule.key)
-                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+        return rule.caseSensitive ? (msg == key)
+                                  : (msg.compare(key, Qt::CaseInsensitive) == 0);
     case MatchType::StartsWith:
-        return rule.caseSensitive ? msg.startsWith(rule.key)
-                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.startsWith(key)
+                                  : msg.startsWith(key, Qt::CaseInsensitive);
     case MatchType::EndsWith:
-        return rule.caseSensitive ? msg.endsWith(rule.key)
-                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.endsWith(key)
+                                  : msg.endsWith(key, Qt::CaseInsensitive);
     case MatchType::Contains:
-        return rule.caseSensitive ? msg.contains(rule.key)
-                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.contains(key)
+                                  : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
 
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
 
-        return ev.msgType == rule.key;
+        return ev.msgType == key;
     }
     return false;
 }
 bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
+    if (!rule.enabled) return false;
+    const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
-        return rule.caseSensitive ? (msg == rule.key)
-                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+        return rule.caseSensitive ? (msg == key)
+                                  : (msg.compare(key, Qt::CaseInsensitive) == 0);
     case MatchType::StartsWith:
-        return rule.caseSensitive ? msg.startsWith(rule.key)
-                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.startsWith(key)
+                                  : msg.startsWith(key, Qt::CaseInsensitive);
     case MatchType::EndsWith:
-        return rule.caseSensitive ? msg.endsWith(rule.key)
-                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.endsWith(key)
+                                  : msg.endsWith(key, Qt::CaseInsensitive);
     case MatchType::Contains:
-        return rule.caseSensitive ? msg.contains(rule.key)
-                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.contains(key)
+                                  : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
 
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
 
-        return ev.msgType == rule.key;
+        return ev.msgType == key;
     }
     return false;
 }
 bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
+    if (!rule.enabled) return false;
+    const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
-        return rule.caseSensitive ? (msg == rule.key)
-                                  : (msg.compare(rule.key, Qt::CaseInsensitive) == 0);
+        return rule.caseSensitive ? (msg == key)
+                                  : (msg.compare(key, Qt::CaseInsensitive) == 0);
     case MatchType::StartsWith:
-        return rule.caseSensitive ? msg.startsWith(rule.key)
-                                  : msg.startsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.startsWith(key)
+                                  : msg.startsWith(key, Qt::CaseInsensitive);
     case MatchType::EndsWith:
-        return rule.caseSensitive ? msg.endsWith(rule.key)
-                                  : msg.endsWith(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.endsWith(key)
+                                  : msg.endsWith(key, Qt::CaseInsensitive);
     case MatchType::Contains:
-        return rule.caseSensitive ? msg.contains(rule.key)
-                                  : msg.contains(rule.key, Qt::CaseInsensitive);
+        return rule.caseSensitive ? msg.contains(key)
+                                  : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
 
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
 
-        return ev.msgType == rule.key;
+        return ev.msgType == key;
     }
     return false;
 }
@@ -1029,7 +1106,17 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
             if (matchRule(rule, msg)) {
                 if (!gil) gil.emplace();   // 第一次命中才获取，循环内复用
 
-                py::object ret = rule.function(msg); // 如果是async，这里返回协程对象
+                // 正文一个字不动（用户实输就在 msg.msg 里）。这条指令的「生效命令词」
+                // （改名=新名、没改=原名）作为**第 2 个参数**交给插件，让它去切正文取参数 ——
+                // 与原生库 v3 的参数含义一致（那边是 (json, fun, cmd)）。
+                // 兼容：老插件只写 1 个形参（def on_x(msg)）→ rule.wantsCmd=false，仍按 1 参调用。
+                py::object ret;
+                if (rule.wantsCmd) {
+                    const QString effCmd = ruleMatchKey(rule.key, rule.newKey);
+                    ret = rule.function(msg, effCmd.toStdString());   // async 时返回协程对象
+                } else {
+                    ret = rule.function(msg);                         // 老插件：1 参，同旧路径
+                }
                 process_ret(ret);
 
             }
@@ -1064,6 +1151,13 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
     int _32=0;
     std::optional<py::gil_scoped_acquire> gil;
     QJsonArray jsTargets;    // 本轮命中的 JS 插件（uuid + 命中规则名），遍历结束后合成**一帧**投给 node 宿主
+    // 32 位易语言侧：把本轮要投的插件收集起来，最后随帧一起投一次。
+    //   · 注册式    —— 只列**命中规则**的那些，附「函数指针 + 命中原指令 + 用户实输」
+    //   · 非注册式  —— **每条消息都列**，只给 uuid（没有函数指针可给，插件自己判断）
+    // 正文一律不动；易语言侧按 plugins[] 逐条分派即可，不必再自己匹配一遍。
+    // ⚠ 旧版 32 位插件（插件信息里没带 sdk）也照样收到 plugins[]，只是它看不懂、继续按 d.content
+    //   自己匹配 —— 正因如此**旧版不允许在界面上改名**（见 ruleConfigAllowRename）。
+    QJsonArray plugins32;
     for (const auto & p:std::as_const(m_pluginList)) {
         if (!p.enabled) continue;
         if(p.appid.contains(msg.appid)) continue; //这个插件禁用
@@ -1072,18 +1166,34 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             onMessageReceived(msg,p,gil);
             continue;
         }
-        else if(p.type == 2) //统计 是否需要发送
+        else if(p.type == 2) //收集命中的 32 位插件，遍历结束后随帧一起投递
         {
-            if(_32>0) continue;
             if(p.DLL.rules.size()>0){
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
                     if (matchRule2(rule, msg)) {
                         _32++;
-
+                        // 命中即登记一条：插件标识 + 函数指针 + **生效命令词**（+ 一份用户实输兜底）。
+                        // fun 是**32 位进程里的地址**（≤ 0x7FFFFFFF，double 能精确表示）；
+                        // 再给一份 fun_s 十进制字符串，方便按字符串读的解析器。
+                        QJsonObject one;
+                        one["uuid"]  = p.uuid;
+                        one["fun"]   = double(rule.fun);
+                        one["fun_s"] = QString::number(rule.fun);
+                        // cmd = **生效命令词**（界面上改过名就是新名、没改就是原名，绝不为空）：
+                        // 易语言拿它去切帧正文里的参数；别用「注册原名」的长度切（改名后长度对不上）。
+                        one["cmd"]   = ruleMatchKey(rule.key, rule.newKey);
+                        one["text"]  = msg.msg;     // 用户实输原文（冗余，正文里也有；插件可自行忽略）
+                        plugins32.append(one);
                     }
                 }
             }else{
                 _32++;
+                // 非注册式（老式）32 位插件：没有规则表，**每条消息都要投给它**，由它自己匹配。
+                // 没有函数指针可给 → 只登记 uuid，fun / fun_s / cmd / text 一律不写。
+                // ⚠ 易语言侧按**本地插件的「注册式」标志**分流，别靠这些字段是否存在来判。
+                QJsonObject one;
+                one["uuid"] = p.uuid;
+                plugins32.append(one);
             }
 
             continue;
@@ -1093,35 +1203,71 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             // 否则把**所有命中**的规则名（fun）收集起来一起下发 —— 框架既然已经匹配过了，
             // node 侧直接按名字执行即可，不用再匹配一遍（也顺带让 regex 规则可用）。
             bool hit = p.js.rules.isEmpty();
-            QJsonArray funs;
+            QJsonArray funs;    // 命中的规则函数名（顺序与 cmds 一一对应）
+            QJsonArray cmds;    // 对应的「生效命令词」；用户实输就在 data 的正文里，不用另传
             for (const Rule_js &rule : std::as_const(p.js.rules)) {
-                if (matchRule3(rule, msg)) { hit = true; funs.append(rule.fun); }
+                if (!matchRule3(rule, msg)) continue;
+                hit = true;
+                funs.append(rule.fun);
+                cmds.append(ruleMatchKey(rule.key, rule.newKey));   // 改名=新名、没改=原名
             }
             if (hit) {
                 QJsonObject item;
                 item["uuid"] = p.uuid;
                 item["funs"] = funs;
+                item["cmds"] = cmds;    // 宿主原样透传，插件按 funs[i] ↔ cmds[i] 对应取
                 jsTargets.append(item);
             }
             continue;
         }
 
         try {
-            if (p.DLL.onMessage2) {
+            // 命中一条规则就调一次；正文一律原样（不做替换），额外信息全走参数。
+            //   新版(导出 onMessagev3) → onMessagev3(json, fun, **生效命令词**)：
+            //     生效命令词 = 界面上改过名就是新名、没改就是原名（绝不为空）。插件拿它去切
+            //     json 正文里的参数 —— 不能拿自己注册的原名切，改名后长度对不上。
+            //     **返回值 = 想让机器人发的话**（NULL/空串 = 不发）
+            //   中间版                → onMessagev2(json, fun)
+            //   旧版                  → on_message(json)（不看规则，每条都喂）
+            // 三者按优先级取其一，插件导出哪个就走哪条，互不干扰。
+            // v3 返回值攒在这里（命中多条用分隔行拼起来，与 Python 插件 return 文本的做法一致）
+            QString dllReply;
+            if (p.DLL.onMessage3) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
-                    if (matchRule2(rule, msg)) {
-                        if(msg.log>0) {
-                            bool ok = false;
-                            g_logdb [msg.type+1]->setBuffer_250(msg.log,ok); //设置为250 让未处理 回复 不回复
-                        }
-                        p.DLL.onMessage2(utf8.data(),rule.fun);
+                    if (!matchRule2(rule, msg)) continue;
 
+                    // 缓冲区显式存活到调用结束，别写成临时对象的 constData()
+                    const QByteArray effCmd = ruleMatchKey(rule.key, rule.newKey).toUtf8(); // 生效命令词（改名=新名）
+                    // 返回值 = 插件想让机器人发的话：非空即代发（插件也可以照旧自己调 API 发，两种都行）。
+                    // ⚠ 内存所有权：返回的字符串由**插件持有**（静态缓冲 / 字面量），框架只读、绝不释放。
+                    const char *ret = p.DLL.onMessage3(utf8.constData(), rule.fun, effCmd.constData());
+                    if (ret && *ret) {
+                        const QString s = QString::fromUtf8(ret);
+                        if (dllReply.isEmpty()) dllReply = s;
+                        else dllReply += "\n---\n" + s;
                     }
+                }
+            } else if (p.DLL.onMessage2) {
+                for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
+                    if (!matchRule2(rule, msg)) continue;
+
+                    p.DLL.onMessage2(utf8.constData(), rule.fun);
                 }
             }
 
             if (p.DLL.onMessage) {
                 p.DLL.onMessage(utf8.data());
+            }
+
+            // v3 返回值 → 框架代发（与 Python 插件 return 文本走的是同一条发送路径）。
+            // 顺手置 op：插件已经答过了，别再让 AI 兜底回一条重复的。
+            if (!dllReply.isEmpty()) {
+                msg.op = true;
+                QQBotClient *client = m_botClients.value(msg.appid);
+                if (client) {
+                    QString pname = "[" + p.name + "|%1ms]";
+                    client->send_msgAsync(msg.type, msg.groupId, pname, dllReply, msg.msgId);
+                }
             }
         } catch (const std::exception &e) {
             AppendEventLog("[DLL] " + p.name + " on_message: " + e.what() ,0xff);
@@ -1137,8 +1283,19 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
         NodePluginManager::instance().postEventBatchAsync(jsTargets, "on_message", text, QString());
 
 #ifdef _WIN32
-    if(_32!=0 && bridge)
-        bridge->writeResponseToBlock(2, utf8.constData());
+    if(_32!=0 && bridge) {
+        // 把「命中的插件 + 函数指针 + 指令」并进原始帧顶层的 plugins[] 一起投过去（仍只投一次）。
+        // ⚠ 正文一个字不动；易语言侧按 plugins[i] 直接调函数，不必再自己匹配一遍。
+        //   万一帧解析不出来（理论上不会）就退回原始帧，保持旧行为。
+        QJsonObject doc = QJsonDocument::fromJson(utf8.constData()).object();
+        if (!doc.isEmpty()) {
+            doc["plugins"] = plugins32;
+            const QByteArray frame32 = QJsonDocument(doc).toJson(QJsonDocument::Compact);
+            bridge->writeResponseToBlock(2, frame32.constData());
+        } else {
+            bridge->writeResponseToBlock(2, utf8.constData());
+        }
+    }
 
 #endif
     if(msg.at_you && msg.subType==0)
@@ -1775,8 +1932,25 @@ bool PluginPage::Enabled_Plugin(PluginInfo &info)
 
 void PluginPage::foruninstall_Plugin()
 {
-    for(int i=0;i<m_pluginList.size();++i)
-        uninstall_Plugin(m_pluginList[i]);
+    for (int i = 0; i < m_pluginList.size(); ++i) {
+        PluginInfo &info = m_pluginList[i];
+
+        // 32 位插件：退出时只要把「禁用 + 卸载」两条甩过去就行（返回值没人看）。
+        // 走同步版的话每个插件最高 2×5 秒（禁用 3 + 卸载 4）全卡在退出流程里，
+        // 而且退出期间跑嵌套事件循环不是好主意 —— 所以这里只发不等，然后自己清临时 DLL。
+        if (info.type == 2) {
+            sendData32NoWait(3, info, QString());
+            sendData32NoWait(4, info, QString());
+            if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
+                QFile::remove(info.loadedDllPath);
+                info.loadedDllPath.clear();
+            }
+            info.enabled = false;
+            continue;
+        }
+
+        uninstall_Plugin(info);
+    }
 
     // JS 插件现在共用一个常驻 node 宿主进程：上面对每个插件的 unloadPlugin 只是结束了
     // 它的 Worker，宿主本身还在。退出前必须显式关掉，否则会留一个孤儿 node 进程。
@@ -2398,18 +2572,28 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     info.DLL.get_config_list = (OnFunc1)lib->resolve("get_config_list");
     info.DLL.set_config_value = (OnFunc2)lib->resolve("set_config_value");
 
+    // 入口统一是 get_plugin_info（新旧都叫这个名）。
+    // ⚠「是不是新版」**只看导出符号**：有 onMessagev3（4 参入口）= 新版，没有 = 旧版。
+    //   **不读** get_plugin_info 返回 JSON 里的 sdk 字段 —— 动态库的导出符号本身就是事实，
+    //   少一个字段少一处对不上（C / C++ / Go / Rust 全都一样，跟入口名无关）。
+    //   Python(0) / JS(3) 没有「入口函数」这个概念（规则直接指向任意 handler），那两类继续用 sdk 字段。
+    //   只有新版才允许在「编辑指令」里重命名 —— 老插件收到改名后的输入会自己按原指令匹配、匹配不上。
     info.DLL.getPluginInfo = (GetPluginInfoFunc)lib->resolve("get_plugin_info");
-    info.DLL.onMessage = (OnMessageFunc)lib->resolve("on_message");
+    info.DLL.onMessage  = (OnMessageFunc)lib->resolve("on_message");      // 旧版 1 参
+    info.DLL.onMessage2 = (OnMessageFunc2)lib->resolve("onMessagev2");    // 中间版 2 参
+    info.DLL.onMessage3 = (OnMessageFunc3)lib->resolve("onMessagev3");    // 新版 4 参
+    info.DLL.isV2 = (info.DLL.onMessage3 != nullptr);   // 有 v3 入口 = 新版（才允许指令改名）
     info.DLL.onEnable = (OnFunc0)lib->resolve("on_enable");
     info.DLL.onDisable = (OnFunc0)lib->resolve("on_disable");
     info.DLL.onUnload = (OnFunc0)lib->resolve("on_unload");
     info.DLL.onSet = (OnFunc0)lib->resolve("on_set");
-    info.DLL.onMessage2 = (OnMessageFunc2)lib->resolve("onMessagev2");
     // 昵称审核接口：加载时就把地址取出来（插件不实现则为 nullptr，不报错）
     info.DLL.getReviewList = (ReviewFetchFunc)lib->resolve(kPluginFuncGetReviewList);
     info.DLL.submitReview  = (ReviewSubmitFunc)lib->resolve(kPluginFuncSubmitReview);
-    if (!info.DLL.getPluginInfo) return info.path + "\n get_plugin_info 函数不存在";
-    if (!info.DLL.onMessage && !info.DLL.onMessage2) return info.path + "\n on_message 函数不存在";
+    if (!info.DLL.getPluginInfo)
+        return info.path + "\n get_plugin_info 函数不存在";
+    if (!info.DLL.onMessage && !info.DLL.onMessage2 && !info.DLL.onMessage3)
+        return info.path + "\n on_message / onMessagev2 / onMessagev3 一个都没有";
     info.DLL.rules.clear();
     QByteArray uuidBytes = info.uuid.toUtf8();
     uuidBytes.append('\0');
@@ -2452,6 +2636,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
             if (obj.contains("icon")) info.icon = obj["icon"].toString();
             if (obj.contains("id")) info.id = obj["id"].toString();
             if (obj.contains("version2")) info.version_int = obj["version2"].toInt();
+            // ⚠ 这里**不再**读 "sdk" 判断新旧 —— 原生库的新旧看导出符号 onMessagev3（见上面 resolve 处）。
 
             auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
 
@@ -2495,47 +2680,166 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     }
     if(info.name.isEmpty()) return info.path + "get_plugin_info 函数中未正确 返回插件名字";
 
+    applySavedRuleConfig(info);   // 套用「编辑指令」里存下的启停 / 重命名
     return QString();
+}
+
+// ==================== 往 32 位模块发命令（异步内核 + 同步外壳）====================
+// 桥接只提供「写任务槽 → 阻塞等返回值」这一条同步通道（processRequestsA 会卡住调用线程）。
+// 卡在 GUI 线程上 = 界面「无响应」，而且全 app 的 QTimer / 网络 / AI 一起停摆 ——
+// 32 位模块没在跑的时候，点一下「启用」要白等满 5 秒。
+// 所以内核改成异步：写任务槽后立刻返回，用 QTimer 每 100ms 回头看一次有没有返回值，
+// 拿到就回调、到点还没等到就超时。外面再套一层同步外壳给原来的调用点用（签名没动）。
+// ⚠ 100ms 是 2026-10-09 用户拍板的轮询间隔（对用户无感）。
+// ⚠⚠ **多路**（2026-10-09 二版）：每条命令先领一个请求号，把它塞进 JSON 的 "reqid"，
+//    易语言回吐时原样带回（_post4 第 3 个参数），桥按号精确路由 —— 于是**多条命令可以同时在飞**。
+//    （一版是「同一时间只允许一条在飞」，第二条直接失败；根因是回执不带任何标识。）
+static constexpr int kData32PollMs    = 100;    // 轮询间隔
+static constexpr int kData32TimeoutMs = 5000;   // 单条命令的总超时（沿用旧值）
+
+void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
+                                 const std::function<void(const QString &)> &cb)
+{
+#ifdef _WIN32
+    // bridge 只在 纯白铃32.exe 存在时才创建（main.cpp），没装 32 位模块时直接失败返回
+    if (!bridge) { if (cb) cb(QString()); return; }
+
+    // 只发不等：调用点根本不看返回值（比如同步账号列表 / 退出时的一串通知），
+    // 连等待者都不登记、一个定时器都不起。
+    // ⚠ 仍然带一个哨兵号：它的回执（若易语言也回了）永远匹配不上任何一路，
+    //   从而不会被误认成「正在等的那条命令」的结果。
+    if (timeoutMs <= 0) {
+        QJsonObject r = req;
+        r["reqid"] = SharedMemoryBridge::NO_WAIT_REQ_ID;
+        bridge->writeResponseToBlock(1, QJsonDocument(r).toJson(QJsonDocument::Compact).constData());
+        return;
+    }
+
+    // 领号 + 登记等待者（一步完成，原子的）
+    const int reqId = bridge->prepareCommandWait();
+    if (reqId <= 0) {
+        qWarning() << "共享内存: 请求号分配失败，本次 32 位命令放弃";
+        if (cb) cb(QString());
+        return;
+    }
+
+    QJsonObject r = req;
+    r["reqid"] = reqId;                        // 易语言回吐时原样带回 → 桥按它路由
+    const QByteArray data = QJsonDocument(r).toJson(QJsonDocument::Compact);
+
+    // ⚠ 已经登记了等待者再写任务槽：万一对方回得比 100ms 的轮询还快，结果也已经记在
+    //   这一路里，下一跳就能取到，不会丢
+    if (!bridge->writeResponseToBlock(1, data.constData())) {
+        bridge->endCommandWait(reqId);
+        if (cb) cb(QStringLiteral("发送命令失败（共享内存繁忙）"));
+        return;
+    }
+
+    auto timer   = new QTimer(this);           // 挂在 this 上：页面析构时跟着停
+    auto elapsed = std::make_shared<QElapsedTimer>();
+    timer->setSingleShot(true);
+    elapsed->start();
+
+    connect(timer, &QTimer::timeout, this,
+            [this, timer, elapsed, cb, timeoutMs, reqId]() {
+        QString out;
+        if (bridge && bridge->pollCommandResult(reqId, out)) {
+            bridge->endCommandWait(reqId);
+            timer->deleteLater();
+            if (cb) cb(out);                   // ⚠ 空串也是**合法返回值**（很多命令本来就没输出）
+            return;
+        }
+        if (elapsed->elapsed() >= timeoutMs) { // 超时：注销等待者（迟到的结果会被丢弃，防串包）
+            if (bridge) bridge->endCommandWait(reqId);
+            timer->deleteLater();
+            qWarning() << "共享内存: 等待 32 位命令返回超时 (reqid =" << reqId << ")";
+            if (cb) cb(QString());
+            return;
+        }
+        timer->start(kData32PollMs);           // 还没有 → 再等 100ms
+    });
+    timer->start(kData32PollMs);
+#else
+    Q_UNUSED(req); Q_UNUSED(timeoutMs); Q_UNUSED(cb);
+#endif
+}
+
+// 同步外壳：GUI 线程用局部事件循环驱动上面的轮询。
+// 等待期间**排除两类事件**，其它照常：
+//   · ExcludeUserInputEvents    —— 点击排队，等这次做完再处理。同步壳通常是「点按钮 → 发命令 →
+//     等结果」这条链上的，等待期间再派发用户输入会在同一个调用栈里递归进 UI 回调。
+//     （多路改造后已经不存在「撞上唯一等待者」的问题，但重入这条仍然要挡。）
+//   · ExcludeSocketNotifiers    —— 不去读新到的 socket 数据。WebUI 的收发就在 GUI 线程上
+//     （websocketserver 没 moveToThread），不排除的话等待期间会嵌套着处理别人的 WS 请求。
+// 剩下重绘、QTimer、跨线程排队调用都正常跑 —— 所以界面不再「无响应」，心跳 / 消息轮询也不停。
+// 非 GUI 线程（机器人线程等）没有事件循环可跑 → 保持原来的阻塞等待。
+QString PluginPage::sendData32Wait(const QJsonObject &req, int timeoutMs)
+{
+#ifdef _WIN32
+    if (!bridge) return QString();
+
+    if (QThread::currentThread() == qApp->thread()) {
+        struct WaitCtx { QEventLoop loop; QString ret; bool got = false; };
+        auto ctx = std::make_shared<WaitCtx>();          // 堆上放，回调万一晚到也不会引用到已退栈的局部变量
+        sendData32Async(req, timeoutMs, [ctx](const QString &r) {
+            ctx->ret = r;
+            ctx->got = true;
+            ctx->loop.quit();
+        });
+        if (!ctx->got)                                   // 同步就失败（没桥 / 抢不到等待者）时别再 exec
+            ctx->loop.exec(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
+        return ctx->got ? ctx->ret : QString();
+    }
+
+    // 非 GUI 线程（机器人线程）直接阻塞等：和异步版一样先领号，回执靠号路由
+    const int reqId = bridge->prepareCommandWait();
+    if (reqId <= 0) return QString();
+
+    QJsonObject r = req;
+    r["reqid"] = reqId;
+    const QByteArray data = QJsonDocument(r).toJson(QJsonDocument::Compact);
+    if (!bridge->writeResponseToBlock(1, data.constData())) {
+        bridge->endCommandWait(reqId);
+        return QStringLiteral("发送命令失败（共享内存繁忙）");
+    }
+    return bridge->processRequestsA(reqId, timeoutMs);   // 内部会把这一路注销掉
+#else
+    Q_UNUSED(req); Q_UNUSED(timeoutMs);
+    return QString();
+#endif
 }
 
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
 {
-    #ifdef _WIN32
-    // bridge 只在 纯白铃32.exe 存在时才创建（main.cpp），
-    // 没装 32 位模块时这里必须直接返回，否则解引用空指针会直接崩掉。
-    if (!bridge) return QString();
     QJsonObject reqJson;
     reqJson["type"] = type;                       // 加载插件
     reqJson["path"] = info.path;      // 路径
     reqJson["uuid"] = info.uuid;              // 插件唯一标识（可能为空，由易语言处理）
     reqJson["e"]    = info.enabled;           // 是否启用（bool 型，易语言取逻辑值）
     reqJson["appid"]=appidlist;
-    QByteArray reqData = QJsonDocument(reqJson).toJson(QJsonDocument::Compact);
-    if(!bridge->writeResponseToBlock(1, reqData.constData()))
-         return "发送加载命令失败（共享内存繁忙）";
-    return bridge->processRequestsA(5000);
-#else
-    return QString();
-#endif
+    return sendData32Wait(reqJson, kData32TimeoutMs);
 }
 QString PluginPage::sendData32(int type, PluginInfo &info , const QString &id, const QString &value)
 {
-#ifdef _WIN32
-
-    if (!bridge) return QString();
     QJsonObject reqJson;
     reqJson["type"] = type;                       // 加载插件
 
     reqJson["uuid"] = info.uuid;              // 插件唯一标识（可能为空，由易语言处理）
     reqJson["id"] = id;
     reqJson["value"] = value;
-    QByteArray reqData = QJsonDocument(reqJson).toJson(QJsonDocument::Compact);
-    if(!bridge->writeResponseToBlock(1, reqData.constData()))
-        return "发送加载命令失败（共享内存繁忙）";
-    return bridge->processRequestsA(5000);
-#else
-    return QString();
-#endif
+    return sendData32Wait(reqJson, kData32TimeoutMs);
+}
+
+// 只发不等：调用点不看返回值，那就别白等 5 秒（例：账号勾选时同步账号列表）
+void PluginPage::sendData32NoWait(int type, PluginInfo &info, const QString &appidlist)
+{
+    QJsonObject reqJson;
+    reqJson["type"] = type;
+    reqJson["path"] = info.path;
+    reqJson["uuid"] = info.uuid;
+    reqJson["e"]    = info.enabled;
+    reqJson["appid"]=appidlist;
+    sendData32Async(reqJson, 0, nullptr);
 }
 QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
 {
@@ -2570,6 +2874,7 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
         info.uuid=uuid.toString(QUuid::WithoutBraces);
     }
     QString result = sendData32(1,info);
+
     if (result.isEmpty())
         return "加载DLL 等待响应超时或返回空";
 
@@ -2590,6 +2895,11 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     info.id = obj["id"].toString();
     info.version_int = obj["version2"].toInt();
     info.type=2;
+    // 「是不是新版」：32 位（易语言）没有导出符号可查（它压根不是被 LoadLibrary 加载的，
+    //   只有固定入口 on_message + 共享内存帧协议），所以只能看**插件信息 JSON 里的 sdk >= 2**。
+    //   · 带 sdk（新版）→ 帧里会带上 plugins[].cmd（生效命令词）/text（用户实输），改名才安全
+    //   · 没这个字段（老插件）→ 自己拿 d.content 按原指令匹配，改名后它匹配不上 → 静默失效
+    info.DLL.isV2 = (obj["sdk"].toInt() >= 2);
     info.DLL.rules.clear();
     auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
 
@@ -2626,6 +2936,7 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     parseRuleList("contains", MatchType::Contains);
     parseRuleList("regex", MatchType::Regex);
     parseRuleList("event", MatchType::event);
+    applySavedRuleConfig(info);   // 套用「编辑指令」里存下的启停 / 重命名
     return QString();   // 成功
 }
 
@@ -2649,11 +2960,13 @@ void PluginPage::syncPluginsTo32()
     }
     cmd["plugin"] = pluginArray;
 
-    QByteArray data = QJsonDocument(cmd).toJson(QJsonDocument::Compact);
-    bridge->writeResponseToBlock(1, data.constData());
-    QString ret =bridge->processRequestsA(5000);
-    if(ret.isEmpty()) return;
-    AppendEventLog(ret);
+    // 返回值只是一句「结果说明」，丢进事件日志就行 —— 原来是阻塞等最多 5 秒，
+    // 而这个函数是**心跳里每 8 拍就调一次**（mainwindow 的心跳 lambda），
+    // 32 位模块没在跑的时候 GUI 线程会周期性卡住。改成异步：发出去，回来了再补日志。
+    sendData32Async(cmd, kData32TimeoutMs, [this](const QString &ret) {
+        if (ret.isEmpty()) return;
+        AppendEventLog(ret);
+    });
     #endif
 }
 
@@ -2843,6 +3156,7 @@ event = _register_rule("event")
                     rule.type = matchType;
                     rule.key = keyStr;
                     rule.function = funcObj;
+                    rule.wantsCmd = pyFuncWantsCmd(funcObj);   // 2 个形参就传「生效命令词」，1 个不传
                     rule.caseSensitive = caseSensitive;
 
                     if (matchType == MatchType::Regex) {
@@ -2892,6 +3206,13 @@ event = _register_rule("event")
 
                 if (dict.contains("version2") && !dict["version2"].is_none()) {
                     info.version_int = dict["version2"].cast<int>();
+                }
+
+                // 新版标志：插件信息字典里带 sdk >= 2（老插件没这个键 → isV2 = false，不可改名）
+                info.python.isV2 = false;
+                if (dict.contains("sdk") && !dict["sdk"].is_none()) {
+                    try { info.python.isV2 = (dict["sdk"].cast<long long>() >= 2); }
+                    catch (const std::exception &) { info.python.isV2 = false; }
                 }
 
                 // 解析规则列表（与原来一致）
@@ -2947,6 +3268,7 @@ event = _register_rule("event")
                             rule.type = matchType;
                             rule.key = key;
                             rule.function = funcObj;
+                            rule.wantsCmd = pyFuncWantsCmd(funcObj);   // 2 个形参就传「生效命令词」，1 个不传
                             rule.caseSensitive = caseSensitive;
 
                             // 仅当类型是 Regex 时初始化正则表达式
@@ -2986,11 +3308,145 @@ event = _register_rule("event")
             return info.path + "/main.py 中 get_plugin_info 函数未返回插件名称";
         }
 
+        applySavedRuleConfig(info);   // 套用「编辑指令」里存下的启停 / 重命名
         return QString();
 
     } catch (const py::error_already_set &e) {
         return QString("%1 错误: %2").arg(info.path, e.what());
     }
+}
+
+// ==================== 指令配置（勾选启用 / 重命名）存取 ====================
+// 配置以「插件 id」为键，id 为空时退化成插件名，存放在 g_config["plugin_rules"]：
+//   { "<插件id或名>": [ {"t":匹配方式, "k":注册原指令, "n":新指令, "e":是否启用} ... ] }
+// ⚠ 这里只存「差异」：没配过的插件根本不会出现在这张表里。
+static inline QString ruleCfgKeyOf(const PluginInfo &info)
+{
+    return info.id.isEmpty() ? info.name : info.id;
+}
+
+// 把配置行套到规则的活体上（按 (匹配方式, 注册原指令) 定位，三套 Rule 结构字段名一致 → 一个模板搞定）
+// allowRename = false（旧版插件）时**忽略配置里的新指令名**，防止历史脏值把它改成匹配不上的名字。
+template <typename RuleT>
+static void applyRowsToRules(QList<RuleT> &rules, const QJsonArray &arr, bool allowRename = true)
+{
+    for (const QJsonValue &v : arr) {
+        const QJsonObject o = v.toObject();
+        const int     t = o.value("t").toInt(-1);
+        const QString k = o.value("k").toString();
+        if (k.isEmpty()) continue;
+        for (RuleT &r : rules) {
+            if (static_cast<int>(r.type) != t || r.key != k) continue;
+            r.newKey  = allowRename ? o.value("n").toString() : QString();
+            r.enabled = o.value("e").toBool(true);
+            if (r.type == MatchType::Regex) {
+                // 重命名后正则必须按新值重建，否则匹配的还是插件注册时那个老正则
+                QRegularExpression::PatternOptions opt = QRegularExpression::NoPatternOption;
+                if (!r.caseSensitive) opt |= QRegularExpression::CaseInsensitiveOption;
+                r.regex = QRegularExpression(r.newKey.isEmpty() ? r.key : r.newKey, opt);
+            }
+            break;
+        }
+    }
+}
+
+void PluginPage::applySavedRuleConfig(PluginInfo &info)
+{
+    const QString key = ruleCfgKeyOf(info);
+    if (key.isEmpty()) return;
+    const QJsonArray arr = m_ruleCfg.value(key).toArray();
+    if (arr.isEmpty()) return;
+
+    // 旧版插件不允许改名 → 配置里残留的新指令名一律不生效（启用/停用照常套用）。
+    // 原生库看 onMessagev3 符号、32 位看 sdk，两者都落在 info.DLL.isV2 上。
+    const bool allowRename = (info.type == 2) ? info.DLL.isV2 : true;
+
+    switch (info.type) {
+    case 0:          applyRowsToRules(info.python.rules, arr); break;
+    case 1: case 2:  applyRowsToRules(info.DLL.rules,    arr, allowRename); break;
+    case 3:          applyRowsToRules(info.js.rules,     arr); break;
+    default: break;
+    }
+}
+
+// ---- 给 RuleEditDialog 用的只读视图 / 提交接口 ----
+QList<int> PluginPage::ruleConfigPluginIndexes() const
+{
+    QList<int> out;
+    for (int i = 0; i < m_pluginList.size(); ++i) {
+        const PluginInfo &p = m_pluginList[i];
+        const bool has = (p.type == 0 && !p.python.rules.isEmpty())
+                      || ((p.type == 1 || p.type == 2) && !p.DLL.rules.isEmpty())
+                      || (p.type == 3 && !p.js.rules.isEmpty());
+        if (has) out.append(i);
+    }
+    return out;
+}
+
+QString PluginPage::ruleConfigPluginLabel(int index) const
+{
+    if (index < 0 || index >= m_pluginList.size()) return QString();
+    const PluginInfo &p = m_pluginList[index];
+    return QString("%1  [%2]").arg(p.name, pluginTypeName(p.type));
+}
+
+QList<RuleConfigRow> PluginPage::ruleConfigRows(int index) const
+{
+    QList<RuleConfigRow> out;
+    if (index < 0 || index >= m_pluginList.size()) return out;
+    const PluginInfo &p = m_pluginList[index];
+    auto push = [&out](const auto &rules) {
+        for (const auto &r : rules)
+            out.append(RuleConfigRow{ static_cast<int>(r.type), r.key, r.newKey, r.enabled });
+    };
+    if (p.type == 0)                       push(p.python.rules);
+    else if (p.type == 1 || p.type == 2)   push(p.DLL.rules);
+    else if (p.type == 3)                  push(p.js.rules);
+    return out;
+}
+
+// 只有「新版插件」才允许改名。新版标志按插件类型各看各的：
+//   · 原生 DLL / SO (1)：**导出符号** onMessagev3 存在即新版（不看入口名，也不看 JSON 里的 sdk）
+//   · 32 位/易语言 (2)：它不是 LoadLibrary 加载的，没有导出符号可查 → 看**插件信息 JSON 里的 sdk >= 2**
+//   · Python (0)       ：main.py 的 get_plugin_info 返回的 dict 里 "sdk":2
+//   · JS (3)           ：main.js 的 get_plugin_info 返回的对象里 sdk:2
+//     （Python / JS 没有「入口函数」可看：前者规则直接指向任意 handler，后者固定导出 on_message）
+//   老插件 → 只能勾选启用/停用、改不了名（改了名它内部仍按原指令匹配 → 静默失效）。
+bool PluginPage::ruleConfigAllowRename(int index) const
+{
+    if (index < 0 || index >= m_pluginList.size()) return false;
+    const PluginInfo &p = m_pluginList[index];
+    if (p.type == 0) return p.python.isV2;
+    if (p.type == 1) return p.DLL.isV2;
+    if (p.type == 2) return p.DLL.isV2;
+    if (p.type == 3) return p.js.isV2;
+    return true;
+}
+
+void PluginPage::applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows)
+{
+    if (index < 0 || index >= m_pluginList.size()) return;
+    PluginInfo &p = m_pluginList[index];
+    const QString key = ruleCfgKeyOf(p);
+    if (key.isEmpty()) return;
+
+    // 1) 整表覆盖（UI 就是全量提交）
+    QJsonArray arr;
+    for (const RuleConfigRow &row : rows) {
+        QJsonObject o;
+        o["t"] = row.type;
+        o["k"] = row.key;
+        o["n"] = row.newKey;
+        o["e"] = row.enabled;
+        arr.append(o);
+    }
+    m_ruleCfg[key] = arr;
+
+    // 2) 立即对活体生效，不必重载插件
+    applySavedRuleConfig(p);
+
+    // 3) 落盘
+    savePlugins();
 }
 
 void PluginPage::savePlugins() {
@@ -3009,6 +3465,7 @@ void PluginPage::savePlugins() {
     }
 
     g_config["plugins"] = arr;
+    g_config["plugin_rules"] = m_ruleCfg;   // 指令的启用 / 重命名配置（按插件 id 存）
     saveConfig();
 
 }
@@ -3066,6 +3523,8 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     info.id = metadata["id"].toString();
     info.version_int = metadata["version2"].toInt();
     info.type = 3;
+    // 新版标志：插件元数据 JSON 里带 sdk >= 2（老插件没这个字段 → isV2 = false，不可改名）
+    info.js.isV2 = (metadata["sdk"].toInt() >= 2);
     info.js.rules.clear();
     auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
 
@@ -3102,5 +3561,6 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     parseRuleList("contains", MatchType::Contains);
     parseRuleList("regex", MatchType::Regex);
     parseRuleList("event", MatchType::event);
+    applySavedRuleConfig(info);   // 套用「编辑指令」里存下的启停 / 重命名
     return QString();
 }

@@ -253,9 +253,12 @@ void NodePluginManager::postEventBatch(const QJsonArray& items, const QString& e
         QJsonObject ev;
         ev["type"] = eventType;
         ev["uuid"] = o["uuid"];
-        ev["data"] = data;
+        // items[].data 存在 = 该插件命中的指令被重命名过 → 用「改写过的帧」（正文已还原），
+        // 否则沿用公共的 data（老路径，一个字节都没多传）
+        ev["data"] = o.contains("data") ? o["data"] : QJsonValue(data);
         ev["fun"]  = fun;
         if (o.contains("funs")) ev["funs"] = o["funs"];
+        if (o.contains("cmds")) ev["cmds"] = o["cmds"];   // 与 funs 一一对应的「生效命令词」（改名=新名 / 没改=原名）
         m_host->writeMessage(QJsonDocument(ev).toJson(QJsonDocument::Compact));
         return;
     }

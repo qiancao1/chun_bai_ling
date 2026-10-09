@@ -384,7 +384,7 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
                        const char* _6, const char* _7, const char* _8) {
     static std::string result="{}"; //静态
     result="{}"; //初始化
-    //qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
+     //qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
     if (apiId == 10000) {
         miaomiao32 = 0;
         return result.c_str();

@@ -29,14 +29,17 @@
 #include <QStringList>
 #include <QMutex>
 #include <QWaitCondition>
+#include <QHash>
 #include <functional>
 #include <string>
 #include <atomic>
 #include <windows.h>
 
-// 注意：类名沿用 SharedMemoryBridge（改名要动 5 个外部文件），
-// 且**公开接口一字未改**（writeResponseToBlock / processRequestsA / startServer /
-// stopServer / restartYiProcess / setCallback），所以调用方一行都不用动。
+// 注意：类名沿用 SharedMemoryBridge（改名要动 5 个外部文件）；
+// 2026-10-06 传输层重写时**公开接口一字未改**（writeResponseToBlock / startServer /
+// stopServer / restartYiProcess / setCallback），调用方一行没动。
+// ⚠ processRequestsA 在 2026-10-09 升级成**多路**（新增带 reqId 的重载 + 非阻塞三件套），
+//   旧的单参版本保留为「不分路」语义，老调用点照常能编。
 //
 // 内部实现经历过一次来回：共享内存+事件 →（2026-10-06 上午）命名管道 →（2026-10-06 下午，用户拍板）
 // **又回到共享内存+事件**。当前协议全文见 sharedmemorybridge.cpp 顶部注释，动它之前先读那段。
@@ -71,11 +74,32 @@ public:
     //   只有 type = 1 才可能有返回值（类型 2 是甩完就走，等也没人回）。
     bool writeResponseToBlock(int type, const char *text);
 
-    // 取易语言回吐的命令返回值（易语言 _post4(1831501026, ...) 送来的那个 json）。
+    // 取易语言回吐的命令返回值（易语言 _post4(1831501026, reqId, "", 结果json) 送来的那个 json）。
     // 这是**唯一「等返回」的通道**：最多等 timeoutMs，等不到就返回空串。
     // ⚠ 命令**允许返回空值**（语义 = 「没有消息」），空串是**合法结果**、不是超时 ——
     //   调用方按「无内容」处理即可，别拿 isEmpty() 当失败判据（真超时只有日志里那条 warning）。
+    // reqId 版本 = 多路：只认准自己那一条的结果；单参版本 = 兼容老写法（等价于 reqId 0 =「不分路」）。
+    QString processRequestsA(int reqId, int timeoutMs);
     QString processRequestsA(int timeoutMs);
+
+    // ---- 「命令返回值」通道：**多路**（2026-10-09 二版，替换掉「同一时间只允许一条在飞」）----
+    // 起因：回执原先不带任何标识（`_post4(1830501026, appid, "", json)` 只有内容），框架无从判断
+    // 它对应哪次请求，只能靠「一次只放一条在飞」来保证不串包。
+    // 现在改成：发命令前先领一个请求 id，塞进发给易语言的 JSON（字段名 "reqid"），
+    // 易语言回吐时**原样带回**（_post4 的第 3 个参数，原来是 ""，现在填 reqId），框架按 id 路由。
+    // 于是同一时刻可以有多条命令在飞。
+    //   prepareCommandWait()        发号 + 登记，一步完成（原子）；返回 >0 = 请求 id，0 = 登记失败
+    //   pollCommandResult(id,out)   非阻塞看一眼；true = 拿到了（**空串也算拿到**，out 有效）
+    //   endCommandWait(id)          注销（迟到的结果按「没人在等」丢弃，防串包）
+    // ⚠ 易语言**没带回 id** 时（还没改的老版本）自动退化：唯一一个等待者才能拿到值，
+    //   多个在等就丢弃 + warning —— 宁可失败也不串包。
+    // ⚠ 「只发不等」的命令（sendData32NoWait）也要带上 "reqid" = NO_WAIT_REQ_ID，
+    //   免得它的回执（无 id）被当成正在等的那条的结果喂进去。
+    static constexpr int NO_WAIT_REQ_ID = -1;   // 「只发不等」哨兵：永远不会有人等它
+
+    int  prepareCommandWait();
+    bool pollCommandResult(int reqId, QString &out);
+    void endCommandWait(int reqId);
 
 private:
     // ---- 共享内存协议常量（改这里必须同步改易语言）----
@@ -157,11 +181,16 @@ private:
     DWORD  m_yiPid      = 0;
 
     // ---- 命令返回值通道（唯一「等返回」的地方）----
-    QMutex         m_cmdMutex;
-    QWaitCondition m_cmdCond;
-    QString        m_cmdResult;
-    int            m_cmdPending = 0;
-    int            m_cmdWaiter  = 0;
+    // 多路：key = 请求 id（由 m_cmdSeq 派发），value = 这一路的等待状态。
+    // key = 0 是「不分路」的老式等待者（单参 processRequestsA），最多只允许一个。
+    struct CmdWait {
+        QString result;
+        bool    pending = false;   // true = 结果已到（**空串也算到**）
+    };
+    QMutex              m_cmdMutex;
+    QWaitCondition      m_cmdCond;
+    QHash<int, CmdWait> m_cmdWaiters;
+    int                 m_cmdSeq = 0;   // 自增发号器，从 1 开始（0 保留给「不分路」）
 
     bool m_debug = false;
     std::atomic<bool> m_stop{false};

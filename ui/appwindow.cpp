@@ -192,6 +192,7 @@ def get_plugin_info(uuid):
         "name": "我的机器人",
         "version": "1.0.0",
         "version2": 1, #用于判断是否需要更新的 整数版本号
+        "sdk": 2, # SDK 版本 固定 2：框架据此才允许在界面上给这条指令改名；删掉就按旧版对待
         "author": "me",
         "id":"test_1", #由于上传插件市场的id 建议使用作者+时间戳
         "description": "支持多种匹配",

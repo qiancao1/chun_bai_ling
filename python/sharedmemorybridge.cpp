@@ -65,9 +65,15 @@
  *         10001/10002 异常通知），或 api_id == 2 且 text6 == "true"。
  *   Qt 拷完数据立刻把槽清 0，然后照样丢线程池跑回调（结果丢弃）。
  *   api_id == 1831501026（API_ID_CMD_RESULT）单独走：易语言把「宿主命令的返回值」回吐给 Qt，
- *   Qt 唤醒 processRequestsA() 的等待者，**不跑插件回调**、不占槽。
+ *   Qt 按**请求 id** 唤醒对应的等待者，**不跑插件回调**、不占槽。
  *   ⚠ 该返回值**允许为空**（语义 =「没有消息」，很多命令本来就没输出）：空串是**合法结果**，
  *     照样唤醒等待者立刻返回；只有「一条都没等到」才算真超时。
+ *   ⚠⚠ **回执必须带请求 id 才能多路**（2026-10-09）：Qt 发命令时在 JSON 里塞了 `"reqid"`，
+ *     易语言回吐时把它填进 `_post4` 的**第 3 个参数**（原来是 `""` 那个位置）：
+ *         _post4 (1831501026, appid, 到文本 (reqid), 结果json)
+ *     Qt 从 `req.uuid`（= 第 3 个参数）读这个数字，路由到对应的等待者。
+ *     没带回 id（老易语言）→ 只有「唯一一个等待者」时才敢交付；多个在等就丢弃（宁可失败也不串包）。
+ *     只发不等的命令（reqid = -1）回执永远匹配不上任何等待者，天然被丢弃。
  *
  * 五、⚠ 竞态与硬约定（Qt 侧已做兜底，但客户端那边最好也配合改）
  *   ① 「占坑」与「写数据」之间有窗口：状态已是 1、长度还是旧值或 0。
@@ -100,6 +106,7 @@
 #include <QByteArray>
 
 #include <cstring>
+#include <climits>
 
 // ---------------------------- 常量 ----------------------------
 static const DWORD IDLE_POLL_MS     = 1000;      // 空闲轮询间隔（顺便用来查客户端进程还活着没）
@@ -228,8 +235,7 @@ void SharedMemoryBridge::stopServer()
 
     {
         QMutexLocker lk(&m_cmdMutex);
-        m_cmdResult.clear();
-        m_cmdPending = 0;
+        m_cmdWaiters.clear();       // 所有等待者一并注销：各自醒来会发现自己在等的那路没了 → 立刻返回
     }
     m_cmdCond.wakeAll();            // 唤醒可能还在等响应的调用者
 }
@@ -577,21 +583,59 @@ void SharedMemoryBridge::parseRequestBody(const char *data, quint32 len, Request
 
 void SharedMemoryBridge::deliverCommandResult(const RequestData &req)
 {
-    // 命令的返回值：易语言 _post4(1831501026, appid, "", json)，json 落在 text1
-    const std::string &json = !req.texts[0].empty() ? req.texts[0] : req.uuid;
+    // 命令的返回值：易语言 _post4(1831501026, appid, reqId, json)
+    //   第 3 个参数（落到 req.uuid） = 请求 id 的十进制字符串  ← **新协议**（老版本这里是 ""）
+    //   第 4 个参数（落到 texts[0]） = 结果 json 本体
+    int reqId = 0;
+    if (!req.uuid.empty()) {
+        const QString u = QString::fromUtf8(req.uuid.c_str(), static_cast<int>(req.uuid.size()));
+        bool ok = false;
+        const qlonglong v = u.trimmed().toLongLong(&ok);
+        if (ok && v > 0 && v <= INT_MAX)
+            reqId = static_cast<int>(v);
+    }
+
+    // 正文以 texts[0] 为准；只有「没带 reqId 且 texts[0] 也是空」时才回退成 uuid
+    // （兼容极老写法：把结果塞在第 3 个参数里 —— 现在第 3 参已让给 reqId）
+    const std::string &body = (!req.texts[0].empty() || reqId > 0) ? req.texts[0] : req.uuid;
 
     // ⚠ 空串是**合法返回值**（很多命令就是没有输出，比如心跳/加载成功），不是错误 ——
     //   照样唤醒等待者，让它立刻拿到空串返回，而不是白等满 5 秒。
-    if (!json.empty())
-        qDebug() << "共享内存: 命令返回值 =" << QString::fromUtf8(json.c_str(), static_cast<int>(json.size()));
+    const QString text = QString::fromUtf8(body.c_str(), static_cast<int>(body.size()));
+    if (!text.isEmpty())
+        qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "内容 =" << text;
 
     QMutexLocker lk(&m_cmdMutex);
-    if (m_cmdWaiter <= 0) {
-        qWarning() << "共享内存: 收到命令返回值但没人在等（上层可能已经超时），丢弃";
-        return;
+
+    CmdWait *slot = nullptr;
+    if (reqId > 0) {
+        auto it = m_cmdWaiters.find(reqId);
+        if (it == m_cmdWaiters.end()) {
+            // 正常来源：只发不等的命令（reqid = NO_WAIT_REQ_ID）回吐了值，或上层已超时注销。
+            // 不暂存（防串包），也不值得刷 warning。
+            qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "没人在等（只发不等 / 已超时），丢弃";
+            return;
+        }
+        slot = &it.value();
+    } else {
+        // 老易语言没把 id 带回来（_post4 第 3 参还是 ""）：
+        // 只有「唯一一个等待者」时才能确定这条值是谁的；多个在等就直接丢弃 —— 宁可失败也不串包。
+        if (m_cmdWaiters.isEmpty()) {
+            qDebug() << "共享内存: 收到命令返回值但没人在等（只发不等 / 上层已超时），丢弃";
+            return;
+        }
+        if (m_cmdWaiters.size() > 1) {
+            qWarning() << "共享内存: 同时有" << m_cmdWaiters.size()
+                       << "条命令在等，但回执没带请求 id（易语言 _post4 第 3 个参数仍是空），无法路由，丢弃";
+            return;
+        }
+        slot = &m_cmdWaiters.begin().value();
+        qDebug() << "共享内存: 回执未带请求 id，退化按「唯一等待者」交付（id ="
+                 << m_cmdWaiters.begin().key() << "）";
     }
-    m_cmdResult = QString::fromUtf8(json.c_str(), static_cast<int>(json.size()));
-    m_cmdPending = 1;
+
+    slot->result  = text;
+    slot->pending = true;
     m_cmdCond.wakeAll();
 }
 
@@ -631,33 +675,61 @@ bool SharedMemoryBridge::writeResponseToBlock(int type, const char *text)
     return false;
 }
 
-// ---------------------------- 命令返回值等待 ----------------------------
+// ---------------------------- 命令返回值等待（多路，2026-10-09 二版） ----------------------------
+// 每一路用一个请求 id 标识：发命令前 prepareCommandWait() 领号（同时登记），把号塞进 JSON 的
+// "reqid"，易语言回吐时原样带回 → deliverCommandResult 精确路由。同一时刻可以有多条在飞。
 
+// 发号 + 登记，一步完成（原子）。返回 >0 = 请求 id；0 = 失败（号不够用了）
+int SharedMemoryBridge::prepareCommandWait()
+{
+    QMutexLocker lk(&m_cmdMutex);
+    for (int tries = 0; tries < 100000; ++tries) {
+        // 从 1 往上派；到顶就回到 1（0 保留给「不分路」的老式等待者，见单参 processRequestsA）
+        m_cmdSeq = (m_cmdSeq >= INT_MAX) ? 1 : m_cmdSeq + 1;
+        if (m_cmdWaiters.contains(m_cmdSeq)) continue;   // 回绕后撞上还活着的号 → 换一个
+        m_cmdWaiters.insert(m_cmdSeq, CmdWait());
+        return m_cmdSeq;
+    }
+    qWarning() << "共享内存: 命令请求号用尽，同时有" << m_cmdWaiters.size() << "条在等？";
+    return 0;
+}
+
+// 兼容老调用点：「不分路」的等待者（id = 0），同一时间只允许一个在等。
 QString SharedMemoryBridge::processRequestsA(int timeoutMs)
+{
+    {
+        QMutexLocker lk(&m_cmdMutex);
+        if (m_cmdWaiters.contains(0)) {
+            // 理论上不会发生（这些调用都在主线程顺序执行）；真重入了就直接放行，免得抢别人的结果
+            qWarning() << "共享内存: 命令返回值通道重入，忽略本次等待";
+            return QString();
+        }
+        m_cmdWaiters.insert(0, CmdWait());
+    }
+    return processRequestsA(0, timeoutMs);
+}
+
+QString SharedMemoryBridge::processRequestsA(int reqId, int timeoutMs)
 {
     QElapsedTimer timer;
     timer.start();
 
     {
         QMutexLocker lk(&m_cmdMutex);
-        if (m_cmdWaiter > 0) {
-            // 理论上不会发生（这些调用都在主线程顺序执行）；真重入了就直接放行，免得抢别人的结果
-            qWarning() << "共享内存: 命令返回值通道重入，忽略本次等待";
-            return QString();
+        if (!m_cmdWaiters.contains(reqId)) {
+            // 调用方没先 prepareCommandWait（或已被别处注销）→ 兜底补登，别让等待凭空失败
+            m_cmdWaiters.insert(reqId, CmdWait());
         }
-        m_cmdResult.clear();
-        m_cmdPending = 0;
-        ++m_cmdWaiter;
     }
 
     bool got = false;                       // 是否真收到了返回值（**空串也算收到**）
     QString ret;
     while (timer.elapsed() < timeoutMs) {
         QMutexLocker lk(&m_cmdMutex);
-        if (m_cmdPending) {
-            ret = m_cmdResult;
-            m_cmdResult.clear();
-            m_cmdPending = 0;
+        auto it = m_cmdWaiters.find(reqId);
+        if (it == m_cmdWaiters.end()) break;    // 被别处注销（如 stopServer 清空）→ 立刻放弃
+        if (it.value().pending) {
+            ret = it.value().result;
             got = true;
             break;
         }
@@ -666,20 +738,47 @@ QString SharedMemoryBridge::processRequestsA(int timeoutMs)
 
     {
         QMutexLocker lk(&m_cmdMutex);
-        --m_cmdWaiter;
-        if (m_cmdPending) {                 // 最后一刻才到的结果也别丢
-            ret = m_cmdResult;
-            m_cmdResult.clear();
-            m_cmdPending = 0;
-            got = true;
+        auto it = m_cmdWaiters.find(reqId);
+        if (it != m_cmdWaiters.end()) {
+            if (it.value().pending) {           // 最后一刻才到的结果也别丢
+                ret = it.value().result;
+                got = true;
+            }
+            m_cmdWaiters.erase(it);             // 注销：迟到的结果按「没人在等」丢弃
         }
     }
 
     // ⚠ 不能拿「返回串是不是空的」当超时判据 —— 命令**允许返回空值**（相当于「没有消息」），
     //   空串是合法结果。只有连一条返回值都没等到（got == false）才是真超时。
     if (!got)
-        qWarning() << "共享内存: 等待命令返回超时";
+        qWarning() << "共享内存: 等待命令返回超时（reqid =" << reqId << "）";
     return ret;
+}
+
+// ---------------------------- 命令返回值：非阻塞（轮询）用法 ----------------------------
+// 给「不等，但 100ms 后回头看一眼」的调用方用（32 位插件命令的异步版）。
+// 用法：prepareCommandWait() 领号（登记）→ 写任务槽 → 定时器里 pollCommandResult(reqId, out)
+//       → 拿到 / 超时都调 endCommandWait(reqId)。和 processRequestsA 共用 m_cmdWaiters，
+//       同步 / 异步 / 多条并发都互不干扰。
+
+bool SharedMemoryBridge::pollCommandResult(int reqId, QString &out)
+{
+    QMutexLocker lk(&m_cmdMutex);
+    auto it = m_cmdWaiters.find(reqId);
+    if (it == m_cmdWaiters.end()) return false;   // 已注销（超时 / 会话结束）
+    if (!it.value().pending) return false;        // 还没回来
+    out = it.value().result;
+    it.value().result.clear();
+    it.value().pending = false;
+    return true;                                  // ⚠ 空串也算「拿到了」，调用方别拿 isEmpty() 当没拿到
+}
+
+void SharedMemoryBridge::endCommandWait(int reqId)
+{
+    QMutexLocker lk(&m_cmdMutex);
+    m_cmdWaiters.remove(reqId);
+    // 注销后到达的结果会被 deliverCommandResult 按「没人在等」丢弃 —— 超时后别把下一条的
+    // 返回值串到这次调用上。
 }
 
 // ---------------------------- 纯白铃32.exe 进程管理 ----------------------------
@@ -864,55 +963,7 @@ static HWND consoleWindowOf(DWORD pid)
 
 bool SharedMemoryBridge::hideYiWindow()
 {
-#ifdef Q_OS_WIN
-    DWORD pid = 0;
-    {
-        QMutexLocker lk(&m_procMutex);
-        DWORD code = 0;
-        // 进程不在（debug 模式没起过 / 已被 takeDeadYiProcess 回收 / 还没起来）→ 什么都不做
-        if (!m_hYiProcess || yiProcessExited(code)) return false;
-        pid = m_yiPid;
-    }
-    if (pid == 0) return false;
-
-    int touched = 0;
-
-    // ---------- ① 该 pid 自己创建的顶层窗口（易语言若编成窗口程序，主窗口在这一类里）----------
-    TopWinEnum t{ pid, { nullptr }, 0 };
-    EnumWindows(collectTopWinProc, reinterpret_cast<LPARAM>(&t));
-    for (int i = 0; i < t.n; ++i) {
-        HWND h = t.hwnd[i];
-        if (!IsWindow(h)) continue;
-        const QString cls = winClassOf(h);
-        if (cls.contains("tooltip", Qt::CaseInsensitive)) continue;   // 提示框之类辅助窗口别动
-        if (!IsWindowVisible(h)) continue;                            // 本来就看不见的不动
-        ShowWindow(h, SW_HIDE);
-        if (!IsWindowVisible(h)) ++touched;
-        else qWarning() << "共享内存: SW_HIDE 对窗口" << cls << "没生效";
-        qDebug() << "共享内存: 32 位窗口已隐藏" << cls << "|" << winTitleOf(h);
-    }
-
-    // ---------- ② 控制台窗口（属于 conhost）----------
-    // ⚠ CREATE_NO_WINDOW 下根本没有这个窗口，这里基本是 nullptr；
-    //   只有「易语言自己又开了一个控制台」这类情况才命中。
-    HWND con = consoleWindowOf(pid);
-    if (con) {
-        ShowWindow(con, SW_HIDE);
-        if (!IsWindowVisible(con)) ++touched;
-        else qWarning() << "共享内存: SW_HIDE 对控制台窗口没生效（可能被 Windows Terminal 托管）";
-        qDebug() << "共享内存: 控制台窗口" << winClassOf(con) << "已隐藏";
-    }
-
-    if (touched == 0)
-        qDebug() << "共享内存: 没找到可隐藏的 32 位窗口（pid =" << static_cast<quint32>(pid)
-                 << "）—— CREATE_NO_WINDOW 下这就是正常结果";
-    else
-        qDebug() << "共享内存: 32 位窗口已隐藏，影响" << touched << "个窗口，pid ="
-                 << static_cast<quint32>(pid);
-    return touched > 0;
-#else
     return false;
-#endif
 }
 
 // ---------------------------- 线程池任务 ----------------------------

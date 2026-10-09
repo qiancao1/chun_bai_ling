@@ -626,8 +626,9 @@ void handleSetPluginAccount(const QJsonObject &params, ClientConnection *client,
         info.appid.append(appid);
     }
 
-    // 同步给 32 位子模块（与桌面端勾选账号时一致），再刷新界面 + 落盘
-    pluginPage->sendData32(11, info, joinIntListFast(info.appid, ","));
+    // 通知 32 位子模块（与桌面端勾选账号时一致），再刷新界面 + 落盘。
+    // 返回值没人看 → 只发不等，别让 HTTP 处理线程白等最多 5 秒
+    pluginPage->sendData32NoWait(11, info, joinIntListFast(info.appid, ","));
     pluginPage->updatePluginItemInUI(idx);
     pluginPage->savePlugins();
 
