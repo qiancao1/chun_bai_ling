@@ -77,12 +77,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.0.102"
-#define APP_BUILD_NUMBER 102
+#define APP_VERSION_STR "v1.4.0.105"
+#define APP_BUILD_NUMBER 105
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.0.102 (2026-10-08)
+## v1.4.0.102 (2026-10-09)
 - 增加 ai获取模型列表 并且测试模型
 - 重写 32位插件加载器
 - 重写 JS 插件相关
@@ -92,6 +92,8 @@ QString Homev=R"(
 - 优化 聊天室 全量表 加锁 同时机器人被踢时移出哈希表
 - 优化 聊天室 滚动过大问题 优化<表情> 修复 右键菜单重复弹出问题
 - 优化 发送视频 语音 文件 等回调方法
+- 增加 插件指令启用 禁用 增加 指令重命名 仅限注册式v3 sdk
+- 优化 sdk 更新至v3
 
 ## v1.3.9.93 (2026-10-04)
 - 优化 聊天室 显示机器人是否被踢出

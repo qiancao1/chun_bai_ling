@@ -324,7 +324,9 @@ private:
                                   const QByteArray& data, const QString& filename, bool usePool,
                                   std::function<void(const QString &result, qint64 expireTime,
                                                      const QString &md5, bool ok, const QString &outurl)> onDone);
-    void addmsglog(const QString &response, int index, const QString &pname, const QString &text, qint64 now_us, int type, const QString &openid);
+    // pname 传值：插件侧直接把**发起方 uuid**当 pname 传（不带 '['）→ 内部先用 pluginPnameText()
+    // 还原成展示标签 "[插件名|%1ms]" 再显示；带 '[' 的普通标签原样用。
+    void addmsglog(const QString &response, int index, QString pname, const QString &text, qint64 now_us, int type, const QString &openid);
     void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();

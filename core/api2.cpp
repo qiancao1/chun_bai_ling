@@ -11,8 +11,12 @@ QList<CosPutPoolEntry> takeCosPutPending();
 
 
 
-void QQBotClient::addmsglog(const QString &response,int index,const QString &pname,const QString &text,qint64 now_us, int type,const QString &openid)
+void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid)
 {
+    // 插件侧的 pname 传的是**裸 uuid**（不以 '[' 开头）→ 按插件表还原成展示标签 "[插件名|%1ms]"，
+    // 日志/聊天窗里看不出跟以前有任何区别；框架 / AI / 关键词匹配传的 "[某某|%1ms]" 原样用。
+    if (!pname.startsWith(QLatin1Char('[')))
+        pname = pluginPnameText(pname);
 
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
     QJsonObject obj = doc.object();

@@ -33,6 +33,21 @@ const char* myCallback(const char* uuid,int apiId, int appid, const char* _1, co
 const char* myCallbackA(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                         const char* _3, const char* _4, const char* _5,
                         const char* _6, const char* _7, const char* _8);
+
+// ---- pname 直接当「发起方 uuid」的载体 ----
+// 展示标签一律以 '[' 开头（"[插件名|%1ms]" / "[关键词匹配|%1ms]" / "[聊天室]" …），插件侧的
+// pname **传裸 uuid**（不带 '['）。所以只看首字符就能判定：
+//   · 发送管线入口（send_msgAsync / send_messages 首行）用 senderUuidFromPname() 取 uuid →
+//     把正文里的 [注册原名](...) 重定向成改名后的指令；
+//   · addmsglog 用 pluginPnameText() 把裸 uuid 还原成 "[插件名|%1ms]" 再显示，日志看不出区别。
+QString senderUuidFromPname(const QString &pname);  // 带 '[' 的展示标签 → 空；否则就是裸 uuid
+QString pluginPnameText(const QString &uuid);       // 裸 uuid → "[插件名|%1ms]"；不在插件表 → 空
+
+// 插件要发出的正文里，把 [注册原指令](...) 重定向成 [生效指令](...)（= 改名后的新名）。
+//   uuid = 发起这次发送的插件；空 / 不在插件表里（框架、AI、WebUI、关键词匹配）→ 原文一字不动。
+//   唯一调用点：发送管线入口（send_msgAsync / send_messages 的第一行）——
+//   所以 md / 普通模式、同步 / 异步图片路径全都覆盖。
+QString redirectPluginCmdsMarkdown(const QString &text, const QString &uuid);
 typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                                             const char* _3, const char* _4, const char* _5,
                                             const char* _6, const char* _7, const char* _8);

@@ -670,11 +670,8 @@ void PluginPage::setupUi()
 
     // 编辑指令：打开独立页面，左侧插件列表 + 右侧 [启用][指令名][新指令名][匹配方式]
     connect(bj_zl, &QPushButton::clicked, this, [this]() {
-        if (currentSelected_index < 0 || currentSelected_index >= m_pluginList.size()) {
-            QMessageBox::warning(this, "", "请先选择一个插件");
-            return;
-        }
-        auto *dlg = new RuleEditDialog(this, currentSelected_index, this);
+
+        auto *dlg = new RuleEditDialog(this, 0, this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
     });
@@ -964,6 +961,87 @@ static inline QString ruleMatchKey(const QString &key, const QString &newKey)
     return newKey.isEmpty() ? key : newKey;
 }
 
+// pname 直接当「发起方 uuid」用：展示标签一律以 '[' 开头（"[插件名|%1ms]" / "[关键词匹配|%1ms]" …），
+// 插件侧传的是**裸 uuid**，不带 '[' —— 只看首字符就能区分，不用任何分隔符。
+QString senderUuidFromPname(const QString &pname)
+{
+    return pname.startsWith(QLatin1Char('[')) ? QString() : pname;
+}
+
+// 裸 uuid → 展示标签 "[插件名|%1ms]"（addmsglog 还原日志前缀用）。
+// 「不在插件表」正常到不了：myCallback 里 uuid 不在插件表就早退了，pluginpage 传的就是表里的 p.uuid。
+QString pluginPnameText(const QString &uuid)
+{
+    for (const PluginInfo &p : std::as_const(m_pluginList)) {
+        if (p.uuid != uuid) continue;
+        return "[" + p.name + "|%1ms]";
+    }
+    return QString();
+}
+
+// 插件输出正文里的 [注册原指令](...) → [生效指令](...)（改名后的按钮兜底重定向）
+//
+// 背景：插件注册的指令被用户改名后，插件内部仍按**注册原名**输出按钮，例如 [ping]()。
+// 点它发出去的是原名，而框架此时只按新名匹配（pong）→ 按钮点不动 / 提示指令不存在。
+// 这里按「**该插件自己的规则表**」把正文改写成新名：
+//   · [ping]()            目标为空 → 改方括号里的文字（点击就是发这段文字）
+//   · [点我](ping)        目标就是指令 → 改圆括号里的目标
+//   · [ping](https://..) / [x](其他) → 原样不动
+// 只取「该 uuid 的插件」+「newKey 非空且 != key（真正改过名）」的规则，所以：
+//   · 没改过名的插件 / 关键词匹配（uuid 不在插件表里）→ 空映射 → 原文一字不动（零开销）
+//   · 别的插件的同名指令不受影响
+QString redirectPluginCmdsMarkdown(const QString &input, const QString &uuid)
+{
+    if (input.isEmpty() || uuid.isEmpty()) return input;
+    if (!input.contains(QLatin1Char('[')) || !input.contains(QLatin1Char('(')))
+        return input;                       // 快速排除：正文里根本没有 markdown 链接
+
+    // 1) 收集「注册原名 → 生效新名」
+    QHash<QString, QString> renames;
+    for (const PluginInfo &p : std::as_const(m_pluginList)) {
+        if (p.uuid != uuid) continue;
+        auto collect = [&renames](const auto &rules) {
+            for (const auto &r : rules) {
+                if (r.newKey.isEmpty() || r.newKey == r.key) continue;
+                renames.insert(r.key, r.newKey);
+            }
+        };
+        if (p.type == 0)                     collect(p.python.rules);
+        else if (p.type == 1 || p.type == 2) collect(p.DLL.rules);
+        else if (p.type == 3)                collect(p.js.rules);
+        break;                              // uuid 唯一，找到就停
+    }
+    if (renames.isEmpty()) return input;
+
+    // 2) 逐条 [显示](目标) 改写（与 convertMarkdownLinksToXml 同一套正则，排除 ![图片]）
+    static const QRegularExpression re(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))");
+    QString output;
+    int lastIndex = 0;
+    auto it = re.globalMatch(input);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const int start = m.capturedStart();
+        output += input.mid(lastIndex, start - lastIndex);
+
+        const QString showText = m.captured(1);
+        const QString target   = m.captured(2);
+        if (!target.isEmpty()) {
+            const auto hit = renames.constFind(target);       // 目标就是指令 → 换目标
+            output += (hit != renames.constEnd())
+                        ? QStringLiteral("[%1](%2)").arg(showText, hit.value())
+                        : m.captured(0);
+        } else {
+            const auto hit = renames.constFind(showText);     // 目标为空 → 换方括号里的文字
+            output += (hit != renames.constEnd())
+                        ? QStringLiteral("[%1]()").arg(hit.value())
+                        : m.captured(0);
+        }
+        lastIndex = m.capturedEnd();
+    }
+    output += input.mid(lastIndex);
+    return output;
+}
+
 // 探测 Python 处理函数是否接受第 2 个参数「生效命令词」（形参 >= 2 个，或带 *args）。
 // 用于「老插件只写 1 个形参（def on_x(msg)）→ 仍按 1 参调用」的兼容，避免多传实参
 // 触发 TypeError 被吞、插件静默失效。探测失败一律按 1 参（旧行为，最安全）。
@@ -1126,8 +1204,9 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
         if (!reply.isEmpty()) {
             QQBotClient *client = m_botClients[msg.appid];
             if (client) {
-                QString pname = "[" + p.name + "|%1ms]";
-                client->send_msgAsync(msg.type, msg.groupId, pname, reply, msg.msgId);
+                // pname 直接传发起方 uuid（不带 '['）：发送管线入口据此把正文里 [注册原名]()
+                // 重定向成改名后的指令；addmsglog 再按 uuid 还原成 "[插件名|%1ms]" 显示。
+                client->send_msgAsync(msg.type, msg.groupId, p.uuid, reply, msg.msgId);
 
             }
 
@@ -1265,8 +1344,9 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                 msg.op = true;
                 QQBotClient *client = m_botClients.value(msg.appid);
                 if (client) {
-                    QString pname = "[" + p.name + "|%1ms]";
-                    client->send_msgAsync(msg.type, msg.groupId, pname, dllReply, msg.msgId);
+                    // pname 直接传发起方 uuid（不带 '['）：发送管线入口据此把正文里 [注册原名]()
+                    // 重定向成改名后的指令；addmsglog 再按 uuid 还原成 "[插件名|%1ms]" 显示。
+                    client->send_msgAsync(msg.type, msg.groupId, p.uuid, dllReply, msg.msgId);
                 }
             }
         } catch (const std::exception &e) {

@@ -484,19 +484,24 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         // 传了它 → 走 PostAsync 回调路径，发送完成后把响应送回插件协程；
         // 不传（JS / DLL / 老的同步调用）→ 行为与以前完全一致。
         const QString reqId = (_7 == nullptr) ? QString() : toQString(_7);
+        // 插件按**注册原名**输出按钮（如 [ping]()），用户改名成 pong 后点它发出去的还是 ping →
+        // 按钮失效。这里把**发起方 uuid** 直接当 pname 传进去，由发送管线按该插件**自己的**规则表
+        // 把 [原指令]() 重定向成生效指令；addmsglog 再按 uuid 还原成 "[插件名|%1ms]" 显示。
+        // 关键词匹配没有插件（uuid 不在插件表），照旧传展示标签，正文一字不动。
+        const QString pn = (strcmp(uuid, g_keyuuid2) != 0) ? toQString(uuid) : pname;
         if(toBool(_6))
         {
             if(reqId.isEmpty())
-                ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup);
+                ret = client->send_msgAsync(type, openid, pn, text, msgid, is_wakeup);
             else
-                ret = client->send_msgAsync(type, openid,pname, text,msgid, is_wakeup,
+                ret = client->send_msgAsync(type, openid, pn, text, msgid, is_wakeup,
                                             false, 0, false,
                                             [reqId](const QString &resp, QNetworkReply::NetworkError) {
                                                 deliverPluginAsyncResult(reqId, resp);
                                             });
         }
         else
-            ret = client->send_messages(type, openid,pname, text,msgid, is_wakeup);
+            ret = client->send_messages(type, openid, pn, text, msgid, is_wakeup);
         result = ret.toStdString();
         break;
     }
@@ -4362,6 +4367,12 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     if(type==18) type =0;
 
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
+
+    // 插件侧的 pname 传的是**发起方裸 uuid**（展示标签一律以 '[' 开头）→ 按该插件**自己的**规则表
+    // 把正文里的 [注册原名](...) 改写成改名后的指令（插件只认注册名，改不了这个）。
+    // 框架 / AI / WebUI / 关键词匹配传的 "[某某|%1ms]" → uuid 空 → 正文一字不动，零副作用。
+    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname));
+
     QString newtext;
     if(m_info->xxwb.isEmpty())
         newtext = text;
@@ -4402,6 +4413,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(type!=18){
         if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
     }
+
+    // 同 send_msgAsync：pname 是插件侧传的裸 uuid 时，按该插件把 [注册原名]() 改成改名后的指令
+    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname));
 
     QString newtext;
     if(m_info->xxwb.isEmpty())
