@@ -167,7 +167,7 @@ extern BlacklistPage *Black;
 extern int 聊天发送模式;
 extern int 定时检查变量;
 extern bool 框架退出;
-extern int plugin_n;
+
 
 extern QList<PluginInfo2> m_allPlugins;
 extern MessageEvent *g_cqev;
@@ -186,7 +186,7 @@ QString replaceFileTag(const QString &content, const QString &format = "[文件]
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
-void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int _32=0);
+void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int addint=0);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms

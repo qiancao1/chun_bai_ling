@@ -670,8 +670,10 @@ void PluginPage::setupUi()
 
     // 编辑指令：打开独立页面，左侧插件列表 + 右侧 [启用][指令名][新指令名][匹配方式]
     connect(bj_zl, &QPushButton::clicked, this, [this]() {
-
-        auto *dlg = new RuleEditDialog(this, 0, this);
+        int i = currentSelected_index;
+        if(i<0) i=0;
+        if(i>=m_pluginList.size()) i=0;
+        auto *dlg = new RuleEditDialog(this, i, this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
     });
@@ -914,17 +916,7 @@ int PluginPage::findPluginIndex(const QString &id) const {
     return -1;
 }
 
-void plug_tji() {
-    plugin_n=2;
 
-    for (int i = 0; i < m_pluginList.size(); ++i) {
-
-        if (m_pluginList[i].type == 3 && m_pluginList[i].js.rules.size()==0) plugin_n++;
-
-
-    }
-
-}
 QString python_code(const QString &py_code,const MessageEvent &msg)
 {
     py::gil_scoped_acquire gil;
@@ -1379,7 +1371,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 
 #endif
     if(msg.at_you && msg.subType==0)
-        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId,_32);
+        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId,(_32==0)+jsTargets.isEmpty());
 
 }
 
@@ -2231,7 +2223,7 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
         qWarning() << "Unknown exception in appendPlugin (data append)";
     }
     appendPlugin(info);
-    plug_tji();
+
     return QString();
 }
 

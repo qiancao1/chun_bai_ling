@@ -73,7 +73,7 @@ process.stdin.on('data', (chunk) => {
 				const sendOk = () => {
 					let type = data.type;
 					if (type !== undefined && type >= 0 && type <= 3) {
-						api.ok(type, data.d?.group_id, data.d?.id).catch(e => console.error('ok call failed', e));
+						api.ok(data.appid ?? 0, type, data.d?.group_id, data.d?.id).catch(e => console.error('ok call failed', e));   // 第 1 参必须是 appid，少传则 ok 静默失效
 					}
 				};
 

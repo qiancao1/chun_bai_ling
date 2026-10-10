@@ -193,8 +193,8 @@ void PluginCard::onDetailBtn() {
 PluginMarketWindow::PluginMarketWindow(QWidget *parent)
     : QDialog(parent), m_currentTabIndex(0) {
     setWindowTitle("插件市场");
-    resize(900, 650);
-    setMinimumSize(800, 500);
+    resize(950, 650);
+    setMinimumSize(850, 500);
     setupUI();
     refreshList();
     applyStyleSheet();

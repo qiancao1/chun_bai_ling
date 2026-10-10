@@ -54,68 +54,23 @@ int mapTypeToTabIndex(int type)
 }
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
-int plugin_n=0;
 
-void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int _32)
+
+void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int addint)
 {
     if (!m_botClients.contains(appid)) return;
     QQBotClient *c = m_botClients[appid];
     if (c->m_info->fallbackReply.isEmpty()) return;
-    int tabIndex=type + 1;
+    int tabIndex = type + 1;
     if(tabIndex<1 || tabIndex>4) return;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     if(index<0) return;
-    int n = g_logdb [tabIndex]->incrementBufferStatus(index);
-    if(_32!=0) n = g_logdb [tabIndex]->incrementBufferStatus(index); //32位额外+1
-
+    int n = g_logdb [tabIndex]->incrementBufferStatus2(index,addint+1); //32位额外+1
     if(n >= 250) return; //255代表被处理了
-    //qDebug()<< "未回应计数：" <<entry.n;
-    if(n>=plugin_n)
+    if(n >= 3)
     {
-
-        QMetaObject::invokeMethod(qApp, [=]() {
-
-            if (m_openidTimers.contains(openid)) {
-                QTimer *oldTimer = m_openidTimers[openid];
-                oldTimer->start();  // 重新计时 5 秒
-                //qDebug() << "重置定时" << openid;
-                return;  // 无需创建新定时器
-            }
-
-            // 2. 创建新的单次定时器
-            QTimer *timer = new QTimer();
-            timer->setSingleShot(true);
-            timer->setInterval(6000);
-
-            // 3. 连接回调（注意 lambda 捕获所有需要的变量）
-            QObject::connect(timer, &QTimer::timeout, qApp, [=]() {
-                // 回调执行时，该定时器已触发，需要从 map 中移除
-                m_openidTimers.remove(openid);  // 先移除自身
-
-                // 执行业务逻辑
-                if (!m_botClients.contains(appid)) {
-                    timer->deleteLater();
-                    return;
-                }
-                QQBotClient *c = m_botClients[appid];
-                if (c->m_info->fallbackReply.isEmpty()) {
-                    timer->deleteLater();
-                    return;
-                }
-                QString text = "[未被处理回应]";
-                c->send_msgAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
-
-                timer->deleteLater();  // 任务完成，清理定时器
-            });
-
-            // 4. 保存定时器到 map，并启动
-            m_openidTimers.insert(openid, timer);
-            timer->start();
-
-            //qDebug() << "添加定时（或重置）" << openid;
-        }, Qt::QueuedConnection);
+        c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, false, false, 0, true);
     }
-
 }
 
 

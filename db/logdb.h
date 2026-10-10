@@ -125,16 +125,54 @@ public:
 
     // 原子加1（对状态位加1，溢出时饱和为255）
     uint8_t incrementBufferStatus(uint64_t seq) {
+        if (m_bufferSize == 0) return 0;  // 防止除零
         size_t index = seq % m_bufferSize;
+
         uint64_t oldValue = m_buffer[index].load(std::memory_order_acquire);
-        uint8_t oldStatus = static_cast<uint8_t>(oldValue & 0xFF);
-        if (oldStatus >= 255) return 255;
-        uint8_t newStatus = oldStatus + 1;
-        uint64_t newValue = (oldValue & ~0xFFULL) | (newStatus & 0xFFULL);
-        m_buffer[index].store(newValue, std::memory_order_release);
+        uint64_t newValue;
+        uint8_t oldStatus, newStatus;
+
+        do {
+            oldStatus = static_cast<uint8_t>(oldValue & 0xFF);
+            if (oldStatus >= 255) {
+                return 255;  // 已饱和
+            }
+            newStatus = oldStatus + 1;
+            newValue = (oldValue & ~0xFFULL) | (newStatus & 0xFFULL);
+        } while (!m_buffer[index].compare_exchange_weak(
+            oldValue, newValue,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire));
+
         return newStatus;
     }
+    uint8_t incrementBufferStatus2(uint64_t seq, int value) {
+        if (m_bufferSize == 0) return 0;  // 防止除零
+        size_t index = seq % m_bufferSize;
 
+        uint64_t oldValue = m_buffer[index].load(std::memory_order_acquire);
+        uint64_t newValue;
+        uint8_t oldStatus, newStatus;
+
+        do {
+            oldStatus = static_cast<uint8_t>(oldValue & 0xFF);
+            if (oldStatus >= 255) {
+                return 255;  // 已经饱和
+            }
+
+            int sum = static_cast<int>(oldStatus) + value;
+            if (sum < 0) sum = 0;        // 根据业务调整
+            if (sum > 255) sum = 255;    // 饱和到 255
+            newStatus = static_cast<uint8_t>(sum);
+
+            newValue = (oldValue & ~0xFFULL) | (newStatus & 0xFFULL);
+        } while (!m_buffer[index].compare_exchange_weak(
+            oldValue, newValue,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire));
+
+        return newStatus;
+    }
     size_t bufferSize() const { return m_bufferSize; }
     QList<QPair<QString, Message>> getLatestMessagesWithOffset(int appid, int limit, int offset) const;
 

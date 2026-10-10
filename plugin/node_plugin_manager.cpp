@@ -338,12 +338,19 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
         else if (val.isString()) appid = val.toString().toInt();
         startIdx = 1;
     }
+    //qDebug() <<"收到JS的OK " << method;
     if (api_id == 10002) {
-
-        if (params.size() >= 3) {
-            int type = params[0].toInt();
-            QString groupId = params[1].toString();
-            QString msgId = params[2].toString();
+        // ok(appid, type, groupId, msgId)：和其它 API 一样，appid 是第 1 个实参，
+        // 已被上面的通用逻辑解析进 appid 变量。
+        // ⚠ 旧版 bridge.js 只传 3 个（type, groupId, msgId）、根本没有 appid ——
+        //   以前这个分支仍按 params[0] 取 appid，等于把 **type(0~3)** 当 appid 用，
+        //   于是 botnomsg 里 m_botClients.contains(0~3) 必然失败、直接 return，
+        //   插件的 ok 从头到尾都是静默失效的。现在要求满 4 个参数，旧的直接忽略。
+        //qDebug() <<"收到JS的OK appid=" << appid << "params=" << QJsonDocument(params).toJson(QJsonDocument::Compact);
+        if (params.size() >= 4) {
+            int type = params[1].toInt();
+            QString groupId = params[2].toString();
+            QString msgId = params[3].toString();
             botnomsg(appid,type, groupId, msgId);
         }
         return "{}";
