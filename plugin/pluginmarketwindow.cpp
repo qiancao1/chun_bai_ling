@@ -18,6 +18,64 @@
 #include <qnetworkreply.h>
 #include <qpainter.h>
 #include <QSettings>
+#include <QFontMetrics>   // ElidedLabel：按当前宽度算省略号
+#include <QResizeEvent>   // ElidedLabel::resizeEvent 形参
+#include <QEvent>         // ElidedLabel::changeEvent（字体变化后重算）
+
+// ======================== 单行省略号标签 ========================
+// QLabel 自己不做省略号：文本比可用宽度长时只会被**硬切**，而且换行 / 富文本会让它的
+// sizeHint 和实际渲染不一致（卡片高度是按 setItemWidget 前取的一次 sizeHint 定死的）。
+// 插件市场的「说明」要求「自动一行、放不下打省略号」，所以这里在 resize / 字体变化时
+// 自己按当前宽度重算 elidedText。
+class ElidedLabel : public QLabel
+{
+public:
+    explicit ElidedLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(parent), m_full(text)
+    {
+        // 横向 Preferred（可伸可缩）、纵向 Fixed —— 绝不允许布局把它压扁成半行
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        setText(text);
+    }
+
+    QSize sizeHint() const override
+    {
+        const QFontMetrics fm(font());
+        // 给一个宽度上限：超长说明不应该把整张卡片撑宽（否则列表出横向滚动条）。
+        // 真的比可用宽度长时，resizeEvent 会把它换成省略号版本。
+        const int w = qMin(fm.horizontalAdvance(m_full) + 2, 420);
+        return QSize(w, fm.height());
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        // 高度是硬需求（就一行），宽度可以让
+        return QSize(0, QFontMetrics(font()).height());
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *e) override
+    {
+        QLabel::resizeEvent(e);
+        updateElide();
+    }
+
+    void changeEvent(QEvent *e) override
+    {
+        QLabel::changeEvent(e);
+        // 样式表里的 font-size 是走 FontChange 生效的 → 字体一变就得按新字重算
+        if (e->type() == QEvent::FontChange)
+            updateElide();
+    }
+
+private:
+    void updateElide()
+    {
+        QLabel::setText(QFontMetrics(font()).elidedText(m_full, Qt::ElideRight, qMax(0, width())));
+    }
+
+    QString m_full;   // 完整文本（当前显示的可能是省略版）
+};
 
 // ======================== PluginCard 实现 ========================
 PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
@@ -56,9 +114,20 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
     m_nameLabel = new QLabel(nameText);
     m_nameLabel->setStyleSheet("background: transparent; font-weight: bold; font-size: 14px; color: black;");
 
-    // 备注行
-    m_remarkLabel = new QLabel(info.remark);
+    // 备注行（说明）
+    // ⚠ 市场 JSON 的 remark 是作者手写的，**里面可能带换行**（手动折行）。
+    //   QLabel 会把 '\n' 当换行渲染成多行，但卡片高度是按 `item->setSizeHint(card->sizeHint())`
+    //   取的一次值定死的 —— 多出来的行会把「名称 / 标签」挤到一起（就是"说明一换行就显示异常"）。
+    //   这里统一压成**单行**：所有连续空白（含 \r \n \t）压成一个空格，再去掉首尾空白。
+    //   （QString::simplified() 正好干这件事，中文不受影响。）
+    const QString remarkOneLine = info.remark.simplified();
+    m_remarkLabel = new ElidedLabel(remarkOneLine);
+    // 万一 remark 里有 '<' '&' 之类，别让 QLabel 按富文本解析（那会再引入一次"渲染 ≠ sizeHint"）
+    m_remarkLabel->setTextFormat(Qt::PlainText);
     m_remarkLabel->setStyleSheet("background: transparent; color: #666; font-size: 12px;");
+    // 被省略掉的部分挂 tooltip 里，信息不丢
+    if (!info.remark.trimmed().isEmpty())
+        m_remarkLabel->setToolTip(info.remark.trimmed());
 
     // ----- 标签 + 版本信息 同一行（水平布局）-----
     QHBoxLayout *tagVersionLayout = new QHBoxLayout;
@@ -379,6 +448,11 @@ void PluginMarketWindow::filterAndDisplay() {
         // 创建卡片
         PluginCard *card = new PluginCard(info);
         QListWidgetItem *item = new QListWidgetItem(m_listWidget);
+        // ⚠ 先 ensurePolished()：卡片里的字号是**样式表**给的（name 14px / remark 12px / 标签 11px），
+        //   样式表字体要等 polish 才落到控件上。不先 polish 就取 sizeHint，拿到的是默认字体算的高度
+        //   （偏小），而 setItemWidget 之后就按这个高度定死了 —— 渲染时字更高 → 行与行挤在一起重叠。
+        //   QWidget::ensurePolished() 会**递归**处理子控件，所以调卡片一次就够。
+        card->ensurePolished();
         item->setSizeHint(card->sizeHint());
         m_listWidget->setItemWidget(item, card);
 

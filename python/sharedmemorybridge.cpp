@@ -488,13 +488,13 @@ void SharedMemoryBridge::scanRequestSlots()
         const bool async = (apiId <= 1u) || (apiId >= 10000u) || (apiId == 2u && isTrueish(req.texts[5]));
         req.sync = !async;
 
-        if (apiId > 1 && apiId<10000) {      // api_id 1 是插件输出日志，最频繁，不刷屏
-            qDebug() << "共享内存: 收到请求 api_id =" << req.apiId
-                     << "uid =" << static_cast<qint32>(uid)
-                     << "reqId =" << reqId
-                     << "len =" << len << "槽 =" << i
-                     << (async ? "（异步）" : "（同步）");
-        }
+        //if (apiId > 1 && apiId<10000) {      // api_id 1 是插件输出日志，最频繁，不刷屏
+            // qDebug() << "共享内存: 收到请求 api_id =" << req.apiId
+            //          << "uid =" << static_cast<qint32>(uid)
+            //          << "reqId =" << reqId
+            //          << "len =" << len << "槽 =" << i
+            //          << (async ? "（异步）" : "（同步）");
+        //}
 
         miaomiao32 = 0;         // 有动静 = 活着，别让上层误判成「无回执」把进程重启掉
 

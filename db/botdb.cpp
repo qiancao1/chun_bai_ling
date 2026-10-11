@@ -853,6 +853,41 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
             QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
             if (groupKey.isEmpty()) return -1;
 
+            // 5a-1. 群记录二次确认（★ 群 bitmap 被清 0 的根因就在这里）：
+            //   上面的 groupExists 只表示「群缓存是否命中」，而缓存未命中 ≠ 库里没有这条记录：
+            //     · cleanGroupCache() 每 24h 会删掉所有 jojnyz/jojntime 为空的群缓存（几乎所有群）；
+            //     · close() / 扩容 reopenEnvironment() 会整体清空 m_groupCache；
+            //     · 用户缓存命中（该用户刚发过言）而该群从未进过缓存 → groupCacheHit=false。
+            //   此时 needUpdateGroup 被判为 true，写事务走进下面的 if(!groupExists) 分支，
+            //   用一条 memset 0 的新记录**覆盖**库里已存在的群记录 →
+            //   bitmap / qid(代管列表) / autoref / inviter_seq_id / xychy_time / tq_CD 全丢。
+            //   写事务本身排他，这里是唯一能可靠区分「真不存在」与「只是没缓存」的位置。
+            if (!groupExists) {
+                GroupRecord recheck{};
+                int groupRecheckRc = MDB_NOTFOUND;
+                if (getRecord(txn, m_dbi_groups, groupKey, &recheck, sizeof(recheck), &groupRecheckRc)) {
+                    groupExists = true;
+                    oldGroup = recheck;
+                    // 记录确实存在 → 按已存在重做决策，避免用「新建」逻辑覆盖
+                    if (hc == false) {
+                        const qint64 ONE_MONTH = 30 * 24 * 3600;
+                        qint64 now = time(nullptr);
+                        needUpdateGroup = (recheck.ncgx == 0 || (now - recheck.ncgx > ONE_MONTH));
+                    } else {
+                        needUpdateGroup = false;
+                    }
+                    if (ev.at_you) {
+                        bool currentAdmin = (recheck.bitmap & BIT_ADMIN) != 0;
+                        needUpdateBitmap = (currentAdmin != ev.bot_admin);
+                    }
+                } else if (groupRecheckRc != MDB_NOTFOUND) {
+                    // 读取失败不能当成「不存在」，否则又会覆盖已有群记录
+                    qCritical() << "BotDB: 写事务内读取群记录失败，放弃本次写入"
+                                << mdb_strerror(groupRecheckRc) << "groupId=" << ev.groupId;
+                    return -1;
+                }
+            }
+
             GroupRecord currentGroup = oldGroup;
             if (!groupExists) {
                 // 新建群
@@ -972,6 +1007,16 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
 
             // 将 finalGroup 转换为 GroupRecord2
             GroupRecord2 cacheRecord = toGroupRecord2(finalGroup);
+            // jojnyz / jojntime 是纯内存数据（不入 LMDB），toGroupRecord2 不会带过来：
+            // 直接覆盖 m_groupCache 会把整份「待入群验证」名单丢掉，下面的「验证通过」分支
+            // 也会因为 jojnyz 恒为空而永不命中。这里先把旧缓存的名单继承过来。
+            {
+                auto itOldGroup = m_groupCache.find(groupKey);
+                if (itOldGroup != m_groupCache.end()) {
+                    cacheRecord.jojnyz = itOldGroup->jojnyz;
+                    cacheRecord.jojntime = itOldGroup->jojntime;
+                }
+            }
             // 加载 jojnyz 数据（如果存在）
             QList<int> ids, times;
 

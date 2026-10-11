@@ -12,10 +12,89 @@
 #include <QInputDialog>
 #include <QDateTime>
 #include "global.h"
+#include "mainwindow.h"    // 「转到聊天室」要切到聊天页 —— 导航按钮在 MainWindow 里（私有）
 #include "themecolors.h"   // 页面自带样式表也要跟着主题走
+#include <QDialog>             // 「查看发送人头像」弹窗
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QUrl>
+#include <QPixmap>
+#include <QPointer>
 
 int Color_0=0;
 int Color_1=0;
+
+// ---------- 「查看发送人头像」弹窗 ----------
+// 头像地址是 QQ 开放平台的通用形式：https://thirdqq.qlogo.cn/qqapp/{appid}/{用户id}/100
+// 这里下原图直接显示 —— 不复用 chatpage 那套 32x32 圆形缓存（那是给消息气泡用的，尺寸太小）。
+static void showSenderAvatar(QWidget *parent, int appid, const QString &userId, const QString &senderName)
+{
+    if (userId.trimmed().isEmpty()) {
+        QMessageBox::warning(parent, "查看头像", "这条日志没有发送人ID。");
+        return;
+    }
+    if (appid <= 0) {
+        QMessageBox::warning(parent, "查看头像", "这条日志没有关联的机器人 appid，拼不出头像地址。");
+        return;
+    }
+
+    const QString url = QString("https://thirdqq.qlogo.cn/qqapp/%1/%2/0").arg(appid).arg(userId);
+
+    QDialog *dlg = new QDialog(parent);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);   // 关掉自动 delete，非模态不挡着看日志
+    dlg->setWindowTitle(QString("发送人头像 - %1").arg(senderName.isEmpty() ? userId : senderName));
+    QVBoxLayout *lay = new QVBoxLayout(dlg);
+
+    QLabel *img = new QLabel("正在下载头像…", dlg);
+    img->setAlignment(Qt::AlignCenter);
+    img->setMinimumSize(220, 220);
+    lay->addWidget(img);
+
+    // 链接可选中/可点，方便复制或丢浏览器
+    QLabel *link = new QLabel(QString("<a href=\"%1\">%1</a>").arg(url), dlg);
+    link->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    link->setOpenExternalLinks(true);
+    link->setWordWrap(true);
+    lay->addWidget(link);
+
+    QHBoxLayout *btnRow = new QHBoxLayout;
+    btnRow->addStretch();
+    QPushButton *copyBtn  = new QPushButton("复制链接", dlg);
+    QPushButton *closeBtn = new QPushButton("关闭", dlg);
+    btnRow->addWidget(copyBtn);
+    btnRow->addWidget(closeBtn);
+    lay->addLayout(btnRow);
+
+    QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
+    QObject::connect(copyBtn, &QPushButton::clicked, dlg, [url]() {
+        QApplication::clipboard()->setText(url);
+    });
+
+    // 网络管理器挂在弹窗上：窗口一关就跟着回收，不用手工清理。
+    // img 用 QPointer 兜住「下载还没回来、用户已经把窗口关了」——那时 img 已随 dlg 析构。
+    QNetworkAccessManager *nam = new QNetworkAccessManager(dlg);
+    QPointer<QLabel> safeImg(img);
+    QNetworkReply *reply = nam->get(QNetworkRequest(QUrl(url)));
+    QObject::connect(reply, &QNetworkReply::finished, dlg, [reply, safeImg]() {
+        if (safeImg) {
+            if (reply->error() == QNetworkReply::NoError) {
+                QPixmap pm;
+                if (pm.loadFromData(reply->readAll())) {
+                    safeImg->setText(QString());
+                    safeImg->setPixmap(pm.scaled(220, 220, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                } else {
+                    safeImg->setText("头像数据解析失败");
+                }
+            } else {
+                safeImg->setText("下载失败：" + reply->errorString());
+            }
+        }
+        reply->deleteLater();
+    });
+
+    dlg->show();
+}
 
 LogPage::LogPage(QWidget *parent) : QWidget(parent)
 {
@@ -631,6 +710,10 @@ void LogPage::setupUi()
             QAction *chbr = menu.addAction("撤回别人");
             QAction *viewContent = menu.addAction("查看消息内容");
 
+            menu.addSeparator();
+            QAction *gotoChat   = menu.addAction("转到聊天室");
+            QAction *viewAvatar = menu.addAction("查看发送人头像");
+
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
             if (!selected) return;
 
@@ -735,6 +818,38 @@ void LogPage::setupUi()
                 }
 
                 QMessageBox::information(this, "消息内容", parts.join("\n----------------\n"));
+            } else if (selected == gotoChat) {
+                // 事件日志（tab 0）没有对应的会话，跳不了
+                if (currentTabIndex == 0) {
+                    QMessageBox::warning(this, "无法跳转", "事件日志没有对应的聊天室。");
+                    return;
+                }
+                QModelIndex idx = m_model->index(index.row(), 0);
+                const QString key = m_model->data(idx, Qt::UserRole).toString();
+                const QStringList list = key.split(":");      // 格式：seq:appid:会话id
+                const int appid    = list.value(1).toInt();
+                const QString conv = list.value(2);
+                if (conv.isEmpty()) {
+                    QMessageBox::warning(this, "无法跳转", "这条日志没有会话ID。");
+                    return;
+                }
+
+                // ① 先切到「聊天」页（等价于点左侧导航的「聊天」）
+                if (MainWindow *mw = qobject_cast<MainWindow *>(window()))
+                    mw->gotoChatPage();
+
+                // ② 再打开会话。日志页的 tab 索引就是聊天页的 isGroupMode
+                //    （1群聊 / 2频道 / 3私聊 / 4频道私聊），不用再映射。
+                if (chatPage)
+                    chatPage->openConversationFromLog(appid, conv, currentTabIndex);
+            } else if (selected == viewAvatar) {
+                QModelIndex idx = m_model->index(index.row(), 0);
+                const QString key = m_model->data(idx, Qt::UserRole).toString();
+                Message msg;
+                g_logdb[currentTabIndex]->readLog(key, msg);
+                const QStringList list = key.split(":");
+                showSenderAvatar(this, list.value(1).toInt(), msg.user,
+                                 msg.name.isEmpty() ? msg.user : msg.name);
             }else if(ch == selected)
             {
                 QModelIndex idx = m_model->index(index.row(), 0);
@@ -743,7 +858,7 @@ void LogPage::setupUi()
 
                 Message msg;
                 g_logdb[currentTabIndex]->readLog(key,msg);
-                if(msg.ch.isEmpty())
+                if(msg.plugin_ch.isEmpty())
                 {
                     QMessageBox::warning(this,"","撤回失败 msgid为空 不能撤回");
                     return ;

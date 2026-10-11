@@ -30,6 +30,8 @@
 #include "mainwindow.h"
 #include <QHostInfo>
 #include <QThreadPool>
+#include <QThread>
+#include <QDateTime>
 #include "qq_bind_login.h"
 bool 框架退出=false;
 int miaomiao32=0;
@@ -56,6 +58,29 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 
 
+// 被动回复（带 msgid）全局限速：所有调用线程共用一个「时间片队列」，
+// 所以 plts 的好友线程 + 群线程、schedule 的多账号任务加起来也是约 perSec 条/秒。
+// 锁只用来「预订一个发送时间片」，睡眠在锁外做，不会互相堵住。
+void paceMsgIdReply(int perSec)
+{
+    static QMutex paceMutex;
+    static qint64 paceNextMs = 0;      // 下一个可用时间片（毫秒时间戳）
+
+    if (perSec <= 0) perSec = 60;
+    const qint64 stepMs = 1000 / perSec;
+
+    qint64 waitMs = 0;
+    {
+        QMutexLocker locker(&paceMutex);
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const qint64 slotMs = qMax(nowMs, paceNextMs);
+        paceNextMs = slotMs + stepMs;
+        waitMs = slotMs - nowMs;
+    }
+    if (waitMs > 0) QThread::msleep(static_cast<unsigned long>(waitMs));
+}
+
+
 void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int addint)
 {
     if (!m_botClients.contains(appid)) return;
@@ -69,7 +94,49 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
     if(n >= 250) return; //255代表被处理了
     if(n >= 3)
     {
-        c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, false, false, 0, true);
+        if(!c->m_info->ychfwcl){
+            c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, false, false, 0, true);
+            return;
+        }
+
+        QMetaObject::invokeMethod(qApp, [=]() {
+            if (m_openidTimers.contains(openid)) {
+                QTimer *oldTimer = m_openidTimers[openid];
+                oldTimer->start();  // 重新计时 5 秒
+                return;  // 无需创建新定时器
+            }
+
+            QTimer *timer = new QTimer();
+            timer->setSingleShot(true);
+            timer->setInterval(6000);
+
+            // 3. 连接回调（注意 lambda 捕获所有需要的变量）
+            QObject::connect(timer, &QTimer::timeout, qApp, [=]() {
+                // 回调执行时，该定时器已触发，需要从 map 中移除
+                m_openidTimers.remove(openid);  // 先移除自身
+
+                // 执行业务逻辑
+                if (!m_botClients.contains(appid)) {
+                    timer->deleteLater();
+                    return;
+                }
+                QQBotClient *c = m_botClients[appid];
+                if (c->m_info->fallbackReply.isEmpty()) {
+                    timer->deleteLater();
+                    return;
+                }
+                QString text = "[未被处理回应]";
+                c->send_msgAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
+
+                timer->deleteLater();  // 任务完成，清理定时器
+            });
+
+            // 4. 保存定时器到 map，并启动
+            m_openidTimers.insert(openid, timer);
+            timer->start();
+
+            //qDebug() << "添加定时（或重置）" << openid;
+        }, Qt::QueuedConnection);
     }
 }
 
@@ -385,7 +452,7 @@ QString 内置指令(MessageEvent &ev)
                        .arg(db->getUserTodayMsgCount(userKeyBytes)).arg(db->getGroupTodayMsgCount(groupKeyBytes));
 
         }else
-            text = QString("**我的ID**\n>user_id:%1\n>个人ID:%2\n群ID>：%3\n>昵称：%4 [修改昵称]()").arg(ev.user_int).arg(ev.user, ev.groupId,ev.nickname2);
+            text = QString("**我的ID**\n>user_id:%1\n>个人ID:[%2]()\n群ID>：[%3]()\n>昵称：%4 [修改昵称]()").arg(ev.user_int).arg(ev.user, ev.groupId,ev.nickname2);
     }
     if(ev.msg=="代管列表")
     {

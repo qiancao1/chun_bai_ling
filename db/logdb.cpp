@@ -23,6 +23,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QDataStream>
+#include <QDateTime>
+#include <QSet>
 #include <QCoreApplication>
 #include <cstring>
 
@@ -32,6 +34,35 @@
 static const size_t DEFAULT_MAPSIZE = 64ULL * 1024 * 1024;   // 64 MB
 static const size_t MAX_MAPSIZE = 16ULL * 1024 * 1024 * 1024; // 16 GB
 static const int SEQ_DIGITS = 20; // 序号填充位数
+
+// ---- 被动回复 msgid 的有效窗口（2026-10-11）----
+// 被动回复用的 msg_id 有效期：群 5 分钟、好友 1 小时（用户口径）。超窗的 msg_id 发出去会失败，
+// 所以按各自窗口取最近一条即可；拿不到就传空 msgid 走主动发送。
+static const qint64 GROUP_MSGID_WINDOW_SECS  = 5 * 60;      // 群消息：5 分钟
+static const qint64 FRIEND_MSGID_WINDOW_SECS = 60 * 60;     // 好友/单聊：1 小时
+
+// "yyyy-MM-dd hh:mm:ss"（入站消息）与 "yyyy-MM-dd HH:mm:ss"（出站/日志）两种写法都吃
+static qint64 parseLogTimeString(const QString &ts)
+{
+    if (ts.isEmpty()) return 0;
+    QDateTime dt = QDateTime::fromString(ts, "yyyy-MM-dd HH:mm:ss");
+    if (!dt.isValid()) dt = QDateTime::fromString(ts, "yyyy-MM-dd hh:mm:ss");
+    if (!dt.isValid()) dt = QDateTime::fromString(ts, Qt::ISODate);
+    return dt.isValid() ? dt.toSecsSinceEpoch() : 0;
+}
+
+// 只读出记录的前 4 个字段（user / msg / isSelf / timestamp）拿时间戳。
+// 扫描时每条都要判一次时间，全量 deserializeMessage 太贵，这里只取到 timestamp 就止步。
+static qint64 logBlobTimeSecs(const QByteArray &blob)
+{
+    QDataStream stream(blob);
+    stream.setVersion(QDataStream::Qt_5_15);
+    QString user, msg, ts;
+    bool isSelf = false;
+    stream >> user >> msg >> isSelf >> ts;
+    if (stream.status() != QDataStream::Ok) return 0;   // 旧格式/坏记录 → 0=未知
+    return parseLogTimeString(ts);
+}
 
 // ========== 构造函数、析构函数 ==========
 LogDB::LogDB(const QString &dbPath, QObject *parent)
@@ -358,6 +389,119 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
     if(!daoxu)
     std::reverse(result.begin(), result.end());
     return result;
+}
+
+// ================= 被动回复 msgid（2026-10-11）=================
+//
+// 背景：发送分两种，频率限制互不占用 ——
+//   ① 被动回复（携带 msg_id，即 Message.ch 保存的那条消息 id）：群 100 条/秒、好友 60 条/秒，
+//      **没有分钟限制**，强度轻；
+//   ② 主动发送（不携带 msg_id）：群 60 条/分钟、好友 30 条/分钟。
+// 所以 plts（批量推送）/ scheduleconfigwidget（定时）先来这里要 msgid，做成「混合发送」：
+// 拿到 msgid 就用 msgid 发（走被动额度，不吃主动的分钟频率），拿不到才退回主动发送。
+// 被动那条路统一走 paceMsgIdReply(60) 的全局 60 条/秒（比群 100 更保守，好友也刚好卡住）。
+//
+// ⚠ 数据来源是「收到的消息」的 Message.ch（core/qqbotclient.cpp 里
+//   Message mes{ev.user, ev.msg, false, tiems, "", ev.replyTo, ev.msgId} 的第 7 个参数）
+//   —— ch 才是「用户发来的消息 id」，只有它才能当被动回复用；它可能是空的，跳过即可。
+// ⚠⚠ 机器人自己发出去的消息 id 存在 Message.plugin_ch（core/api2.cpp: msg.plugin_ch = deleteid），
+//   那个只能拿去做撤回（delete_messages），绝不能用它来发送！所以 isSelf==true 或
+//   plugin_ch 非空的一律过滤掉。
+QStringList LogDB::getRecentMsgIds(const QString &appid, const QString &groupId, bool isGroup,
+                                   int maxCount) const
+{
+    QStringList result;
+    if (groupId.isEmpty() || maxCount <= 0) return result;
+
+    const qint64 windowSecs = isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS;
+    QHash<QString, QStringList> map;
+    QMutexLocker locker(&m_mutex);
+    collectRecentMsgIds(appid, groupId, QDateTime::currentSecsSinceEpoch() - windowSecs,
+                        maxCount, map);
+    auto it = map.constFind(groupId);
+    if (it != map.constEnd()) result = it.value();
+    return result;
+}
+
+QHash<QString, QStringList> LogDB::getRecentMsgIdMap(const QString &appid, bool isGroup,
+                                                     int maxCountPerConv) const
+{
+    QHash<QString, QStringList> map;
+    if (appid.isEmpty() || maxCountPerConv <= 0) return map;
+
+    const qint64 windowSecs = isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS;
+    QMutexLocker locker(&m_mutex);
+    collectRecentMsgIds(appid, QString(), QDateTime::currentSecsSinceEpoch() - windowSecs,
+                        maxCountPerConv, map);
+    return map;
+}
+
+void LogDB::collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,
+                                int maxPerConv, QHash<QString, QStringList> &out, int scanLimit) const
+{
+    if (!m_env || appid.isEmpty() || maxPerConv <= 0) return;
+
+    QSet<QString> seen;                 // 缓存/库里同一条消息去重（msgid 全局唯一）
+    QHash<QString, int> convCount;      // 每个会话已经收了多少个
+
+    // 1) 内存缓存优先：刚收到、还没落盘（最多 5 秒窗口）的消息也要算
+    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+        const QStringList parts = it.key().split(':');
+        if (parts.size() != 3 || parts[1] != appid) continue;
+        const QString &conv = parts[2];
+        if (!onlyConv.isEmpty() && conv != onlyConv) continue;
+        if (convCount.value(conv) >= maxPerConv) continue;
+
+        const Message &m = it.value().msg;
+        // ch = 用户发来的消息 id（被动回复用它）；plugin_ch = 机器人发出去的（只能撤回，不能发送）
+        if (m.isSelf || !m.plugin_ch.isEmpty() || m.ch.isEmpty() || seen.contains(m.ch)) continue;
+        if (parseLogTimeString(m.timestamp) < cutoffSecs) continue;
+
+        seen.insert(m.ch);
+        out[conv].append(m.ch);
+        convCount[conv] = convCount.value(conv) + 1;
+    }
+
+    // 2) 数据库：从最大 seq 往回扫；撞到比时间窗还早的记录就停（seq 递增 ≈ 时间递增）
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+
+    MDB_cursor *cursor = nullptr;
+    if (mdb_cursor_open(txn, m_dbi_main, &cursor) != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        return;
+    }
+
+    MDB_val key, value;
+    int rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    int scanned = 0;
+    while (rc == MDB_SUCCESS && scanned < scanLimit) {
+        ++scanned;
+        const QByteArray blob((const char*)value.mv_data, (int)value.mv_size);
+
+        const qint64 ts = logBlobTimeSecs(blob);
+        if (ts > 0 && ts < cutoffSecs) break;    // 0=时间未知（旧格式）→ 不据此提前结束
+
+        const QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+        const QStringList parts = keyStr.split(':');
+        if (parts.size() == 3 && parts[1] == appid
+            && (onlyConv.isEmpty() || parts[2] == onlyConv)) {
+            const QString &conv = parts[2];
+            if (convCount.value(conv) < maxPerConv) {
+                Message m;
+                if (deserializeMessage(blob, m) && !m.isSelf && m.plugin_ch.isEmpty()
+                    && !m.ch.isEmpty() && !seen.contains(m.ch)) {
+                    seen.insert(m.ch);
+                    out[conv].append(m.ch);
+                    convCount[conv] = convCount.value(conv) + 1;
+                }
+            }
+        }
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+    }
+
+    mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
 }
 QStringList LogDB::getLatestKeys(int N) const
 {

@@ -83,6 +83,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QCheckBox" name="checkBox_3">
+         <property name="text">
+          <string>延迟回应未被处理</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <spacer name="horizontalSpacer">
          <property name="orientation">
           <enum>Qt::Horizontal</enum>

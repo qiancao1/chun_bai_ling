@@ -51,6 +51,10 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+    // 切到「聊天」页（等价于用户点左侧导航的「聊天」按钮）。
+    // 给「日志」页右键菜单的「转到聊天室」用 —— 那边拿不到私有的导航按钮。
+    void gotoChatPage();
+
 protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;

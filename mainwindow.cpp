@@ -77,11 +77,22 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.1.106"
-#define APP_BUILD_NUMBER 106
+#define APP_VERSION_STR "v1.4.1.114"
+#define APP_BUILD_NUMBER 114
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.2.114 (2026-10-11)
+- 修复 日志右键菜单 撤回机器人信息失败问题
+- 修复 数据库bitmap被覆盖问题(群管配置)
+- 优化 批量推送 定时推送功能 将使用msgid 优先发送
+- 优化 指令未处理响应增加 延迟
+- 修复 py安装库时 没有实时输出 日志
+- 优化 插件市场 插件说明 换行显示布局问题
+- 合并 添加 py JS 合并到一个按钮
+- 修复 加载DLL/SO时 未设置临时加载目录导致 某些有依赖的插件可能是吧
+- 增加 右键菜单 增加查看发送人头像 转到聊天室
+
 ## v1.4.1.106 (2026-10-10)
 - 增加 ai获取模型列表 并且测试模型
 - 重写 32位插件加载器
@@ -719,6 +730,13 @@ MainWindow::~MainWindow()
 }
 
 bool _g_qieh=false;
+// 切到「聊天」页。直接借导航按钮的 clicked 走一遍，把 btnGroup 互斥、stackedWidget 切换、
+// logPage->setActive(false)、chatPage->存在 这些副作用一次带全 —— 手工在这儿重写那几句容易漏。
+void MainWindow::gotoChatPage()
+{
+    if (btnChat) btnChat->click();
+}
+
 void MainWindow::setupUi()
 {
 

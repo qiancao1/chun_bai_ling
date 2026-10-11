@@ -160,6 +160,10 @@ public:
     int isGroupMode=0;
     bool 存在=false;
     void onContactItemClicked2(int appid, const QString &id, int type);
+    // 「日志」页右键 → 转到聊天室：切到对应分类并打开指定会话。
+    // type 用的就是日志页的 tab 索引，和本页的 isGroupMode 是同一套编号：
+    //   1=群聊 2=频道 3=私聊 4=频道私聊（0=事件日志，不适用）
+    void openConversationFromLog(int appid, const QString &id, int type);
 
 public slots:
     void onGroupChatClicked();

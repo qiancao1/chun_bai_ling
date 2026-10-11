@@ -3,6 +3,7 @@
 #include "ui_plts.h"
 #include <QMessageBox>
 #include <QThreadPool>
+#include <QDateTime>
 
 int 成功数量g=0;
 QList<int> ts_m_friendStatus;
@@ -165,14 +166,20 @@ public:
     void run() override {
         auto *db = g_botdb[g_appid];
         QQBotClient *bot = m_botClients[g_appid];
+        // 一次扫库拿到所有好友可用的被动回复 msgid（窗口 5 分钟），整批推送都不用再查
+        QHash<QString, QStringList> replyIds;
+        if (LogDB *ldb = g_logdb[mapTypeToTabIndex(2)].get())
+            replyIds = ldb->getRecentMsgIdMap(QString::number(g_appid), false);
 
         QString pname = "[批量推送]";
         int len = ts_m_friendStatus.size();
-        const int maxPerSec = 8;
-        const int minIntervalMs = 1000 / maxPerSec;  // 125ms
 
+        // 好友**没有**分钟限制（「30 条/分钟」只是「未认证」机器人才有的，这里都是有认证的）→
+        // 只做秒级限速：被动回复走全局 60 条/秒；主动发送维持原来的 8 条/秒。
+        const int maxPerSec = 8;
+        const int minIntervalMs = 1000 / maxPerSec;   // 125ms
         QElapsedTimer timer;
-        timer.start();  // 用于计算每次调用的时间点
+        timer.start();
 
         for (int i = 0; i < len; ++i) {
             if (i >= len) return;
@@ -182,15 +189,22 @@ public:
             QString user;
             db->getOpenIdBySeqId(ts_m_friendStatus[i], user);
 
+            // 混合发送：有 msgid 就走被动回复（好友窗口 1 小时），没有就走主动发送
+            QString msgid = replyIds.value(user).value(0);
+
             // 实际发送消息
-            bot->send_msgAsync(2, user, pname, ts_m_text, QString());
+            bot->send_msgAsync(2, user, pname, ts_m_text, msgid);
             ts_m_friendStatus[i] = 0;
 
-            qint64 elapsed = timer.elapsed();
-            if (elapsed < minIntervalMs) {
-                QThread::msleep(minIntervalMs - elapsed);
+            if (!msgid.isEmpty()) {
+                paceMsgIdReply(60);   // 被动回复：全局 60 条/秒
+            } else {
+                qint64 elapsed = timer.elapsed();
+                if (elapsed < minIntervalMs) {
+                    QThread::msleep(minIntervalMs - elapsed);
+                }
+                timer.restart();      // 重置计时器，准备下一次间隔计算
             }
-            timer.restart();  // 重置计时器，准备下一次间隔计算
         }
     }
 
@@ -204,8 +218,24 @@ public:
 
     void run() override {
         QQBotClient *bot = m_botClients[g_appid];
+        // 群日志库（type=0 → tabIndex=1）
+        LogDB *ldb = g_logdb[mapTypeToTabIndex(0)].get();
+        // 群的被动回复窗口只有 5 分钟，整批推送可能跑很久 → 先扫一次，之后每 60 秒重扫
+        QHash<QString, QStringList> replyIds;
+        if (ldb) replyIds = ldb->getRecentMsgIdMap(QString::number(g_appid), true);
+        QElapsedTimer replyIdsTimer;
+        replyIdsTimer.start();
+
         QString pname="[批量推送]";
         int len = ts_m_groupStatus.size();
+
+        // 群硬限：只有「主动发送」（不带 msgid）才吃 50 条/分钟（官方 60，留 10 条保险）；
+        // 被动回复不占这个额度（只受 paceMsgIdReply(60) 的全局 60 条/秒限制）。
+        // 主动额度满 50 条就睡到下一个整分钟再继续，期间支持中途停止（ts_m_stopPush）。
+        const int GROUP_MIN_LIMIT = 50;
+        int sentThisMinute = 0;                      // 本分钟内「主动发送」条数
+        qint64 minuteStart = QDateTime::currentMSecsSinceEpoch();
+
         for(int i=0;i<len;i++)
         {
 
@@ -213,9 +243,37 @@ public:
             if(i>=len) return;
             if(ts_m_groupStatus[i].isEmpty()) continue;
 
-            QString res = bot->send_messages(0,ts_m_groupStatus[i],pname,ts_m_text);
+            if (ldb && replyIdsTimer.elapsed() > 60 * 1000) {
+                replyIds = ldb->getRecentMsgIdMap(QString::number(g_appid), true);
+                replyIdsTimer.restart();
+            }
+
+            // 混合发送：有 msgid 就走被动回复（群窗口 5 分钟），没有就走主动发送
+            QString msgid = replyIds.value(ts_m_groupStatus[i]).value(0);
+
+            if (msgid.isEmpty()) {
+                // 主动发送才受 50 条/分钟限制；满了就等到下一个整分钟
+                qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                if (nowMs - minuteStart >= 60000) { sentThisMinute = 0; minuteStart = nowMs; }
+                if (sentThisMinute >= GROUP_MIN_LIMIT) {
+                    qint64 waitMs = 60000 - (nowMs - minuteStart);
+                    while (waitMs > 0) {
+                        if (!ts_m_stopPush) return;
+                        QThread::msleep(qMin<qint64>(waitMs, 200));
+                        waitMs = 60000 - (QDateTime::currentMSecsSinceEpoch() - minuteStart);
+                    }
+                    sentThisMinute = 0;
+                    minuteStart = QDateTime::currentMSecsSinceEpoch();
+                }
+            }
+
+            QString res = bot->send_messages(0,ts_m_groupStatus[i],pname,ts_m_text,msgid);
             ts_m_groupStatus[i]=QString();
             if(res.contains("ROBOT")) 成功数量g++;
+
+            // 带上 msgid 就是被动回复，可以走全局 60 条/秒；主动发送才吃 50 条/分钟
+            if(!msgid.isEmpty()) paceMsgIdReply(60);
+            else ++sentThisMinute;
         }
     }
 

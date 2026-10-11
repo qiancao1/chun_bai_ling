@@ -4403,7 +4403,11 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     }
 
     // cb 必须透传下去，否则调用方等不到回调（send_messagesAsync 里才会 ctx.cb = cb）
-    return send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref,cb);
+    //QElapsedTimer t;
+    //t.start();
+    QString r = send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref,cb);
+    //qDebug () << t.elapsed();
+    return r;
 }
 
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,

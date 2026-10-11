@@ -642,6 +642,18 @@ QString python_code(const QString &py_code,const MessageEvent &msg);
 int accinfo(int appid);
 // 全局互斥锁，保护 schedule->tasksMap 的访问
 QMutex scheduleMutex;
+
+// 一次性扫库，拿「该 appid 下所有会话还能用来被动回复的 msgid」
+//   isGroup=true → 群（最近 5 分钟）；false → 好友/单聊（最近 1 小时）
+// 拿不到就是空表 → 调用方传空 msgid 走主动推送。
+// ⚠ 批量任务不要每个 target 都调一次（每次都要扫最近日志），一个 appid 一次触发扫一次即可。
+static QHash<QString, QStringList> loadReplyMsgIds(int appid, bool isGroup)
+{
+    LogDB *ldb = g_logdb[mapTypeToTabIndex(isGroup ? 0 : 2)].get();
+    if (!ldb) return QHash<QString, QStringList>();
+    return ldb->getRecentMsgIdMap(QString::number(appid), isGroup);
+}
+
 void processAppidTasks(int appid) {
     QDateTime now = QDateTime::currentDateTime();
     const QTime time = now.time();
@@ -655,6 +667,10 @@ void processAppidTasks(int appid) {
     locker.unlock();
 
     // ---- 线程局部限速变量 ----
+    // 分钟额度只对「主动发送」（不带 msgid）生效，且只有群有：群 50 条/分钟（官方 60，留 10 条保险）。
+    // ⚠ 好友**没有**分钟限制 —— 「好友 30 条/分钟」是「未认证」机器人才有的限制，这里有认证，不卡。
+    // 被动回复（带 msgid）不计入任何分钟额度，只受 paceMsgIdReply(60) 的全局 60 条/秒限制。
+    // jiancha() 每分钟才跑一次本函数 → 群主动额度满了就 break，剩下的靠 t.groupOffset 下一分钟续传。
     const int GROUP_MIN_LIMIT = 50;
     int groupCount = 0;
     int groupLastMinute = now.toTime_t() / 60;
@@ -662,6 +678,23 @@ void processAppidTasks(int appid) {
     const int PRIVATE_QPS = 8;
     const qint64 MIN_INTERVAL_MS = 1000 / PRIVATE_QPS;
     qint64 lastPrivateSendTime = 0;
+
+    // ---- 被动回复 msgid：每个 appid 一次触发只扫一次库（懒加载）----
+    //   群 = 最近 5 分钟窗口，好友 = 最近 1 小时窗口，每会话取最新一条；取不到就传空 msgid 走主动发送
+    QHash<QString, QStringList> replyIdsG, replyIdsF;
+    bool loadedG = false, loadedF = false;
+    auto msgIdFor = [&](int type, const QString &openid) -> QString {
+        if (openid.isEmpty()) return QString();
+        if (type == 0) {
+            if (!loadedG) { replyIdsG = loadReplyMsgIds(appid, true);  loadedG = true; }
+            return replyIdsG.value(openid).value(0);
+        }
+        if (type == 2) {
+            if (!loadedF) { replyIdsF = loadReplyMsgIds(appid, false); loadedF = true; }
+            return replyIdsF.value(openid).value(0);
+        }
+        return QString();   // 频道(1/3)不掺和，继续走主动推送
+    };
 
     // ---- 遍历任务 ----
     for (auto &t : list) {
@@ -732,7 +765,7 @@ void processAppidTasks(int appid) {
                 groupList.append(item);
         }
 
-        // ---- 发送私聊（无分钟限制，仅秒限速） ----
+        // ---- 发送私聊（好友无分钟限制，只做秒级限速；被动回复不计） ----
         int start = t.privateOffset;
         if (start >= privateList.size()) {
             t.privateOffset = 0;
@@ -765,18 +798,27 @@ void processAppidTasks(int appid) {
             }
             bool is_wakeup = true;
 
-            // ---- 秒级限速 ----
-            qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-            if (lastPrivateSendTime > 0) {
-                qint64 elapsed = nowMs - lastPrivateSendTime;
-                if (elapsed < MIN_INTERVAL_MS) {
-                    QThread::msleep(MIN_INTERVAL_MS - elapsed);
+            // 混合发送：优先用「对方最近发来的消息 msgid」走被动回复（好友窗口 1 小时）；
+            // 取不到就传空走主动发送。好友没有分钟限制，所以只有秒级限速。
+            QString msgid;
+            if (!data.isEmpty()) msgid = msgIdFor(type, openid);
+
+            // ---- 秒级限速（被动回复 60 条/秒；主动发送维持原来的 8 条/秒）----
+            if (!msgid.isEmpty()) {
+                paceMsgIdReply(60);
+            } else {
+                qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                if (lastPrivateSendTime > 0) {
+                    qint64 elapsed = nowMs - lastPrivateSendTime;
+                    if (elapsed < MIN_INTERVAL_MS) {
+                        QThread::msleep(MIN_INTERVAL_MS - elapsed);
+                    }
                 }
+                lastPrivateSendTime = QDateTime::currentMSecsSinceEpoch();
             }
-            lastPrivateSendTime = QDateTime::currentMSecsSinceEpoch();
 
             if (!data.isEmpty()) {
-                client->send_messagesAsync(type, openid, text, data, QString());
+                client->send_messagesAsync(type, openid, text, data, msgid);
             }
 
             t.privateOffset = i + 1;
@@ -785,7 +827,7 @@ void processAppidTasks(int appid) {
             t.privateOffset = 0;
         }
 
-        // ---- 发送群聊（分钟限速 50） ----
+        // ---- 发送群聊（主动 50 条/分钟；被动回复不计） ----
         start = t.groupOffset;
         if (start >= groupList.size()) {
             t.groupOffset = 0;
@@ -797,9 +839,6 @@ void processAppidTasks(int appid) {
             if (curMinute != groupLastMinute) {
                 groupCount = 0;
                 groupLastMinute = curMinute;
-            }
-            if (groupCount >= GROUP_MIN_LIMIT) {
-                break;   // 达到限额，保留偏移
             }
 
             const QString &item = groupList[i];
@@ -828,9 +867,21 @@ void processAppidTasks(int appid) {
             }
             bool is_wakeup = false;
 
+            // 混合发送：优先用「该群最近 5 分钟内收到的消息 msgid」走被动回复；取不到就传空走主动发送
+            QString msgid;
+            if (!data.isEmpty()) msgid = msgIdFor(type, openid);
+
+            // 只有主动发送才吃群 50 条/分钟：满额就 break（被动回复不受此限，能拿到的照样发）
+            if (!data.isEmpty() && msgid.isEmpty() && groupCount >= GROUP_MIN_LIMIT) {
+                break;   // 群主动发送额度已满，保留偏移下一分钟接着发
+            }
+
+            // 被动回复不算主动发送的分钟额度，只按 60 条/秒走
+            if (!msgid.isEmpty()) paceMsgIdReply(60);
+
             if (!data.isEmpty()) {
-                client->send_messagesAsync(type, openid, text, data, QString(), is_wakeup);
-                groupCount++;
+                client->send_messagesAsync(type, openid, text, data, msgid, is_wakeup);
+                if (msgid.isEmpty()) groupCount++;   // 只有主动发送才吃 50 条/分钟
             }
 
             t.groupOffset = i + 1;

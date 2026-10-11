@@ -127,6 +127,7 @@ struct AccountInfo {
     int tq_lq=0 ;
 
     int rq_ychf=0, rq_lq=0;
+    bool ychfwcl=false; //延迟回应未处理
     bool autoht=true;
     bool pbbot=true;
     bool autoConnect = false;

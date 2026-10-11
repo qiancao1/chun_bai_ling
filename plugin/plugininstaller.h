@@ -364,8 +364,8 @@ inline QString installMarketPlugin(const PluginInfo2 &info, QString &note,
     //    ⚠ Python / JS 不能用裸 LoadPlugin：它只把插件挂上去，**不会补依赖**。
     //      带 requirements.txt 的 Python 插件、带 package.json 的 JS 插件会因缺包
     //      直接加载失败，用户看到的是"装好了却不能用"。必须走会补环境的两个入口：
-    //        LoadPlugin_Python_pip()  → pip install -r requirements.txt → onPipFinished() → 加载
-    //        npmJSpk()                → npm install                    → onNpmFinished() → 加载
+    //        LoadPlugin_Python_pip()  → pip install -r requirements.txt → 装完自动加载
+    //        npmJSpk()                → npm install                    → 装完自动加载
     //      代价：这两个入口是**异步**的（依赖在后台装，装完才真正加载），所以这里只能
     //      确认"已经交给它们"，拿不到最终加载结果 —— 进度和结果在它们自己弹出的日志窗口里。
     //    原生库没有依赖概念，仍走 LoadPlugin（同步，加载失败会自动降级 32 位）。

@@ -2006,6 +2006,26 @@ void ChatPage::onContactItemClicked2(int appid,const QString &id,int type)
         loadChatHistory(m_appid,currentContactId,m_type);
     }
 }
+
+// 「日志」页右键 → 转到聊天室。
+// type 直接就是 isGroupMode（日志页的 tab 索引和它同一套编号：1群 / 2频道 / 3私聊 / 4频道私聊），
+// 而 isGroupMode 又等于 g_logdb 的下标 —— 所以不用再做映射。
+void ChatPage::openConversationFromLog(int appid, const QString &id, int type)
+{
+    if (type < 1 || type > 4 || id.isEmpty()) return;
+
+    isGroupMode = type;
+    btnsetChecked();          // 清空消息区 + 按 mode 重建联系人列表（内部会暂存/还原 isGroupMode）
+    // btnsetChecked() 刚把所有分类按钮置成了未选中，这里补上对应那个
+    switch (type) {
+    case 1: btnGroupChat->setChecked(true);       break;   // 群聊
+    case 2: btnChannelChat->setChecked(true);     break;   // 频道
+    case 3: btnPrivateChat->setChecked(true);     break;   // 私聊
+    case 4: btnChannelPrivate->setChecked(true);  break;   // 频道私聊
+    default: break;
+    }
+    onContactItemClicked2(appid, id, type);   // 打开这个会话并加载聊天记录
+}
 //加载聊天记录
 void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)
 {

@@ -187,6 +187,10 @@ QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到�
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
 void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int addint=0);
+// 被动回复（带 msgid 的发送）全局限速：跨线程共享，平均约 perSec 条/秒，会阻塞调用线程。
+// 主动推送有频率限制，被动回复基本没有（官方 100 条/秒）→ 保险起见默认按 60 条/秒发。
+// 只有「真的带上了 msgid」的发送才需要调它；msgid 为空（主动推送）不要调。
+void paceMsgIdReply(int perSec = 60);
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms

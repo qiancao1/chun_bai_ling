@@ -931,6 +931,28 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
         safeClient->sendMessage(o);
     };
 
+    // pip / npm 的**实时**输出：同样走 progress 消息，但**不带 percent**
+    // （带上会把进度条拨回 0），前端收到 log 就往安装弹窗的滚动日志区追加。
+    // 以前这两个函数把输出全写进桌面的 Qt 日志弹窗，浏览器这边从 95% 到结束
+    // 之间是**完全静默**的 —— 装依赖要几分钟，控制台看着像卡住了。
+    //
+    // 线程：ws_server 是在 set::setupUI() 里 new 的，跑在 GUI 线程；
+    //      pip/npm 的 readyRead 回调也在 GUI 线程 → 这里直接 sendMessage 是安全的。
+    auto pushInstallLog = [safeClient, reqId, name](const QString &text, bool isError, bool isFinal) {
+        if (!safeClient || text.isEmpty()) return;
+        QJsonObject o;
+        o["cmd"]      = "installPlugin";
+        o["success"]  = true;
+        o["progress"] = true;          // 过程消息：前端只更新进度/日志，不结束请求
+        o["stage"]    = "install";
+        o["name"]     = name;
+        o["log"]      = text;
+        if (isError) o["isError"] = true;
+        if (isFinal) o["final"]   = true;   // 最后一条（pip/npm 已退出）→ 前端可以关弹窗了
+        if (!reqId.isEmpty()) o["reqId"] = reqId;
+        safeClient->sendMessage(o);
+    };
+
     // 1. 准备临时 zip
     const QString tmpMarketDir = QCoreApplication::applicationDirPath() + "/tmp/market";
     QDir().mkpath(tmpMarketDir);
@@ -942,7 +964,7 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
     auto lastPct = std::make_shared<int>(-1);
 
     httpGet(QUrl(dlUrl), 0,
-            [safeClient, reqId, name, type, safeName, index, zipPath, stage, lastPct]
+            [safeClient, reqId, name, type, safeName, index, zipPath, stage, pushInstallLog, lastPct]
             (bool ok, const QByteArray &data, const QString &err) {
         if (!ok) {
             sendReply(safeClient, "installPlugin", false, QJsonValue(), reqId,
@@ -980,7 +1002,7 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
                          QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                          qApp,
                          [safeClient, reqId, name, type, safeName, index, targetDir, zipPath,
-                          proc, stage](int code, QProcess::ExitStatus status) {
+                          proc, stage, pushInstallLog](int code, QProcess::ExitStatus status) {
             const QString stderrText = QString::fromLocal8Bit(proc->readAllStandardError());
             proc->deleteLater();
             QFile::remove(zipPath);
@@ -1001,11 +1023,12 @@ void handleInstallPlugin(const QJsonObject &params, ClientConnection *client, co
             // setWorkingDirectory(dir)，相对路径会依赖进程的当前工作目录，不可靠。
             // 注意它们是异步的（依赖装完才真正加载），所以这里只能报"已开始安装"。
             if (type == "Python") {
-                pluginPage->LoadPlugin_Python_pip(targetDir);
+                // 传实时回调：pip/npm 每读一块输出就推一条 progress(log) 给浏览器
+                pluginPage->LoadPlugin_Python_pip(targetDir, pushInstallLog);
                 msg = QString("插件 %1 已解压到 plugins/%2，正在后台安装依赖 (pip) 并加载")
                           .arg(name, safeName);
             } else if (type == "JS") {
-                pluginPage->npmJSpk(targetDir);
+                pluginPage->npmJSpk(targetDir, pushInstallLog);
                 msg = QString("插件 %1 已解压到 plugins/%2，正在后台安装依赖 (npm) 并加载")
                           .arg(name, safeName);
             } else if (PluginMarketMeta::isNativeType(type)) {

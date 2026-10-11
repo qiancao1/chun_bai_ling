@@ -221,6 +221,7 @@ void qunguan::on_pushButton_clicked() {
     info->tq_ychf = ui->lineEdit_3->text().toInt();
     info->tq_lq = ui->lineEdit_4->text().toInt();
     info->cbl = ui->checkBox->isChecked();
+    info->ychfwcl = ui->checkBox_3->isChecked();
     // ---- 2. 保存当前编辑的文本内容（如果存在） ----
     if (!m_currentField.isEmpty()) {
         QString newContent = ui->textEdit->toPlainText(); // 假设是纯文本
@@ -252,6 +253,7 @@ void qunguan::列表行被单击()
         ui->tiao_Edit->setText(QString::number(info->tiaoshu));
         ui->checkBox->setChecked(info->cbl);
         ui->checkBox_2->setChecked(info->pbbot);
+        ui->checkBox_3->setChecked(info->ychfwcl);
         ui->textEdit->setText(info->admin);
         ui->zdht->setChecked(info->autoht);
 

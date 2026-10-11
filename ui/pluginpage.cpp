@@ -26,6 +26,7 @@
 #include "appwindow.h"
 
 #include "pluginmarketwindow.h"
+#include "plugininstaller.h"  // PluginInstaller::pluginsRootDir()：文件对话框默认定位到 <程序目录>/plugins
 #include "ruleeditdialog.h"   // 「编辑指令」独立页面
 #include "global.h"
 #include "node_plugin_manager.h"
@@ -37,6 +38,20 @@
 #include <QLineEdit>
 #include <QLayout>
 #include <QEvent>
+#include <QPlainTextEdit>    // pip/npm 安装日志区（纯文本；QTextEdit 在本工程被 #define 成 PlaceholderTextEdit）
+#include <QTextCharFormat>   // 日志按行上色（普通 / stderr / 结果）
+#include <QColor>
+#include <QFont>
+#include <memory>            // std::shared_ptr：pip/npm 每次安装各持一份独立状态
+#include <functional>
+
+#ifdef Q_OS_WIN
+// 插件 DLL 依赖同目录其它 DLL 时，加载期间要把该目录临时塞进 DLL 搜索路径
+// —— SetDllDirectoryW / GetDllDirectoryW（用法见 LoadPlugin_DLL）。
+// 用 Qt 自带的 qt_windows.h：它内部已经替我们定义好 NOMINMAX / WIN32_LEAN_AND_MEAN，
+// 不会把 min/max 那批宏带进来污染本文件后面的 Qt / STL 代码。
+#  include <qt_windows.h>
+#endif
 
 // ======================== 插件类型徽章（列表卡片 / 详情用） ========================
 static QString pluginTypeName(int type)
@@ -314,14 +329,12 @@ void PluginPage::setupUi()
     // 假设在类的构造函数或初始化函数中
     connect(pluginListWidget, &QListWidget::itemDoubleClicked, this, &PluginPage::onItemDoubleClicked);
     addPluginBtn  = new QPushButton("添加-DLL");
-    addPluginBtn2 = new QPushButton("添加-Python");
-    addPluginBtn3 = new QPushButton("添加-JS");
-
+    addScriptBtn  = new QPushButton("添加-脚本");     // Python / JS 合并：选目录后按 main.py / main.js 自动分流
+    addScriptBtn->setToolTip("选择插件文件夹（内含 main.py 或 main.js）");
 
     QHBoxLayout *btnRow = new QHBoxLayout;
     btnRow->addWidget(addPluginBtn);
-    btnRow->addWidget(addPluginBtn2);
-    btnRow->addWidget(addPluginBtn3);
+    btnRow->addWidget(addScriptBtn);
     leftLayout->addWidget(listTitle);
     leftLayout->addWidget(pluginListWidget);
     leftLayout->addLayout(btnRow);
@@ -511,8 +524,7 @@ void PluginPage::setupUi()
     connect(rightCheckList, &QListWidget::itemChanged, this, &PluginPage::onAccountCheckStateChanged);
     connect(pluginListWidget, &QListWidget::currentRowChanged, this, &PluginPage::onPluginSelected);
     connect(addPluginBtn, &QPushButton::clicked, [this](){ LoadPlugin_DLL(); });
-    connect(addPluginBtn2, &QPushButton::clicked, [this](){ LoadPlugin_Python(); });
-    connect(addPluginBtn3, &QPushButton::clicked, [this](){ LoadPlugin_JS(); });
+    connect(addScriptBtn, &QPushButton::clicked, [this](){ LoadPlugin_Script(); });
 
 
     connect(setBtn, &QPushButton::clicked, [this](){
@@ -971,17 +983,6 @@ QString pluginPnameText(const QString &uuid)
     return QString();
 }
 
-// 插件输出正文里的 [注册原指令](...) → [生效指令](...)（改名后的按钮兜底重定向）
-//
-// 背景：插件注册的指令被用户改名后，插件内部仍按**注册原名**输出按钮，例如 [ping]()。
-// 点它发出去的是原名，而框架此时只按新名匹配（pong）→ 按钮点不动 / 提示指令不存在。
-// 这里按「**该插件自己的规则表**」把正文改写成新名：
-//   · [ping]()            目标为空 → 改方括号里的文字（点击就是发这段文字）
-//   · [点我](ping)        目标就是指令 → 改圆括号里的目标
-//   · [ping](https://..) / [x](其他) → 原样不动
-// 只取「该 uuid 的插件」+「newKey 非空且 != key（真正改过名）」的规则，所以：
-//   · 没改过名的插件 / 关键词匹配（uuid 不在插件表里）→ 空映射 → 原文一字不动（零开销）
-//   · 别的插件的同名指令不受影响
 QString redirectPluginCmdsMarkdown(const QString &input, const QString &uuid)
 {
     if (input.isEmpty() || uuid.isEmpty()) return input;
@@ -2002,6 +2003,28 @@ bool PluginPage::Enabled_Plugin(PluginInfo &info)
     return true;
 }
 
+// 卸载一个原生库插件时，清掉「这次加载复制出来的临时文件」。
+//   Windows：共享的 p_tmp/<名>_<时间戳>.dll → 只删这一个文件；
+//   Linux/macOS：每个插件专属的 p_tmp/<名>_<时间戳>/ → 删掉整个子目录。
+static void removeLoadedPluginFiles(const QString &loadedDllPath)
+{
+    if (loadedDllPath.isEmpty()) return;
+
+    // Linux/macOS：每次加载有自己的子目录 p_tmp/<名>_<时间戳>/ → 连目录一起删，
+    //             否则 p_tmp 里会攒一堆只装着 .so 的空目录。
+    // Windows：父目录是**共享的** p_tmp → 只能删那一个文件，绝不能递归（那里面还有别的插件的库）。
+    // 这里用「父目录名是不是 p_tmp」判断，而不是平台宏，两个平台的代码因此在任何平台都能被编到
+    // —— Windows 上的 cl /Zs 语法自检也就能覆盖到 Linux 那条路。
+    const QFileInfo fi(loadedDllPath);
+    const QString subDir = fi.absolutePath();
+    if (!subDir.isEmpty() && QDir(subDir).dirName() != QLatin1String("p_tmp")) {
+        QDir(subDir).removeRecursively();
+        return;
+    }
+
+    if (QFile::exists(loadedDllPath)) QFile::remove(loadedDllPath);
+}
+
 void PluginPage::foruninstall_Plugin()
 {
     for (int i = 0; i < m_pluginList.size(); ++i) {
@@ -2013,8 +2036,8 @@ void PluginPage::foruninstall_Plugin()
         if (info.type == 2) {
             sendData32NoWait(3, info, QString());
             sendData32NoWait(4, info, QString());
-            if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
-                QFile::remove(info.loadedDllPath);
+            if (!info.loadedDllPath.isEmpty()) {
+                removeLoadedPluginFiles(info.loadedDllPath);
                 info.loadedDllPath.clear();
             }
             info.enabled = false;
@@ -2098,16 +2121,16 @@ def clean_plugin(plugin_path):
         info.DLL.submitReview = nullptr;
         info.DLL.get_config_list = nullptr;
         info.DLL.set_config_value = nullptr;
-        if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
-            QFile::remove(info.loadedDllPath);
+        if (!info.loadedDllPath.isEmpty()) {
+            removeLoadedPluginFiles(info.loadedDllPath);
             info.loadedDllPath.clear();
         }
 
     } else if (info.type == 2) {
         bool ok = ( sendData32(4, info) == "true");
 
-        if (!info.loadedDllPath.isEmpty() && QFile::exists(info.loadedDllPath)) {
-            QFile::remove(info.loadedDllPath);
+        if (!info.loadedDllPath.isEmpty()) {
+            removeLoadedPluginFiles(info.loadedDllPath);
             info.loadedDllPath.clear();
         }
         return ok;
@@ -2227,6 +2250,16 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
     return QString();
 }
 
+// 文件对话框的起始目录：<程序目录>/plugins。
+// ⚠ 目录不存在时 QFileDialog 会**忽略**这个起始路径（回退到上次目录 / 当前目录），
+//   所以这里先 mkpath 出来。
+static QString pluginDialogStartDir()
+{
+    const QString d = PluginInstaller::pluginsRootDir();
+    QDir().mkpath(d);
+    return d;
+}
+
 void PluginPage::LoadPlugin_DLL() //按钮
 {
     #ifdef Q_OS_WIN
@@ -2235,7 +2268,8 @@ void PluginPage::LoadPlugin_DLL() //按钮
         QString filter = tr("动态链接库 (*.so)");
     #endif
 
-    QString path = QFileDialog::getOpenFileName(this, tr("选择插件"), "", filter);
+    QString path = QFileDialog::getOpenFileName(this, tr("选择插件"),
+                                                pluginDialogStartDir(), filter);
     if (path.isEmpty()) return;
 
 
@@ -2279,53 +2313,87 @@ void PluginPage::doLoadPythonPlugin(const QString &dir)
     savePlugins();
     AppendEventLog("[载入插件] " + pluginDir);
 }
-void PluginPage::onPipOutputReady()
+// ======================== pip / npm 安装日志：真正的实时输出 ========================
+// 子进程（pip / node）的输出是一块块回来的，这里统一做三件事：
+//   1. 清洗：pip 的进度条是用 '\r' 原地刷新同一行的，不归一化日志窗里会全是半行；
+//   2. 入库：以**纯文本**插进 QPlainTextEdit（QTextEdit 会把 pip 输出里的
+//      `requests<4,>=2` 这种当 HTML 标签吃掉），并滚到最新一行；
+//   3. 外发：可选回调，把同一份输出推给 WebUI 控制台（每次安装各自一份 InstallCtx::onLog）。
+static QString normalizeInstallOutput(const QString &raw)
 {
-    if (!m_pipProcess || !m_pipLog) return;
-    QString output = QString::fromLocal8Bit(m_pipProcess->readAllStandardOutput());
-    m_pipLog->append(output);
-    m_pipLog->moveCursor(QTextCursor::End);
+    if (raw.isEmpty()) return raw;
+    QString s = raw;
+    s.replace("\r\n", "\n");
+    s.replace('\r', '\n');
+    return s;
 }
 
-void PluginPage::onPipErrorReady()
+// 子进程的字节流一律按 UTF-8 解：pip 由下面 PYTHONIOENCODING / PYTHONUTF8 强制成 UTF-8，
+// node 本来就是 UTF-8（原来按 fromLocal8Bit 解，npm 的中文 / emoji 会乱码）。
+static QString decodeInstallOutput(const QByteArray &raw)
 {
-    if (!m_pipProcess || !m_pipLog) return;
-    QString error = QString::fromLocal8Bit(m_pipProcess->readAllStandardError());
-    m_pipLog->append("<font color='red'>" + error + "</font>");
-    m_pipLog->moveCursor(QTextCursor::End);
+    return QString::fromUtf8(raw);
 }
-void PluginPage::onPipFinished(int exitCode, QProcess::ExitStatus status)
-{
-    if (!m_pipDialog) return;
 
-    bool success = (status == QProcess::NormalExit && exitCode == 0);
-    QString resultMsg = success ? "pip install 成功完成！" :
-                            QString("pip install 失败 (退出码: %1)").arg(exitCode);
-    m_pipLog->append("<font color='blue'>" + resultMsg + "</font>");
-    QString absDir = m_pipProcess->workingDirectory();
-    QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
-    doLoadPythonPlugin(relDir);
-    if (success) {
-        // 成功：延迟 10 秒自动关掉日志窗，留时间让用户看完安装输出。
-        // 用 QPointer 兜住"用户在这 10 秒里自己先把窗口关了"的情况 ——
-        // dialog 是 WA_DeleteOnClose 的裸指针成员，关掉之后裸指针就成了野指针。
-        m_pipLog->append("\n安装已完成，窗口将在 10 秒后自动关闭...");
-        QPointer<QDialog> alive(m_pipDialog);   // 兜住"用户在这 10 秒里提前自己关掉"
-        QTimer::singleShot(10000, this, [this, alive]() {
-            if (alive) alive->close();          // WA_DeleteOnClose → 自动 delete
-            m_pipDialog = nullptr;              // 不管用户有没有提前关，都清掉成员，
-            m_pipLog = nullptr;                 // 否则关过的窗口会在成员里留下野指针
-        });
-    } else {
-        // 安装失败，提示用户，也可选择不加载
-        QMessageBox::warning(this, "安装依赖失败",
-                             "pip install 失败，请检查网络或手动安装依赖。\n"
-                             "您可以手动执行：pip install -r requirements.txt");
-        // 失败后若想继续加载（依赖可能已存在），可调用 doLoadPythonPlugin，但一般不推荐
-        m_pipLog->append("\n安装失败，窗口不会自动关闭，请手动关闭...");
+static void appendInstallLog(QPlainTextEdit *log, const QString &text, const QColor &color)
+{
+    if (!log || text.isEmpty()) return;
+    QTextCharFormat fmt;
+    fmt.setForeground(color);
+    QTextCursor cur(log->document());    // ⚠ QTextCursor 只吃 QTextDocument*，不是 QPlainTextEdit*
+    cur.movePosition(QTextCursor::End);
+    cur.insertText(text, fmt);
+    log->setTextCursor(cur);
+    log->ensureCursorVisible();          // 光标跟到末尾 → 这个日志区是真·滚动的
+}
+
+// 每块日志落地后立刻把窗口刷一次：GUI 线程同时还跑着机器人 / 插件，
+// 只 update() 有可能被排到安装结束才真正重绘（现象就是「装完才一次性冒出来」）。
+// ExcludeUserInputEvents：不在这里派发用户点击，免得装到一半连点按钮。
+static void refreshInstallLogUi()
+{
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+// ==================== 每次安装各持一份状态 ====================
+// ⚠ 以前 pip / npm 的状态是成员单指针（m_pipDialog / m_pipLog / m_pipProcess），
+//   于是「同一时刻只能有一次安装」成了隐含硬约束，第二次调用直接覆盖句柄：
+//     · 旧进程 finished 时拿 `m_pipProcess->workingDirectory()` 去加载**另一个插件**；
+//     · 旧进程那个 10 秒 QTimer 还会把 m_pipDialog 置空 → 新弹窗从此收不到任何日志；
+//     · 两路输出可能 append 进同一个日志区，串台。
+//   桌面（单线程 + 弹窗挡着主界面）看不出问题，但 WebUI 走的是**全局唯一**的
+//   pluginPage（core/global.h: extern PluginPage *pluginPage），WebSocket 回包也在 GUI 线程
+//   → 完全能在桌面弹窗还没关时插进来第二次安装，一并发就炸。
+//   现在每次安装各自 new 一套 dialog / log / process，用 shared_ptr<InstallCtx> 贯穿所有回调，
+//   互不干扰，真正可以重复创建。
+struct InstallCtx {
+    QPointer<QProcess>       proc;   // 这次安装的 pip / npm 进程
+    QPointer<QPlainTextEdit> log;    // 这次安装的日志区（弹窗 WA_DeleteOnClose，用户点 X 会连它一起删）
+    PluginPage::InstallLogFn onLog;  // 这次安装的外发回调（可空）
+};
+
+// 把管道里剩下的输出读干净并落盘 / 外发。
+// ⚠ finished 与 readyRead 之间有竞态：进程退出前最后一块输出可能还在管道里，
+//   结束回调必须再收一次，否则最后几行（往往是 Successfully installed …）会丢。
+static void drainInstallOutput(const InstallCtx &ctx)
+{
+    if (!ctx.proc) return;
+
+    const QString out = normalizeInstallOutput(decodeInstallOutput(ctx.proc->readAllStandardOutput()));
+    if (!out.isEmpty()) {
+        appendInstallLog(ctx.log, out, QColor(0x22, 0x22, 0x22));
+        if (ctx.onLog) ctx.onLog(out, false, false);
     }
+
+    const QString err = normalizeInstallOutput(decodeInstallOutput(ctx.proc->readAllStandardError()));
+    if (!err.isEmpty()) {
+        appendInstallLog(ctx.log, err, QColor(0xcc, 0x33, 0x33));
+        if (ctx.onLog) ctx.onLog(err, true, false);
+    }
+
+    refreshInstallLogUi();
 }
-void PluginPage::LoadPlugin_Python_pip(const QString &dir)
+void PluginPage::LoadPlugin_Python_pip(const QString &dir, InstallLogFn onLog)
 {
     if (!QFile::exists(dir + "/main.py")) {
         showAutoCloseMessageBox("错误", "所选文件夹中缺少 main.py");
@@ -2385,40 +2453,107 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
 #endif
     QDir().mkpath(sitePackages);  // 确保目录存在
 
-    // ==================== 创建日志对话框 ====================
-    m_pipDialog = new QDialog(this);
-    m_pipDialog->setWindowTitle("正在安装 Python 依赖 (pip install)");
-    m_pipDialog->resize(600, 400);
-    m_pipDialog->setAttribute(Qt::WA_DeleteOnClose);
+    // ==================== 创建日志对话框（这次安装独享一份） ====================
+    auto ctx = std::make_shared<InstallCtx>();
+    ctx->onLog = onLog;                     // 外部（WebUI 控制台）要的实时回调
 
-    QVBoxLayout *layout = new QVBoxLayout(m_pipDialog);
-    m_pipLog = new QTextEdit(m_pipDialog);
-    m_pipLog->setReadOnly(true);
-    m_pipLog->setFontFamily("Consolas");
-    layout->addWidget(m_pipLog);
+    // parent 仍是 this（多开和挂 parent 不冲突：同时存在几个子窗口完全正常），
+    // 这样弹窗居中于主窗口、主窗口关掉时也一起收掉
+    QDialog *dlgRaw = new QDialog(this);
+    dlgRaw->setWindowTitle("正在安装 Python 依赖 (pip install)");
+    dlgRaw->resize(640, 420);
+    dlgRaw->setAttribute(Qt::WA_DeleteOnClose);
+    QPointer<QDialog> dlg(dlgRaw);          // 10 秒后自动关窗时用它兜住「用户提前点了 X」
 
-    QPushButton *closeBtn = new QPushButton("关闭", m_pipDialog);
-    connect(closeBtn, &QPushButton::clicked, m_pipDialog, &QDialog::close);
+    QVBoxLayout *layout = new QVBoxLayout(dlgRaw);
+    layout->addWidget(new QLabel("安装日志（实时输出）：", dlgRaw));
+    // 纯文本 + 可滚动：pip 输出里的 `<4,>=2` 不会被当成 HTML 标签吃掉，几千行也不卡
+    ctx->log = new QPlainTextEdit(dlgRaw);
+    ctx->log->setReadOnly(true);
+    {
+        QFont mono("Consolas");
+        mono.setStyleHint(QFont::Monospace);
+        ctx->log->document()->setDefaultFont(mono);
+    }
+    layout->addWidget(ctx->log.data(), 1);
+
+    QPushButton *closeBtn = new QPushButton("关闭", dlgRaw);
+    connect(closeBtn, &QPushButton::clicked, dlgRaw, &QDialog::close);
     layout->addWidget(closeBtn);
-    m_pipDialog->show();
+    dlgRaw->show();
 
     // ==================== 启动 pip 进程 ====================
-    m_pipProcess = new QProcess(this);
-    m_pipProcess->setWorkingDirectory(dir);
+    ctx->proc = new QProcess(this);
+    ctx->proc->setWorkingDirectory(dir);
 
+    // 继承系统环境变量（代理等），另外强制子进程「无缓冲 + UTF-8」：
+    // pip 的 stdout/stderr 接在管道上（isatty()=false）默认是**块缓冲**的，
+    // 关掉它日志才会一行行实时冒出来（否则表现就是「装完才一次性刷出来」）。
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    m_pipProcess->setProcessEnvironment(env);
+    env.insert("PYTHONUNBUFFERED", "1");
+    env.insert("PYTHONIOENCODING", "utf-8");
+    env.insert("PYTHONUTF8", "1");
+    ctx->proc->setProcessEnvironment(env);
 
-    connect(m_pipProcess, &QProcess::readyReadStandardOutput,
-            this, &PluginPage::onPipOutputReady);
-    connect(m_pipProcess, &QProcess::readyReadStandardError,
-            this, &PluginPage::onPipErrorReady);
-    connect(m_pipProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &PluginPage::onPipFinished);
+    // 三个回调都只认**自己那份 ctx** —— 同时装多个也互不串台
+    connect(ctx->proc, &QProcess::readyReadStandardOutput, this, [ctx]() {
+        if (!ctx->proc) return;
+        const QString out = normalizeInstallOutput(decodeInstallOutput(ctx->proc->readAllStandardOutput()));
+        if (out.isEmpty()) return;
+        appendInstallLog(ctx->log, out, QColor(0x22, 0x22, 0x22));
+        if (ctx->onLog) ctx->onLog(out, false, false);
+        refreshInstallLogUi();
+    });
+    connect(ctx->proc, &QProcess::readyReadStandardError, this, [ctx]() {
+        if (!ctx->proc) return;
+        const QString err = normalizeInstallOutput(decodeInstallOutput(ctx->proc->readAllStandardError()));
+        if (err.isEmpty()) return;
+        appendInstallLog(ctx->log, err, QColor(0xcc, 0x33, 0x33));
+        if (ctx->onLog) ctx->onLog(err, true, false);
+        refreshInstallLogUi();
+    });
+    connect(ctx->proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, ctx, dlg](int exitCode, QProcess::ExitStatus status) {
+        // ⚠ 目录必须从**这次安装自己的进程**上取。以前从成员取，多开时会拿着别人的
+        //   目录去 doLoadPythonPlugin —— 装完加载的是另一个插件。
+        const QString absDir = ctx->proc ? ctx->proc->workingDirectory() : QString();
+
+        drainInstallOutput(*ctx);               // 先把管道里剩下的输出收干净，再报结果
+
+        const bool success = (status == QProcess::NormalExit && exitCode == 0);
+        const QString resultMsg = success ? QStringLiteral("pip install 成功完成！")
+                                          : QString("pip install 失败 (退出码: %1)").arg(exitCode);
+        appendInstallLog(ctx->log, resultMsg, success ? QColor(0x15, 0x65, 0xc0) : QColor(0xcc, 0x33, 0x33));
+        if (ctx->onLog) ctx->onLog(resultMsg, !success, true);   // isFinal：WebUI 收到就可以关弹窗了
+        ctx->onLog = PluginPage::InstallLogFn();                 // 装完了，回调不再需要
+
+        // 这次安装的进程用完就扔，重复安装不会越攒越多
+        if (ctx->proc) ctx->proc->deleteLater();
+        ctx->proc = nullptr;
+
+        const QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
+        doLoadPythonPlugin(relDir);
+
+        if (success) {
+            // 成功：延迟 10 秒自动关掉日志窗，留时间让用户看完安装输出。
+            // dlg 是 QPointer —— 用户在这 10 秒里提前点 X 也不会变成野指针。
+            appendInstallLog(ctx->log, "\n安装已完成，窗口将在 10 秒后自动关闭...", QColor(0x66, 0x66, 0x66));
+            QTimer::singleShot(10000, this, [dlg]() {
+                if (dlg) dlg->close();          // WA_DeleteOnClose → 自动 delete
+            });
+        } else {
+            QMessageBox::warning(this, "安装依赖失败",
+                                 "pip install 失败，请检查网络或手动安装依赖。\n"
+                                 "您可以手动执行：pip install -r requirements.txt");
+            appendInstallLog(ctx->log, "\n安装失败，窗口不会自动关闭，请手动关闭...", QColor(0x66, 0x66, 0x66));
+        }
+    });
 
     // ==================== pip install 参数（平台自适应） ====================
     QStringList args;
-    args << "-m" << "pip" << "install" << "-r" << "requirements.txt"
+    // ⚠ "-u" 是 **python 自己**的无缓冲开关，必须排在 "-m" 之前
+    //   （放后面会被 pip 当成 --upgrade 解析）
+    args << "-u" << "-m" << "pip" << "install" << "-r" << "requirements.txt"
 
          // 主源：电信镜像
          << "-i" << "https://mirrors.ctyun.cn/pypi/simple/"
@@ -2442,21 +2577,37 @@ void PluginPage::LoadPlugin_Python_pip(const QString &dir)
          << "--trusted-host" << "pypi.doubanio.com"
          << "--trusted-host" << "pypi.org";
 
-    m_pipProcess->start(pythonExe, args);
+    ctx->proc->start(pythonExe, args);
 
-    if (!m_pipProcess->waitForStarted(3000)) {
-        m_pipDialog->close();
+    if (!ctx->proc->waitForStarted(3000)) {
+        if (dlg) dlg->close();
+        // 没起来就不会有 finished 回调，这里顺手把进程也收掉
+        ctx->proc->deleteLater();
+        ctx->proc = nullptr;
         QMessageBox::warning(this, "错误", "无法启动 pip 进程，请检查 Python 环境。");
         QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(dir);
         doLoadPythonPlugin(relDir);
     }
 }
-void PluginPage::LoadPlugin_Python()
+// 「添加-脚本」：Python / JS 共用一个按钮。
+// 选完文件夹**先判 main.py，再判 main.js**（Python 优先），命中哪个就走哪条补依赖的入口：
+//   main.py → LoadPlugin_Python_pip()（pip install -r requirements.txt）
+//   main.js → npmJSpk()             （npm install）
+// 两个都没有 → 直接提示，不再往下走（以前分开两个按钮时是各自报「缺少 main.py / main.js」）。
+void PluginPage::LoadPlugin_Script()
 {
-    QString dir = QFileDialog::getExistingDirectory(this, "选择 Python 插件文件夹");
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, "选择插件文件夹（含 main.py 或 main.js）", pluginDialogStartDir());
     if (dir.isEmpty()) return;
-    LoadPlugin_Python_pip(dir);
 
+    if (QFile::exists(dir + "/main.py")) {
+        LoadPlugin_Python_pip(dir);
+    } else if (QFile::exists(dir + "/main.js")) {
+        npmJSpk(dir);
+    } else {
+        QMessageBox::warning(this, "错误",
+                             "所选文件夹里既没有 main.py 也没有 main.js，不是有效的插件目录。");
+    }
 }
 
 
@@ -2479,69 +2630,9 @@ void PluginPage::doLoadPlugin(const QString &dir) {
     AppendEventLog("加载JS插件: " + pluginDir);
 }
 
-// npm 输出实时追加到日志文本框
-void PluginPage::onNpmOutputReady() {
-    if (!m_npmProcess || !m_npmLog) return;
-    QString output = QString::fromLocal8Bit(m_npmProcess->readAllStandardOutput());
-    m_npmLog->append(output);
-    // 自动滚动到底部
-    m_npmLog->moveCursor(QTextCursor::End);
-}
-
-void PluginPage::onNpmErrorReady() {
-    if (!m_npmProcess || !m_npmLog) return;
-    QString error = QString::fromLocal8Bit(m_npmProcess->readAllStandardError());
-    m_npmLog->append("<font color='red'>" + error + "</font>");
-    m_npmLog->moveCursor(QTextCursor::End);
-}
-
-
-// npm 进程结束槽
-void PluginPage::onNpmFinished(int exitCode, QProcess::ExitStatus status) {
-    if (!m_npmDialog) return;
-
-    QString resultMsg;
-    bool success = false;
-    if (status == QProcess::NormalExit && exitCode == 0) {
-        resultMsg = "npm install 成功完成！";
-        success = true;
-    } else {
-        resultMsg = QString("npm install 失败 (退出码: %1)").arg(exitCode);
-        success = false;
-    }
-    m_npmLog->append("<font color='blue'>" + resultMsg + "</font>");
-
-    if (success) {
-        //m_npmDialog->close();  // 或 accept()
-        QString absDir = m_npmProcess->workingDirectory();
-        QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
-
-        doLoadPlugin(relDir);
-
-        // 成功：延迟 10 秒自动关掉日志窗（和 pip 那个一致）。
-        m_npmLog->append("\n安装已完成，窗口将在 10 秒后自动关闭...");
-        QPointer<QDialog> alive(m_npmDialog);   // 兜住"用户在这 10 秒里提前自己关掉"
-        QTimer::singleShot(10000, this, [this, alive]() {
-            if (alive) alive->close();          // WA_DeleteOnClose → 自动 delete
-            m_npmDialog = nullptr;              // 不管用户有没有提前关，都清掉成员，
-            m_npmLog = nullptr;                 // 否则关过的窗口会在成员里留下野指针
-        });
-    } else {
-        QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
-        m_npmLog->append("\n安装失败，窗口不会自动关闭，请手动关闭...");
-    }
-}
-// 主函数
-void PluginPage::LoadPlugin_JS() {
-    QString dir = QFileDialog::getExistingDirectory(this, "选择 JS 插件文件夹");
-    if (dir.isEmpty()) return;
-
-
-    npmJSpk(dir);
-
-
-}
-void PluginPage::npmJSpk(const QString &dir){
+// npm 那套输出处理已经并进 pip 的 InstallCtx / drainInstallOutput（同一份逻辑，npmJSpk 里内联回调）。
+// 入口只有一个：PluginPage::LoadPlugin_Script()（选目录 → main.py / main.js 分流）。
+void PluginPage::npmJSpk(const QString &dir, InstallLogFn onLog){
     if (!QFile::exists(dir + "/main.js")) {
         QMessageBox::warning(this, "错误", "所选文件夹中缺少 main.js");
         return;
@@ -2568,31 +2659,99 @@ void PluginPage::npmJSpk(const QString &dir){
         return;
     }
 
-    m_npmDialog = new QDialog(this);
-    m_npmDialog->setWindowTitle("正在安装依赖 (npm install)");
-    m_npmDialog->resize(600, 400);
-    m_npmDialog->setAttribute(Qt::WA_DeleteOnClose); // 关闭时自动删除
+    // ==================== 创建日志对话框（这次安装独享一份，见上方 InstallCtx 注释） ====================
+    auto ctx = std::make_shared<InstallCtx>();
+    ctx->onLog = onLog;                     // 外部（WebUI 控制台）要的实时回调
 
-    QVBoxLayout *layout = new QVBoxLayout(m_npmDialog);
-    m_npmLog = new QTextEdit(m_npmDialog);
-    m_npmLog->setReadOnly(true);
-    m_npmLog->setFontFamily("Consolas");
-    layout->addWidget(m_npmLog);
+    QDialog *dlgRaw = new QDialog(this);    // parent 仍是 this（多开无冲突，见上方注释）
+    dlgRaw->setWindowTitle("正在安装依赖 (npm install)");
+    dlgRaw->resize(640, 420);
+    dlgRaw->setAttribute(Qt::WA_DeleteOnClose); // 关闭时自动删除
+    QPointer<QDialog> dlg(dlgRaw);          // 10 秒后自动关窗时用它兜住「用户提前点了 X」
 
-    m_npmDialog->show();
+    QVBoxLayout *layout = new QVBoxLayout(dlgRaw);
+    layout->addWidget(new QLabel("安装日志（实时输出）：", dlgRaw));
+    // 纯文本 + 可滚动（和 pip 那个日志窗一致）
+    ctx->log = new QPlainTextEdit(dlgRaw);
+    ctx->log->setReadOnly(true);
+    {
+        QFont mono("Consolas");
+        mono.setStyleHint(QFont::Monospace);
+        ctx->log->document()->setDefaultFont(mono);
+    }
+    layout->addWidget(ctx->log.data(), 1);
 
-    // 创建进程
-    m_npmProcess = new QProcess(this);
-    m_npmProcess->setWorkingDirectory(dir);
+    dlgRaw->show();
 
-    connect(m_npmProcess, &QProcess::readyReadStandardOutput, this, &PluginPage::onNpmOutputReady);
-    connect(m_npmProcess, &QProcess::readyReadStandardError, this, &PluginPage::onNpmErrorReady);
-    connect(m_npmProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &PluginPage::onNpmFinished);
-    m_npmProcess->start(npmPath, QStringList() << "install");
+    // ==================== 创建进程 ====================
+    ctx->proc = new QProcess(this);
+    ctx->proc->setWorkingDirectory(dir);
+    {
+        // NO_COLOR：npm 在 FORCE_COLOR 之类的环境变量下会吐 ANSI 转义码，
+        // 在纯文本日志里就是一堆 `←[32m`。
+        QProcessEnvironment npmEnv = QProcessEnvironment::systemEnvironment();
+        npmEnv.insert("NO_COLOR", "1");
+        ctx->proc->setProcessEnvironment(npmEnv);
+    }
 
-    if (!m_npmProcess->waitForStarted(3000)) {
-        m_npmDialog->close();
+    // 三个回调都只认**自己那份 ctx** —— 同时装多个也互不串台
+    connect(ctx->proc, &QProcess::readyReadStandardOutput, this, [ctx]() {
+        if (!ctx->proc) return;
+        const QString out = normalizeInstallOutput(decodeInstallOutput(ctx->proc->readAllStandardOutput()));
+        if (out.isEmpty()) return;
+        appendInstallLog(ctx->log, out, QColor(0x22, 0x22, 0x22));
+        if (ctx->onLog) ctx->onLog(out, false, false);
+        refreshInstallLogUi();
+    });
+    connect(ctx->proc, &QProcess::readyReadStandardError, this, [ctx]() {
+        if (!ctx->proc) return;
+        const QString err = normalizeInstallOutput(decodeInstallOutput(ctx->proc->readAllStandardError()));
+        if (err.isEmpty()) return;
+        appendInstallLog(ctx->log, err, QColor(0xcc, 0x33, 0x33));
+        if (ctx->onLog) ctx->onLog(err, true, false);
+        refreshInstallLogUi();
+    });
+    connect(ctx->proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, ctx, dlg](int exitCode, QProcess::ExitStatus status) {
+        // ⚠ 目录必须从**这次安装自己的进程**上取（多开时成员早被别人覆盖了）
+        const QString absDir = ctx->proc ? ctx->proc->workingDirectory() : QString();
+
+        drainInstallOutput(*ctx);               // 先把管道里剩下的输出收干净，再报结果
+
+        const bool success = (status == QProcess::NormalExit && exitCode == 0);
+        const QString resultMsg = success ? QStringLiteral("npm install 成功完成！")
+                                          : QString("npm install 失败 (退出码: %1)").arg(exitCode);
+        appendInstallLog(ctx->log, resultMsg, success ? QColor(0x15, 0x65, 0xc0) : QColor(0xcc, 0x33, 0x33));
+        if (ctx->onLog) ctx->onLog(resultMsg, !success, true);   // isFinal：WebUI 收到就可以关弹窗了
+        ctx->onLog = PluginPage::InstallLogFn();                 // 装完了，回调不再需要
+
+        // 这次安装的进程用完就扔，重复安装不会越攒越多
+        if (ctx->proc) ctx->proc->deleteLater();
+        ctx->proc = nullptr;
+
+        if (success) {
+            const QString relDir = QDir(QCoreApplication::applicationDirPath()).relativeFilePath(absDir);
+            doLoadPlugin(relDir);
+
+            // 成功：延迟 10 秒自动关掉日志窗（和 pip 那个一致）。
+            // dlg 是 QPointer —— 用户在这 10 秒里提前点 X 也不会变成野指针。
+            appendInstallLog(ctx->log, "\n安装已完成，窗口将在 10 秒后自动关闭...", QColor(0x66, 0x66, 0x66));
+            QTimer::singleShot(10000, this, [dlg]() {
+                if (dlg) dlg->close();          // WA_DeleteOnClose → 自动 delete
+            });
+        } else {
+            QMessageBox::warning(this, "安装依赖失败", "npm install 失败，请检查网络或手动安装依赖。");
+            appendInstallLog(ctx->log, "\n安装失败，窗口不会自动关闭，请手动关闭...", QColor(0x66, 0x66, 0x66));
+        }
+    });
+
+    ctx->proc->start(npmPath, QStringList() << "install");
+
+    if (!ctx->proc->waitForStarted(3000)) {
+        if (dlg) dlg->close();
+        // 没起来就不会有 finished 回调，这里顺手把进程也收掉
+        ctx->proc->deleteLater();
+        ctx->proc = nullptr;
         doLoadPlugin(dir);
         return;
     }
@@ -2622,16 +2781,94 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
     #endif
 
     QString newFileName = baseName + "_" + timestamp + ext;
-    info.loadedDllPath = tmpDir.filePath(newFileName);
 
+    // Windows 和 Linux/macOS 的「依赖怎么找」机制完全不同，所以临时库的摆放也不同：
+    //   · Windows：主 DLL 单独复制到**共享的** p_tmp/ 就行 —— 依赖的 DLL 由下面那段
+    //              SetDllDirectory 从「插件原目录」里找。
+    //   · Linux/macOS：依赖不靠"搜索路径"，而是靠**链接期写进 .so 的 RUNPATH/RPATH** 解析，
+    //              其中 $ORIGIN = 这个库**自己所在的目录**（macOS 叫 @loader_path）。
+    //              只把主库复制到 p_tmp/，它的 $ORIGIN 就跟着变成 p_tmp/ ——
+    //              插件作者明明按规范写好了 $ORIGIN，反倒被这步复制搞失效，依赖照样找不到。
+    //              所以给**每次加载**开一个独立子目录，把主库和它同目录下所有 .so* 一起放进去：
+    //              $ORIGIN 依然指着这一堆库 → 依赖命中；每个插件一个子目录 → 同名依赖不串台。
+    // ⚠ 只覆盖「依赖和主库平级」这种常见情况；依赖放在子目录（libs/ 之类）仍需插件自己写 RUNPATH。
+    // 下面用**运行时分支**而不是把它整段 #ifdef 掉：这样两个平台的代码在任一平台都能被编译到，
+    // Windows 上的 cl /Zs 语法自检也就能覆盖到 Linux 那条路。
+#ifdef Q_OS_WIN
+    const bool perPluginSubDir = false;
+#else
+    const bool perPluginSubDir = true;
+#endif
+
+    QString targetDir = tmpDir.absolutePath();
+    if (perPluginSubDir) {
+        targetDir = tmpDir.absoluteFilePath(baseName + "_" + timestamp);
+        if (!QDir().mkpath(targetDir)) return QString("无法创建临时目录: %1").arg(targetDir);
+    }
+    info.loadedDllPath = QDir(targetDir).filePath(newFileName);
+
+    if (perPluginSubDir) {
+        const QDir srcDir(originalFile.absolutePath());
+        const QFileInfoList depList = srcDir.entryInfoList(
+            QStringList() << "*.so" << "*.so.*" << "*.dylib",
+            QDir::Files | QDir::NoDotAndDotDot);
+        for (const QFileInfo &dep : qAsConst(depList)) {
+            if (dep.absoluteFilePath() == srcAbsPath) continue;   // 主库走下面那次改名复制
+            QFile::copy(dep.absoluteFilePath(), QDir(targetDir).filePath(dep.fileName()));
+        }
+    }
 
     if (!QFile::copy(srcAbsPath, info.loadedDllPath)) return QString("复制 DLL 到临时目录失败: %1 -> %2").arg(info.path, info.loadedDllPath);
+
+    // ==================== 让插件 DLL 能找到「它自己依赖的 DLL」 ====================
+    // 插件经常自带第三方依赖（helper.dll / 运行库 / 同作者拆出来的公共库…），
+    // 就和插件 DLL 放在同一个文件夹里。
+    // 但 LoadLibrary 的默认搜索顺序是：
+    //     exe 目录 → 系统目录 → Windows 目录 → 当前工作目录 → PATH
+    // **不包含「被加载 DLL 自己所在的目录」**；而且上面刚把主 DLL 复制到了 p_tmp/，
+    // 依赖就更无从找起 —— 表现就是报「找不到指定的模块」(错误码 126)，
+    // 明明 DLL 就在那儿、插件看起来也没问题。
+    // 解决：加载期间把它**原目录**临时加进搜索路径（SetDllDirectory 会把该目录
+    // 插到「当前工作目录」之前），加载完立刻还原，进程里其它加载行为不受影响。
+#ifdef Q_OS_WIN
+    const std::wstring depDirW =
+        QDir::toNativeSeparators(originalFile.absolutePath()).toStdWString();
+    wchar_t prevDllDir[MAX_PATH] = { 0 };
+    const DWORD prevDllDirLen = ::GetDllDirectoryW(MAX_PATH, prevDllDir);   // 0 = 原本没设过
+    if (!depDirW.empty())
+        ::SetDllDirectoryW(depDirW.c_str());
+#else
+    // Linux / macOS：.so / .dylib 的依赖搜索靠 RUNPATH/RPATH（`$ORIGIN`）+ LD_LIBRARY_PATH +
+    // ldconfig，**运行时改不了**（LD_LIBRARY_PATH 只在进程启动时读一次）。
+    // 所以 Linux 插件要在**链接时**写 -Wl,-rpath,'$ORIGIN'，依赖才会从插件目录里找。
+#endif
+
     QLibrary* lib = new QLibrary(info.loadedDllPath);
-    if (!lib->load()) {
+    const bool dllLoaded = lib->load();
+
+#ifdef Q_OS_WIN
+    // 还原。注意这是 API 自身的设计、不是本代码的副作用：只要调用过一次
+    // SetDllDirectory，进程的 DLL 搜索路径里就不再包含「当前工作目录」
+    // —— 这是更安全的行为，对本程序没有影响。
+    // ⚠ 例外：若插件用了 delay-load（延迟加载）的依赖，首次真正调用该依赖时
+    //   目录早已还原 → 仍然找不到。这种插件得自己显式 LoadLibrary。
+    ::SetDllDirectoryW(prevDllDirLen ? prevDllDir : nullptr);
+#endif
+
+    if (!dllLoaded) {
         QString errorMsg = "加载 DLL|SO 失败:: " + lib->errorString();
+#ifdef Q_OS_WIN
+        // 126 = ERROR_MOD_NOT_FOUND。主 DLL 刚刚复制成功，说明它自己是存在的 ——
+        // 加载不上基本就是「它依赖的某个 DLL 不在搜索路径里」。
+        const QString es = lib->errorString();
+        if (es.contains(QStringLiteral("找不到指定的模块")) || es.contains(QStringLiteral("126"))) {
+            errorMsg += "\n\n提示：这个插件可能依赖其它 DLL。请把它依赖的 DLL 一起放进插件目录：\n"
+                        + QDir::toNativeSeparators(originalFile.absolutePath());
+        }
+#endif
         delete lib;                          // 释放 QLibrary 对象
-        QFile::remove(info.loadedDllPath);   // 删除临时文件
-        info.loadedDllPath.clear();          // 清除路径（可选）
+        removeLoadedPluginFiles(info.loadedDllPath);   // 清掉这次复制出来的临时文件（Win：单文件 / Linux：整个子目录）
+        info.loadedDllPath.clear();                    // 清除路径（可选）
         return errorMsg;
     }
     info.dllLib = lib;

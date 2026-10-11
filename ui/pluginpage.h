@@ -16,6 +16,7 @@
 #include <QTextBrowser>
 #include <QJsonObject>
 #include <QLibrary>
+#include <QPlainTextEdit>  // pip/npm 安装日志区（纯文本，别用 QTextEdit —— 本工程被 #define 成 PlaceholderTextEdit 了）
 #include <functional>      // sendData32Async 的回调
 #include "qqbotclient.h"
 
@@ -47,6 +48,17 @@ QString pluginPnameText(const QString &uuid);       // 裸 uuid → "[插件名|
 //   uuid = 发起这次发送的插件；空 / 不在插件表里（框架、AI、WebUI、关键词匹配）→ 原文一字不动。
 //   唯一调用点：发送管线入口（send_msgAsync / send_messages 的第一行）——
 //   所以 md / 普通模式、同步 / 异步图片路径全都覆盖。
+// 插件输出正文里的 [注册原指令](...) → [生效指令](...)（改名后的按钮兜底重定向）
+//
+// 背景：插件注册的指令被用户改名后，插件内部仍按**注册原名**输出按钮，例如 [ping]()。
+// 点它发出去的是原名，而框架此时只按新名匹配（pong）→ 按钮点不动 / 提示指令不存在。
+// 这里按「**该插件自己的规则表**」把正文改写成新名：
+//   · [ping]()            目标为空 → 改方括号里的文字（点击就是发这段文字）
+//   · [点我](ping)        目标就是指令 → 改圆括号里的目标
+//   · [ping](https://..) / [x](其他) → 原样不动
+// 只取「该 uuid 的插件」+「newKey 非空且 != key（真正改过名）」的规则，所以：
+//   · 没改过名的插件 / 关键词匹配（uuid 不在插件表里）→ 空映射 → 原文一字不动（零开销）
+//   · 别的插件的同名指令不受影响
 QString redirectPluginCmdsMarkdown(const QString &text, const QString &uuid);
 typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                                             const char* _3, const char* _4, const char* _5,
@@ -247,7 +259,15 @@ public:
     void addPluginItemToUI(int index, const PluginInfo &info);
     void insertPluginItemToUI(int index, const PluginInfo &info);
     void updatePluginItemInUI(int index);
-    void npmJSpk(const QString &dir);
+    // pip / npm 安装的**实时**输出回调（可空）。每读到一块输出就回调一次：
+    //   text    = 该块文本（已按行清洗，可能多行）
+    //   isError = 来自 stderr（桌面弹窗标红）
+    //   isFinal = **最后一条**（子进程已退出，装完了）。成功/失败看 isError；
+    //             成功时也照样带 true —— WebUI 靠它决定「什么时候可以关安装弹窗」。
+    // 桌面那个安装日志弹窗照旧显示，这个回调只是把**同一份**输出额外给外部
+    // （目前唯一使用者：WebUI 控制台的安装弹窗，见 network/webuiadmin.cpp）。
+    using InstallLogFn = std::function<void(const QString &text, bool isError, bool isFinal)>;
+    void npmJSpk(const QString &dir, InstallLogFn onLog = InstallLogFn());
     QString LoadPlugin_js(PluginInfo &info);
     int findPluginIndex(const QString &id) const;
 
@@ -273,7 +293,7 @@ public:
     QString anzpip(const QString &reqPath);
     void safeCall(const py::object &func);
 
-    void LoadPlugin_Python_pip(const QString &dir);
+    void LoadPlugin_Python_pip(const QString &dir, InstallLogFn onLog = InstallLogFn());
 
 private slots:
     void onPluginSelected(int row);
@@ -281,13 +301,6 @@ private slots:
     void onPluginRowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row);
     void stopAsyncioThread();
     void onItemDoubleClicked(QListWidgetItem *item);//列表被双击
-    void onNpmFinished(int exitCode, QProcess::ExitStatus status);
-    void onNpmOutputReady();
-    void onNpmErrorReady();
-
-    void onPipFinished(int exitCode, QProcess::ExitStatus status);
-    void onPipOutputReady();
-    void onPipErrorReady();
 
 private:
     // 插件加载完成（rules 已解析）后套用已保存的指令配置（启停 / 重命名 / regex 重建）
@@ -302,16 +315,18 @@ private:
 
     void doLoadPlugin(const QString &dir); // 从 LoadPlugin_JS 中提取加载逻辑
     void initPython();
-    QProcess *m_npmProcess = nullptr;
-    QDialog *m_npmDialog = nullptr;
-    QTextEdit *m_npmLog = nullptr;
 
     void doLoadPythonPlugin(const QString &dir);  // 加载插件核心逻辑
 
-    QProcess *m_pipProcess = nullptr;
-    QDialog *m_pipDialog = nullptr;
-    QTextEdit *m_pipLog = nullptr;
-
+    // ⚠ pip / npm 的安装状态**故意不放在成员里**（2026-10-11 改）。
+    //    以前是 m_pipDialog / m_pipLog / m_pipProcess 三个单指针，于是「同一时刻只有一次安装」
+    //    成了隐含硬约束：第二次安装一赋值就把第一次的句柄覆盖掉 → 旧进程 finished 时拿着
+    //    新进程的 workingDirectory() 去 doLoadPythonPlugin（装完加载的是**另一个插件**），
+    //    旧进程那个 10 秒 QTimer 还会把 m_pipDialog 置空、让新弹窗从此收不到任何日志。
+    //    桌面单线程 + 弹窗挡着主界面看不出问题，但 WebUI 走的是**全局唯一**的 pluginPage
+    //    （core/global.h），WebSocket 回包也在 GUI 线程 → 一并发就炸。
+    //    现在每次安装各自 new 一套 dialog / log / process，用 shared_ptr<InstallCtx>
+    //    贯穿所有回调（见 pluginpage.cpp 的 InstallCtx / drainInstallOutput），真正可以重复创建。
 
     void setupUi();
 
@@ -320,9 +335,9 @@ private:
 
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();
-    void LoadPlugin_Python();
-
-    void LoadPlugin_JS();
+    // 「添加-脚本」：选文件夹 → 先看 main.py，再看 main.js，按命中项分流到 pip / npm 入口
+    // （两个都没有就提示；默认目录定位到 <程序目录>/plugins）
+    void LoadPlugin_Script();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
     void onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
@@ -347,8 +362,8 @@ private:
     QPushButton *pypip,*ai_c_j,*ai_b_j;
     QPushButton *plugin_sc;
     QPushButton *loadBtn;
-    QPushButton *addPluginBtn;   // 顶部按钮
-    QPushButton *addPluginBtn2,*addPluginBtn3;   // 顶部按钮
+    QPushButton *addPluginBtn;    // 添加-DLL
+    QPushButton *addScriptBtn;    // 添加-脚本（Python / JS 合并成一个按钮）
     QPushButton *uninstallBtn;   // 卸载按钮
     QPushButton *setBtn;
     QPushButton *bj_zl = nullptr;   // 「编辑指令」按钮

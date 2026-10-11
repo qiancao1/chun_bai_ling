@@ -4,6 +4,7 @@
 #include "chatpage.h"
 #include <QObject>
 #include <QString>
+#include <QHash>
 #include <QList>
 #include <QStringList>
 #include <QMutex>
@@ -34,6 +35,21 @@ public:
     QString makeKey(const QString &appid, const QString &groupId, uint64_t seq) const;
     // 获取指定 appid:groupId 最近 N 条（按序号从大到小，即最新在前）
     QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int seq, int N,bool daoxu=false) const;
+
+    // ===== 被动回复用的 msgid（2026-10-11）=====
+    // 取指定会话「还能用来被动回复」的 msgid 列表（新 → 旧，最多 maxCount 个）
+    //   isGroup = true  → 群：只认最近 5 分钟内收到的消息
+    //   isGroup = false → 好友/单聊：最近 1 小时
+    // ⚠ 只取「收到的消息」的 Message.ch（isSelf==false 且 plugin_ch 为空）——
+    //   ch 是用户发来的消息 id（被动回复用它，群 100 条/秒、好友 60 条/秒，无分钟限制）；
+    //   plugin_ch 是机器人自己发出去的，只能拿来撤回，绝不能用于发送。ch 可能为空，跳过。
+    //   拿不到就返回空表，调用方此时应传空 msgid 走主动发送（群 60 条/分钟、好友 30 条/分钟）。
+    QStringList getRecentMsgIds(const QString &appid, const QString &groupId, bool isGroup,
+                                int maxCount = 5) const;
+    // 一次扫描拿到多个会话的 msgid（批量推送用：避免逐个 target 重扫全库）
+    //   返回 <会话id, msgid 列表>；isGroup 决定时间窗（群 5 分钟 / 好友 1 小时），每会话取最新一条即可
+    QHash<QString, QStringList> getRecentMsgIdMap(const QString &appid, bool isGroup,
+                                                  int maxCountPerConv = 5) const;
 
     // 获取所有 key（格式 "appid:groupId:序号"）的列表
     QStringList getAllKeys() const;
@@ -212,6 +228,11 @@ private:
     bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
     void flushCacheToDB() ;
     void flushCacheToDBUnlocked();   // 不加锁版本
+    // 反向扫描最近日志收集 <会话id, msgid 列表>（调用方需已持有 m_mutex；只读，可 const）
+    //   onlyConv 非空 = 只收这一个会话；cutoffSecs 之前的记录直接停（seq 递增≈时间递增）
+    void collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,
+                             int maxPerConv, QHash<QString, QStringList> &out,
+                             int scanLimit = 20000) const;
     // 禁用拷贝
     LogDB(const LogDB&) = delete;
     LogDB& operator=(const LogDB&) = delete;
