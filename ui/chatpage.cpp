@@ -2024,7 +2024,7 @@ void ChatPage::openConversationFromLog(int appid, const QString &id, int type)
     case 4: btnChannelPrivate->setChecked(true);  break;   // 频道私聊
     default: break;
     }
-    onContactItemClicked2(appid, id, type);   // 打开这个会话并加载聊天记录
+    onContactItemClicked2(appid, id, type-1);   // 打开这个会话并加载聊天记录
 }
 //加载聊天记录
 void ChatPage::loadChatHistory(int appid2,const QString &contactId,int type)

@@ -77,7 +77,7 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.1.116"
+#define APP_VERSION_STR "v1.4.2.116"
 #define APP_BUILD_NUMBER 116
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(

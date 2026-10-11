@@ -3110,8 +3110,28 @@ static double probeAudioDurationSec(const QString &filePath)
     return probeMediaInfo(filePath).durationSec;
 }
 
+// 切段后不足 10 秒的尾巴直接丢弃不发（只有最后一段可能偏短，前面几段都是满的 segSec）。
+// 探测失败（<=0）时保守保留 —— 宁可多发一段，也别把用户最后那截语音吞掉。
+static const int AUDIO_SEG_MIN_SEC = 10;
+
+static QStringList dropShortAudioTail(const QStringList &segs)
+{
+    if (segs.size() < 2)
+        return segs;                        // 只剩一段就没有「尾巴」可言，原样返回
+    const double tailSec = probeAudioDurationSec(segs.last());
+    if (tailSec <= 0 || tailSec >= AUDIO_SEG_MIN_SEC)
+        return segs;
+
+    QStringList out = segs;
+    out.removeLast();
+    AppendEventLog(QStringLiteral("音频切段：结尾仅 %1 秒（不足 %2 秒），已丢弃不发")
+                       .arg(tailSec, 0, 'f', 1).arg(AUDIO_SEG_MIN_SEC));
+    return out;
+}
+
 // 把 m4a 按 segSec 秒流复制切段（不重编码），段文件名 = 原名去 .m4a + _seg000.m4a ...
-// 已有同名段文件则直接复用；失败返回空表
+// 已有同名段文件则直接复用；失败返回空表。
+// 返回值里已丢掉不足 AUDIO_SEG_MIN_SEC 的结尾段。
 static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
 {
     if (!m4aPath.endsWith(".m4a"))
@@ -3125,7 +3145,7 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
     if (!exist.isEmpty()) {              // 之前切过，直接复用
         for (const QString &f : exist)
             out << dir.filePath(f);
-        return out;
+        return dropShortAudioTail(out);  // 复用旧产物时同样丢掉不足 10 秒的尾巴
     }
 
     QString ffmpegPath = findFfmpegPath();
@@ -3152,7 +3172,7 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
         return {};                       // 只切出 1 段没意义，按失败算
     for (const QString &f : files)
         out << dir.filePath(f);
-    return out;
+    return dropShortAudioTail(out);
 }
 
 // ===========================================================================
@@ -3259,7 +3279,23 @@ static void convertAudioToSilkAsync(const QString &srcFilePath, std::function<vo
         });
 }
 
+// 同 dropShortAudioTail，但时长探测走异步（回调落在媒体线程）
+static void dropShortAudioTailAsync(const QStringList &segs, std::function<void(QStringList)> onDone)
+{
+    if (segs.size() < 2) { onDone(segs); return; }     // 只剩一段 → 没有尾巴可丢
+    probeAudioDurationSecAsync(segs.last(), [segs, onDone](double tailSec) {
+        if (tailSec <= 0 || tailSec >= AUDIO_SEG_MIN_SEC) { onDone(segs); return; }
+
+        QStringList out = segs;
+        out.removeLast();
+        AppendEventLog(QStringLiteral("音频切段：结尾仅 %1 秒（不足 %2 秒），已丢弃不发")
+                           .arg(tailSec, 0, 'f', 1).arg(AUDIO_SEG_MIN_SEC));
+        onDone(out);
+    });
+}
+
 // 把 m4a 按 segSec 秒流复制切段（同 splitM4aSegments）；已有同名段文件直接复用，不起进程
+// 返回值里已丢掉不足 AUDIO_SEG_MIN_SEC 的结尾段
 static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::function<void(QStringList)> onDone)
 {
     if (!m4aPath.endsWith(".m4a")) { onDone(QStringList()); return; }   // 只切转换产物
@@ -3272,7 +3308,7 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
         if (!exist.isEmpty()) {                    // 之前切过，直接复用
             QStringList out;
             for (const QString &f : exist) out << dir.filePath(f);
-            onDone(out);
+            dropShortAudioTailAsync(out, onDone);  // 复用旧产物时同样丢掉不足 10 秒的尾巴
             return;
         }
     }
@@ -3292,7 +3328,7 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
             if (files.size() < 2) { onDone(QStringList()); return; }   // 只切出 1 段没意义，按失败算
             QStringList out;
             for (const QString &f : files) out << d.filePath(f);
-            onDone(out);
+            dropShortAudioTailAsync(out, onDone);
         });
 }
 
