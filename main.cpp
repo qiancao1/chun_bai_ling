@@ -96,6 +96,13 @@ void loadconfig()
         ev->appid  = obj["appid"].toInt();
         g_cqev = ev;   // 全局指针指向动态对象
     }
+    if(!g_config["___dyc"].toBool())
+    {
+        QMessageBox::warning(nullptr,"特别说明","本框架禁止黑灰违法使用");
+        g_config["___dyc"] = true;
+        saveConfig();
+    }
+
 }
 
 void saveConfig()

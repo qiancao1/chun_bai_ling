@@ -77,12 +77,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.1.114"
-#define APP_BUILD_NUMBER 114
+#define APP_VERSION_STR "v1.4.1.116"
+#define APP_BUILD_NUMBER 116
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.2.114 (2026-10-11)
+## v1.4.2.116 (2026-10-11)
 - 修复 日志右键菜单 撤回机器人信息失败问题
 - 修复 数据库bitmap被覆盖问题(群管配置)
 - 优化 批量推送 定时推送功能 将使用msgid 优先发送
@@ -92,6 +92,7 @@ QString Homev=R"(
 - 合并 添加 py JS 合并到一个按钮
 - 修复 加载DLL/SO时 未设置临时加载目录导致 某些有依赖的插件可能是吧
 - 增加 右键菜单 增加查看发送人头像 转到聊天室
+- 修复 插件市场 已经安装的插件 不能直接热更新问题
 
 ## v1.4.1.106 (2026-10-10)
 - 增加 ai获取模型列表 并且测试模型
@@ -654,6 +655,7 @@ void showClickableLicenseInfo()
         "官方 QQ 群：<a href=\"https://qm.qq.com/q/pPykIoOqGW\">827737534</a><br><br>"
 
         "本软件为免费开源项目，仅供学习交流使用。<br>"
+        "禁止灰黑赌博违法使用<br>"
         "<i>本程序使用的第三方组件及其许可证，点下方「第三方组件许可」查看。</i>");
     msgBox.setTextInteractionFlags(Qt::TextBrowserInteraction);
 

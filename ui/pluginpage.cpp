@@ -928,6 +928,22 @@ int PluginPage::findPluginIndex(const QString &id) const {
     return -1;
 }
 
+// 按「市场口径」找已载入插件：优先比插件自报的 id，id 为空或没命中时退回插件名。
+// 插件市场判断「是否已安装」用的就是 `marketInfo.id == pluginInfo.id`，这里保持一致。
+// ⚠ 两趟分开扫：先全表比 id、再全表比名称。在同一趟里混着比的话，
+//   若某个"名称相同但 id 不同"的插件排在前，会盖过后面真正 id 命中的那个 → 卸载错对象。
+int PluginPage::findPluginIndexByIdentity(const QString &id, const QString &name) const {
+    if (!id.isEmpty()) {
+        for (int i = 0; i < m_pluginList.size(); ++i)
+            if (m_pluginList[i].id == id) return i;
+    }
+    if (!name.isEmpty()) {
+        for (int i = 0; i < m_pluginList.size(); ++i)
+            if (m_pluginList[i].name == name) return i;
+    }
+    return -1;
+}
+
 
 QString python_code(const QString &py_code,const MessageEvent &msg)
 {
@@ -2197,8 +2213,18 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
     if (type == 0 && !normPath.endsWith('/') && !normPath.endsWith('\\'))
         normPath += '/';
 
+    // 同一路径已经载入过 —— 不当作错误，改走**热重载**。
+    // 触发场景：插件市场「重新安装」（下完覆盖再加载）、用户重复选同一目录、WebUI / 聊天指令重复加载。
+    // ⚠ 原来这里 return「插件已经 载入请勿重复载入」，市场重装时会被上层当成加载失败，
+    //   弹「已解压，但加载失败」—— 文件明明已经换成新版，插件却没生效。
+    //   findPluginIndex 是按 path **精确匹配**的，能命中就说明旧记录和这次的新路径指向同一个位置，
+    //   所以交给 Reload_Plugin(index)（它用自己的那份记录：先 uninstall_Plugin 清 Python 模块缓存 /
+    //   释放原生库临时副本，再按类型重新加载）是安全的。
     int index = findPluginIndex(normPath);
-    if(index!=-1) return normPath + "\n插件已经 载入请勿重复载入";
+    if (index != -1) {
+        if (Reload_Plugin(index)) return QString();
+        return normPath + "\n插件热重载失败（旧插件已被卸载，可再次尝试载入）";
+    }
     py::gil_scoped_acquire gil;
     PluginInfo info;
     info.path=normPath;

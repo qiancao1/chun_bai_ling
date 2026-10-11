@@ -238,6 +238,10 @@ public:
     bool Enabled_Plugin(int index);//启用
     bool Enabled_Plugin(PluginInfo &info);
     bool Reload_Plugin(int index);//重载
+    // 按「市场口径」（插件 id，为空时退回名称）找已载入插件的下标，找不到返回 -1。
+    // 与私有的 findPluginIndex 区分：那个按 path / uuid 精确匹配，判断的是"同一路径有没有被重复加载"；
+    // 这个对应插件市场里 `info.id == p.id` 的那套。给市场「重新安装」用 —— 覆盖前先卸载旧实例。
+    int findPluginIndexByIdentity(const QString &id, const QString &name = QString()) const;
     bool disable_Plugin(PluginInfo &info);//禁用
     void savePlugins();
     void loadPlugins();

@@ -244,8 +244,22 @@ void PluginCard::updateStatus(bool installed) {
                                                "（downloadUrl_linux 为空）")
                                     .arg(PluginMarketMeta::platformName()));
         m_actionBtn->setEnabled(false);
+    } else if (installed) {
+        // 已经装了 → 这个按钮是"重新下载 + 热重载"（会先卸载旧实例再覆盖，不会再报"已载入"）。
+        // 文案两字是为了适配 80px 的固定宽度。有新版时突出显示。
+        const bool hasNew = m_info.hasUpdate;
+        m_actionBtn->setText(hasNew ? "更新" : "重装");
+        m_actionBtn->setToolTip(hasNew
+                                    ? QStringLiteral("已安装 %1，市场最新 %2 —— 点击下载并热重载")
+                                          .arg(m_info.installedVersionName.isEmpty() ? QStringLiteral("未知")
+                                                                                     : m_info.installedVersionName,
+                                               m_info.versionName)
+                                    : QStringLiteral("重新下载并热重载该插件"));
+        m_actionBtn->setStyleSheet(hasNew ? "color: #FF6B00; font-weight: bold;" : QString());
+        m_actionBtn->setEnabled(true);
     } else {
         m_actionBtn->setText("安装");
+        m_actionBtn->setStyleSheet(QString());
         m_actionBtn->setEnabled(true);
     }
 }
@@ -678,6 +692,19 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                         + PluginInstaller::installDirName(*info) + "/";
     QDir().mkpath(targetDir);
 
+    // ==================== 重新安装：覆盖前先卸载旧实例 ====================
+    // 7z 的 `-aoa` 是"全部覆盖"，但 Windows 上**被占用的文件覆盖会失败**：
+    //   · 原生库插件：主库虽然被复制到 p_tmp 再加载，**同目录的依赖 DLL 却是从原目录 LoadLibrary 的**；
+    //   · Python 插件：包里的 .pyd 被 CPython import 之后不会释放。
+    // 这两种情况下 7z 会报"无法打开输出文件" → 解压整体失败 → 重装永远做不成。
+    // 所以覆盖之前把已载入的旧插件先卸掉。
+    // ⚠ 必须用 uninstall_Plugin2(index)：它不弹确认框；uninstall_Plugin(int) 会弹"确定要卸载吗"。
+    const int oldIndex = pluginPage
+                             ? pluginPage->findPluginIndexByIdentity(info->id, info->name)
+                             : -1;
+    const bool unloadedOld = (oldIndex >= 0);
+    if (unloadedOld) pluginPage->uninstall_Plugin2(oldIndex);
+
     QStringList args;
     args << "x" << zipPath << "-o" + targetDir << "-y" << "-aoa";
 
@@ -711,12 +738,19 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                     targetDirObj.removeRecursively();
                     QFile::remove(zipPath);
                     progress->deleteLater();
+                    // 旧插件是在覆盖前卸载的，取消后不会自动回来 —— 得告诉用户一声
+                    if (unloadedOld)
+                        QMessageBox::information(this, "已取消安装",
+                                                 "已取消。原插件在覆盖之前已被卸载，如需继续使用请重新点击安装。");
                     return;
                 }
 
                 if (exitCode != 0 || status != QProcess::NormalExit) {
                     QByteArray err = process->readAllStandardError();
                     QString errMsg = QString::fromLocal8Bit(err);
+                    if (unloadedOld)
+                        errMsg += "\n\n（原插件已在覆盖前卸载，请重新点击安装；"
+                                  "若反复失败，通常是插件目录里的 dll / pyd 仍被占用）";
                     QMessageBox::warning(this, "解压失败", QString("7z 解压出错：%1").arg(errMsg));
                     QDir targetDirObj(targetDir);
                     targetDirObj.removeRecursively();
