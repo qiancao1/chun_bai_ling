@@ -54,6 +54,10 @@
 #endif
 
 // ======================== 插件类型徽章（列表卡片 / 详情用） ========================
+// 文件对话框的起始目录（定义在文件下方）：py引用库 的「导入txt」也要用它，而那段代码
+// 在 setupUi() 里、比定义位置靠前，所以这里先声明一下。
+static QString pluginDialogStartDir();
+
 static QString pluginTypeName(int type)
 {
     switch (type) {
@@ -544,22 +548,82 @@ void PluginPage::setupUi()
     });
 
 
+    // py引用库：不再要求先准备好 requirements.txt —— **直接填文本**装库。
+    // 输入框里一行一个（也可空格分隔），支持 `#` 行注释；「导入txt」只把文件内容读进输入框，
+    // 最终统一由「开始安装」走 anzpip()（命令里 `-r "<路径>"` 改成直接跟包名，其余一行没动）。
     connect(pypip, &QPushButton::clicked, this, [this]() {
-        // 1. 选择 requirements.txt 文件
-        QString defaultDir = QCoreApplication::applicationDirPath() + "/plugin";
-        QString reqPath = QFileDialog::getOpenFileName(
-            this,
-            "选择 requirements.txt 文件",
-            defaultDir,
-            "文本文件 (*.txt);;所有文件 (*)"
-            );
-        if (reqPath.isEmpty()) {
-            return;
+        QDialog dlg(this);
+        dlg.setWindowTitle("安装 Python 引用库");
+        dlg.resize(480, 360);
+
+        QVBoxLayout *dlgLayout = new QVBoxLayout(&dlg);
+        QLabel *dlgTip = new QLabel("请输入要安装的库：一行一个（也可用空格分隔），例如\n"
+                                    "requests\n"
+                                    "numpy==1.26.4\n"
+                                    "（以 # 开头的行会被忽略）", &dlg);
+        dlgTip->setStyleSheet("font-size: 12px; color: #444444;");
+        dlgLayout->addWidget(dlgTip);
+
+        QPlainTextEdit *input = new QPlainTextEdit(&dlg);
+        {   // 等宽字体：包名 / 版本号好认一点
+            QFont mono("Consolas");
+            mono.setStyleHint(QFont::Monospace);
+            input->document()->setDefaultFont(mono);
         }
-        QString err = anzpip(reqPath);
-        if (!err.isEmpty()) {
-            QMessageBox::critical(this, "错误", err);
-        }
+        input->setPlaceholderText("requests\nnumpy==1.26.4");
+        dlgLayout->addWidget(input, 1);
+
+        QHBoxLayout *dlgBtnRow = new QHBoxLayout;
+        QPushButton *importTxtBtn = new QPushButton("导入txt");
+        QPushButton *installBtn   = new QPushButton("开始安装");
+        QPushButton *cancelBtn    = new QPushButton("取消");
+        dlgBtnRow->addWidget(importTxtBtn);
+        dlgBtnRow->addStretch(1);
+        dlgBtnRow->addWidget(installBtn);
+        dlgBtnRow->addWidget(cancelBtn);
+        dlgLayout->addLayout(dlgBtnRow);
+
+        // 导入txt：只把文件内容读进输入框（**追加**，不覆盖已输入的内容，方便多次导入 / 手工补充）
+        connect(importTxtBtn, &QPushButton::clicked, &dlg, [&dlg, input]() {
+            QString reqPath = QFileDialog::getOpenFileName(
+                &dlg,
+                "选择 requirements.txt 文件",
+                pluginDialogStartDir(),
+                "文本文件 (*.txt);;所有文件 (*)"
+                );
+            if (reqPath.isEmpty()) return;
+
+            QFile f(reqPath);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                QMessageBox::warning(&dlg, "错误", "无法读取文件：" + reqPath);
+                return;
+            }
+            const QString txt = QString::fromUtf8(f.readAll()).trimmed();
+            f.close();
+            if (txt.isEmpty()) {
+                QMessageBox::information(&dlg, "提示", "文件内容为空");
+                return;
+            }
+            const QString old = input->toPlainText().trimmed();
+            input->setPlainText(old.isEmpty() ? txt : old + "\n" + txt);
+            input->moveCursor(QTextCursor::End);   // 光标跟到末尾，方便接着改
+        });
+
+        connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+        connect(installBtn, &QPushButton::clicked, &dlg, [this, &dlg, input]() {
+            const QString pkgs = input->toPlainText();
+            if (pkgs.trimmed().isEmpty()) {
+                QMessageBox::information(&dlg, "提示", "请先输入要安装的库名，或点「导入txt」选择文件");
+                return;
+            }
+            dlg.accept();                    // 先收掉输入窗，pip 在独立终端窗口里跑
+            QString err = anzpip(pkgs);
+            if (!err.isEmpty()) {
+                QMessageBox::critical(this, "错误", err);
+            }
+        });
+
+        dlg.exec();
     });
 
     connect(tjzl, &QPushButton::clicked, this, [this]() {
@@ -708,8 +772,31 @@ void PluginPage::setupUi()
         w->show();
     });
 }
-QString PluginPage::anzpip(const QString &reqPath)
+// 安装 Python 引用库。
+// 入参是**用户直接输入的文本**（一行一个 / 空格分隔、支持 `#` 注释），不再是 requirements.txt 的路径 ——
+// py引用库 的「导入txt」只是把文件内容读进输入框，最后统一走这里，所以这里按文本解析一遍。
+QString PluginPage::anzpip(const QString &pkgsText)
 {
+    // ---- 把自由文本拆成 pip 认的包规格列表 ----
+    // 逐行：先砍掉 `#` 起的行内注释（`requests  # 网络库`），再把回车 / 制表符拉平成空格，最后按空格切词。
+    // 顺带去重 —— 重复的包名 pip 会重复解析，纯属白等。
+    QStringList pkgs;
+    const QStringList lines = pkgsText.split('\n');
+    for (const QString &rawLine : lines) {
+        QString line = rawLine;
+        const int hash = line.indexOf('#');
+        if (hash >= 0) line.truncate(hash);
+        line.replace('\r', ' ').replace('\t', ' ');
+        const QStringList toks = line.split(' ', Qt::SkipEmptyParts);
+        for (const QString &t : toks) {
+            if (!pkgs.contains(t)) pkgs.append(t);
+        }
+    }
+    if (pkgs.isEmpty()) {
+        return "没有解析到任何库名，请输入例如：requests";
+    }
+    const QString pkgArgs = pkgs.join(' ');
+
     QString pythonExe = QCoreApplication::applicationDirPath() + "/python3.14t.exe";
 
 
@@ -726,16 +813,17 @@ QString PluginPage::anzpip(const QString &reqPath)
     }
     // 构造要执行的 pip 安装命令（注意转义内部引号）
     QString pipCmd = QString(
-                         "\"%1\" -m pip install -r \"%2\" Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
-                         ).arg(pythonExe, reqPath);
+                         "\"%1\" -m pip install %2 Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
+                         ).arg(pythonExe, pkgArgs);
 
     // 构建完整的 cmd /k 命令，/k 会保持窗口打开
     QString fullCmd = QString(
-                          "echo 欢迎使用插件依赖安装工具 & echo 提示： "
+                          "echo 欢迎使用插件依赖安装工具 & echo 正在安装: %2 "
+                          "& echo 提示： "
                           "& echo   - \"Requirement already satisfied\" 表示库已存在，无需重复下载 "
                           "& echo   - \"Successfully installed\" 表示新库安装成功 "
                           "& echo. & %1 & echo. & echo 安装完成，请检查上述输出，然后关闭此窗口."
-                          ).arg(pipCmd);
+                          ).arg(pipCmd, pkgArgs);
 
     // 直接启动 cmd.exe，带 /k 参数，让它在新的终端窗口中执行
     QStringList args;

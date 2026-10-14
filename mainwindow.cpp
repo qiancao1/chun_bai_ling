@@ -77,12 +77,17 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.2.116"
-#define APP_BUILD_NUMBER 116
+#define APP_VERSION_STR "v1.4.3.120"
+#define APP_BUILD_NUMBER 120
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.2.116 (2026-10-11)
+## v1.4.3.120 (2026-10-14)
+- 修复 修改昵称指令 空昵称也会添加审核问题
+- 优化 py安装库可以直接输入文本了
+- 增加 C#SDK
+
+## v1.4.2.117 (2026-10-11)
 - 修复 日志右键菜单 撤回机器人信息失败问题
 - 修复 数据库bitmap被覆盖问题(群管配置)
 - 优化 批量推送 定时推送功能 将使用msgid 优先发送
@@ -93,6 +98,7 @@ QString Homev=R"(
 - 修复 加载DLL/SO时 未设置临时加载目录导致 某些有依赖的插件可能是吧
 - 增加 右键菜单 增加查看发送人头像 转到聊天室
 - 修复 插件市场 已经安装的插件 不能直接热更新问题
+- 优化 语音分块 少于10秒会被舍弃
 
 ## v1.4.1.106 (2026-10-10)
 - 增加 ai获取模型列表 并且测试模型

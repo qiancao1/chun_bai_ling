@@ -294,7 +294,9 @@ public:
     void sendData32NoWait(int type, PluginInfo &info, const QString &appidlist);
     QString LoadPlugin_DLL32(PluginInfo &info);
     void syncPluginsTo32();
-    QString anzpip(const QString &reqPath);
+    // 安装 Python 引用库：入参是「用户输入的文本」（一行一个 / 空格分隔，支持 # 注释），
+    // 直接在独立终端窗口里 `pip install <包名...> Pillow`（原来是 `-r <txt 路径>`）
+    QString anzpip(const QString &pkgsText);
     void safeCall(const py::object &func);
 
     void LoadPlugin_Python_pip(const QString &dir, InstallLogFn onLog = InstallLogFn());

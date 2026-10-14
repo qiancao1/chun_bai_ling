@@ -102,13 +102,13 @@ __result__ = f"收到来自 {msg.appid} 的消息"
     cancelSubscribeEdit->setPlaceholderText("取消订阅测试");
 
     addSubscribeReplyEdit = new QTextEdit;
-    addSubscribeReplyEdit->setPlaceholderText(R"(只支持pyhton代码下面例子
+    addSubscribeReplyEdit->setPlaceholderText(R"(只支持python代码下面例子
 __result__="添加订阅成功 在特定时间将会推送 订阅内容 记得打开主动功能"
 __ok__="1"#返回1代表成功
 __data__="要添加到数据库内容" #使用|||分割添加多个
 )");
     cancelSubscribeReplyEdit = new QTextEdit;
-    cancelSubscribeReplyEdit->setPlaceholderText(R"(只支持pyhton代码下面例子
+    cancelSubscribeReplyEdit->setPlaceholderText(R"(只支持python代码下面例子
 __result__="取消订阅成功"
 __ok__="1" #返回1代表成功
 __data__="要从数据库删除的内容" #使用|||分割删除多个
@@ -486,12 +486,12 @@ __result__ = f"收到来自 {msg.appid} 的消息"
 #按钮挂载：#b:#按钮json#b:# "#b:#"包起来即可)";
 
 
-    newTask.addSubscribe_text=R"(#只支持pyhton代码下面例子
+    newTask.addSubscribe_text=R"(#只支持python代码下面例子
 __result__="添加订阅成功 在特定时间将会推送 订阅内容 记得打开主动功能"
 __ok__="1"  #返回1代表成功
 #__data__="要添加到数据库内容" #使用|||分割添加多个
 )";
-    newTask.cancelSubscribe_text= R"(#只支持pyhton代码下面例子
+    newTask.cancelSubscribe_text= R"(#只支持python代码下面例子
 __result__="取消订阅成功"
 __ok__="1"  #返回1代表成功
 #__data__="要从数据库删除的内容"  #使用|||分割删除多个

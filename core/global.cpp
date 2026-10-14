@@ -476,6 +476,7 @@ QString 内置指令(MessageEvent &ev)
             QString newname;
             int cnt = extractParams(ev.msg, "修改昵称", 0, newname);
             if (cnt == -1) return "[修改昵称] 缺少新昵称";
+            if(newname.isEmpty()) return "请在指令后面 跟随新昵称";
             uint32_t now = QDateTime::currentSecsSinceEpoch();
             if(m_nickReviewWidget->addReview(ev.appid,ev.user_int,newname,now)) return "提交审核成功 等待通过就可以使用新昵称";
             return "提交昵称修改失败";

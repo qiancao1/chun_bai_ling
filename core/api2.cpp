@@ -190,7 +190,7 @@ QString QQBotClient::uploadRichMedia_url(int targetType, const QString& openid,i
     QJsonObject obj;
     obj["file_type"]=fileType;
     obj["url"]=fileurl;
-
+    obj["file_name"] = "网络文件.bin";
     QString url = get_url(targetType, openid, "files");
     QString file_info,response;
     for(int i=0;i<10;i++)
