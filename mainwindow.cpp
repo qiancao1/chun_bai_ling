@@ -77,15 +77,16 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.3.120"
-#define APP_BUILD_NUMBER 120
+#define APP_VERSION_STR "v1.4.3.121"
+#define APP_BUILD_NUMBER 121
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.3.120 (2026-10-14)
+## v1.4.3.121 (2026-10-14)
 - 修复 修改昵称指令 空昵称也会添加审核问题
 - 优化 py安装库可以直接输入文本了
 - 增加 C#SDK
+- 优化 内部权限 并且投递到插件 这样子就可以区分 是否为管理员或机器人管理员
 
 ## v1.4.2.117 (2026-10-11)
 - 修复 日志右键菜单 撤回机器人信息失败问题
