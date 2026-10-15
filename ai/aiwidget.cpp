@@ -2730,8 +2730,8 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
     else if(info->niren){}
     else return QString();
     if (ev.msg == "清除记忆") {
-        if(ev.member_role<2){
-        QString openid;
+        if(ev.member_role<=5){
+            QString openid;
             switch (ev.type) {
             case 0: openid = info->enableGroupPersonal ? ev.user : ev.groupId; break;
             case 1: openid = info->enableChannelPersonal ? ev.user : ev.groupId; break;

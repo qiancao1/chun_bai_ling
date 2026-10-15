@@ -369,7 +369,7 @@ bool KeywordPunishConfigWidget::match(const MessageEvent &ev) {
 
 
     if(!(ev.bitmap & BIT_PUNISH)) return false; //没开启违禁词撤回
-    if(ev.member_role<2) return false; //管理员
+    if(ev.member_role<=5) return false; //管理员
     //if(!m_botClients.contains(ev.appid))  return false; //机器人没登录 算了注释吧
     int appid = ev.appid;
     if (!s_acMatchers.contains(appid)) return false;

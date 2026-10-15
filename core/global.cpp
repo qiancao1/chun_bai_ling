@@ -813,7 +813,7 @@ bool __cqkj=false;
 QString upadmin(AccountInfo *info,MessageEvent &ev)
 {
 
-    if(ev.admin_role!=2) return QString();
+    if(ev.member_role>2) return QString();
 
     // ---------- AI 长期日志（没有 UI，用指令调）----------
     // 日志正文是 AI 自己用 write_log 工具写的，这里只管"上限"和"清空"。
@@ -1274,7 +1274,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 
 QString admin_zl(AccountInfo *info,MessageEvent &ev)
 {
-    if(ev.admin_role==0){
+    if(ev.member_role>2){
 
         if(!info->cbl) return QString();
         if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
@@ -1612,7 +1612,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             auto *cw = g_CW[appid];
             if(cw->m_info->online) return "机器人已经在线 无须重复登录";
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行上线";
+                if(ev.member_role!=1) return "你非该机器人管理员 或者超管 不能执行删除";
             }
             QMetaObject::invokeMethod(qApp, [=]() {
                 cw->onLoginButton();
@@ -1636,7 +1636,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             auto *cw = g_CW[appid];
             if(!cw->m_info->online) return "机器人未在线 无须下线";
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行下线";
+                if(ev.member_role!=1) return "你非该机器人管理员 或者超管 不能执行删除";
             }
             QMetaObject::invokeMethod(qApp, [=]() {
                 cw->onLoginButton();
@@ -1655,7 +1655,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         {
             auto *cw = g_CW[appid];
             if(!cw->m_info->admin.contains(ev.user) ){
-                if(ev.admin_role!=2) return "你非该机器人管理员 或者超管 不能执行删除";
+                if(ev.member_role!=1) return "你非该机器人管理员 或者超管 不能执行删除";
             }
 
             QMetaObject::invokeMethod(qApp, [=]() {
@@ -2098,16 +2098,10 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
-    if(info->cbl || ev.admin_role!=0) {
-        bool admin=false,admin2=false;
-        for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
-            if (ev.qid[i] == ev.user_int) {
-                admin = true;
-                break;
-            }
-        }
-        admin2 = ((ev.member_role ==0) || ev.admin_role!=0 );
-        if(admin2)
+    if(info->cbl || ev.member_role <=2) {
+        bool admin=(ev.member_role <=3);
+
+        if(admin)
         {
             if (ev.msg.startsWith("添加本群代管"))
             {
@@ -2173,14 +2167,14 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return QString("该ID:%1 不存在在代管列表").arg(id);
             }
 
-        }else if(ev.member_role==1 )
+        }else if(ev.member_role==4 || ev.member_role==5)
         {
 
             if (ev.msg.startsWith("添加本群代管"))  return "添加本群代管 这个指令只有群主才能使用";
             if (ev.msg.startsWith("删除本群代管")) return "删除本群代管 这个指令只有群主才能使用";
-            admin2 =true;
+            admin =true;
         }
-        if (admin2 || admin ) {
+        if (admin) {
             if (ev.msg == "本群状态")
             {
                 QString text;

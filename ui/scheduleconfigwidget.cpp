@@ -1164,12 +1164,15 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
     {
         if(!t.enabled) continue;
 
-        if(t.role==1 && ev.member_role<=1 || t.role==2) {} else
-        {
-            if(!g_admin.contains(ev.user) && !info->admin.contains(ev.user)) continue;
-        }
+
         if(!t.addSubscribeCmd.isEmpty() && ev.msg.startsWith(t.addSubscribeCmd))
         {
+            if(t.role==0 && ev.member_role<=2 ) {}
+            else if(t.role ==1 && ev.member_role<=5){}
+            else if(t.role==2){} else
+            {
+                return QString("订阅失败 订阅该功能 需要 %1 才能触发").arg(t.role==0?"机器人管理|后台管理":"群主|管理员|代管");
+            }
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[添加订阅：" + t.remark + "|%1ms]";
             QString data;
@@ -1182,6 +1185,12 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
             return "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
         }else if(!t.cancelSubscribeCmd.isEmpty() && ev.msg.startsWith(t.cancelSubscribeCmd))
         {
+            if(t.role==0 && ev.member_role<=2 ) {}
+            else if(t.role ==1 &&ev.member_role<=5){}
+            else if(t.role==2){} else
+            {
+                return QString("订阅失败 订阅该功能 需要 %1 才能触发").arg(t.role==0?"机器人管理|后台管理":"群主|管理员|代管");
+            }
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[删除订阅：" + t.remark + "|%1ms]";
             QString data;

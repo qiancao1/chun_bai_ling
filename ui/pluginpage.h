@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QMap>
+#include <QStringList>
 #include <QTextBrowser>
 #include <QJsonObject>
 #include <QLibrary>
@@ -104,11 +105,21 @@ enum class MatchType {
     event
 };
 
+// 指令的「启用类型」（role）取值，三套 Rule 结构共用：
+//   -1 = 停用（该指令不参与匹配）
+//    0 = 全部人可用（默认）
+//  1..5 = 只放行「第 1..5 级及更高权限」的人 → 见 roleAllowed()
+// 数值越小权限越高，所以设置 N 表示 ev.member_role <= N 的成员都能用
+// （如设置 5 → 1超管/2机器人管理/3群主/4群管理/5代管 全部放行，6群成员不行）。
+// ⚠ 用 constexpr 而不是 #define：本工程已有若干宏（emit/slots/QTextEdit…）踩过坑，别再引新宏。
+constexpr int kRuleRoleOff = -1;   // 停用
+constexpr int kRuleRoleAll =  0;   // 全部人可用（默认）
+
 struct Rule {
     MatchType type;
     QString key;            // 插件注册的原始指令（永不改动）
     QString newKey;         // 用户重命名后的指令（空 = 未重命名）；匹配用「非空的那个」
-    bool enabled = true;    // 该条指令是否启用（默认全部启用）
+    int role = kRuleRoleAll;   // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
     py::object function;    // 已解析的 Python 可调用对象
     bool wantsCmd = false;  // 该处理函数是否接受第 2 个参数「生效命令词」（加载时按形参个数探测；
                             //   老插件只写 1 个形参 → false，仍按 1 参调用，不报错）
@@ -119,7 +130,7 @@ struct Rule_js {
     MatchType type;
     QString key;            // 插件注册的原始指令
     QString newKey;         // 重命名后的指令（空 = 未重命名）
-    bool enabled = true;
+    int role = kRuleRoleAll;   // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
     QString fun;    // 插件侧函数名
     bool caseSensitive = true;
     QRegularExpression regex;   // 多线程安全，只读使用
@@ -128,7 +139,7 @@ struct Rule_Dll {
     MatchType type;
     QString key;            // 插件注册的原始指令
     QString newKey;         // 重命名后的指令（空 = 未重命名）
-    bool enabled = true;
+    int role = kRuleRoleAll;   // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
     qint64 fun;    // 插件侧函数地址/序号
     bool caseSensitive = true;
     QRegularExpression regex;   // 多线程安全，只读使用
@@ -139,8 +150,16 @@ struct RuleConfigRow {
     int     type    = 0;        // MatchType 的整数值
     QString key;                // 插件注册的原始指令
     QString newKey;             // 用户设置的新指令（空 = 不改名）
-    bool    enabled = true;     // 是否启用
+    int     role    = kRuleRoleAll;   // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
 };
+
+// ================= 「启用类型」下拉的取值表（UI / 匹配 共用一份，别各写各的） =================
+// 下拉第 i 项 ↔ role = i - 1（第 0 项是「禁用」，所以 role = -1）。默认选中「全部人」（role 0）。
+QString     ruleRoleName(int role);        // role → 界面文字（未知值兜底成「全部人」）
+QStringList ruleRoleComboItems();          // 下拉框 item 顺序（与 role = index - 1 对应）
+int         ruleRoleFromComboIndex(int i); // 下拉下标 → role
+int         ruleRoleToComboIndex(int role);// role → 下拉下标
+bool        ruleRoleMatched(int role, int memberRole);   // 权限判定：这个人能不能用这条指令
 struct PythonPluginobj {
     //py::dict globals;
 

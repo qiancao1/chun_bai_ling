@@ -529,11 +529,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if (ev.user.isEmpty()) ev.user = author.value("id").toString();
         QString role= author.value("member_role").toString();
         if(role == "owner")
-            ev.member_role = 0;
+            ev.member_role = 3;
         else if(role=="admin")
-            ev.member_role = 1;
-        else if(role == "member")
-            ev.member_role = 2;
+            ev.member_role = 4;
+        else
+            ev.member_role = 6;
         ev.nickname = author.value("username").toString();
         ev.bot = author.value("bot").toBool();
         ev.msgId = d.value("id").toString();
@@ -585,6 +585,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
         ev.replyTo = d.value("message_scene").toString();
+        ev.member_role = 3;
         ev.at_you=true;
     }
     else if (ev.msgType == "AT_MESSAGE_CREATE" || ev.msgType == "MESSAGE_CREATE") {
@@ -598,6 +599,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
+        ev.member_role = 6;
         if(ev.msg.contains(m_info->pduid))
         {
             ev.at_you = true;
@@ -909,8 +911,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     //2300 +-
     if(!ev.fullType) ev.at_you=true; //
 
-    if(m_info->admin.contains(ev.user)) ev.admin_role=1;
-    if(g_admin.contains(ev.user)) ev.admin_role=2;
+    if(m_info->admin.contains(ev.user)) ev.member_role=2;
+    if(g_admin.contains(ev.user)) ev.member_role=1;
 
     tiqfuj(d,ev.msg);
     ev.appid = m_info->appid_int;
@@ -1128,7 +1130,14 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
 
     }
-
+    if(ev.member_role==6){
+        for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
+            if (ev.qid[i] == ev.user_int) {
+                ev.member_role =5;
+                break;
+            }
+        }
+    }
 
     d["content"] = ev.msg;
     d["id"] = ev.msgId;
@@ -1136,7 +1145,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     payload["d"] = d;
     payload["user_id"] = ev.user_int;
     payload["appid"]=ev.appid;
-    payload["admin_role"]=ev.admin_role;
+
+    payload["member_role"]=ev.member_role;
     payload["at_you"]=ev.at_you;
     payload["type"]=ev.type;
     payload["GroupName"]=ev.groupname;

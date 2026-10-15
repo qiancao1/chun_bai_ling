@@ -84,13 +84,14 @@ static QString pluginTypeColor(int type)
 // setupUi 在同一文件更靠前的位置，没法直接 new，所以走一个前置声明的工厂函数。
 static QLayout *createConfigLayout(QWidget *parent);
 
-// 「指令」列表弹窗里每条规则的显示文字：改过名 / 被停用都直接标出来
+// 「指令」列表弹窗里每条规则的显示文字：改过名 / 停用 / 限定权限都直接标出来
 template <typename RuleT>
 static QString ruleDisplayText(const RuleT &rule)
 {
     QString s = rule.key;
     if (!rule.newKey.isEmpty()) s += " → " + rule.newKey;
-    if (!rule.enabled)          s += "（停用）";
+    if (rule.role <= kRuleRoleOff)       s += "（停用）";
+    else if (rule.role > kRuleRoleAll)   s += QString("（限%1）").arg(ruleRoleName(rule.role));
     return s;
 }
 
@@ -1069,6 +1070,45 @@ static inline QString ruleMatchKey(const QString &key, const QString &newKey)
     return newKey.isEmpty() ? key : newKey;
 }
 
+// ==================== 「启用类型」：指令对谁能生效 ====================
+// 取值：-1 停用 / 0 全部人（默认） / 1 超管 / 2 机器人管理 / 3 群主 / 4 群管理 / 5 代管。
+// 数值越小权限越高 → 设置 N 表示 member_role <= N 的人都能用
+//   （如设置 5 → 1超管/2机器人管理/3群主/4群管理/5代管 全放行，6群成员不行；
+//     设置 1 → 只有超管）。
+// ev.member_role 的取值见 qqbotclient.h：1超管 2机器人管理 3群主 4群管理 5代管 6群成员，
+// **0 = 身份未识别**（私聊 / 频道消息不解析成员身份）→ 只在「全部人可用」时放行；
+// 但超管 / 机器人管理是全局表命中（在私聊里也会被置成 1/2），所以他们在私聊里照样能用受限指令。
+bool ruleRoleMatched(int role, int memberRole)
+{
+    if (role <= kRuleRoleOff) return false;          // 停用
+    if (role == kRuleRoleAll) return true;           // 全部人可用
+    return memberRole >= 1 && memberRole <= role;    // 限定权限：只放行 <= 设定等级的人
+}
+
+QString ruleRoleName(int role)
+{
+    switch (role) {
+    case kRuleRoleOff: return "禁用";
+    case 1:            return "超管";
+    case 2:            return "机器人管理";
+    case 3:            return "群主";
+    case 4:            return "群管理";
+    case 5:            return "代管";
+    case kRuleRoleAll:
+    default:           return "全部人";
+    }
+}
+
+// 下拉框 item 顺序：第 0 项「禁用」→ role = -1，第 i 项 → role = i - 1
+QStringList ruleRoleComboItems()
+{
+    return QStringList() << "禁用" << "全部人" << "超管" << "机器人管理"
+                         << "群主" << "群管理" << "代管";
+}
+
+int ruleRoleFromComboIndex(int i) { return i - 1; }
+int ruleRoleToComboIndex(int role) { return qBound(0, role + 1, ruleRoleComboItems().size() - 1); }
+
 // pname 直接当「发起方 uuid」用：展示标签一律以 '[' 开头（"[插件名|%1ms]" / "[关键词匹配|%1ms]" …），
 // 插件侧传的是**裸 uuid**，不带 '[' —— 只看首字符就能区分，不用任何分隔符。
 QString senderUuidFromPname(const QString &pname)
@@ -1172,7 +1212,7 @@ static bool pyFuncWantsCmd(const py::object &fn)
 //   没配过改名的插件走的是与改动前逐字节相同的路径（不拷贝、不重编码）。
 
 bool matchRule(const Rule &rule, const MessageEvent &ev) {
-    if (!rule.enabled) return false;          // 被停用的指令不参与匹配
+    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
     const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
@@ -1199,7 +1239,7 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     return false;
 }
 bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
-    if (!rule.enabled) return false;
+    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
     const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
@@ -1226,7 +1266,7 @@ bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
     return false;
 }
 bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
-    if (!rule.enabled) return false;
+    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
     const QString key = ruleMatchKey(rule.key, rule.newKey);
     QString msg = ev.msg;
     switch (rule.type) {
@@ -3739,9 +3779,12 @@ event = _register_rule("event")
     }
 }
 
-// ==================== 指令配置（勾选启用 / 重命名）存取 ====================
+// ==================== 指令配置（启用类型 / 重命名）存取 ====================
 // 配置以「插件 id」为键，id 为空时退化成插件名，存放在 g_config["plugin_rules"]：
-//   { "<插件id或名>": [ {"t":匹配方式, "k":注册原指令, "n":新指令, "e":是否启用} ... ] }
+//   { "<插件id或名>": [ {"t":匹配方式, "k":注册原指令, "n":新指令, "r":启用类型(-1/0..5)} ... ] }
+// ⚠ "r" 是 2026-10-15 起的新字段（原先只有 "e":是否启用 bool）。老配置读的时候按
+//   "e" 折算：true → 0（全部人可用）、false → -1（停用），保证升级后旧配置行为不变；
+//   写的时候 **两个都写**（"r" 给新版读，"e" 给降级回去的老版本读）。
 // ⚠ 这里只存「差异」：没配过的插件根本不会出现在这张表里。
 static inline QString ruleCfgKeyOf(const PluginInfo &info)
 {
@@ -3761,7 +3804,9 @@ static void applyRowsToRules(QList<RuleT> &rules, const QJsonArray &arr, bool al
         for (RuleT &r : rules) {
             if (static_cast<int>(r.type) != t || r.key != k) continue;
             r.newKey  = allowRename ? o.value("n").toString() : QString();
-            r.enabled = o.value("e").toBool(true);
+            // 启用类型：优先读新字段 "r"；老配置只有 "e"(bool) → true=0 全部人 / false=-1 停用
+            r.role = o.contains("r") ? o.value("r").toInt(kRuleRoleAll)
+                                     : (o.value("e").toBool(true) ? kRuleRoleAll : kRuleRoleOff);
             if (r.type == MatchType::Regex) {
                 // 重命名后正则必须按新值重建，否则匹配的还是插件注册时那个老正则
                 QRegularExpression::PatternOptions opt = QRegularExpression::NoPatternOption;
@@ -3820,7 +3865,7 @@ QList<RuleConfigRow> PluginPage::ruleConfigRows(int index) const
     const PluginInfo &p = m_pluginList[index];
     auto push = [&out](const auto &rules) {
         for (const auto &r : rules)
-            out.append(RuleConfigRow{ static_cast<int>(r.type), r.key, r.newKey, r.enabled });
+            out.append(RuleConfigRow{ static_cast<int>(r.type), r.key, r.newKey, r.role });
     };
     if (p.type == 0)                       push(p.python.rules);
     else if (p.type == 1 || p.type == 2)   push(p.DLL.rules);
@@ -3860,7 +3905,8 @@ void PluginPage::applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows
         o["t"] = row.type;
         o["k"] = row.key;
         o["n"] = row.newKey;
-        o["e"] = row.enabled;
+        o["r"] = row.role;                      // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
+        o["e"] = (row.role > kRuleRoleOff);      // 兼容老版本：非停用即「启用」
         arr.append(o);
     }
     m_ruleCfg[key] = arr;

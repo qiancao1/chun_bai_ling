@@ -76,8 +76,8 @@ struct MessageEvent
     int type = 0;           // 0群 1频道 2私聊 3频道私聊
     int subType=0;          //ai整的没啥用
     int callbackType = 0;   // 回调回应来源: 0群 1频道 2私聊 3频道私聊
-    int member_role=-1;     //0群主 1管理 2群成员
-    int admin_role=0;     //0无权限 1机器人管理 2后台管理
+    int member_role=0;     //1超管 2机器人管理 3群主 4管理 5代管 6群成员
+
     int bitmap=0;//群相关配置
     bool fullType = false;  // 全量标识 这条信息来自全量
     bool at_you=false;

@@ -4,6 +4,7 @@
 #include <QListWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QComboBox>
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
@@ -28,7 +29,9 @@ static QString matchTypeName(int t)
 }
 
 namespace {
-enum Col { ColEnable = 0, ColKey, ColNewKey, ColType, ColCount };
+// 第 0 列现在是一个下拉框（QComboBox 作为 cellWidget），不再用勾选框：
+// 「启用类型」= 这条指令对谁能生效（禁用 / 全部人 / 超管 / 机器人管理 / 群主 / 群管理 / 代管）
+enum Col { ColRole = 0, ColKey, ColNewKey, ColType, ColCount };
 }
 
 RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *parent)
@@ -45,6 +48,10 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
         "QListWidget, QTableWidget { background: #FFFFFF; border: 1px solid #cccccc;"
         "                            border-radius: 4px; color: #111111; }"
         "QTableWidget::item { color: #111111; }"
+        "QComboBox { background: #FFFFFF; border: 1px solid #cccccc; border-radius: 3px;"
+        "            padding: 1px 6px; margin: 2px; color: #111111; }"
+        "QComboBox QAbstractItemView { background: #FFFFFF; color: #111111;"
+        "                              selection-background-color: #FFE3C0; selection-color: #111111; }"
         "QHeaderView::section { background: #EFEFEF; color: #222222; border: 0px; padding: 5px; }"
         );
 
@@ -75,15 +82,17 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     rv->addWidget(m_tip);
 
     m_table = new QTableWidget(0, ColCount);
-    m_table->setHorizontalHeaderLabels(QStringList() << "启用" << "指令名" << "新指令名" << "匹配方式");
+    m_table->setHorizontalHeaderLabels(QStringList() << "启用类型" << "指令名" << "新指令名" << "匹配方式");
     m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(32);   // 要给下拉框留出行高
     m_table->setSelectionBehavior(QAbstractItemView::SelectItems);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::DoubleClicked
                              | QAbstractItemView::SelectedClicked
                              | QAbstractItemView::EditKeyPressed
                              | QAbstractItemView::AnyKeyPressed);
-    m_table->horizontalHeader()->setSectionResizeMode(ColEnable, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(ColRole, QHeaderView::Fixed);
+    m_table->setColumnWidth(ColRole, 118);
     m_table->horizontalHeader()->setSectionResizeMode(ColKey, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColNewKey, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColType, QHeaderView::ResizeToContents);
@@ -147,12 +156,15 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
     for (int i = 0; i < rows.size(); ++i) {
         const RuleConfigRow &r = rows[i];
 
-        // 0 启用：勾选 = 该指令参与匹配（默认全部启用）
-        QTableWidgetItem *chk = new QTableWidgetItem;
-        chk->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-        chk->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
-        chk->setTextAlignment(Qt::AlignCenter);
-        m_table->setItem(i, ColEnable, chk);
+        // 0 启用类型：下拉框。禁用 = 该指令不参与匹配；其余按权限放行
+        //   （全部人 / 超管 / 机器人管理 / 群主 / 群管理 / 代管，默认全部人）
+        QComboBox *role = new QComboBox;
+        role->addItems(ruleRoleComboItems());
+        role->setCurrentIndex(ruleRoleToComboIndex(r.role));
+        role->setToolTip("这条指令对谁能生效。数值越小权限越高：例如选「群主」，则超管 / 机器人管理 / 群主都能用；"
+                         "选「代管」则 超管 / 机器人管理 / 群主 / 群管理 / 代管 都能用。\n"
+                         "私聊 / 频道消息没有成员身份，只有选「全部人」以及超管 / 机器人管理能用。");
+        m_table->setCellWidget(i, ColRole, role);
 
         // 1 指令名：插件注册的原名，只读（重命名走右边那一列；这个原名是「命中原指令」的来源）
         QTableWidgetItem *k = new QTableWidgetItem(r.key);
@@ -169,7 +181,7 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
         } else {
             n->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             n->setToolTip("这个插件是旧版（原生库没导出 onMessagev3；32 位 / Python / JS 是插件信息里没带 sdk），"
-                          "框架没有把指令名传给它的通道，所以不支持重命名；勾选启用仍然有效。");
+                          "框架没有把指令名传给它的通道，所以不支持重命名；改「启用类型」仍然有效。");
         }
         m_table->setItem(i, ColNewKey, n);
 
@@ -181,9 +193,9 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
     }
 
     m_tip->setText(allowRename
-                       ? QString("共 %1 条指令；勾选 = 启用，新指令名留空 = 不改名。保存后立即生效，无需重载插件。")
+                       ? QString("共 %1 条指令；「启用类型」决定谁能用这条指令（默认全部人），新指令名留空 = 不改名。保存后立即生效，无需重载插件。")
                              .arg(rows.size())
-                       : QString("共 %1 条指令；该插件是旧版（原生库没有 v3 入口，或插件信息里没带 sdk），只能勾选启用 / 停用，不支持重命名。")
+                       : QString("共 %1 条指令；该插件是旧版（原生库没有 v3 入口，或插件信息里没带 sdk），只能改「启用类型」，不支持重命名。")
                              .arg(rows.size()));
 }
 
@@ -200,7 +212,6 @@ void RuleEditDialog::onSave()
     QList<RuleConfigRow> rows;
     rows.reserve(m_table->rowCount());
     for (int i = 0; i < m_table->rowCount(); ++i) {
-        QTableWidgetItem *c0 = m_table->item(i, ColEnable);
         QTableWidgetItem *c1 = m_table->item(i, ColKey);
         QTableWidgetItem *c2 = m_table->item(i, ColNewKey);
         QTableWidgetItem *c3 = m_table->item(i, ColType);
@@ -210,7 +221,9 @@ void RuleEditDialog::onSave()
         r.type    = c3->data(Qt::UserRole).toInt();
         r.key     = c1->text();
         r.newKey  = (allowRename && c2) ? c2->text().trimmed() : QString();
-        r.enabled = c0 ? (c0->checkState() == Qt::Checked) : true;
+        // 启用类型：读第 0 列的「启用类型」下拉（下拉下标 → role：0 禁用=-1，1 全部人=0，… 6 代管=5）
+        QComboBox *roleBox = qobject_cast<QComboBox *>(m_table->cellWidget(i, ColRole));
+        r.role    = roleBox ? ruleRoleFromComboIndex(roleBox->currentIndex()) : kRuleRoleAll;
         if (r.newKey == r.key) r.newKey.clear();   // 填成和原指令一样 = 没改名，别白写进配置
         rows.append(r);
     }
