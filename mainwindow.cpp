@@ -77,17 +77,18 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.3.122"
-#define APP_BUILD_NUMBER 122
+#define APP_VERSION_STR "v1.4.3.123"
+#define APP_BUILD_NUMBER 123
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.3.122 (2026-10-15)
+## v1.4.3.123 (2026-10-15)
 - 修复 修改昵称指令 空昵称也会添加审核问题
 - 优化 py安装库可以直接输入文本了
 - 增加 C#SDK
 - 优化 内部权限 并且投递到插件 这样子就可以区分 是否为管理员或机器人管理员
 - 修复 缓存使用失败 语音导致文件会多次上传
+- 修复 聊天室发送语音文件触发分片时 多次触发回调 导致重复发送很多语音文件
 
 ## v1.4.2.117 (2026-10-11)
 - 修复 日志右键菜单 撤回机器人信息失败问题

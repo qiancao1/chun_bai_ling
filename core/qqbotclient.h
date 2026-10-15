@@ -242,8 +242,11 @@ private:
     // info = 平台给的**裸 file_info**（上传函数直接返回它，不再有 "[类型,path=…]" 包装）
     // fileType：1图片/2视频/3音频/4文件，**只用于日志** —— 写回日志时还原成
     //   "[<类型>,path=…,]" 形态，UI(chatpage) 靠它认媒体标签并把整段从气泡正文里剥掉；0 = 不包装
+    // multiPart：本次是「同一轮回复的多段媒体」的其中一段（true 时不受 noref 去重影响，
+    //   否则第 2 段起会被当成"重复发送"直接吞掉 → 4 段音频只发出 1 段）
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
-                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx, int fileType = 0);
+                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx, int fileType = 0,
+                       bool multiPart = false);
     // ctx 只读：函数内部仅取 ctx.openid / ctx.cb，并按值转发给 send_Media。
     // 必须是 const 引用 —— 否则调用方传临时对象（如 send_messages 传 MessageLogContext()）
     // 在 GCC/Clang 下报 “cannot bind non-const lvalue reference to an rvalue”，

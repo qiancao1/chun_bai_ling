@@ -573,7 +573,8 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
     return qMakePair(addr, realMsgId);
 }
 QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
-                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx, int fileType)
+                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx, int fileType,
+                                bool multiPart)
 {
     QJsonObject json;
     json["msg_type"] = 7;
@@ -602,7 +603,11 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     }
     if(ok)
         seq_index = 1;
-    else if(noref) return "{}";
+    // ⚠ noref 时这里原来是直接 return "{}"（把「同一条消息的重复发送」吞掉，防重复回复）。
+    //   但同一轮回复的多段媒体（音频切段 / 缓存的 N 段重放）也走这个函数：第一条 send_Media
+    //   已经把该消息标成「已处理」，第 2 段起 ok 必为 false，于是 4 段只发得出第 1 段。
+    //   多段发送时传 multiPart=true 绕过这个去重 —— 它们本来就该一条条发出去。
+    else if(noref && !multiPart) return "{}";
     else seq_index = 2;
     initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index);
     QString url= get_url(type,openid,"messages");

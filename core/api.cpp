@@ -3107,21 +3107,10 @@ static QStringList dropShortAudioTail(const QStringList &segs)
     return out;
 }
 
-// 「只切出 1 段」= 等于没切：删掉这份残留，并返回空表（调用方按整文件发）。
-// ⚠ 必须删。留着的话下次连 ffmpeg 都不会起 —— 复用分支会把这个孤零零的段文件当成
-//   「已经切好的分段」返回，于是 audioSegs 非空 → 整条音频被当成「分段结果」→
-//   **上传缓存永远写不进去，每次重发都重传一遍**（体积超 1MB 的语音几乎必踩：
-//   audioCanSendAsIs 对 >=1MB 直接判 false，一定要走这条切段分支）。
-static QStringList dropSegmentLeftover(const QDir &dir, const QStringList &names)
-{
-    for (const QString &f : names)
-        QFile::remove(dir.filePath(f));
-    return {};
-}
-
 // 把 m4a 按 segSec 秒流复制切段（不重编码），段文件名 = 原名去 .m4a + _seg000.m4a ...
-// 已有同名段文件则直接复用；失败返回空表。
-// 返回值里已丢掉不足 AUDIO_SEG_MIN_SEC 的结尾段；**只切出 1 段时返回空表**（残留顺手删掉）。
+// ⚠ tmp/ 目录就是专门放这些产物的：**只要已有 _seg*.m4a 就直接用，绝不再起 ffmpeg，也绝不删**
+//   （哪怕只切出 1 段 —— 那也是「整段音频的流复制产物」，直接上传即可；删了下次又要重切一遍）。
+// 返回值里已丢掉不足 AUDIO_SEG_MIN_SEC 的结尾段（只有 ≥2 段时才可能丢）。
 static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
 {
     if (!m4aPath.endsWith(".m4a"))
@@ -3132,9 +3121,7 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
     QDir dir = QFileInfo(m4aPath).absoluteDir();
     QStringList out;
     const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
-    if (!exist.isEmpty()) {              // 之前切过，直接复用
-        if (exist.size() < 2)            // 上一版留下的「单段残留」→ 清掉，当没切过
-            return dropSegmentLeftover(dir, exist);
+    if (!exist.isEmpty()) {              // 之前切过 → 直接复用产物，不起进程
         for (const QString &f : exist)
             out << dir.filePath(f);
         return dropShortAudioTail(out);  // 复用旧产物时同样丢掉不足 10 秒的尾巴
@@ -3160,8 +3147,8 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
         return {};
 
     const QStringList files = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
-    if (files.size() < 2)
-        return dropSegmentLeftover(dir, files);   // 只切出 1 段 = 没切：清掉残留，按整文件发
+    if (files.isEmpty())
+        return {};                       // 一段都没切出来（ffmpeg 失败）→ 空表，调用方按整文件发
     for (const QString &f : files)
         out << dir.filePath(f);
     return dropShortAudioTail(out);
@@ -3286,7 +3273,7 @@ static void dropShortAudioTailAsync(const QStringList &segs, std::function<void(
     });
 }
 
-// 把 m4a 按 segSec 秒流复制切段（同 splitM4aSegments）；已有同名段文件直接复用，不起进程
+// 把 m4a 按 segSec 秒流复制切段（同 splitM4aSegments）；已有同名段文件直接复用，不起进程、也不删
 // 返回值里已丢掉不足 AUDIO_SEG_MIN_SEC 的结尾段
 static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::function<void(QStringList)> onDone)
 {
@@ -3297,14 +3284,10 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
     {
         QDir dir = QFileInfo(m4aPath).absoluteDir();
         const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
-        if (!exist.isEmpty()) {                    // 之前切过，直接复用
-            if (exist.size() < 2) {                // 上一版留下的「单段残留」→ 清掉，当没切过
-                onDone(dropSegmentLeftover(dir, exist));
-                return;
-            }
+        if (!exist.isEmpty()) {                    // 之前切过 → 直接复用产物（tmp/ 就是放这个的）
             QStringList out;
             for (const QString &f : exist) out << dir.filePath(f);
-            dropShortAudioTailAsync(out, onDone);  // 复用旧产物时同样丢掉不足 10 秒的尾巴
+            dropShortAudioTailAsync(out, onDone);
             return;
         }
     }
@@ -3321,7 +3304,7 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
             if (timedOut || code != 0) { onDone(QStringList()); return; }
             QDir d = QFileInfo(m4aPath).absoluteDir();
             const QStringList files = d.entryList(QStringList{filter}, QDir::Files, QDir::Name);
-            if (files.size() < 2) { onDone(dropSegmentLeftover(d, files)); return; }   // 只切出 1 段 = 没切：清残留
+            if (files.isEmpty()) { onDone(QStringList()); return; }   // 一段都没切出来 → 按整文件发
             QStringList out;
             for (const QString &f : files) out << d.filePath(f);
             dropShortAudioTailAsync(out, onDone);
@@ -3458,6 +3441,19 @@ static void putMediaUploadCache(const QString &mediaType, const QString &fileMd5
     cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
 }
 
+// 复制一份 ctx 但**去掉回调**。
+// ⚠ 只有「本次发送的最后一条消息」才允许带回调：send_Media 每发一条（每个分段）都会在 HTTP
+//   回调里触发一次 ctx.cb，4 段音频就把调用方回调 4 次 —— 插件/Python 那边每收到一次都会当成
+//   「这一轮发完了」而继续下一步（甚至再发一轮），于是表现为「一直循环重复发这 4 个片段」。
+//   契约见 send_messagesAsync 的注释：每条路径必须把 ctx.cb 触发**恰好一次**。
+//   中间分段用这个版本：日志照记（pname/jsonString/openid 都保留），只是不回调。
+static MessageLogContext ctxNoCb(const MessageLogContext &c)
+{
+    MessageLogContext r = c;
+    r.cb = nullptr;
+    return r;
+}
+
 // ===========================================================================
 struct MediaTagMatch {              // 与 sendOneMedia 内部的 MatchInfo 同构
     int     start  = 0;
@@ -3480,6 +3476,8 @@ struct QQBotClient::MediaTagCtx {
     qint64      segExpire = 0;      // 多段缓存的统一过期时间（各段取最小）
     bool        segAllOk = true;    // 各段是否全部上传成功（有失败就不写缓存）
     bool        needUpload = true;
+    bool        uploadStarted = false;  // 「上传 + 发送」只允许进入一次（任何回调重复触发都挡住）
+    bool        fallbackDone  = false;  // 远程音频超时长的兜底链只允许走一次
     bool        done = false;       // 这条标签是否已收尾（防重复摘标签 / 重复推进）
 };
 
@@ -3568,16 +3566,22 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
     tc->filePath  = pathArg;
 
     // ── 本地文件：md5 + 查上传缓存（命中就不用再传了）──
+    //    外链（http）没有本地文件可算 md5，用 **URL 自身的 md5** 当缓存键 —— 同一首歌（点歌插件
+    //    发的外链）再发一次就直接重放上次上传好的分段，不用再走「注册外链 → 40093013 → 下载 →
+    //    转码 → 切段 → 逐段上传」整条兜底链（那条链慢到调用方会超时重试，表现得像"循环重复发"）。
     if (!tc->filePath.startsWith("http")) {
         int w = 0, h = 0;
         calculateFileMD5AndSize(tc->filePath, tc->fileMd5, w, h);
-        if (cache_db && !tc->fileMd5.isEmpty()) {
-            const QString cacheKey = QString("%1_%2").arg(mediaType, tc->fileMd5);
-            // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-            tc->cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
-            if (!tc->cachedInfos.isEmpty())
-                tc->needUpload = false;
-        }
+    } else {
+        tc->fileMd5 = QString::fromLatin1(
+            QCryptographicHash::hash(tc->filePath.toUtf8(), QCryptographicHash::Md5).toHex());
+    }
+    if (cache_db && !tc->fileMd5.isEmpty()) {
+        const QString cacheKey = QString("%1_%2").arg(mediaType, tc->fileMd5);
+        // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
+        tc->cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
+        if (!tc->cachedInfos.isEmpty())
+            tc->needUpload = false;
     }
 
     // ── 本地音频：探测 →（必要时）转码 →（超长）切段 → 上传 ──
@@ -3646,13 +3650,27 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
 void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc)
 {
     if (!clientAlive(this, st->appid)) return;
+    // ⚠ 单飞：这条标签只允许进「上传+发送」一次。音频链要跨 ffmpeg / 切段 / 探测好几个回调，
+    //   任何一个回调重复触发都会再发一轮（表现为「同一批分段一直循环发」），这里一刀切死。
+    if (tc->uploadStarted) return;
+    tc->uploadStarted = true;
 
     if (!tc->needUpload) {
         // 缓存命中：1 条 = 整文件 / 单段；N 条 = 上次切好的多段 → 逐条原样重发
-        for (const QString &fi : std::as_const(tc->cachedInfos)) {
-            if (fi.isEmpty()) continue;
-            st->response = send_Media(st->type, st->openid, st->pname, fi,
-                                      st->now_us, st->msgid, st->is_wakeup, st->noref, st->ctx, tc->fileType);
+        QStringList infos;
+        for (const QString &fi : std::as_const(tc->cachedInfos))
+            if (!fi.isEmpty()) infos << fi;
+        // ⚠ 只有**最后一条**带 ctx（里面是调用方回调）。每条都带 = 4 段回调 4 次 → 调用方
+        //   以为每段都是一轮结束 → 又走下一轮，正是「循环重复发」的来源。
+        for (int i = 0; i < infos.size(); ++i) {
+            const bool last = (i + 1 == infos.size());
+            // ⚠ multiPart：这一批是「同一轮的多段媒体」。send_Media 里 setBuffer_250 只对**第一条**
+            //   返回 ok=true（它把该消息从「未处理」翻成 250），第 2 条起一律 ok=false；noref 时原本
+            //   会直接 return "{}" 把 2..N 段吞掉。多段必须传 true 绕过该去重（见 send_Media）。
+            st->response = send_Media(st->type, st->openid, st->pname, infos[i],
+                                      st->now_us, st->msgid, st->is_wakeup, st->noref,
+                                      last ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
+                                      /*multiPart=*/infos.size() > 1);
         }
         mediaChainFinishTag(st, tc);
         return;
@@ -3677,15 +3695,20 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
 
     const QString upPath = job->paths[job->idx];
     job->idx += 1;
+    // ⚠ 只有最后一段允许带 ctx（= 调用方回调）。每段都带 → 4 段回调 4 次 → 调用方每收一次
+    //   都当成一轮结束 → 重复发。见 ctxNoCb 的注释（契约是「恰好一次」）。
+    const bool lastSeg = (job->idx >= job->paths.size());
 
     uploadRichMediaPoolAAsync(st->type, st->openid, tc->fileType, upPath, /*usePool=*/false,
-        [this, st, tc, job, upPath](const QString &fileInfo, qint64 expireTime, const QString &, bool ok, const QString &) {
+        [this, st, tc, job, upPath, lastSeg](const QString &fileInfo, qint64 expireTime, const QString &, bool ok, const QString &) {
             if (!clientAlive(this, st->appid)) return;
 
             // ⚠ 顺序必须与同步版一致：**先**判远程音频超时长，**后**判 ok。
             //   超时长时平台回的是报错文本（ok=false）；要是先 `if(!ok)` 就把报错当正文发掉了，
             //   下面这个兜底分支永远执行不到 —— 整条兜底链等于死代码。
             if (tc->fileType == 3 && fileInfo.contains("40093013") && upPath.startsWith(QLatin1String("http"))) {
+                if (tc->fallbackDone) { mediaChainFinishTag(st, tc); return; }   // 兜底链只走一次
+                tc->fallbackDone = true;
                 mediaRemoteAudioFallback(st, tc, upPath, fileInfo);
                 return;
             }
@@ -3699,7 +3722,8 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                                   st->is_wakeup, st->mode, st->sendType, st->noref);
                 else
                     send_msgAsync(st->type, st->openid, st->pname, errInfo, st->msgid,
-                                  st->is_wakeup, st->mode, st->sendType, st->noref, st->ctx.cb);
+                                  st->is_wakeup, st->mode, st->sendType, st->noref,
+                                  lastSeg ? st->ctx.cb : Callback());
                 mediaChainSegLoop(st, tc, job);
                 return;
             }
@@ -3711,7 +3735,9 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                 if (expireTime > 0)
                     tc->segExpire = (tc->segExpire == 0) ? expireTime : qMin(tc->segExpire, expireTime);
                 st->response = send_Media(st->type, st->openid, st->pname, fileInfo,
-                                          st->now_us, st->msgid, st->is_wakeup, st->noref, st->ctx, tc->fileType);
+                                          st->now_us, st->msgid, st->is_wakeup, st->noref,
+                                          lastSeg ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
+                                          /*multiPart=*/job->paths.size() > 1);
             }
             mediaChainSegLoop(st, tc, job);
         });
@@ -3898,15 +3924,23 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
         {
             int w=0,h=0;
             calculateFileMD5AndSize(filePath,fileMd5,w,h);
-
-
-            if (cache_db && !fileMd5.isEmpty()) {
-                QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
-                // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-                cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
-                if (!cachedInfos.isEmpty())
-                    needUpload = false;
-            }
+        }
+        else
+        {
+            // 外链没有本地文件可算 md5 → 用 URL 自身的 md5 当缓存键（与异步链同款）：
+            // 同一条外链再发一次直接重放上次上传好的分段/整串，不用重新注册+下载+转码+切段。
+            fileMd5 = QString::fromLatin1(
+                QCryptographicHash::hash(filePath.toUtf8(), QCryptographicHash::Md5).toHex());
+        }
+        if (cache_db && !fileMd5.isEmpty()) {
+            QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
+            // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
+            cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
+            if (!cachedInfos.isEmpty())
+                needUpload = false;
+        }
+        if(!filePath.startsWith("http"))
+        {
             if(needUpload && fileType==3)
             {
                 needUpload=true;
@@ -3964,7 +3998,14 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             QStringList segInfos;      // 本次各段上传成功的整串 —— 整条循环结束后一次性写缓存
             qint64      segExpire = 0; // 多段缓存的统一过期时间（各段取最小）
             bool        segAllOk = true;
-            for (const QString &upPath : upPaths) {
+            for (int si = 0; si < upPaths.size(); ++si) {
+                const QString upPath = upPaths[si];
+                // ⚠ 只有**最后一段**带 ctx（= 调用方回调）。send_Media 每发一条就触发一次 ctx.cb，
+                //   4 段的音频会把调用方回调 4 次 —— 插件/Python 每收到一次都当成「这一轮发完了」，
+                //   于是又走下一轮 = 「一直循环重复发这 4 个片段」。契约是「恰好一次」。
+                const bool lastSeg = (si + 1 == upPaths.size());
+                const MessageLogContext segCtx = lastSeg ? ctx : ctxNoCb(ctx);
+                const Callback segCb = lastSeg ? ctx.cb : Callback();
                 ok = true;
                 qint64 expireTime = 0;
                 QString md5;
@@ -3994,15 +4035,15 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                     // 整条链路丢进回调异步做（下载在网络线程，转码/上传在回调线程），
                     // 不占住当前 worker 线程；任一步失败就把平台原报错当文本发出去。
                     downloadRemoteAudioToTempAsync(uploadedUrl, kRemoteAudioMaxBytes,
-                        [this, type, openid, pname, fileType, msgid, is_wakeup, mode, 发送类型, noref, now_us, ctx, fileInfo]
+                        [this, type, openid, pname, fileType, msgid, is_wakeup, mode, 发送类型, noref, now_us, segCtx, segCb, fileInfo]
                         (const QString &localFile) {
                             // 失败兜底：把平台返回的报错内容原样发出去
                             auto sendOriginError = [&]() {
                                 QString errInfo = fileInfo;   // 非 const：send_* 收的是 QString&
-                                if (ctx.openid.isEmpty())
+                                if (segCtx.openid.isEmpty())
                                     send_messages(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref);
                                 else
-                                    send_msgAsync(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                                    send_msgAsync(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref,segCb);
                             };
 
                             if (localFile.isEmpty()) {        // 超 50MB / 下载失败（日志已在下载里记过）
@@ -4029,17 +4070,22 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                                 return;
                             }
 
-                            for (const QString &seg : std::as_const(segs)) {
+                            for (int gi = 0; gi < segs.size(); ++gi) {
                                 bool okSeg = true;
                                 qint64 segExp = 0; QString segMd5;
-                                QString segInfo = uploadRichMediaPoolA(type, openid, fileType, seg, segExp, segMd5, okSeg, /*usePool=*/false);   // 非 const：send_messages/send_msgAsync 收的是 QString&
+                                QString segInfo = uploadRichMediaPoolA(type, openid, fileType, segs[gi], segExp, segMd5, okSeg, /*usePool=*/false);   // 非 const：send_messages/send_msgAsync 收的是 QString&
+                                // 同样只有最后一段带回调（见上面 lastSeg 的注释）
+                                const bool lastInner = (gi + 1 == segs.size());
                                 if (!okSeg) {
-                                    if (ctx.openid.isEmpty())
+                                    if (segCtx.openid.isEmpty())
                                         send_messages(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref);
                                     else
-                                        send_msgAsync(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                                        send_msgAsync(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref,
+                                                      lastInner ? segCb : Callback());
                                 } else if (!segInfo.isEmpty()) {
-                                    send_Media(type, openid,pname, segInfo,now_us, msgid,is_wakeup,noref,ctx, fileType);
+                                    send_Media(type, openid,pname, segInfo,now_us, msgid,is_wakeup,noref,
+                                               lastInner ? segCtx : ctxNoCb(segCtx), fileType,
+                                               /*multiPart=*/segs.size() > 1);
                                 }
                             }
                         });
@@ -4049,10 +4095,10 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 if(!ok)
                 {
                     segAllOk = false;   // 有段失败 → 本次不写缓存（避免缓存成半截音频）
-                    if(ctx.openid.isEmpty())
+                    if(segCtx.openid.isEmpty())
                         send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
                     else
-                        send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,ctx.cb);
+                        send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,segCb);
                 }else if (!fileInfo.isEmpty()) {
                     // 累计本段的裸 file_info；真正的写缓存放到整条循环之后一次性做（见下）——
                     // 逐段各写一次会互相覆盖，最后只剩最后一段。
@@ -4063,7 +4109,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
 
                 if (ok && !fileInfo.isEmpty()) {
 
-                    response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,ctx, fileType);
+                    response = send_Media(type, openid,pname, fileInfo,now_us, msgid,is_wakeup,noref,segCtx, fileType,
+                                          /*multiPart=*/upPaths.size() > 1);
                 }
             }
 
@@ -4071,10 +4118,15 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             putMediaUploadCache(mediaType, fileMd5, segInfos, segExpire, segAllOk);
         }else{
             // 缓存命中：1 条 = 整文件 / 单段；N 条 = 上次切好的多段 → 逐条原样重发
-            for (const QString &fi : std::as_const(cachedInfos)) {
-                if (fi.isEmpty()) continue;
-
-                response = send_Media(type, openid,pname, fi,now_us, msgid,is_wakeup,noref,ctx, fileType);
+            QStringList infos;
+            for (const QString &fi : std::as_const(cachedInfos))
+                if (!fi.isEmpty()) infos << fi;
+            for (int i = 0; i < infos.size(); ++i) {
+                // 同样只有最后一条带 ctx（回调恰好一次）—— 见上面 lastSeg 的注释
+                const bool last = (i + 1 == infos.size());
+                response = send_Media(type, openid,pname, infos[i],now_us, msgid,is_wakeup,noref,
+                                      last ? ctx : ctxNoCb(ctx), fileType,
+                                      /*multiPart=*/infos.size() > 1);
             }
         }
         qDebug () << text;
