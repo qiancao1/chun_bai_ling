@@ -239,8 +239,11 @@ private:
     void fetchGatewayUrl(Callback calls);
     // token 刷新已改由主线程定时任务 onRefreshReplyFinished() 统一处理
     void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
+    // info = 平台给的**裸 file_info**（上传函数直接返回它，不再有 "[类型,path=…]" 包装）
+    // fileType：1图片/2视频/3音频/4文件，**只用于日志** —— 写回日志时还原成
+    //   "[<类型>,path=…,]" 形态，UI(chatpage) 靠它认媒体标签并把整段从气泡正文里剥掉；0 = 不包装
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
-                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx);
+                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx, int fileType = 0);
     // ctx 只读：函数内部仅取 ctx.openid / ctx.cb，并按值转发给 send_Media。
     // 必须是 const 引用 —— 否则调用方传临时对象（如 send_messages 传 MessageLogContext()）
     // 在 GCC/Clang 下报 “cannot bind non-const lvalue reference to an rvalue”，
@@ -268,9 +271,9 @@ private:
     void uploadRichMediaAsync(int targetType, const QString &openid, int fileType,
                               const QByteArray &data, const QString &filename, MediaUploadDone onDone);
     // uploadRichMediaPoolA 的异步版：URL → 注册链接；本地文件 → 读进内存后交给上面的异步上传器。
-    // ⚠ 出参与同步版**对齐**：成功时 result 是整串 "[<类型>,path=<file_info>,md5=<md5>,Time=<过期秒>]"
-    //   （底层三个上传器只回裸 file_info，由这里补包装）；失败时不包装，原样透传平台报错文本。
-    //   两个下游都只认这个格式：send_Media 要 extractBetween(info,"path=",",")，媒体缓存要 ",Time="。
+    // 出参与同步版**对齐**且与底层上传器一致：成功时 result 就是**裸 file_info**（不再包一层
+    //   "[<类型>,path=…]"）；失败时原样透传平台报错文本。成功时 expireTime/md5 也从回调里带出来
+    //   —— 上传缓存要的过期时间就在这儿，不用再写进返回串。
     void uploadRichMediaPoolAAsync(int targetType, const QString &openid, int fileType,
                                    const QString &filePath, bool usePool, MediaUploadDone onDone);
 
@@ -315,8 +318,10 @@ private:
     //usePool=false 时只用「100K 申请 + 整文件直传」的快速路径，不入池（给音视频/文件用）；targetType==4 回退原始上传
     QString uploadRichMediaPool(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                                 qint64& expireTime,QString &md5, bool &ok, QString &outurl, bool usePool=true);
-    //uploadRichMediaA 的池子版：入参/返回格式与 A 完全一致（[type,path=...,md5=...,Time=...]），可直接换调用点
-    QString uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok, bool usePool=true);
+    //uploadRichMediaA 的池子版：入参与 A 一致；返回**裸 file_info**（成功）/ 平台报错文本（失败）
+    //⚠ expireTime、md5 走引用出参带出去 —— 上传缓存要用过期时间写 "<过期秒>||||…"，包装去掉后没别的通道了
+    QString uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath,
+                                 qint64& expireTime, QString &md5, bool &ok, bool usePool=true);
     //uploadRichMediaPool 的纯回调版：prepare → put → finish → files 全链路异步（零线程零阻塞），图片热路径专用
     //onDone 在 NetManager 线程池线程触发（不可在里面阻塞），成败都会回调；出参语义与阻塞版一致：
     //result=返回串（成功=file_info，失败=错误信息/空）、ok 标记成败、outurl=加时间戳的 raw_url

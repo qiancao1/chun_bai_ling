@@ -122,39 +122,28 @@ QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int 
         info = uploadRichMedia(targetType,openid,fileType,filePath,expireTime,md5,ok,url);
     }
     if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
+    // 成功：直接返回裸 file_info —— 整条链（send_Media / 上传缓存 / UI）现在都只认它。
+    //   以前那层 "[<类型>,path=<info>,md5=<md5>,Time=<time>]" 是纯冗余：md5、过期时间调用方
+    //   本来就能从出参拿到，类型只有日志用得上，而且入库时还得再拆一次。
+    return info;
 }
 QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok)
 {
     qint64 expireTime=0;
     QString md5,url;
     QString info = uploadRichMedia(targetType,openid,fileType,data,filename,expireTime,md5,ok,url);
-    if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
+    // 成功 = 裸 file_info；失败 = 平台报错文本 —— 两种都是 info，直接返回
+    return info;
 }
 
-// uploadRichMediaA 的池子版：入参/返回格式与 A 完全一致，调用点可直接替换
+// uploadRichMediaA 的池子版：返回裸 file_info（与 A 一致，但多了 expireTime/md5 出参）
 // http 链接 → uploadRichMedia_url（与 A 相同，不涉及 put 池）；本地文件 → uploadRichMediaPool
-QString QQBotClient::uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath, bool &ok, bool usePool)
+QString QQBotClient::uploadRichMediaPoolA(int targetType, const QString& openid,int fileType, const QString& filePath,
+                                          qint64& expireTime, QString &md5, bool &ok, bool usePool)
 {
-    qint64 expireTime=0;
-    QString md5,info,url;
+    expireTime = 0;
+    md5.clear();
+    QString info,url;
     if(filePath.startsWith("http"))
     {
         info = uploadRichMedia_url(targetType,openid,fileType,filePath,expireTime,ok);
@@ -169,16 +158,10 @@ QString QQBotClient::uploadRichMediaPoolA(int targetType, const QString& openid,
         QString filename = QFileInfo(filePath).fileName();
         info = uploadRichMediaPool(targetType,openid,fileType,fileData,filename,expireTime,md5,ok,url,usePool);
     }
-    if(!ok) return info;
-    QString typeStr;
-    switch (fileType) {
-    case 1: typeStr = "image"; break;
-    case 2: typeStr = "video"; break;
-    case 3: typeStr = "audio"; break;
-    case 4: typeStr = "file"; break;
-    default: typeStr = "unknown";
-    }
-    return QString("[%1,path=%2,md5=%3,Time=%4]").arg(typeStr,info,md5).arg(expireTime);
+    // 成功 = 裸 file_info；失败 = 平台报错文本 —— 直接返回。
+    // ⚠ expireTime / md5 必须走引用出参带出去：上传缓存要拿过期时间写 "<过期秒>||||..."，
+    //   而以前它是藏在返回串的 ",Time=" 里的 —— 包装去掉后就没别的通道了。
+    return info;
 }
 
 //上传富媒体
@@ -590,17 +573,25 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
     return qMakePair(addr, realMsgId);
 }
 QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
-                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx)
+                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx, int fileType)
 {
     QJsonObject json;
     json["msg_type"] = 7;
     if (info.isEmpty()) return R"({"msg":"要发送的富媒体标签码为空"})";
-    QString info2=extractBetween(info,"path=",",");
-    if (info2.isEmpty()) return R"({"msg":"无法从path获取info"})";
+    // info 就是平台给的裸 file_info → 直接塞进 media.file_info
+    // （以前这里要先 extractBetween(info,"path=",",")，因为上传函数返回的是包装串）
     QJsonObject refObj;
-    refObj["file_info"] = info2;
+    refObj["file_info"] = info;
     json["media"] = refObj;
     json["noref"] = noref;
+    // 日志里仍要留一条带媒体类型的标签：UI（chatpage）靠 "[image," / "[audio," 认出这是媒体，
+    // 并把整段从气泡正文里剥掉。类型只有日志用得上 —— 真正发出去的只有上面的 file_info。
+    // 末尾那个 ',' 不能省：UI 取源用的是 extractBetween(...,"path=",",")，没逗号就取不到。
+    const QString logInfo =
+        (fileType == 1) ? QStringLiteral("[image,path=%1,]").arg(info) :
+        (fileType == 2) ? QStringLiteral("[video,path=%1,]").arg(info) :
+        (fileType == 3) ? QStringLiteral("[audio,path=%1,]").arg(info) :
+        (fileType == 4) ? QStringLiteral("[file,path=%1,]").arg(info)  : info;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index=index;
     int seq_index=0;
@@ -618,7 +609,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     if(ctx.openid.isEmpty()){
         QString response= PostSync(url, json,QString(), 5000);
 
-        addmsglog(response,index,pname,info,now_us,type,openid);
+        addmsglog(response,index,pname,logInfo,now_us,type,openid);
 
         return response;
 
