@@ -77,12 +77,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.3.123"
-#define APP_BUILD_NUMBER 123
+#define APP_VERSION_STR "v1.4.4.126"
+#define APP_BUILD_NUMBER 126
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.4.125 (2026-10-17)
+## v1.4.4.126 (2026-10-17)
 - 优化 语音部分 使用ffmpeg.dll 减少ffmpeg.exe重复启动的消耗 可以减少300-600ms的启动耗时
 - 优化 聊天室 图片标签没删除问题
 - 优化 插件配置 输入框到对齐 减少行宽

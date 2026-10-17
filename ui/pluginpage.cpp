@@ -2296,10 +2296,9 @@ def clean_plugin(plugin_path):
         }
 
     } else if (info.type == 1) {
-        if (info.DLL.onUnload) info.DLL.onUnload();
+        if (info.DLL.onUnload) info.DLL.onUnload(); //GO 的插件不能被卸载 但是可以减少引用
         if (info.dllLib) {
             info.dllLib->unload();
-
             delete info.dllLib;
             info.dllLib = nullptr;
         }
@@ -2311,10 +2310,8 @@ def clean_plugin(plugin_path):
             removeLoadedPluginFiles(info.loadedDllPath);
             info.loadedDllPath.clear();
         }
-
     } else if (info.type == 2) {
-        bool ok = ( sendData32(4, info) == "true");
-
+        bool ok = (sendData32(4, info) == "true");
         if (!info.loadedDllPath.isEmpty()) {
             removeLoadedPluginFiles(info.loadedDllPath);
             info.loadedDllPath.clear();
