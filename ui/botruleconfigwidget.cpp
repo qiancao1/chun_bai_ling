@@ -527,6 +527,7 @@ void BotRuleConfigWidget::oninitbot(int appid)
         if (account->appid_int != appid) continue;
         account->mdbtnlist.clear();
         for (const auto& rule : rules) {
+            if(!rule.enabled) continue;
             QJsonParseError parseError;
             QJsonDocument jsonDoc = QJsonDocument::fromJson(rule.buttonText.toUtf8(), &parseError);
             if (parseError.error != QJsonParseError::NoError) {
@@ -540,7 +541,7 @@ void BotRuleConfigWidget::oninitbot(int appid)
                 bt.jzc.clear();
             else
                 bt.jzc  = rule.jzc.split("|||");//禁止词
-            if(rule.jzc.isEmpty())
+            if(rule.candidateWords.isEmpty())
                 bt.hxc.clear();
             else
                 bt.hxc  = rule.candidateWords.split("|||"); //候选词

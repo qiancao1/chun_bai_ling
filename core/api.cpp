@@ -4313,10 +4313,12 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
     }
     if (!prompt_keyboard.isEmpty()) {
         json["prompt_keyboard"] = QJsonObject{
-            {"msg", QJsonObject{
-                            {"rows", QJsonArray{
-                                         QJsonObject{{"buttons", prompt_keyboard}}
-                                     }}
+            {"keyboard", QJsonObject{
+                            {"content", QJsonObject{
+                                            {"rows", QJsonArray{
+                                                         QJsonObject{{"buttons", prompt_keyboard}}
+                                                     }}
+                                        }}
                         }}
         };
     }
@@ -4428,6 +4430,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
     const QList<mdbtn> &bts = m_info->mdbtnlist;
     for (const mdbtn &bt : bts)
     {
+
         bool isok=false;
         for(int i=0;i< bt.zl.size();++i)
         {
@@ -4667,7 +4670,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     if(m_info->xxwb.isEmpty())
         newtext = text;
     else
-        newtext = text+m_info->xxwb;
+        newtext = text + m_info->xxwb;
     if(text.contains("#python"))
     {
         MessageEvent ev;
