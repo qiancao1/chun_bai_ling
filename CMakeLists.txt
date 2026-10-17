@@ -183,6 +183,7 @@ set(PROJECT_SOURCES_ALL
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
     core/api2.cpp
     core/cnbuploader.cpp
+    core/qcffmpeg.h core/qcffmpeg.cpp
 )
 
 
@@ -193,17 +194,21 @@ if(NOT WIN32)
         python/sharedmemorybridge.h
     )
 endif()
-# ==================== 音频：零第三方依赖 ====================
-# ⚠ 2026-10-02 起，音频的**探测与转码全部交给外部 ffmpeg**（见 core/api.cpp 顶部那段说明）：
-#   · 时长 / 有无视频轨 → 解析 `ffmpeg -i` 的 stderr（core/api.cpp 的 probeMediaInfo）
-#   · 转码              → `ffmpeg -c:a aac -b:a 32k -ar 24000 -ac 1`
-#   · 超长切段          → `ffmpeg -c copy`
+# ==================== 音频：进程内 ffmpeg.dll（动态加载）+ 外部 ffmpeg.exe 兜底 ====================
+# 2026-10-17 起，音频链路的**首选**是自建的精简 ffmpeg.dll：
+#   core/qcffmpeg.cpp 用 QLibrary **运行时**加载（不用到就不加载，缺文件也不影响进程启动），
+#   缺 DLL 时会去 Gitee release 下完整包、只抽出 ffmpeg.dll 放到程序目录。
+#   能力：探测时长/视频轨、转音频格式、视频提音频、按 4:58 流复制切段。
+#
+# 外部 ffmpeg.exe 那条路**保留**为兜底（DLL 补不下来 / Linux 没编 .so 时自动退回），
+# 代码在 core/api.cpp 的 probeMediaInfo / convertAudioToSilk / splitM4aSegments 里。
+#
+# ⚠ libs/ffmpeg/ 只是**源码与产物目录**（qc_ffmpeg.c + build-win.sh + win-x64/bin/ffmpeg.dll），
+#   **不参与**本工程的链接：主程序一行 libav 符号都没有，永远只通过 QLibrary 打交道。
 # 下面这些目录**已从工程里整体移除**，不要再加回来：
 #   libs/opus      —— libopus 编码（原 core/opusconvert.cpp 用）
-#   libs/ffmpeg    —— 自编译精简版 FFmpeg/libav（原 core/libavio.cpp 用）
 #   libs/decoders  —— 单文件解码库 dr_mp3/dr_flac/dr_wav/stb_vorbis/minimp4（原 core/audiodecoder.cpp 用）
 # 更早还删过 libs/faad2（GPL-2.0-or-later，静态链进主程序会污染许可证）。
-# 结果：整条音频链路零第三方源码，只剩 core/api.cpp 里几处 QProcess 调用。
 
 # ==================== 构建目标 ====================
 if(WIN32)
@@ -218,6 +223,21 @@ endif()
 # Windows 资源文件（仅 Windows）
 if(WIN32)
     target_sources(qiancao PRIVATE app.rc)
+endif()
+
+# ==================== 自建 ffmpeg.dll（构建后拷到 exe 旁边） ====================
+# 程序是**运行时**加载它的（core/qcffmpeg.cpp 的 QLibrary），所以不链接、不加依赖；
+# 这里只是保证「自己编译出来的那份」和 exe 放在一起，省得每次手动复制。
+# 文件不存在（还没编过 DLL / Linux 上没编 .so）时静默跳过 —— 缺了也能启动，
+# 只是音频会退回外部 ffmpeg.exe，或者自动去发布页补齐。
+if(WIN32)
+    set(QC_FFMPEG_DLL "${CMAKE_CURRENT_SOURCE_DIR}/libs/ffmpeg/win-x64/bin/ffmpeg.dll")
+    if(EXISTS "${QC_FFMPEG_DLL}")
+        add_custom_command(TARGET qiancao POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${QC_FFMPEG_DLL}" "$<TARGET_FILE_DIR:qiancao>/ffmpeg.dll"
+            COMMENT "复制自建 ffmpeg.dll 到输出目录")
+    endif()
 endif()
 
 # ==================== 链接库和包含目录（平台自动切换） ====================

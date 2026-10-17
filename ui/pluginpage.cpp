@@ -44,6 +44,8 @@
 #include <QFont>
 #include <memory>            // std::shared_ptr：pip/npm 每次安装各持一份独立状态
 #include <functional>
+#include <algorithm>         // std::stable_sort：配置区里把 input 项排到前面，聚成一整块
+#include <QVector>
 
 #ifdef Q_OS_WIN
 // 插件 DLL 依赖同目录其它 DLL 时，加载期间要把该目录临时塞进 DLL 搜索路径
@@ -414,10 +416,12 @@ void PluginPage::setupUi()
     // 所有 QPushButton 丢掉全局底色（看起来就是「白按钮」）。
     configContainer->setObjectName("qcConfigContainer");
     configContainer->setStyleSheet("#qcConfigContainer { background: transparent; }");
+    configContainer->setContentsMargins(0, 0, 0, 0);
+
     // 自适应折行布局：input 独占一行，checkbox / button 能并排就并排
     configLayout = createConfigLayout(configContainer);
     configLayout->setContentsMargins(0, 0, 0, 0);
-
+    configLayout->setSpacing(3);
     configScroll = new QScrollArea;
     configScroll->setWidget(configContainer);
     configScroll->setWidgetResizable(true);
@@ -1563,8 +1567,9 @@ QString getShortPath(const QString& path, int maxLen = 64) {
 static const int kConfigMaxRows   = 5;    // 高度按 5 行封顶（超出滚动）
 static const int kConfigRowHeight = 28;   // 单行高度
 static const int kConfigSpacing   = 6;    // 同一行里「项与项」的间距（水平）
-static const int kConfigRowGap    = 10;   // 「行与行」的间距（垂直）——比项间距大一点，输入框/按钮上下不显挤
+static const int kConfigRowGap    = 6;    // 「行与行」的间距（垂直）——10 会显得空，跟项间距一致比较整齐
 static const int kConfigConfirmWidth = 56;  // input 行右侧「确认」按钮宽度
+static const int kConfigLabelMaxWidth = 120; // input 行标签列的统一宽度上限（超长的裁掉，别把输入框挤没）
 
 // ==================== 配置区自适应折行布局 ====================
 // 用 QVBoxLayout 的话 JSON 里连着好几个 checkbox / button 会一人占一行，太占地方。
@@ -1715,7 +1720,7 @@ private:
 static QLayout *createConfigLayout(QWidget *parent)
 {
     ConfigFlowLayout *layout = new ConfigFlowLayout(parent);
-    layout->setRowGap(kConfigRowGap);   // 行间距 > 项间距：输入框和下面那排按钮不至于贴在一起
+    layout->setRowGap(kConfigRowGap);   // 行间距单独一个口子，和同行里的「项间距」分开调
     return layout;
 }
 
@@ -1870,8 +1875,24 @@ void PluginPage::rebuildConfigPanel(int index)
 
     int rows = 0;
     const QJsonArray arr = doc.array();
-    for (const QJsonValue &v : arr) {
-        const QJsonObject obj = v.toObject();
+
+    // 先过一遍：把「整行项」（input / 未知类型）全部排到前面，紧凑项（checkbox / button）排后面。
+    // 这样 JSON 里两种类型混着写时，所有输入框会聚成**一整块**，配合下面的标签列定宽才是一张整齐的表；
+    // 否则输入框被复选框打散成几截，对齐了也看着散。同类内部保持 JSON 原有顺序（stable_sort）。
+    QVector<QJsonObject> items;
+    items.reserve(arr.size());
+    for (const QJsonValue &v : arr) items.append(v.toObject());
+    std::stable_sort(items.begin(), items.end(), [](const QJsonObject &a, const QJsonObject &b) {
+        auto compact = [](const QJsonObject &o) {
+            const QString t = o["type"].toString().trimmed().toLower();
+            return t == "checkbox" || t == "button";
+        };
+        return !compact(a) && compact(b);
+    });
+
+    QList<QLabel *> rowLabels;   // 整行项的标签，构建完后统一宽度 → 输入框左边缘才会在一条竖线上
+
+    for (const QJsonObject &obj : items) {
         const QString id = obj["id"].toString();
         if (id.isEmpty()) continue;                       // 没有 id 就没法写回，直接跳过
         const QString desc = obj["desc"].toString(id);
@@ -1912,10 +1933,11 @@ void PluginPage::rebuildConfigPanel(int index)
         row->setProperty("qc_config_full_row", true);      // 告诉 ConfigFlowLayout 这行要拉满
         QHBoxLayout *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(8);
+        rowLayout->setSpacing(3);
 
         QLabel *lb = new QLabel(desc, row);
         lb->setStyleSheet("font-size: 12px; color: #222222; background: transparent;");
+        rowLabels.append(lb);
         // ⚠ 本文件里 `#define QLineEdit PlaceholderLineEdit` 是**活跃**的（appwindow.h 间接引入），
         // PlaceholderLineEdit 只有 (QWidget*) 一个构造函数，不能像 QLineEdit 那样一次传文本
         QLineEdit *edit = new QLineEdit(row);
@@ -1938,6 +1960,26 @@ void PluginPage::rebuildConfigPanel(int index)
 
         configLayout->addWidget(row);
         ++rows;
+    }
+
+    // ★ 框对齐：所有整行项的标签统一成同一个宽度（取最宽的那个），这样它们右侧的输入框
+    //   左边缘就落在同一条竖线上，「确认」按钮本来就是定宽，也自然对齐。
+    //   （标签是各自自适应的 widget，宽度天然不一样 —— 不对齐不是因为"没加组件"，而是缺这一列定宽。
+    //     多行的这个宽度只在本次构建里算，不改 JSON。）
+    if (!rowLabels.isEmpty()) {
+        int labelW = 0;
+        for (QLabel *lb : rowLabels) {
+            lb->ensurePolished();          // 先让 QSS 的 font-size 生效，量出来的宽度才准
+            labelW = qMax(labelW, lb->sizeHint().width());
+        }
+        labelW = qMin(labelW, kConfigLabelMaxWidth);   // 封顶，免得个别超长标签把输入框挤没
+        // labelW <= 0 说明没量到（字体还没定型等）→ 宁可不设，也别 setFixedWidth(0) 把标签裁没
+        if (labelW > 0) {
+            for (QLabel *lb : rowLabels) {
+                lb->setFixedWidth(labelW);
+                lb->setToolTip(lb->text());    // 万一被裁，悬停还能看全
+            }
+        }
     }
 
     if (rows == 0) {

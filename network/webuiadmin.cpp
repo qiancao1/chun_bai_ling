@@ -1141,7 +1141,7 @@ const SysConfigItem kSysConfigItems[] = {
     { "xc_s",            "线程池线程数",   "int",    true,  "0 表示按 CPU 核心数自动" },
     { "ai_log_max",      "AI 日志条数",    "int",    false, "每个账号最多保留多少条 AI 日志" },
     { "admin",           "全局管理员",     "string", false, "空格分隔的管理员 openid" },
-    { "ffmpeg",          "ffmpeg 路径",    "string", false, "ffmpeg 可执行文件所在目录" },
+    { "ffmpeg",          "ffmpeg 路径",    "string", false, "ffmpeg.dll（或外部 ffmpeg 可执行文件）所在目录" },
     { "local_server_ip", "本机对外 IP",    "string", false, "生成 WebUI / 图床链接时用的地址" },
     { "y_img",           "启用远程图床",   "bool",   false, "把图片交给远程服务处理" },
     { "y_port",          "远程图床地址",   "string", false, "远程图床的主机:端口" },

@@ -22,6 +22,7 @@
 #include "apiprocessor.h"
 #include "netmanager.h"
 #include "qqbotclient.h"
+#include "qcffmpeg.h"     // 自建 ffmpeg.dll 的动态加载封装（用到才加载，缺了就补包）
 #include <QRandomGenerator>
 #include <qwaitcondition.h>
 #include <string>
@@ -2178,6 +2179,49 @@ static void delayOnMedia(int ms, std::function<void()> fn)
     });
 }
 
+// ---------------------------------------------------------------------------
+// 「进程内 ffmpeg.dll」与「外部 ffmpeg.exe」的统一入口（**必须在媒体线程调用**）
+//
+//   blockingJob ：真正阻塞的那一小段（探测/转码/切段），会被丢到 QcFfmpeg 的
+//                 单线程池里跑 —— 媒体线程本身仍然零阻塞，和以前起 QProcess 一样。
+//   done        ：blockingJob 结束后**回到媒体线程**执行（所以里面可以安全地
+//                 继续跑整条媒体链的下一次回调）。
+//   fallback    ：最后手段 —— DLL 补不下来时走的老 QProcess 链路（现在只在
+//                 没有 DLL 又下载失败、或者 Linux 上没编 .so 的情况下才会进来）。
+//
+// 为什么先 ensureAsync 再跑：发布版历史更新包只发 exe，老用户机器上根本没有
+// ffmpeg.dll。第一次发语音时它会去 Gitee 下**那份 1.9MB 的小包**、只抽出 ffmpeg.dll
+// （固定地址见 core/qcffmpeg.cpp 的 kFfmpegPackUrl），这期间这条请求会等它
+// （而不是降级成「原样发」然后被 QQ 拒掉）。
+// ---------------------------------------------------------------------------
+static void runOnFfmpegDll(std::function<void()> blockingJob,
+                           std::function<void()> done,
+                           std::function<void()> fallback)
+{
+    if (!blockingJob) return;
+    done = done ? done : std::function<void()>([]() {});
+
+    if (QcFfmpeg::loaded()) {
+        QcFfmpeg::runBlocking(blockingJob, [done]() {
+            postToMedia(done);                 // 从后台线程跳回媒体线程
+        });
+        return;
+    }
+
+    QcFfmpeg::ensureAsync([blockingJob, done, fallback](bool ok) {
+        // ensureAsync 的回调可能在网络线程 / 后台线程，先回媒体线程再决定
+        postToMedia([ok, blockingJob, done, fallback]() {
+            if (ok) {
+                QcFfmpeg::runBlocking(blockingJob, [done]() {
+                    postToMedia(done);
+                });
+                return;
+            }
+            if (fallback) fallback();
+        });
+    });
+}
+
 // 异步链（上传 / 媒体标签）跨多轮回调，中途账号或客户端可能已被销毁 ——
 // 每一步进门都要先确认「自己还挂在全局表里」。
 // ⚠ 必须是**自由函数**，且 appid 由调用方按值存进链状态后传进来：
@@ -2939,6 +2983,19 @@ QString convertAudioToSilk(const QString &srcFilePath)
         return srcFilePath;
     }
 
+    // ① 进程内 DLL（首选）：24kHz / 单声道 / 32kbps AAC —— 与下面 ffmpeg.exe 的参数完全等价。
+    //    DLL 里视频轨是整体跳过的（等价 -vn），所以「视频提取音频」也走这条。
+    if (QcFfmpeg::load(nullptr)) {
+        QString err;
+        if (QcFfmpeg::convert(srcFilePath, outputFilePath, 24000, 1, 32, &err))
+            return outputFilePath;
+
+        // 「没有音轨」不是错误：按原文件返回（与旧行为一致，免得刷一条假报错）
+        if (!err.contains(QStringLiteral("没有可用的音频轨")))
+            AppendEventLog("ffmpeg.dll 转换失败:" + err);
+        return srcFilePath;
+    }
+
     QStringList ffmpegArgs = {
         "-y",                      // 覆盖输出
         "-i", srcFilePath,         // 输入（支持视频/音频）
@@ -3022,6 +3079,19 @@ struct MediaProbe
 static MediaProbe probeMediaInfo(const QString &filePath)
 {
     MediaProbe info;
+
+    // ① 进程内 DLL：直接读容器，没有进程启动开销（探测本来就只有几十毫秒，
+    //    以前 fork 一个 ffmpeg.exe 比真正干活还贵）。
+    if (QcFfmpeg::load(nullptr)) {
+        const QcFfmpeg::Probe p = QcFfmpeg::probe(filePath);
+        if (p.ok) {
+            info.durationSec = (p.ms > 0) ? p.ms / 1000.0 : -1.0;
+            info.hasVideo    = p.hasVideo;
+        }
+        return info;      // 读不出来（silk / 损坏文件）→ 照样是「未知」，不必再起 exe
+    }
+
+    // ② 没有 DLL → 外部 ffmpeg.exe（老链路，逻辑一个字没动）
     QProcess p;
     p.start(findFfmpegPath(), {"-i", filePath});
     if (!p.waitForStarted())
@@ -3127,6 +3197,21 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
         return dropShortAudioTail(out);  // 复用旧产物时同样丢掉不足 10 秒的尾巴
     }
 
+    // ① 进程内 DLL（首选）：流复制切段，不起进程；段名规则与下面 ffmpeg 完全一致
+    //    （<base> 是「去掉最后一级扩展名」的基名，所以 歌曲.mp3.m4a → 歌曲.mp3_seg000.m4a）。
+    if (QcFfmpeg::load(nullptr)) {
+        QString err;
+        const QStringList segs = QcFfmpeg::split(m4aPath, dir.absolutePath(), segSec,
+                                                QStringLiteral("m4a"), &err);
+        if (segs.isEmpty()) {
+            if (!err.isEmpty())
+                AppendEventLog("ffmpeg.dll 切段失败:" + err);
+            return {};                   // 切不出来 → 调用方按整文件发（与旧行为一致）
+        }
+        return dropShortAudioTail(segs);
+    }
+
+    // ② 没有 DLL → 外部 ffmpeg.exe（老链路）
     QString ffmpegPath = findFfmpegPath();
     QProcess p;
     p.start(ffmpegPath, {
@@ -3155,30 +3240,49 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
 }
 
 // ===========================================================================
-// ffmpeg 三个链路的**异步回调版** —— 解析逻辑与上面的同步版逐个对应，
-// 唯一区别是把「启动进程 + waitForFinished(最长 120s)」换成 runProcessAsync（进程退出才回调）。
-// 回调统一落在媒体线程。
+// ffmpeg 三个链路的**异步回调版** —— 逻辑与上面的同步版逐个对应。
+//
+// 现在的主路是**进程内 ffmpeg.dll**：阻塞的那一小段被 runOnFfmpegDll 丢到
+// QcFfmpeg 的单线程池，跑完再跳回媒体线程 —— 媒体线程仍然零阻塞（和以前
+// 起 QProcess 的效果一样，但少了一次进程创建 + 参数解析）。
+// DLL 补不下来时才退回 runProcessAsync + 外部 ffmpeg.exe。
 // ===========================================================================
 
-// 探测：一次 `ffmpeg -i` 同时拿到「时长」与「容器里有没有视频轨」（同 probeMediaInfo）
+// 探测：时长 + 容器里有没有视频轨（同 probeMediaInfo）
 static void probeMediaInfoAsync(const QString &filePath, std::function<void(MediaProbe)> onDone)
 {
-    runProcessAsync(findFfmpegPath(), {"-i", filePath}, 10000,
-        [onDone](int, const QByteArray &errBytes, bool) {
-            MediaProbe info;
-            const QString err = QString::fromLocal8Bit(errBytes);
-            static QRegularExpression reDur("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
-            const auto m = reDur.match(err);
-            if (m.hasMatch())
-                info.durationSec = m.captured(1).toInt() * 3600
-                                 + m.captured(2).toInt() * 60
-                                 + m.captured(3).toDouble();
-            // 形如 "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, ..."
-            // （音频轨是 "Audio:"、字幕轨是 "Subtitle:"，不会误命中）
-            static QRegularExpression reVid(QStringLiteral("Stream #\\d+:\\d+.*:\\s*Video:"));
-            info.hasVideo = reVid.match(err).hasMatch();
-            onDone(info);
-        });
+    if (!onDone) return;
+
+    // 退路：解析 `ffmpeg -i` 的 stderr
+    auto viaExe = [filePath, onDone]() {
+        runProcessAsync(findFfmpegPath(), {"-i", filePath}, 10000,
+            [onDone](int, const QByteArray &errBytes, bool) {
+                MediaProbe info;
+                const QString err = QString::fromLocal8Bit(errBytes);
+                static QRegularExpression reDur("Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)");
+                const auto m = reDur.match(err);
+                if (m.hasMatch())
+                    info.durationSec = m.captured(1).toInt() * 3600
+                                     + m.captured(2).toInt() * 60
+                                     + m.captured(3).toDouble();
+                // 形如 "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, ..."
+                // （音频轨是 "Audio:"、字幕轨是 "Subtitle:"，不会误命中）
+                static QRegularExpression reVid(QStringLiteral("Stream #\\d+:\\d+.*:\\s*Video:"));
+                info.hasVideo = reVid.match(err).hasMatch();
+                onDone(info);
+            });
+    };
+
+    auto out = std::make_shared<MediaProbe>();
+    runOnFfmpegDll(
+        [filePath, out]() {
+            const QcFfmpeg::Probe p = QcFfmpeg::probe(filePath);
+            if (!p.ok) return;                       // 读不出来 → 保持「未知（-1）」
+            out->durationSec = (p.ms > 0) ? p.ms / 1000.0 : -1.0;
+            out->hasVideo    = p.hasVideo;
+        },
+        [out, onDone]() { onDone(*out); },
+        viaExe);
 }
 
 // 探测媒体时长（秒）；失败返回 -1（同 probeAudioDurationSec）
@@ -3217,9 +3321,9 @@ static void audioCanSendAsIsAsync(const QString &path, std::function<void(bool)>
 // 转成 32k 单声道 m4a（同 convertAudioToSilk）；失败/超时一律回调「源路径本身」，不把路径改坏
 static void convertAudioToSilkAsync(const QString &srcFilePath, std::function<void(QString)> onDone)
 {
+    if (!onDone) return;
     if (!QFile::exists(srcFilePath)) { onDone(QString()); return; }
 
-    const QString ffmpegPath = findFfmpegPath();
     const QString outputFilePath = audioM4aPathFor(srcFilePath);
     if (outputFilePath.isEmpty()) { onDone(srcFilePath); return; }   // 非本地文件（http URL）→ 不适用
 
@@ -3230,32 +3334,56 @@ static void convertAudioToSilkAsync(const QString &srcFilePath, std::function<vo
         return;
     }
 
-    QStringList ffmpegArgs = {
-        "-y",                      // 覆盖输出
-        "-i", srcFilePath,         // 输入（支持视频/音频）
-        "-map", "0:a:0?",          // 明确取第一个音频轨，若无音频则跳过不报错
-        "-vn",                     // 剔除视频画面
-        "-c:a", "aac",
-        "-b:a", "32k",
-        "-ar", "24000",
-        "-ac", "1",
-        outputFilePath
+    // 退路：外部 ffmpeg.exe（DLL 缺失且补包失败时才走）
+    auto viaExe = [srcFilePath, outputFilePath, onDone]() {
+        const QString ffmpegPath = findFfmpegPath();
+        QStringList ffmpegArgs = {
+            "-y",                      // 覆盖输出
+            "-i", srcFilePath,         // 输入（支持视频/音频）
+            "-map", "0:a:0?",          // 明确取第一个音频轨，若无音频则跳过不报错
+            "-vn",                     // 剔除视频画面
+            "-c:a", "aac",
+            "-b:a", "32k",
+            "-ar", "24000",
+            "-ac", "1",
+            outputFilePath
+        };
+
+        runProcessAsync(ffmpegPath, ffmpegArgs, 120000,
+            [srcFilePath, outputFilePath, onDone](int code, const QByteArray &errBytes, bool timedOut) {
+                if (timedOut) { AppendEventLog("ffmpeg 超时"); onDone(srcFilePath); return; }
+                if (code < 0) { AppendEventLog("ffmpeg 启动失败"); onDone(srcFilePath); return; }
+                if (code != 0) {
+                    const QString err = QString::fromLocal8Bit(errBytes);
+                    // 「没有音频流」不算错误：按原文件返回即可
+                    if (!err.contains("Output file does not contain any stream"))
+                        AppendEventLog("ffmpeg 转换失败:" + err);
+                    onDone(srcFilePath);
+                    return;
+                }
+                onDone(outputFilePath);
+            });
     };
 
-    runProcessAsync(ffmpegPath, ffmpegArgs, 120000,
-        [srcFilePath, outputFilePath, onDone](int code, const QByteArray &errBytes, bool timedOut) {
-            if (timedOut) { AppendEventLog("ffmpeg 超时"); onDone(srcFilePath); return; }
-            if (code < 0) { AppendEventLog("ffmpeg 启动失败"); onDone(srcFilePath); return; }
-            if (code != 0) {
-                const QString err = QString::fromLocal8Bit(errBytes);
-                // 「没有音频流」不算错误：按原文件返回即可
-                if (!err.contains("Output file does not contain any stream"))
-                    AppendEventLog("ffmpeg 转换失败:" + err);
-                onDone(srcFilePath);
-                return;
+    auto okFlag  = std::make_shared<bool>(false);
+    auto errText = std::make_shared<QString>();
+
+    runOnFfmpegDll(
+        [srcFilePath, outputFilePath, okFlag, errText]() {
+            QString e;
+            if (QcFfmpeg::convert(srcFilePath, outputFilePath, 24000, 1, 32, &e)) {
+                *okFlag = true;
+            } else {
+                *errText = e;
             }
-            onDone(outputFilePath);
-        });
+        },
+        [srcFilePath, outputFilePath, okFlag, errText, onDone]() {
+            if (*okFlag) { onDone(outputFilePath); return; }
+            if (!errText->contains(QStringLiteral("没有可用的音频轨")))
+                AppendEventLog("ffmpeg.dll 转换失败:" + *errText);
+            onDone(srcFilePath);
+        },
+        viaExe);
 }
 
 // 同 dropShortAudioTail，但时长探测走异步（回调落在媒体线程）
@@ -3292,23 +3420,47 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
         }
     }
 
-    runProcessAsync(findFfmpegPath(),
-        { "-y", "-i", m4aPath,
-          "-c", "copy",                            // AAC 直接流复制，秒级完成
-          "-f", "segment",
-          "-segment_time", QString::number(segSec),
-          "-reset_timestamps", "1",
-          base + "_seg%03d.m4a" },
-        60000,
-        [m4aPath, filter, onDone](int code, const QByteArray &, bool timedOut) {
-            if (timedOut || code != 0) { onDone(QStringList()); return; }
-            QDir d = QFileInfo(m4aPath).absoluteDir();
-            const QStringList files = d.entryList(QStringList{filter}, QDir::Files, QDir::Name);
-            if (files.isEmpty()) { onDone(QStringList()); return; }   // 一段都没切出来 → 按整文件发
-            QStringList out;
-            for (const QString &f : files) out << d.filePath(f);
-            dropShortAudioTailAsync(out, onDone);
-        });
+    // 退路：外部 ffmpeg.exe（DLL 缺失且补包失败时才走）
+    auto viaExe = [m4aPath, base, filter, segSec, onDone]() {
+        runProcessAsync(findFfmpegPath(),
+            { "-y", "-i", m4aPath,
+              "-c", "copy",                            // AAC 直接流复制，秒级完成
+              "-f", "segment",
+              "-segment_time", QString::number(segSec),
+              "-reset_timestamps", "1",
+              base + "_seg%03d.m4a" },
+            60000,
+            [m4aPath, filter, onDone](int code, const QByteArray &, bool timedOut) {
+                if (timedOut || code != 0) { onDone(QStringList()); return; }
+                QDir d = QFileInfo(m4aPath).absoluteDir();
+                const QStringList files = d.entryList(QStringList{filter}, QDir::Files, QDir::Name);
+                if (files.isEmpty()) { onDone(QStringList()); return; }   // 一段都没切出来 → 按整文件发
+                QStringList out;
+                for (const QString &f : files) out << d.filePath(f);
+                dropShortAudioTailAsync(out, onDone);
+            });
+    };
+
+    auto segs    = std::make_shared<QStringList>();
+    auto errText = std::make_shared<QString>();
+
+    runOnFfmpegDll(
+        [m4aPath, segSec, segs, errText]() {
+            QString e;
+            *segs = QcFfmpeg::split(m4aPath, QFileInfo(m4aPath).absolutePath(), segSec,
+                                    QStringLiteral("m4a"), &e);
+            *errText = e;
+        },
+        [segs, errText, onDone]() {
+            if (segs->isEmpty()) {
+                if (!errText->isEmpty())
+                    AppendEventLog("ffmpeg.dll 切段失败:" + *errText);
+                onDone(QStringList());              // 切不出来 → 调用方按整文件发
+                return;
+            }
+            dropShortAudioTailAsync(*segs, onDone);
+        },
+        viaExe);
 }
 
 // 远程音频（URL 直传被平台按时长拒绝时）允许下载到本地的体积上限

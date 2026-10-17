@@ -82,6 +82,9 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.4.123 (2026-10-15)
+- 优化 语音部分 使用ffmpeg.dll 减少ffmpeg.exe重复启动的消耗 可以减少300-600ms的启动耗时
+
 ## v1.4.3.123 (2026-10-15)
 - 修复 修改昵称指令 空昵称也会添加审核问题
 - 优化 py安装库可以直接输入文本了
@@ -577,15 +580,17 @@ static QString thirdPartyLicenseHtml()
         // --- 插入 OpenSSL 许可证（已根据平台选择不同文本）---
         + opensslLicenseText +
 
-        "<b>ffmpeg</b>（外部转码程序，LGPL-2.1）<br>"
-        "音频转码由 ffmpeg 命令行程序完成：随包附带一份，你也可以替换成自己编译或下载的版本"
-        "（设置中可指定其所在目录；放在程序同目录、或系统 PATH 中同样会被找到）。<br>"
-        "随包分发的那份是第三方基于 FFmpeg 官方源码裁剪的音频版"
-        "（<a href=\"https://github.com/xihan123/FFmpeg-Audio\">xihan123/FFmpeg-Audio</a>，"
-        "LGPL-2.1，<b>非</b> GPL 构建）。<br>"
-        "• LGPL 义务：提供 FFmpeg 完整源代码，并允许用户以自行修改的版本替换它。"
-        "本项目把它当作<b>独立可执行文件</b>调用（不是链接进本程序的库），"
-        "因此直接替换该文件即可满足要求，无需重新链接本程序。<br>"
+        "<b>FFmpeg</b>（LGPL-2.1）<br>"
+        "音频的时长探测 / 转码 / 视频提取音频 / 超长切段由同目录下的 "
+        "<code>ffmpeg.dll</code> 完成。该 DLL 由本项目基于 FFmpeg 官方源码裁剪而来"
+        "（只保留音频解封装、解码、重采样与编码，<b>非</b> GPL 构建）。<br>"
+        "• 它<u>不是</u>链接进本程序的静态库：程序用动态加载方式在需要时才打开它，"
+        "所以你可以直接用自己的 FFmpeg 构建替换该文件（只要导出 <code>qc_*</code> 那几个函数），"
+        "删掉它程序也照常启动。<br>"
+        "• LGPL 义务：提供 FFmpeg 完整源代码与构建脚本（见仓库 <code>libs/ffmpeg/</code>，"
+        "含 <code>qc_ffmpeg.c</code>、<code>build-win.sh</code>、configure 白名单）。<br>"
+        "• 没有 <code>ffmpeg.dll</code> 时，程序会尝试从发布页补齐；补不上则退回调用外部 "
+        "<code>ffmpeg.exe</code>（若你自行放在程序目录或 PATH 中）。<br>"
         "FFmpeg 源代码：<a href=\"https://ffmpeg.org/download.html\">https://ffmpeg.org/download.html</a><br><br>"
         );
 }

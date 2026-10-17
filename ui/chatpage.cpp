@@ -137,7 +137,7 @@ static QString simplifyCommandLinks(const QString &content)
 static QString stripMediaTags(const QString &content)
 {
     static const char *kTags[] = {
-        "[image,", "[video,", "[audio,", "[file,", "[record,", "[img,", "[f,"
+        "[image,", "[record,", "[img,", "[f,"
     };
     QString out = content;
     for (const char *raw : kTags) {
@@ -617,7 +617,7 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     data.imageLocalFile = isLocal ? imageSrc : resolveImageFile(imageSrc);
     // 2. 去掉媒体标签本体（[image,…] / [video,…] / [file,…] …），只留纯文本
     //    —— 只清理 [image, 的话，视频/语音/文件标签会整段留在正文里变成一坨 URL
-    //content = stripMediaTags(content);
+     content = stripMediaTags(content);
 
     // Markdown 图片：图已单独取出来渲染，正文里不该再留 alt / 尺寸 / url
     {
