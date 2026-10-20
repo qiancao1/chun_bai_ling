@@ -85,6 +85,19 @@ LmdbKV::~LmdbKV()
     }
 }
 
+// 幂等关闭：关完把 m_env 置空，后续 get/put/remove 一看 m_env 为空就直接返回空/false。
+// 这样可以「先关库、再删目录」（Windows 下不关就删不掉映射中的 data.mdb），
+// 而不用急着 delete 对象 —— 还攥着旧指针的线程最多做一次空操作。
+void LmdbKV::close()
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return;
+    mdb_dbi_close(m_env, m_dbi);
+    mdb_env_close(m_env);
+    m_env = nullptr;
+    m_dbi = 0;
+}
+
 bool LmdbKV::put(const QString &key, const QString &value)
 {
     return putInternal(key.toUtf8(), value.toUtf8());
@@ -228,6 +241,80 @@ bool LmdbKV::removeBatch(const QList<QByteArray>& keys)
 bool LmdbKV::remove(const QByteArray &key)
 {
     return removeInternal(key);
+}
+
+// 从缓存值里取过期秒。本库惯例：值 = "<过期秒>||||<内容>"；
+// 早期媒体缓存是 "[<类型>,path=…,md5=…,Time=<过期秒>]"（过期秒在末尾、还带个 ']'）。
+// 返回 -1 = 认不出（调用方一律不动它）。
+static qint64 cacheExpireSec(const QByteArray &v)
+{
+    const int sep = v.indexOf("||||");
+    if (sep > 0) {
+        bool ok = false;
+        const qint64 e = v.left(sep).trimmed().toLongLong(&ok);
+        if (ok) return e;
+    }
+    if (v.startsWith('[')) {
+        const int ti = v.lastIndexOf(",Time=");
+        if (ti >= 0) {
+            QByteArray s = v.mid(ti + 6);
+            const int rb = s.indexOf(']');
+            if (rb >= 0) s.truncate(rb);
+            bool ok = false;
+            const qint64 e = s.trimmed().toLongLong(&ok);
+            if (ok) return e;
+        }
+    }
+    return -1;
+}
+
+int LmdbKV::removeExpired(qint64 nowSec)
+{
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return -1;
+
+    MDB_txn *txn = nullptr;
+    int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
+    if (rc != MDB_SUCCESS) {
+        qCritical() << "removeExpired: mdb_txn_begin 失败" << mdb_strerror(rc);
+        return -1;
+    }
+
+    // 先扫、后删：不边删边游标（避免游标定位语义的坑）。过期条目一般很少，键留着不占多少内存。
+    QList<QByteArray> dead;
+    MDB_cursor *cursor = nullptr;
+    rc = mdb_cursor_open(txn, m_dbi, &cursor);
+    if (rc == MDB_SUCCESS) {
+        MDB_val key, data;
+        while (mdb_cursor_get(cursor, &key, &data, MDB_NEXT) == MDB_SUCCESS) {
+            const QByteArray k((const char*)key.mv_data, (int)key.mv_size);
+            const QByteArray v((const char*)data.mv_data, (int)data.mv_size);
+            const qint64 expire = cacheExpireSec(v);
+            if (expire >= 0 && nowSec >= expire)
+                dead.append(k);
+        }
+        mdb_cursor_close(cursor);
+    } else {
+        qCritical() << "removeExpired: 打开游标失败" << mdb_strerror(rc);
+    }
+
+    int removed = 0;
+    for (const QByteArray &k : std::as_const(dead)) {
+        if (k.isEmpty()) continue;
+        MDB_val kv = { (size_t)k.size(), (void*)k.constData() };
+        rc = mdb_del(txn, m_dbi, &kv, nullptr);
+        if (rc == MDB_SUCCESS) ++removed;
+        else if (rc != MDB_NOTFOUND)
+            qCritical() << "removeExpired: mdb_del 失败" << mdb_strerror(rc);
+    }
+
+    rc = mdb_txn_commit(txn);
+    if (rc != MDB_SUCCESS) {
+        // ⚠ 提交失败后 txn 已被 LMDB 释放，**不能再 abort**（对已结束的事务 abort 是未定义行为）
+        qCritical() << "removeExpired: 提交事务失败" << mdb_strerror(rc);
+        return -1;
+    }
+    return removed;
 }
 
 bool LmdbKV::removeInternal(const QByteArray &key)

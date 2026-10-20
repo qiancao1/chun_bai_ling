@@ -45,6 +45,16 @@ public:
     QList<QByteArray> getAllKeysByteArray() const;
     QStringList getAllKeys() const;
     bool removeBatch(const QList<QByteArray>& keys);
+    // 扫描全库，删掉**值已过期**的条目（本库缓存统一是 "<过期秒>||||<内容>" 的前缀惯例，
+    // 兼容早期媒体缓存的 "[…,Time=<过期秒>]"）。认不出格式的值一律不动。
+    // 返回删除条数；-1 = 事务失败 / 库没打开。
+    int removeExpired(qint64 nowSec);
+    // 幂等关闭底层 env：关掉之后 get/put/remove 全部变成**安全空操作**（直接返回空/false）。
+    // 用途是「双库按日轮换」：Windows 下 env 还映射着 data.mdb 就删不掉目录，
+    // 所以必须先把库关掉才能删文件；而旧 LmdbKV 对象又**不能立刻 delete**
+    // （api.cpp 里有 std::thread 上传路径，可能还有线程攥着旧指针），
+    // 关掉后不用 delete 也不会崩 —— 残留调用只会落到空操作上。析构里重复调用无害。
+    void close();
     size_t   m_currentMapSize;
      bool increaseMapSize();
 

@@ -144,6 +144,7 @@ set(PROJECT_SOURCES_ALL
     python/sharedmemorybridge.cpp python/sharedmemorybridge.h
     core/global.h core/global.cpp
     core/api.cpp
+    core/qchash.h
     core/accountinfo.h core/accountinfo.cpp
     core/qqbotclient.h core/qqbotclient.cpp
     python/python_api.cpp

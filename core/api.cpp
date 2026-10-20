@@ -293,46 +293,149 @@ QString botlist()
 #include <QImageReader>
 #include <QImage>
 #include <QBuffer>
+#include <QMutex>
+#include <QHash>
+
+// ---------------------------------------------------------------------------
+// 文件指纹（上传缓存键）= 「绝对路径 | 文件大小 | mtime」**原样拼接，不读内容、不做哈希**
+//
+//   · 只 1 次 QFileInfo（= 一次 stat）就三样全有，IO/CPU 都可忽略
+//   · 为什么连哈希都不做：XXH64 有 11 GB/s，压这几十字节只要 0.02μs，
+//     而一次 stat 本身就要 1~3μs —— 省它毫无意义，直接拼字符串更简单也更省事
+//   · 为什么不用内容哈希：**读文件才是瓶颈**（页缓存 ~3 GB/s、机械盘 0.1 GB/s，比哈希慢一个数量级），
+//     而「路径 + 大小 + mtime」已足够判断「是不是同一个文件、有没有被改过」
+//     （make / rsync / 各类构建系统判文件变更用的就是这三样）。图片同理：
+//     换一张图 → 内容变了 → 大小或 mtime 必然变
+//
+// 现在唯一还要真打开文件的只剩宽高解析（QImageReader），所以用内存表按
+//   (绝对路径, 大小, mtime) 缓存 w/h：命中就直接返回，连图片头都不解析。
+//   反复发的固定素材 = 全程只有 1 次 stat。
+//
+// 已知取舍（别再当 bug 查）：
+//   · 同一份内容放两个不同路径 → 两个键 → 各上传一次（缓存不跨路径共享）
+//   · 被 cp -p 之类覆盖（大小、mtime 都被保留）→ 可能误命中
+//   · 内容没变、只被 touch → 键变 → 白重传一次
+//   · key 比 16 字节 hex 长（中文路径 100+ 字节）→ 库体积、B-tree 分支因子都比哈希版差，
+//     靠「双库按日轮换」把单库压到一天的量来抵消
+// ⚠ 函数名沿用历史的 "MD5"（5 个调用点，语义都是「取缓存键」）。
+// ---------------------------------------------------------------------------
+static const int kFpCacheMax = 1024;             // 宽高内存表上限，超了整表清空
+
+struct FileFpEntry {
+    qint64 size    = 0;
+    qint64 mtimeMs = 0;
+    int    w       = -1;   // -1 = 没解析过宽高；0 = 非图片（音频/视频/文件）
+    int    h       = -1;
+};
+static QMutex                      s_fpMutex;
+static QHash<QString, FileFpEntry> s_fpCache;    // key = 绝对路径
 
 bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, int &height)
 {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        //qWarning() << "无法打开文件:" << filePath;
-        return false;
-    }
+    if (filePath.isEmpty()) return false;
 
-    // 1. 一次性读取整个文件到内存
-    QByteArray fileData = file.readAll();
-    file.close();
-
-    if (fileData.isEmpty()) {
+    const QFileInfo fi(filePath);
+    const qint64 fsize = fi.size();
+    if (fsize <= 0) {
         //qWarning() << "文件为空或读取失败:" << filePath;
         return false;
     }
+    const qint64  fmtime  = fi.lastModified().toMSecsSinceEpoch();
+    const QString absPath = fi.absoluteFilePath();
+    const bool    wantSize = (width == 0 && height == 0);   // 调用方没给宽高才需要解析
 
-    // 2. 计算 MD5（直接对 fileData 做哈希）
-    QByteArray md5Result = QCryptographicHash::hash(fileData, QCryptographicHash::Md5);
-    md5 = QString::fromLatin1(md5Result.toHex());
-    if(width!=0 || height!=0) return true;
-    // 3. 用 QImageReader 从内存数据中读取宽高（仅解析头部）
-    QBuffer buffer(&fileData);
-    buffer.open(QIODevice::ReadOnly);
-    QImageReader reader(&buffer);
+    // ① 指纹 = 绝对路径 + '|' + 大小 + '|' + mtime，**原样拼接，不做任何哈希**
+    //   · Windows 文件名不允许 '|'，分隔无歧义；纯可打印字符，写日志/JSON 也干净
+    //   · 代价：key 比 16 字节的哈希长（英文路径约 60 字节，中文路径 100+ 字节）——
+    //     库按天整库删除，单库最多一天的量，所以这个膨胀是可控的
+    md5 = absPath + QLatin1Char('|') + QString::number(fsize)
+                + QLatin1Char('|') + QString::number(fmtime);
+
+    if (!wantSize) return true;
+
+    // ② 宽高：内存表命中就直接返回 —— 这是整条链上唯一还要真开文件的地方
+    {
+        QMutexLocker lock(&s_fpMutex);
+        auto it = s_fpCache.constFind(absPath);
+        if (it != s_fpCache.constEnd() && it->size == fsize && it->mtimeMs == fmtime
+                && it->w >= 0) {
+            width  = it->w;
+            height = it->h;
+            return true;
+        }
+    }
+
+    auto remember = [&](int w, int h) {
+        QMutexLocker lock(&s_fpMutex);
+        if (s_fpCache.size() >= kFpCacheMax) s_fpCache.clear();
+        FileFpEntry e; e.size = fsize; e.mtimeMs = fmtime; e.w = w; e.h = h;
+        s_fpCache.insert(absPath, e);
+    };
+
+    // ③ 只有没缓存过才真解析图片头（QImageReader 自己只拉头部那几 KB）
+    QImageReader reader(filePath);
     if (!reader.canRead()) {
         //qWarning() << "无法识别图片格式:" << filePath;
-        // 宽高保留默认值，但可以返回 false 表示图片格式无效
+        // 非图片（音频/视频/文件）→ 宽高留 0，并记住，免得每次都再来撞一次
+        remember(0, 0);
         return true;
     }
-    QSize size = reader.size();
+    const QSize size = reader.size();
     if (size.isEmpty()) {
         //qWarning() << "无法获取图片尺寸:" << filePath;
         return false;
     }
-    width = size.width();
+    width  = size.width();
     height = size.height();
+    remember(width, height);
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// 读上传缓存（**统一入口**）
+//   本库缓存值统一是 "<过期秒>||||<内容>"，图片是 <url>、媒体是裸 file_info 列表；
+//   早期媒体缓存还可能是 "[<类型>,path=…,md5=…,Time=<过期秒>]"。
+//
+//   ★ 只读不删（2026-10-20）：
+//     缓存库现在是**双库按日轮换**（main.cpp 的 ensureCacheDb），每天换库并把旧库整目录删掉，
+//     过期条目活不过当天 24 点，所以这里**不需要**再 remove —— 读缓存因此永远是「一次纯读」：
+//        · 一次 mdb_get（微秒级，B-tree 查找，跟库里有多少条无关）
+//        · 不拿写事务、不写 WAL、不触发 map 扩容、不阻塞别的线程的写
+//     命中但已过期 → 直接当未命中返回空，让调用方重新上传；重传成功后 put 覆盖同一 key，
+//     不会堆垃圾条目。
+//   早期为了兜住「LMDB 没有 TTL、过期条目永不消失」才顺手删，那个问题已由换库解决。
+// ---------------------------------------------------------------------------
+static QString cachedValueIfFresh(const QString &key)
+{
+    if (!cache_db || key.isEmpty()) return {};
+    const QString v = cache_db->get(key);      // ← 整个读缓存链路就这一次库访问
+    if (v.isEmpty()) return {};
+
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+
+    // ① 现行格式：过期秒在最前面
+    const int sep = v.indexOf(QStringLiteral("||||"));
+    if (sep > 0) {
+        bool ok = false;
+        const qint64 expire = v.left(sep).trimmed().toLongLong(&ok);
+        if (ok && now >= expire) return {};    // 已过期：当未命中，不删
+        return v;
+    }
+
+    // ② 旧格式（早期媒体缓存）：过期秒藏在 ",Time=" 里，整串末尾还有个 ']'
+    if (v.startsWith(QLatin1Char('['))) {
+        const int ti = v.lastIndexOf(QStringLiteral(",Time="));
+        if (ti != -1) {
+            QString s = v.mid(ti + 6);
+            const int rb = s.indexOf(QLatin1Char(']'));
+            if (rb >= 0) s.truncate(rb);
+            bool ok = false;
+            const qint64 expire = s.trimmed().toLongLong(&ok);
+            if (ok && now >= expire) return {};   // 同上
+        }
+    }
+    return v;
 }
 
 
@@ -1173,12 +1276,12 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     tag.height = tag.userHeight;
                 }
 
-                // 缓存检查
+                // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
                 QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
                 bool cacheValid = false;
                 QString cachedUrl;
                 if (cache_db && !fileMd5.isEmpty()) {
-                    QString cached = cache_db->get(cacheKey);
+                    QString cached = cachedValueIfFresh(cacheKey);
                     if (!cached.isEmpty()) {
                         int sepIdx = cached.lastIndexOf("||||");
                         if (sepIdx != -1) {
@@ -1347,8 +1450,9 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     bool cacheValid = false;
                     QString cachedUrl;
 
+                    // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
                     if (cache_db && !fileMd5.isEmpty()) {
-                        QString cached = cache_db->get(cacheKey);
+                        QString cached = cachedValueIfFresh(cacheKey);
                         if (!cached.isEmpty()) {
                             int sepIdx = cached.lastIndexOf("||||");
                             if (sepIdx != -1) {
@@ -1375,8 +1479,10 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                         // 返回的就是裸 file_info，直接拿去发/缓存（以前要先从 "[image,path=…]" 里抠出来）
                         if (ok && !fileInfo.isEmpty()) {
                             newUrl = fileInfo;
-                            qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
-                            cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                            if (cache_db) {
+                                qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
+                                cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                            }
                         } else {
                             newUrl = tag.url;
                         }
@@ -1868,12 +1974,12 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                 tag.height = tag.userHeight;
             }
 
-            // 缓存检查
+            // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
             QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
             bool cacheValid = false;
             QString cachedUrl;
             if (cache_db && !fileMd5.isEmpty()) {
-                QString cached = cache_db->get(cacheKey);
+                QString cached = cachedValueIfFresh(cacheKey);
                 if (!cached.isEmpty()) {
                     int sepIdx = cached.lastIndexOf("||||");
                     if (sepIdx != -1) {
@@ -3716,7 +3822,7 @@ static void putMediaUploadCache(const QString &mediaType, const QString &fileMd5
                                 const QStringList &infos, qint64 expire, bool allOk)
 {
     if (!cache_db || fileMd5.isEmpty() || !allOk || infos.isEmpty() || expire <= 0) return;
-    const QString key = QStringLiteral("%1_%2").arg(mediaType, fileMd5);
+    const QString key = mediaType + QLatin1Char('_') + fileMd5;   // 用 + 拼接，避免 arg 二次解析 '%'
     cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
 }
 
@@ -3864,10 +3970,11 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
         tc->fileMd5 = QString::fromLatin1(
             QCryptographicHash::hash(tc->filePath.toUtf8(), QCryptographicHash::Md5).toHex());
     }
+    // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
     if (cache_db && !tc->fileMd5.isEmpty()) {
-        const QString cacheKey = QString("%1_%2").arg(mediaType, tc->fileMd5);
+        const QString cacheKey = mediaType + QLatin1Char('_') + tc->fileMd5;
         // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-        tc->cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
+        tc->cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
         if (!tc->cachedInfos.isEmpty())
             tc->needUpload = false;
     }
@@ -4286,10 +4393,11 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             fileMd5 = QString::fromLatin1(
                 QCryptographicHash::hash(filePath.toUtf8(), QCryptographicHash::Md5).toHex());
         }
+        // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
         if (cache_db && !fileMd5.isEmpty()) {
-            QString cacheKey = QString("%1_%2").arg(mediaType,fileMd5);
+            QString cacheKey = mediaType + QLatin1Char('_') + fileMd5;
             // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-            cachedInfos = mediaCachedInfos(cache_db->get(cacheKey));
+            cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
             if (!cachedInfos.isEmpty())
                 needUpload = false;
         }

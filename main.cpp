@@ -38,6 +38,9 @@
 #include <QJsonObject>
 #include "global.h"
 #include <QDir>
+#include <QDate>
+#include <QDateTime>   // ensureCacheDb 的槽位算法（文件头部就要用，不能等到 249 行那组）
+#include <QFileInfo>
 #include <QResource>
 #include "lmdbkv.h"
 #include "logdb.h"
@@ -63,6 +66,97 @@ LmdbKV *accdb=nullptr;
 MessageEvent *g_cqev=nullptr;
 QString g_admin;
 int g_appid;
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 上传缓存 cache_db：双库按日轮换（替代「全库扫过期条目」）
+//
+// 为什么不用 removeExpired 扫：LMDB 没有 TTL，过期条目只能靠游标把整个库走一遍才删得掉。
+//   库到上百万条时，这一趟既慢（在 GUI 线程跑，界面会顿），又要全程占着 LmdbKV::m_mutex
+//   （期间所有上传的 put/get 都得排队等）；更麻烦的是「只上传过一次、再没人发」的条目
+//   永远等不到被读到的那次顺手删除，只能干等这一趟扫描。
+//
+// 所以换成：开两个目录 botdb/file_db_a / botdb/file_db_b，**每 2 天轮换一次**。
+//   · 日界**不在 0 点，而是每天早上 05:00**（`kCacheDbResetHour`）—— 0 点前后还在跑夜间任务，
+//     5 点换库时基本没人用，那一瞬间的重传撞不到高峰
+//   · 任意时刻只有一个是 cache_db —— 查缓存跟单库完全一样，不会多查一个库、也没有「查不到再回退」
+//   · 轮换时切到另一个库，**立刻把刚退役的旧库整个目录删掉** → 盘上永远只有 1 份
+//   · 过期条目不用逐条删，跟着目录一起没（LMDB 删条目不缩文件，只有删文件才真正把磁盘还回去）
+//
+// 「槽位 slot」算法（`cacheDbSlotOf`）：把时间**拨回 5 小时** → 取本地日期 → **整除 2**。
+//   于是 slot 每 2 天在 **05:00 整**变一次；slot 的奇偶决定用 a 还是 b，相邻槽位必然交替。
+//   例：10-20 23:00 与 10-21 04:59 属于同一个 slot；10-21 05:00 起进入下一个 slot。
+//
+// 代价：换库那一下，同一个文件会重新上传一次（图片缓存本来也只有 24h；内网传图约 100ms）。
+// 安全性：删之前必须先 close()（Windows 下 env 还映射着 data.mdb 就删不掉；close 之后任何
+//         残留调用都是安全空操作）；旧对象**不 delete**（攒到退出时统一删）—— api.cpp 里有
+//         std::thread 上传路径可能攥着旧指针。
+// ─────────────────────────────────────────────────────────────────────────────
+static const int      kCacheDbResetHour = 5;   // 日界：每天本地时间几点算「新的一天」
+static const qint64   kCacheDbDays      = 2;   // 一个库用几天
+
+static qint64         s_cacheDbSlot = -1;      // 当前 cache_db 所属的槽位
+static QList<LmdbKV*> s_retiredCacheDbs;       // 已 close、等退出时统一 delete 的旧库
+
+// 任一时间点 → 它属于哪个「kCacheDbDays 天槽位」（日界 = 每天 kCacheDbResetHour 点）
+static qint64 cacheDbSlotOf(const QDateTime &dt)
+{
+    const QDate d = dt.addSecs(-qint64(kCacheDbResetHour) * 3600).date();   // 拨回 5 小时再取日期
+    return d.toJulianDay() / kCacheDbDays;
+}
+
+static qint64 cacheDbSlotNow()
+{
+    return cacheDbSlotOf(QDateTime::currentDateTime());
+}
+
+// 槽位奇偶决定用哪个目录：同槽位恒定，相邻槽位必然相反
+static QString cacheDbDirFor(qint64 slot)
+{
+    return (slot % 2 == 0) ? QStringLiteral("botdb/file_db_a")
+                           : QStringLiteral("botdb/file_db_b");
+}
+
+// 这个目录里的库是不是「本槽位写过的」—— 用来区分两种情况：
+//   · 同一槽位内重启 → 保留，别白丢还热着的缓存
+//   · 跨了槽位 / 停机好几天后重启 → 那份数据早不该用了，作废重建
+static bool cacheDbDirInSlot(const QString &dir, qint64 slot)
+{
+    const QFileInfo fi(dir + QStringLiteral("/data.mdb"));
+    return fi.exists() && cacheDbSlotOf(fi.lastModified()) == slot;
+}
+
+// 启动时调一次，运行期每分钟调一次；只有「槽位变了」或「还没有库」时才真的动。
+static void ensureCacheDb()
+{
+    const qint64 slot = cacheDbSlotNow();
+    if (cache_db && slot == s_cacheDbSlot) return;        // 同一槽位（同一个 2 天周期），什么都不做
+
+    const QString want  = cacheDbDirFor(slot);            // 本槽位该用哪个
+    const QString other = cacheDbDirFor(slot + 1);        // 奇偶相反的那个 = 上个槽位在用的库
+
+    // ① 旧库摘下并关闭：必须先关 env，Windows 才有权限删它映射着的 data.mdb
+    LmdbKV *old = cache_db;
+    cache_db = nullptr;
+    if (old) {
+        old->close();
+        s_retiredCacheDbs.append(old);                    // 不 delete：可能还有线程攥着旧指针
+    }
+
+    // ② want 里装的不是「本槽位写的」→ 整目录作废重建（跨槽位/久停后重启就靠这行）
+    if (!cacheDbDirInSlot(want, slot))
+        QDir(want).removeRecursively();
+
+    // ③ 开本槽位该用的库，立刻把 cache_db 指回去（中间只有几毫秒的「不缓存」窗口）
+    cache_db      = new LmdbKV(want);
+    s_cacheDbSlot = slot;
+
+    // ④ 刚退役的旧库（other，① 里已 close）+ 老版本遗留的 botdb/file_db：直接删
+    QDir(other).removeRecursively();
+    QDir(QStringLiteral("botdb/file_db")).removeRecursively();
+}
+
+
 void loadconfig()
 {
     bool ok = false;
@@ -154,6 +248,7 @@ void initdir()
 #include <QCoreApplication>
 #include <QProcess>
 #include <QDateTime>
+#include <QTimer>
 
 // ---------- 通用：重启自身 ----------
 static void restartSelf()
@@ -428,7 +523,9 @@ int main(int argc, char *argv[]) {
         }
 
         py::gil_scoped_release release;
-        cache_db = new LmdbKV("botdb/file_db");
+        // 上传缓存：双库按日轮换（见 ensureCacheDb 上方说明）。
+        // 不再做「启动全库扫过期条目」—— 跨天时旧库整个目录被删，本来就没有过期条目留下。
+        ensureCacheDb();
         initDBs();
         #ifdef _WIN32
             if (QFile::exists("纯白铃32.exe")) {
@@ -474,6 +571,15 @@ int main(int argc, char *argv[]) {
         w->show();
         detectOptimalRegion();
 
+        // 上传缓存：每分钟比一次「槽位」（一次 QDateTime + 整除，微秒级），
+        // 走到 05:00 那个槽位边界（每 2 天一次）就换库并把旧库整目录删掉 —— 最迟 05:01 生效。
+        // 不做全库扫描，所以条数再多也不会有卡顿，也不会长时间占着缓存库的锁。
+        {
+            QTimer *cacheRotateTimer = new QTimer(&a);
+            QObject::connect(cacheRotateTimer, &QTimer::timeout, &a, []() { ensureCacheDb(); });
+            cacheRotateTimer->start(60 * 1000);
+        }
+
         //QString uploadToMhimg(const QString &filePath, QString *errorMsg);
         //QString err;
         //qDebug() << uploadToMhimg("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png",&err);
@@ -507,6 +613,8 @@ int main(int argc, char *argv[]) {
 
         delete cache_db;
         cache_db = nullptr;
+        for (LmdbKV *p : s_retiredCacheDbs) delete p;   // 双库轮换期间 close 掉的旧库（析构里 m_env 已空，重复关无害）
+        s_retiredCacheDbs.clear();
         delete aidb;
         aidb = nullptr;
         delete dsdb;
