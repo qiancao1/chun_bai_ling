@@ -225,20 +225,7 @@ if(WIN32)
     target_sources(qiancao PRIVATE app.rc)
 endif()
 
-# ==================== 自建 ffmpeg.dll（构建后拷到 exe 旁边） ====================
-# 程序是**运行时**加载它的（core/qcffmpeg.cpp 的 QLibrary），所以不链接、不加依赖；
-# 这里只是保证「自己编译出来的那份」和 exe 放在一起，省得每次手动复制。
-# 文件不存在（还没编过 DLL / Linux 上没编 .so）时静默跳过 —— 缺了也能启动，
-# 只是音频会退回外部 ffmpeg.exe，或者自动去发布页补齐。
-if(WIN32)
-    set(QC_FFMPEG_DLL "${CMAKE_CURRENT_SOURCE_DIR}/libs/ffmpeg/win-x64/bin/ffmpeg.dll")
-    if(EXISTS "${QC_FFMPEG_DLL}")
-        add_custom_command(TARGET qiancao POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${QC_FFMPEG_DLL}" "$<TARGET_FILE_DIR:qiancao>/ffmpeg.dll"
-            COMMENT "复制自建 ffmpeg.dll 到输出目录")
-    endif()
-endif()
+
 
 # ==================== 链接库和包含目录（平台自动切换） ====================
 if(WIN32)
