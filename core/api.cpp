@@ -2302,7 +2302,7 @@ static void putRetryStep(int appid, const QQBotClient *self,
 {
     if (!clientAlive(self, appid)) return;    // 客户端已销毁 → 整条链放弃（不再回调，也没人等了）
     doPut(timeoutMs, onMedia(self, appid, [doPut, onDone, used, timeoutMs, appid, self]
-                             (const QString &, QNetworkReply::NetworkError err) {
+                             (const QString &body, QNetworkReply::NetworkError err) {
         if (err == QNetworkReply::NoError) { onDone(true); return; }
         if (used + 1 >= 3)                 { onDone(false); return; }
         delayOnMedia(1000 * (1 << used), [doPut, onDone, used, timeoutMs, appid, self]() {
@@ -2329,7 +2329,10 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
 {
     const int appid = m_info->appid_int;
     if (!onDone) return;
-    if (data.isEmpty()) { onDone(QString(), 0, QString(), false, QString()); return; }
+    if (data.isEmpty()) {
+        onDone(QStringLiteral("上传数据为空（文件读出来是 0 字节）"), 0, QString(), false, QString());
+        return;
+    }
 
     // targetType==4 不支持 100K 申请/池子流程；音视频/文件（usePool=false）复用池链接实测报文件格式不对
     // → 都改走「原始分片上传」的**异步版**（uploadRichMediaAsync），同样零线程零阻塞。
@@ -2399,10 +2402,9 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         finishJson["md5"]        = stp->md5;
         QString finishUrl = get_url(stp->targetType, stp->openid, "upload_part_finish");
         c->PostAsync(finishUrl, finishJson, QString(), 30000,
-            [this, appid, stp, onDone, fail](const QString &, QNetworkReply::NetworkError) {
+            [this, appid, stp, onDone, fail](const QString &finResp, QNetworkReply::NetworkError finErr) {
                 QQBotClient *c2 = m_botClients.value(appid);
                 if (!c2) return;
-
                 QJsonObject filesJson;
                 filesJson["upload_id"] = stp->entry.uploadId;
                 QString filesUrl = get_url(stp->targetType, stp->openid, "files");
@@ -2410,9 +2412,9 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
                     [this, appid, stp, onDone, fail](const QString &filesResp, QNetworkReply::NetworkError) {
                         QQBotClient *c3 = m_botClients.value(appid);
                         if (!c3) return;
-                        if (filesResp.isEmpty()) { fail(QString()); return; }
+                        if (filesResp.isEmpty()) { fail(QStringLiteral("files 注册无响应（网络超时）")); return; }
                         QJsonDocument doc = QJsonDocument::fromJson(filesResp.toUtf8());
-                        if (doc.isNull()) { fail(QString()); return; }
+                        if (doc.isNull()) { fail(filesResp.left(500)); return; }
                         QJsonObject filesObj = doc.object();
                         QString fileInfo = filesObj["file_info"].toString();
                         if (fileInfo.isEmpty()) { fail(filesResp); return; }   // 链接已移出池，自然丢弃
@@ -2437,7 +2439,7 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         QQBotClient *c = m_botClients.value(appid);
         if (!c) return;
         c->put2(stp->entry.presignedUrl, stp->data, "application/octet-stream", stp->currentTimeout,
-                [appid, stp, afterPut, fail, tryPut](const QString &, QNetworkReply::NetworkError err) {
+                [appid, stp, afterPut, fail, tryPut](const QString &putBody, QNetworkReply::NetworkError err) {
                     if (err == QNetworkReply::NoError) { afterPut(); return; }
                     stp->retry++;
                     if (stp->retry < 3) {
@@ -2469,9 +2471,9 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         [this, appid, stp, tryPut, fail](const QString &resp, QNetworkReply::NetworkError) {
             QQBotClient *c2 = m_botClients.value(appid);
             if (!c2) return;
-            if (resp.isEmpty()) { fail(QString()); return; }
+            if (resp.isEmpty()) { fail(QStringLiteral("upload_prepare 无响应（网络超时）")); return; }
             QJsonDocument doc = QJsonDocument::fromJson(resp.toUtf8());
-            if (doc.isNull()) { fail(QString()); return; }
+            if (doc.isNull()) { fail(resp.left(500)); return; }
             QJsonObject obj = doc.object();
             stp->entry.uploadId = obj["upload_id"].toString();
             if (stp->entry.uploadId.isEmpty()) { fail(resp); return; }
@@ -2493,21 +2495,43 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
 // 所有续写逻辑都经 onMedia() 回到媒体线程，所以整条链只有一条线程在跑，不用加锁。
 // ===========================================================================
 
-// 通用「POST /files 直到拿到 file_info」重试器 —— 同步版里那几处「重试 10 次」的循环都在这里。
-// 对应语义（三处调用完全一致）：
-//   response 空 / JSON 解析失败 → 直接失败；file_info 有值 → 成功；
-//   其余：message == "富媒体文件上传超时" 才值得重试，否则立刻把平台错误原样交出去；耗尽同样交出最后一次响应。
+// 通用「POST /files 直到拿到 file_info」重试器。
+// 语义：
+//   · file_info 有值 → 成功；
+//   · 平台说「超时」→ 再 POST（它在后台异步拉素材）；**最多 3 次**（每次 ≈5s，≈15s 上限）；
+//   · 其它业务错误（下载失败 / 频率限制 / 参数错）→ **立刻失败，不重试**；
+//   · 空响应 / 非 JSON（网络层）→ 也重试，同样最多 3 次。
+//   ⚠ 以前是 10 次且「只要不是死文案就一直重试」→ 拉不到的链接会白卡 50 秒。
 struct QQBotClient::FilesRegJob {
     int         appid      = 0;    // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
     int         targetType = 0;
     QString     openid;
     QJsonObject body;
     int         timeoutMs = 30000;
-    int         backoffMs = 0;     // >0 时每次重试前延时（URL 注册那条是 128ms）
-    int         left      = 10;
+    int         backoffMs = 0;     // >0 时按次递增退避（外链注册那条现在 = 0，不等待）
+    int         left      = 3;     // 剩余尝试次数
+    int         total     = 3;     // 初始次数（只用于日志「第 N/M 次」）
     QString     md5;               // 原样透传给 onDone
     MediaUploadDone onDone;
 };
+
+// 宽松 JSON 解析：平台回包偶尔夹隐藏字符（NUL / BOM / 代理页残留），裸 QJsonDocument::fromJson
+// 会把整段判成 null —— 日志里看着是**完全合法的 JSON**，代码却走「非 JSON」分支，重试理由全错。
+// 这里先剔 NUL，再截第一个 '{' 到最后一个 '}'，把这几种情况救回来。
+// ⚠ 只用于「平台回包解析」，不要拿它做严格校验。
+static bool parseJsonObjectLoose(const QString &response, QJsonObject &out)
+{
+    if (response.isEmpty()) return false;
+    QString s = response;
+    if (s.contains(QChar(0))) s.remove(QChar(0));          // NUL：qDebug 打出来看不见，fromJson 直接判死
+    const int b = s.indexOf(QLatin1Char('{'));
+    const int e = s.lastIndexOf(QLatin1Char('}'));
+    if (b < 0 || e <= b) return false;                     // HTML / 纯文本网关页
+    const QJsonDocument doc = QJsonDocument::fromJson(s.mid(b, e - b + 1).toUtf8());
+    if (!doc.isObject()) return false;
+    out = doc.object();
+    return true;
+}
 
 void QQBotClient::filesRegStep(std::shared_ptr<FilesRegJob> job)
 {
@@ -2515,23 +2539,54 @@ void QQBotClient::filesRegStep(std::shared_ptr<FilesRegJob> job)
     const QString url = get_url(job->targetType, job->openid, "files");
     PostAsync(url, job->body, QString(), job->timeoutMs,
         onMedia(this, job->appid, [this, job](const QString &response, QNetworkReply::NetworkError) {
-            if (response.isEmpty()) { job->onDone(QString(), 0, job->md5, false, QString()); return; }
-            QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
-            if (doc.isNull())       { job->onDone(QString(), 0, job->md5, false, QString()); return; }
-            const QJsonObject r = doc.object();
+            // 第几次 = 初始次数 - 剩余 + 1
+            const int attempt = job->total - job->left + 1;
+            // 退避：默认关闭（backoffMs = 0 → 失败立刻重发）。留着这个开关是为了以后想拉开间隔时
+            // 只改 backoffMs 一处即可（>0 时按次递增：1.5s→3s→6s→12s）。
+            const int waitMs = job->backoffMs > 0 ? (job->backoffMs << qMin(attempt - 1, 4)) : 0;
+            // 重试一步：还有次数就再 POST 一次，用尽则把 msg 原样当失败文本交出去
+            auto retryOrFail = [this, job, waitMs](const QString &msg) {
+                if (job->left <= 1) {
+                    job->onDone(msg, 0, job->md5, false, QString());
+                    return;
+                }
+                job->left -= 1;
+                if (waitMs > 0) delayOnMedia(waitMs, [this, job]() { filesRegStep(job); });
+                else            filesRegStep(job);
+            };
+
+            // ⚠ 空 / 非 JSON 以前直接 `onDone(QString(),…)` → 上层拿到空串当正文发 → 被「内容不能为空」吞掉，
+            //   用户那边就是「文件没发出来、日志也没有」。这里一律把**原始返回**当失败文本往上传。
+            //   这两类属于「网络层没拿到有效响应」，重试有意义（次数 job->total=3）。
+            if (response.isEmpty())
+                { retryOrFail(QStringLiteral("文件注册无响应（网络超时）")); return; }
+
+            // ⚠⚠ 这里**不能**再用裸 `QJsonDocument::fromJson(response.toUtf8())`：
+            //   实测平台返回看着是完整 JSON（`{"message":"富媒体文件上传超时",...}`），却整段判成 null ——
+            //   响应里夹了 NUL / BOM 之类的隐藏字符，一行歧义就被判「非 JSON」，
+            //   于是永远走不到下面「平台说超时」的分支，重试理由全错。
+            //   parseJsonObjectLoose 会先剔掉 NUL、再截第一个 '{' 到最后一个 '}'，能把这几种都救回来。
+            QJsonObject r;
+            if (!parseJsonObjectLoose(response, r)) {
+                retryOrFail(response.left(500));   // 网关/代理回的 HTML 之类
+                return;
+            }
             const QString fileInfo = r["file_info"].toString();
             if (!fileInfo.isEmpty()) {
                 job->onDone(fileInfo, QDateTime::currentSecsSinceEpoch() + r["ttl"].toInt(),
                             job->md5, true, r["raw_url"].toString());
                 return;
             }
-            if (r["message"].toString() != QStringLiteral("富媒体文件上传超时") || job->left <= 1) {
-                job->onDone(response, 0, job->md5, false, QString());   // 其它错误 / 重试耗尽
-                return;
-            }
-            job->left -= 1;
-            if (job->backoffMs > 0) delayOnMedia(job->backoffMs, [this, job]() { filesRegStep(job); });
-            else                    filesRegStep(job);
+            // 平台回了业务错误 → **只有「超时」值得再 POST**：那是它在后台异步拉素材，立刻再打一次有时就能成。
+            // ⚠ 其它一律立刻失败（以前是「只要不是明确业务码就一直重试」的思路，等于什么都重试）：
+            //   · "富媒体文件下载失败"(40093007) = 它拉不到这个 URL（要鉴权的链接永远拉不到），
+            //     重试 10 次结果一模一样，用户看到的就是「卡 50 秒然后失败」；
+            //   · 频率限制 / 参数错 等业务码同理。
+            const QString msg = r["message"].toString();
+            if (msg.contains(QStringLiteral("超时")) && !msg.contains(QStringLiteral("下载失败")))
+                { retryOrFail(response); return; }
+
+            job->onDone(response, 0, job->md5, false, QString());   // 平台业务错误 → 直接失败
         }));
 }
 
@@ -2541,16 +2596,32 @@ void QQBotClient::uploadRichMedia_urlAsync(int targetType, const QString &openid
                                            const QString &fileurl, MediaUploadDone onDone)
 {
     if (!onDone) return;
-    if (!fileurl.startsWith(QLatin1String("http"))) { onDone(QString(), 0, QString(), false, QString()); return; }
+    if (!fileurl.startsWith(QLatin1String("http"))) {
+        onDone(QStringLiteral("外链格式不支持（必须以 http 开头）"), 0, QString(), false, QString());
+        return;
+    }
+    // ⚠ QQ 自己的「文件接口」地址（api-bot.q.qq.com/v2/users/<openid>/files/...）**必须带 Authorization** 才能下，
+    //   交给腾讯服务器去拉 → 它永远拉不到，只会一路回「富媒体文件下载失败 / 上传超时」。
+    //   以前这种情况要白重试 10 次（≈50 秒）才报平台原文，现在直接给一句人话。
+    if (fileurl.contains(QLatin1String("api-bot.q.qq.com")) && fileurl.contains(QLatin1String("/files"))) {
+        onDone(QStringLiteral("这个链接是 QQ 的文件接口地址（需要鉴权），平台下载不了；请先把文件下载到本地再发"),
+               0, QString(), false, QString());
+        return;
+    }
 
     auto job = std::make_shared<FilesRegJob>();
     job->appid      = m_info->appid_int;
     job->targetType = targetType;
     job->openid     = openid;
-    job->body       = QJsonObject{{"file_type", fileType}, {"url", fileurl}};
+    // file_name 与同步版 uploadRichMedia_url 逐字对齐（那边一直带着 "网络文件.bin"，异步版以前漏了）
+    job->body       = QJsonObject{{"file_type", fileType}, {"url", fileurl},
+                                  {"file_name", QStringLiteral("网络文件.bin")}};
     job->timeoutMs  = 300000;
-    job->backoffMs  = 128;      // 与同步版 uploadRichMedia_url 里的 msleep(128) 一致
-    job->left       = 10;
+    // ⚠ 以前是 128ms —— 「富媒体文件上传超时」是平台**还在异步拉外链**，128ms 后立刻重打等于白打。
+    //   现在按用户要求：**不加任何延迟**，失败就紧接着再 POST，共 3 次；3 次都超时就把平台原文交给上层。
+    job->backoffMs  = 0;
+    job->left       = 3;        // 最多 POST 3 次，不等待
+    job->total      = 3;
     job->onDone     = onDone;
     filesRegStep(job);
 }
@@ -2585,9 +2656,10 @@ void QQBotClient::richUploadReport(std::shared_ptr<RichUploadJob> job, const QSt
 void QQBotClient::richUploadPrepareDone(std::shared_ptr<RichUploadJob> job, const QString &response)
 {
     if (!clientAlive(this, job->appid)) return;
-    if (response.isEmpty()) { richUploadReport(job, QString(), 0, false, QString()); return; }
+    // ⚠ 空 / 非 JSON 一律把**原始返回**交出去（以前给空串 → 上层当正文发 → 被吞掉，用户什么也看不到）
+    if (response.isEmpty()) { richUploadReport(job, QStringLiteral("upload_prepare 无响应（网络超时）"), 0, false, QString()); return; }
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
-    if (doc.isNull())       { richUploadReport(job, QString(), 0, false, QString()); return; }
+    if (doc.isNull())       { richUploadReport(job, response.left(500), 0, false, QString()); return; }
     const QJsonObject r = doc.object();
     job->uploadId = r["upload_id"].toString();
     if (job->uploadId.isEmpty()) { richUploadReport(job, response, 0, false, QString()); return; }   // 错误信息
@@ -2688,7 +2760,8 @@ void QQBotClient::richUploadFinishAllFiles(std::shared_ptr<RichUploadJob> job)
     fr->openid     = job->openid;
     fr->body       = QJsonObject{{"upload_id", job->uploadId}};
     fr->timeoutMs  = 30000;
-    fr->left       = 10;
+    fr->left       = 3;
+    fr->total      = 3;
     fr->md5        = job->md5;
     fr->onDone     = [this, job](const QString &result, qint64 expire, const QString &, bool ok, const QString &outurl) {
         richUploadReport(job, result, expire, ok, outurl);
@@ -2803,9 +2876,10 @@ void QQBotClient::smallVideoReport(std::shared_ptr<SmallVideoJob> job, const QSt
 void QQBotClient::smallVideoPrepareDone(std::shared_ptr<SmallVideoJob> job, const QString &response)
 {
     if (!clientAlive(this, job->appid)) return;
-    if (response.isEmpty()) { smallVideoReport(job, QString(), 0, false, QString()); return; }
+    // 同 richUploadPrepareDone：空 / 非 JSON 也要把原始返回带出去，不能吞成空串
+    if (response.isEmpty()) { smallVideoReport(job, QStringLiteral("upload_prepare 无响应（网络超时）"), 0, false, QString()); return; }
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
-    if (doc.isNull())       { smallVideoReport(job, QString(), 0, false, QString()); return; }
+    if (doc.isNull())       { smallVideoReport(job, response.left(500), 0, false, QString()); return; }
     const QJsonObject r = doc.object();
     job->uploadId = r["upload_id"].toString();
     if (job->uploadId.isEmpty()) { smallVideoReport(job, response, 0, false, QString()); return; }   // 错误信息
@@ -2840,14 +2914,14 @@ void QQBotClient::smallVideoSubmit(std::shared_ptr<SmallVideoJob> job)
     finJson["md5"]        = job->md5;
     PostAsync(job->finishUrl, finJson, QString(), 30000,
         onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
-            // 4. files 注册（超时循环重试 10 次）
             auto fr = std::make_shared<FilesRegJob>();
             fr->appid      = job->appid;
             fr->targetType = job->targetType;
             fr->openid     = job->openid;
             fr->body       = QJsonObject{{"upload_id", job->uploadId}};
             fr->timeoutMs  = 30000;
-            fr->left       = 10;
+            fr->left       = 3;
+            fr->total      = 3;
             fr->md5        = job->md5;
             fr->onDone     = [this, job](const QString &result, qint64 expire, const QString &, bool ok, const QString &outurl) {
                 smallVideoReport(job, result, expire, ok, outurl);
@@ -2872,8 +2946,18 @@ void QQBotClient::uploadRichMediaPoolAAsync(int targetType, const QString &openi
         uploadRichMedia_urlAsync(targetType, openid, fileType, filePath, onDone);
         return;
     }
+    // ⚠ 这两条以前回调的是**空串**（ok=false, result=""）→ 上层拿空串当报错去发消息，
+    //   send_* 判定「正文为空」直接吞掉，整条链就静默结束（用户：文件没发出去、日志也没有）。
+    //   这里必须给出非空原因，上层才会把「发送失败」的提示发出来。
+    if (!QFileInfo::exists(filePath)) {
+        onDone(QStringLiteral("本地文件不存在"), 0, QString(), false, QString());
+        return;
+    }
     QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) { onDone(QString(), 0, QString(), false, QString()); return; }
+    if (!file.open(QIODevice::ReadOnly)) {
+        onDone(QStringLiteral("本地文件读取失败"), 0, QString(), false, QString());
+        return;
+    }
     const QByteArray data = file.readAll();
     file.close();
     const QString filename = QFileInfo(filePath).fileName();
@@ -3648,6 +3732,12 @@ struct QQBotClient::MediaSendChain {
     int                  sendType = 0;
     MessageLogContext    ctx;
     bool                 finished = false;
+    // 摘掉全部媒体标签后**还有正文**吗（入口处一次性算好）。
+    // 它决定「调用方回调 (ctx.cb) 归谁」：
+    //   true  —— 正文+媒体混发（违反设计约定，但真出现就都发）：媒体一律不带回调，
+    //            cb 归**正文**那次 send_messages*，即「回调只报正文是否成功，文件的成败不影响」(2026-10-20 拍板)
+    //   false —— 纯媒体：cb 仍挂在最后一段媒体的 send_Media 上（与原来一致，时序 = 真发出去才回）
+    bool                 hasText = false;
 };
 
 // 分段发送的推进状态（音频切段 / 远程音频兜底 共用）
@@ -3680,7 +3770,10 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
         st->finished = true;
         auto cb = st->onDone;
         st->onDone = nullptr;
-        //if (cb) cb(st->text, st->response);
+        // 只有「摘完标签还剩正文」才往回调 —— 让调用方接着发正文（见 send_messagesAsync 的 sendTextPart）。
+        // ⚠ 纯媒体（st->hasText=false）**不能**调：那条路径的 cb 已经由 send_Media 的 PostAsync
+        //   触发过了（api2.cpp），这里再调一次 = 同一个回调触发两次（插件/Python 会当成两轮 → 循环重发）。
+        if (cb && st->hasText) cb(st->text, st->response);
         return;
     }
 
@@ -3814,6 +3907,8 @@ void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, st
             if (!fi.isEmpty()) infos << fi;
         // ⚠ 只有**最后一条**带 ctx（里面是调用方回调）。每条都带 = 4 段回调 4 次 → 调用方
         //   以为每段都是一轮结束 → 又走下一轮，正是「循环重复发」的来源。
+        // ⚠ 消息里还有正文（st->hasText）时，媒体**一条都不带回调** —— cb 归正文
+        //   （契约「恰好一次」；回调只报正文成没成功，媒体成败不影响）。
         for (int i = 0; i < infos.size(); ++i) {
             const bool last = (i + 1 == infos.size());
             // ⚠ multiPart：这一批是「同一轮的多段媒体」。send_Media 里 setBuffer_250 只对**第一条**
@@ -3821,7 +3916,7 @@ void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, st
             //   会直接 return "{}" 把 2..N 段吞掉。多段必须传 true 绕过该去重（见 send_Media）。
             st->response = send_Media(st->type, st->openid, st->pname, infos[i],
                                       st->now_us, st->msgid, st->is_wakeup, st->noref,
-                                      last ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
+                                      (!st->hasText && last) ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
                                       /*multiPart=*/infos.size() > 1);
         }
         mediaChainFinishTag(st, tc);
@@ -3831,6 +3926,19 @@ void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, st
     auto job = std::make_shared<MediaSegJob>();
     job->paths = tc->audioSegs.isEmpty() ? QStringList{tc->filePath} : tc->audioSegs;
     mediaChainSegLoop(st, tc, job);
+}
+
+// fileType → 中文名（只用于「上传失败」的提示文本与事件日志）
+static QString mediaKindLabel(int fileType)
+{
+    switch (fileType) {
+    case 1:  return QStringLiteral("图片");
+    case 2:  return QStringLiteral("视频");
+    case 3:  return QStringLiteral("音频");
+    case 4:  return QStringLiteral("文件");
+    default: break;
+    }
+    return QStringLiteral("媒体");
 }
 
 // 逐段串行上传并发送（与同步版的分段循环一致）
@@ -3851,7 +3959,11 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
     //   都当成一轮结束 → 重复发。见 ctxNoCb 的注释（契约是「恰好一次」）。
     const bool lastSeg = (job->idx >= job->paths.size());
 
-    uploadRichMediaPoolAAsync(st->type, st->openid, tc->fileType, upPath, /*usePool=*/false,
+    // ⚠ usePool 以前这里写死 false，导致**连图片也每次都重新 prepare+put+finish+files**（看起来像新上传）。
+    //   池子只服务图片：音视频/文件复用池链接时服务端报「文件格式不对」（见 uploadRichMediaPool 里的注释），
+    //   所以按类型给：图片=true（同一 put 链接 55 分钟内复用，命中就只 put 一次 + 用原 raw_url，秒发），
+    //   其余=false（走原始分片上传）。targetType==4（私聊）内部还会再挡一次。
+    uploadRichMediaPoolAAsync(st->type, st->openid, tc->fileType, upPath, /*usePool=*/(tc->fileType == 1),
         [this, st, tc, job, upPath, lastSeg](const QString &fileInfo, qint64 expireTime, const QString &, bool ok, const QString &) {
             if (!clientAlive(this, st->appid)) return;
 
@@ -3865,17 +3977,57 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                 return;
             }
 
-            if (!ok) {
+            if (!ok || fileInfo.isEmpty()) {
                 // 上传失败 → 把平台报错当文本发出去（与同步版一致）
+                // ⚠⚠ 关键：平台的**好几种失败路径回的是空串** —— 本地文件打不开 / 不存在
+                //   （uploadRichMediaPoolAAsync 里 open 失败）、prepare 回空、JSON 解析失败。
+                //   以前这里直接拿空串去 send_msgAsync → send_messagesAsync 判定「正文为空」→
+                //   一条都不发、也不记日志 —— 用户那边就是「文件没发出来，日志里一个字都没有」。
+                //   所以：空串必须兜一句人话，并且无论成败都落一条事件日志。
+                //   （ok==true 但 fileInfo 为空同样是异常，一并按失败处理，不然会静默跳过发送）
                 tc->segAllOk = false;               // 有段失败 → 本次不写缓存（避免缓存成半截音频）
-                QString errInfo = fileInfo;          // 非 const：send_* 收的是 QString&
+                const QString kind = mediaKindLabel(tc->fileType);
+                QString errInfo = fileInfo.trimmed();          // 非 const：send_* 收的是 QString&
+                AppendEventLog(QStringLiteral("媒体上传失败（%1）：%2｜path=%3")
+                                   .arg(kind,
+                                        errInfo.isEmpty() ? QStringLiteral("平台/本地均未给出错误信息")
+                                                          : errInfo.left(500),
+                                        upPath.left(300)));
+                if (errInfo.isEmpty())
+                    errInfo = QStringLiteral("[%1发送失败：平台未返回错误信息]").arg(kind);
+                else
+                    errInfo = errInfo.left(300);        // 平台原文（可能是 JSON / 网关返回的 HTML），太长的截断
+
+                // ── 日志里补一条「本来要发的媒体」──
+                // 以前失败时只把错误文本发出去，日志里就只剩「发送错误信息」那一条，完全看不到这次想发的是
+                // 什么（视频/文件全没有 [video,path=…] 记录，事后查不出是哪个文件挂的）。
+                // 这里按 send_Media 成功路径**同一个**标签形态补一行：`[video,path=<实际传的路径>,]`。
+                //   · index 传 -1 → 只**新增**一行，不动 send_* 那条「待处理」缓冲区行（序号/msg_seq 保持原样）；
+                //   · pname 里的 %1 先自己替换成耗时 —— index<0 时 addmsglog 算不出 diff，会显示 0ms。
+                {
+                    const QString tagName = (tc->fileType == 1) ? QStringLiteral("image")
+                                          : (tc->fileType == 2) ? QStringLiteral("video")
+                                          : (tc->fileType == 3) ? QStringLiteral("audio")
+                                                                : QStringLiteral("file");
+                    QString logPname = st->pname;
+                    if (logPname.contains(QStringLiteral("%1"))) {
+                        const double elapsedMs = (QDateTime::currentMSecsSinceEpoch() * 1000.0
+                                                  - static_cast<double>(st->now_us)) / 1000.0;
+                        logPname = logPname.arg(QString::number(elapsedMs, 'f', 1));
+                    }
+                    addmsglog(errInfo, -1, logPname,
+                              QStringLiteral("[%1,path=%2,]").arg(tagName, upPath),
+                              st->now_us, st->type, st->openid);
+                }
+
                 if (st->ctx.openid.isEmpty())
                     send_messages(st->type, st->openid, st->pname, errInfo, st->msgid,
                                   st->is_wakeup, st->mode, st->sendType, st->noref);
                 else
+                    // 有正文（st->hasText）时不占回调：cb 归后面那条正文
                     send_msgAsync(st->type, st->openid, st->pname, errInfo, st->msgid,
                                   st->is_wakeup, st->mode, st->sendType, st->noref,
-                                  lastSeg ? st->ctx.cb : Callback());
+                                  (!st->hasText && lastSeg) ? st->ctx.cb : Callback());
                 mediaChainSegLoop(st, tc, job);
                 return;
             }
@@ -3888,7 +4040,7 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                     tc->segExpire = (tc->segExpire == 0) ? expireTime : qMin(tc->segExpire, expireTime);
                 st->response = send_Media(st->type, st->openid, st->pname, fileInfo,
                                           st->now_us, st->msgid, st->is_wakeup, st->noref,
-                                          lastSeg ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
+                                          (!st->hasText && lastSeg) ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
                                           /*multiPart=*/job->paths.size() > 1);
             }
             mediaChainSegLoop(st, tc, job);
@@ -3915,8 +4067,10 @@ void QQBotClient::mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, s
                         send_messages(st->type, st->openid, st->pname, e, st->msgid,
                                       st->is_wakeup, st->mode, st->sendType, st->noref);
                     else
+                        // 有正文时 cb 归正文（这里只是"报错提示"，不算本轮结果）
                         send_msgAsync(st->type, st->openid, st->pname, e, st->msgid,
-                                      st->is_wakeup, st->mode, st->sendType, st->noref, st->ctx.cb);
+                                      st->is_wakeup, st->mode, st->sendType, st->noref,
+                                      st->hasText ? Callback() : st->ctx.cb);
                 };
 
                 if (localFile.isEmpty()) {           // 超 50MB / 下载失败（日志已在下载里记过）
@@ -4008,6 +4162,15 @@ void QQBotClient::sendOneMediaAsync(int type, const QString &openid, const QStri
     if (st->matches.isEmpty()) {          // 无媒体标签 → 零线程零等待
         onDone(text, QString());
         return;
+    }
+
+    // 摘掉**全部**标签后还剩正文吗 —— 决定 ctx.cb 归谁（见 MediaSendChain::hasText 的注释）。
+    // 与链内逐条摘除的算法一致：从后往前 remove，前面的下标就不会被挪动。
+    {
+        QString rest = text;
+        for (int i = st->matches.size() - 1; i >= 0; --i)
+            rest.remove(st->matches[i].start, st->matches[i].length);
+        st->hasText = !rest.trimmed().isEmpty();
     }
 
     st->idx = st->matches.size() - 1;     // 与同步版一致：从后往前处理
@@ -4176,8 +4339,10 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                     uploadedUrl = upPath;
                 }
                 // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
+                // 图片走池：同一 put 链接 55 分钟内复用，命中就只 put 一次（不 prepare/finish/files），秒发
                 // expireTime/md5 是引用出参（上传缓存要拿过期时间写 "<过期秒>||||…"）
-                fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, expireTime, md5, ok, /*usePool=*/false);
+                fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, expireTime, md5, ok,
+                                                /*usePool=*/(fileType == 1));
                 if(fileType==3 && fileInfo.contains("40093013") && uploadedUrl.startsWith("http"))//上传音频时长超过限制
                 {
                     // ── 远程音频（URL 直传）超时长 ──

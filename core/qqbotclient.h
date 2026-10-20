@@ -259,6 +259,11 @@ private:
     // ⚠ 只做「发媒体」这一件事：文本摘除后的正文发送仍由调用方在 onDone 里继续（见 send_messagesAsync）。
     // onDone(textOut, mediaResp)：textOut = 摘掉媒体标签后的文本；mediaResp = 本条链最后一次 send_Media 的返回
     //   （纯媒体、正文被吃光时非空；否则为空串）。text 按值传入，链内改动不影响调用方。
+    // ⚠ onDone **只在「摘完标签还剩正文」时触发**（MediaSendChain::hasText）——正文和媒体按约定不该混发，
+    //   真出现就都发：媒体一律不带 ctx.cb，回调只报**正文**那次 send_messages* 的结果，媒体成败不影响。
+    //   纯媒体（没有正文）onDone 不触发，ctx.cb 由最后一段媒体的 send_Media 自己触发（真发出去才回）。
+    //   两条路径都保证 ctx.cb 触发**恰好一次**（踩过的坑：send_Media 的 PostAsync 已经触发过一次，
+    //   这里再回调就是两次 → 插件/Python 当成两轮 → 循环重发）。
     void sendOneMediaAsync(int type, const QString &openid, const QString &pname, QString text, qint64 now_us,
                            const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref,
                            const MessageLogContext &ctx,
