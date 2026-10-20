@@ -77,12 +77,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.5.131"
-#define APP_BUILD_NUMBER 131
+#define APP_VERSION_STR "v1.4.5.132"
+#define APP_BUILD_NUMBER 132
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.5.131 (2026-10-20)
+## v1.4.5.132 (2026-10-20)
 - 修改 每条信息只会投递一次 也就是 一条消息会触发某个插件多个指令 现在改为只触发一个
 - 优化 插件市场ui布局
 - 修改 指令权限 指令改名 改为单独机器人配置

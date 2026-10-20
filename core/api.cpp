@@ -1367,7 +1367,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
 
 
-                        // type==0 用 file_info 发送（每次都要新的）→ 每次重新上传，不入池；只享受 100K 直传快速路径
+                        // type==0 用 file_info 发送（每次都要新的）→ 每次重新上传，不复用 COS 链接池
+                        // （usePool=false → 直接走原始分片上传，不受池子那套占位/复写逻辑影响）
                         qint64 imgExpire = 0; QString imgMd5;
                         QString fileInfo = uploadRichMediaPoolA(targetType, openid, 1, newUrl, imgExpire, imgMd5, ok, /*usePool=*/false);
 
@@ -1957,7 +1958,8 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
     if(data.isEmpty()) return QString();
 
     // targetType==4 不支持 100K 申请/池子流程（会报错）；
-    // 音视频/文件（usePool=false）复用链接实测报文件格式不对 → 都回退原始分片上传方法
+    // usePool=false（视频/语音/文件）→ 走原始分片上传：每次 upload_prepare 拿全新 presigned_url，
+    //   逐分片 put，再 part_finish + files。只有图片（fileType==1）才启用池子复用。
     if (targetType == 4 || !usePool) {
         return uploadRichMedia(targetType, openid, fileType, data, filename, expireTime, md5, ok, outurl);
     }
@@ -2334,8 +2336,9 @@ void QQBotClient::uploadRichMediaPoolAsync(int targetType, const QString &openid
         return;
     }
 
-    // targetType==4 不支持 100K 申请/池子流程；音视频/文件（usePool=false）复用池链接实测报文件格式不对
-    // → 都改走「原始分片上传」的**异步版**（uploadRichMediaAsync），同样零线程零阻塞。
+    // usePool=false（视频/语音/文件）→ 一律转「原始分片上传」的异步版（uploadRichMediaAsync）。
+    //   池子那套（100K 申请 + 链复用 + 占位 PNG）只给图片用：链复用会把同一个 COS 对象交给多条消息，
+    //   异步 put 重试时极易互相覆盖。targetType==4（私聊）本来也不支持 100K 申请流程。
     if (targetType == 4 || !usePool) {
         uploadRichMediaAsync(targetType, openid, fileType, data, filename, onDone);
         return;
@@ -3959,10 +3962,10 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
     //   都当成一轮结束 → 重复发。见 ctxNoCb 的注释（契约是「恰好一次」）。
     const bool lastSeg = (job->idx >= job->paths.size());
 
-    // ⚠ usePool 以前这里写死 false，导致**连图片也每次都重新 prepare+put+finish+files**（看起来像新上传）。
-    //   池子只服务图片：音视频/文件复用池链接时服务端报「文件格式不对」（见 uploadRichMediaPool 里的注释），
-    //   所以按类型给：图片=true（同一 put 链接 55 分钟内复用，命中就只 put 一次 + 用原 raw_url，秒发），
-    //   其余=false（走原始分片上传）。targetType==4（私聊）内部还会再挡一次。
+    // ⚠ 图片（fileType==1）继续复用池子；**视频/语音/文件一律不复用**（usePool=false）：
+    //   这几类的分片上传本来就是每次 upload_prepare 拿全新 presigned_url，一旦复用池链接，
+    //   异步链下 put 重试时链接可能已被别的消息取走 → 互相覆盖（内容串号）。
+    //   池子只对图片那条「100K 申请 + 单分片复写」有意义。targetType==4（私聊）内部还会再挡一次。
     uploadRichMediaPoolAAsync(st->type, st->openid, tc->fileType, upPath, /*usePool=*/(tc->fileType == 1),
         [this, st, tc, job, upPath, lastSeg](const QString &fileInfo, qint64 expireTime, const QString &, bool ok, const QString &) {
             if (!clientAlive(this, st->appid)) return;
@@ -4338,8 +4341,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 {
                     uploadedUrl = upPath;
                 }
-                // 音视频/文件：100K 申请 + 整文件直传的快速路径，不入池（池子只给图片用）
-                // 图片走池：同一 put 链接 55 分钟内复用，命中就只 put 一次（不 prepare/finish/files），秒发
+                // 图片（fileType==1）继续复用池子；视频/语音/文件一律不复用（usePool=false）：
+                // 这几类走原始分片上传，每次 upload_prepare 拿全新 presigned_url；复用池链接在异步重试下会互相覆盖。
                 // expireTime/md5 是引用出参（上传缓存要拿过期时间写 "<过期秒>||||…"）
                 fileInfo = uploadRichMediaPoolA(type, openid, fileType, uploadedUrl, expireTime, md5, ok,
                                                 /*usePool=*/(fileType == 1));
