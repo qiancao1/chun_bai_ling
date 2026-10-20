@@ -2540,6 +2540,7 @@ void QQBotClient::filesRegStep(std::shared_ptr<FilesRegJob> job)
 {
     if (!clientAlive(this, job->appid)) return;
     const QString url = get_url(job->targetType, job->openid, "files");
+
     PostAsync(url, job->body, QString(), job->timeoutMs,
         onMedia(this, job->appid, [this, job](const QString &response, QNetworkReply::NetworkError) {
             // 第几次 = 初始次数 - 剩余 + 1
@@ -2643,8 +2644,9 @@ struct QQBotClient::RichUploadJob {
     QList<QJsonObject> finishJsons;  // 各分片的 finish 请求体
     MediaUploadDone onDone;
     bool finished = false;           // 保证 onDone 只回调一次
-    int  partIdx  = 0;               // 串行推进用
-    int  pending  = 0;               // 并发计数用
+    int  partIdx  = 0;               // 串行推进用（公网分支：put 游标）
+    int  finishIdx = 0;              // 串行推进用（finish 游标，内网分支并发 put 完之后用）
+    int  pending  = 0;               // 并发计数用（内网分支并发 put）
 };
 
 void QQBotClient::richUploadReport(std::shared_ptr<RichUploadJob> job, const QString &result,
@@ -2733,25 +2735,59 @@ void QQBotClient::richUploadPutNext(std::shared_ptr<RichUploadJob> job)
                           return;
                       }
                       PostAsync(job->finishUrl, job->finishJsons[i], QString(), 30000,
-                          onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
+                          onMedia(this, job->appid, [this, job, i](const QString &resp, QNetworkReply::NetworkError err) {
+                              if (job->finished) return;
+                              // 与 richUploadFinishNext 一致：finish 失败就地断掉，别把错误拖到 /files 变成「上传超时」
+                              if (err != QNetworkReply::NoError) {
+                                  const int partIndex = job->finishJsons[i]["part_index"].toInt();
+                                  richUploadReport(job,
+                                                   resp.isEmpty()
+                                                       ? QStringLiteral("分片%1确认失败（无响应）").arg(partIndex)
+                                                       : resp.left(500),
+                                                   0, false, QString());
+                                  return;
+                              }
                               job->partIdx += 1;
                               richUploadPutNext(job);
                           }));
                   });
 }
 
-// 所有 put 完成 → 并发提交全部分片的 finish → 去 /files 注册
+// 所有 put 完成 → **逐片串行**提交 finish → 全部成功后才去 /files 注册
+// ⚠ 平台要求 part_index 按顺序确认：上一片 finish 返回之后才能提交下一片。
+//   以前这里是 for 循环把全部 finish 一次性 PostAsync 投出去（并发）→ 平台判「顺序错误」。
+//   同步版（api2.cpp:399-403）就是逐个 PostSync、等返回再下一个，这里按同样语义改成回调链。
 void QQBotClient::richUploadFinishAll(std::shared_ptr<RichUploadJob> job)
 {
     if (job->finished) return;
     if (job->finishJsons.isEmpty()) { richUploadFinishAllFiles(job); return; }
-    job->pending = job->finishJsons.size();
-    for (const QJsonObject &fj : job->finishJsons) {
-        PostAsync(job->finishUrl, fj, QString(), 30000,
-            onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
-                if (--job->pending == 0) richUploadFinishAllFiles(job);
-            }));
-    }
+    job->finishIdx = 0;
+    richUploadFinishNext(job);          // 启动串行链
+}
+
+// 提交第 finishIdx 片 → 等它返回 → 再提交下一片；全部完成才进入 /files。
+void QQBotClient::richUploadFinishNext(std::shared_ptr<RichUploadJob> job)
+{
+    if (job->finished) return;
+    if (job->finishIdx >= job->finishJsons.size()) { richUploadFinishAllFiles(job); return; }
+    const int i = job->finishIdx;
+    PostAsync(job->finishUrl, job->finishJsons[i], QString(), 30000,
+        onMedia(this, job->appid, [this, job, i](const QString &resp, QNetworkReply::NetworkError err) {
+            if (job->finished) return;
+
+            // finish 失败必须在这里断掉：继续走 /files 只会拿到「富媒体文件上传超时」这种查不到根因的错。
+            if (err != QNetworkReply::NoError) {
+                const int partIndex = job->finishJsons[i]["part_index"].toInt();
+                richUploadReport(job,
+                                 resp.isEmpty()
+                                     ? QStringLiteral("分片%1确认失败（无响应）").arg(partIndex)
+                                     : resp.left(500),
+                                 0, false, QString());
+                return;
+            }
+            job->finishIdx += 1;
+            richUploadFinishNext(job);
+        }));
 }
 
 void QQBotClient::richUploadFinishAllFiles(std::shared_ptr<RichUploadJob> job)
@@ -2789,20 +2825,23 @@ void QQBotClient::uploadRichMediaAsync(int targetType, const QString &openid, in
     QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
     md5_10mHash.addData(data.left(10 * 1024 * 1024));
     const QString md5_10m = md5_10mHash.result().toHex();
-
+    QString name = filename;
+    if(name.isEmpty())
+        name="文件.bin";
     // 视频分两路（与同步版一致）：≤80M 走快传；>80M 当文件（file_type=4）走分片
     if (fileType == 2) {
         if (fileSize <= 80LL * 1024 * 1024) {
-            uploadSmallVideoAsync(targetType, openid, data, filename, md5, sha1, md5_10m, onDone);
+            uploadSmallVideoAsync(targetType, openid, data, name, md5, sha1, md5_10m, onDone);
             return;
         }
         fileType = 4;
     }
 
     // 3. prepare：声明真实大小（有多大传多大）
+
     QJsonObject prepJson;
     prepJson["file_type"] = fileType;
-    prepJson["file_name"] = filename;
+    prepJson["file_name"] = name;
     prepJson["file_size"] = (qint64)fileSize;
     prepJson["md5"]       = md5;
     prepJson["sha1"]      = sha1;
@@ -2847,7 +2886,7 @@ void QQBotClient::uploadSmallVideoAsync(int targetType, const QString &openid, c
     QJsonObject prepJson;
     prepJson["file_type"] = 2;
     prepJson["file_name"] = filename;
-    prepJson["file_size"] = (qint64)1024;      // 固定申请 1K，cos 实际可传任意大小
+    prepJson["file_size"] = (qint64)data.size();
     prepJson["md5"]       = md5;
     prepJson["sha1"]      = sha1;
     prepJson["md5_10m"]   = md5_10m;
@@ -2969,6 +3008,7 @@ void QQBotClient::uploadRichMediaPoolAAsync(int targetType, const QString &openi
         uploadRichMediaPoolAsync(targetType, openid, fileType, data, filename, true, onDone);
         return;
     }
+
     uploadRichMediaAsync(targetType, openid, fileType, data, filename, onDone);
 }
 
@@ -3991,11 +4031,7 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                 tc->segAllOk = false;               // 有段失败 → 本次不写缓存（避免缓存成半截音频）
                 const QString kind = mediaKindLabel(tc->fileType);
                 QString errInfo = fileInfo.trimmed();          // 非 const：send_* 收的是 QString&
-                AppendEventLog(QStringLiteral("媒体上传失败（%1）：%2｜path=%3")
-                                   .arg(kind,
-                                        errInfo.isEmpty() ? QStringLiteral("平台/本地均未给出错误信息")
-                                                          : errInfo.left(500),
-                                        upPath.left(300)));
+ ;
                 if (errInfo.isEmpty())
                     errInfo = QStringLiteral("[%1发送失败：平台未返回错误信息]").arg(kind);
                 else

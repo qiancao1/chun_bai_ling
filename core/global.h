@@ -125,6 +125,16 @@ extern QStackedWidget *stackedWidget;
 extern ForbiddenWordPage *forbidden;
 extern int m_currentBotIndex;
 extern QString g_neiw;
+// 商店货币名（默认「铃铛」）。整套商店系统里**只有这里**写货币名：
+//   · 列表指令 = <货币名>商店（默认「铃铛商店」）
+//   · 回复文案里的单位 / 兑换记录都用它
+// ⚠ 预留的全局变量：以后接腾讯广告系统、或让用户自己改货币名，只动这一处（记得同步改默认值兜底）。
+extern QString g_currency_name;
+// 积分兑率：**看 1 次广告 = 多少积分**（默认 1000）。这是整套积分/商店的定价基准：
+//   插件在 get_plugin_info 的 "shop" 里写 price 时，先想「这商品值几次广告」，再乘这个数
+//   （所以 price 一般取它的整数倍）；商店列表会把它翻成「约 N 次广告」显示给用户。
+// ⚠ 广告回调（腾讯广告系统）那边发放积分时也用这个值，别在别处再写死 1000。
+extern qint64 g_points_per_ad;
 extern int g_EventLogs_index;
 extern int g_channelLogs_index_index;
 extern int g_privateLogs_index;

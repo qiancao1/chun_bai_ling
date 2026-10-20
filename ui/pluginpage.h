@@ -85,6 +85,18 @@ typedef void (*OnMessageFunc2)(const char*,qint64);         // 中间版：2 参
 //   ⚠ 所有权：返回的字符串由**插件持有**（静态缓冲 / 字面量），框架只读、绝不释放。
 //   ⚠ v3 是新入口，签名就从这里定死成返回 const char*；on_message / onMessagev2 仍是 void。
 typedef const char* (*OnMessageFunc3)(const char*,qint64,const char*);
+
+// ---- 铃铛商店：商品处理函数（框架只在「兑换」时调它，不进消息派发链）----
+//   int  (*)(const char* json_frame, uint64_t fun, const char* cmd)
+//     json_frame  完整消息帧（与 onMessagev3 第 1 参同一份）
+//     fun         该商品在 "shop" 里注册的 fun 原样回传（C/C++/Rust/C# = 函数地址；Go = 处理函数 id）
+//     cmd         「序号」之后的原文（含数量，可能为空串）
+//   **返回值只有成败**：非 0 = 成功（框架扣费）/ 0 = 失败（不扣费、不给货）。
+//   ⚠⚠ 故意**不返回字符串**：const char* 回来谁释放？插件静态缓冲怕并发、堆内存框架不知道要 free、
+//      Python 侧还要再过一遍 GIL —— 一律改成 bool，要发什么话插件自己调发送 API（框架只发账单回执）。
+//   ⚠ 用 int 而不是 bool：C ABI 里 bool 只占 1 字节（AL），EAX 高 24 位是垃圾，跨语言/跨编译器读法不一致；
+//      int 是 0/1 全 32 位，Go / Rust / C# 都能直接用。C++ 作者写 return true/false 也没问题（隐式转 1/0）。
+typedef int (*ShopFunc)(const char*,qint64,const char*);
 typedef void (*OnFunc0)();
 
 // ---- 昵称审核接口（插件可选实现，加进昵称审核窗口的下拉框后生效）----
@@ -172,6 +184,56 @@ struct BotRuleOverride {
     bool    hasNewKey = false;          // 配置里有没有 "n" 字段（有 = 覆盖，哪怕是空串）
     QString newKey;                     // 该机器人下生效的新指令名（hasNewKey 才有意义；空 = 不改名）
 };
+
+// ==================== 铃铛商店（插件出售的商品）====================
+// ⚠ 定价单位：**积分**。框架设定「看一次广告 = 1000 积分」（g_points_per_ad，默认 1000），
+//   所以 price 请按 **1000 的倍数** 定（1000 = 看 1 次广告、2000 = 2 次、500 = 半次就很别扭）。
+//   自己心里先把「这商品值几次广告」定下来，再乘 1000 写成 price。
+//
+// 插件在 get_plugin_info 返回的 JSON 里多给一个 **shop 数组**（与 equals / startswith …同级）：
+//   "shop": [
+//     {"key": "商品备注", "fun": <处理函数>, "price": 1000}
+//   ]
+//   · key   = 商品备注（商店列表里显示的名字，同一插件内别重名）
+//   · fun   = 处理函数：原生库 = **导出函数的地址**（与规则里的 fun 同一口径，8 字节整数）；
+//             有 onShop 导出的插件（如 Go 版 SDK）= 自定义 id，框架原样回传；
+//             Python  = main.py 里的**函数名**（字符串）
+//   · price = 单价（**整数**，单位 = 全局货币名 g_currency_name，默认「铃铛」；1 次广告 = 1000）
+//
+// 用户侧两条指令（框架级，与插件规则无关，任何插件都不用自己注册）：
+//   1) 「<货币名>商店」（默认「铃铛商店」）→ 列出**所有启用插件**注册的商品（全局统一序号）
+//   2) 「兑换物品 <序号> <数量> <其他内容…>」→ 空格分参数；数量省略 = 1
+//        · 先算总价 = 单价 × 数量，余额不够直接回「余额不足」，**根本不调插件函数**
+//        · 够 → 调该商品的 fun，参数与 onMessagev3 完全一致：fun(json帧, fun, cmd)
+//          cmd = 「序号」这个参数**之后的原文**（含数量与其后的内容，可能为空串）
+//        · 返回值决定成败：**非 0 = 成功才扣费**，0 = 失败不扣费（见 ShopFunc 注释）
+//        · 例外：32 位易语言 / JS 注册的商品**只上架展示**，兑换时直接回「暂时不支持购买」
+//          （不扣费、不调插件；框架侧 `ShopOffer::buyable = false`，以后打通桥接就删掉这一行）
+//
+// 原生库有两种调法（框架自动选）：
+//   ① 导出了 **onShop**：调 onShop(json, fun, cmd)，fun 原样回传（Go 这种拿不了函数地址的用这个）
+//   ② 没导出 onShop：把 fun 直接当函数地址调（C/C++/Rust/C# 最常见，不用多写一个导出）
+struct ShopItem_Dll {
+    QString key;         // 商品备注
+    qint64  fun = 0;     // 插件侧处理函数地址（原生库）
+    qint64  price = 0;   // 单价
+};
+struct ShopItem_py {
+    QString    key;         // 商品备注
+    py::object function;    // 已解析的可调用对象
+    bool       wantsCmd = false;  // 形参 >= 2 就传 (消息, cmd)，只写 1 个就不传（与规则同一套探测）
+    qint64     price = 0;   // 单价
+};
+// JS（type 3）/ 32 位易语言（type 2）：**加载时解析、且上架展示，但暂不可购买**。
+// （这两端的调用桥接还没打通，兑换时框架直接回「暂时不支持购买」、不扣费也不调插件。
+//   以后要放开：把 handleShopCommand 收集时那两处 `o.buyable = false` 删掉，再补调用的分支即可，
+//   注册格式不用再让插件作者改一遍。）
+struct ShopItem_js {
+    QString key;            // 商品备注
+    QString fun;            // main.js 里的函数名
+    qint64  price = 0;      // 单价（积分）
+};
+
 struct PythonPluginobj {
     //py::dict globals;
 
@@ -186,6 +248,7 @@ struct PythonPluginobj {
     py::object set_config_value;
     bool isV2 = false;      // true = get_plugin_info 返回的 JSON 里 sdk >= 2 → 属「新版」，才允许指令重命名
     QList<Rule> rules;      // 所有规则列表（替代原来的 equals hash）
+    QList<ShopItem_py> shop;  // 铃铛商店：这个插件出售的商品（get_plugin_info 的 "shop"）
 
 
 };
@@ -196,6 +259,7 @@ struct JsPlugin {
     bool isV2 = false;             // true = get_plugin_info 返回的 JSON 里 sdk >= 2 → 属「新版」，才允许指令重命名
     QJsonObject pendingRequest;    // 如果请求响应模式需要，可以暂存
     QList<Rule_js> rules;      // 所有规则列表（替代原来的 equals hash）
+    QList<ShopItem_js> shop;   // 铃铛商店：上架展示，但暂不可购买（等 JS 购买桥接打通）
 };
 
 
@@ -214,7 +278,9 @@ struct DLLPluginobj {
     OnFunc0 onSet;
     ReviewFetchFunc getReviewList = nullptr;    // 昵称审核：get_review_list(开始位置,数量,状态)
     ReviewSubmitFunc submitReview = nullptr;    // 昵称审核：submit_review(JSON文本)
+    ShopFunc onShop = nullptr;  // 铃铛商店：可选导出 onShop(json, fun, cmd)；有它时 fun 只当 id 用
     QList<Rule_Dll> rules;      // 所有规则列表（替代原来的 equals hash）
+    QList<ShopItem_Dll> shop;   // 铃铛商店：出售的商品（type 1 = 可购买；type 2 易语言 = 只上架）
 };
 struct PluginInfo {
     QString id;
@@ -277,6 +343,14 @@ public:
     void savePlugins();
     void loadPlugins();
     void dispatch_message(const QString &text, MessageEvent &msg);
+
+    // ==================== 铃铛商店（框架级指令）====================
+    // 「<货币名>商店」/「兑换物品 序号 数量 其他内容」都由框架直接处理，插件只需在
+    // get_plugin_info 里注册 "shop"（见上面 ShopItem_Dll / ShopItem_py 的说明）。
+    //   frame = 本条消息的**原始 JSON 帧**（与 onMessagev3 第 1 个参数同一份）；
+    //   msg   = 本条消息事件（用户 openid / 群 / appid / msgId 都从这里取）。
+    // 返回 true = 这条消息是商店指令、**已经自己回过消息了**（调用方别再往下派发，也别让 AI 兜底）。
+    bool handleShopCommand(const QString &frame, MessageEvent &msg);
 
     // ==================== 指令编辑（启用类型 / 重命名）====================
     // 配置按「插件 id」存；id 为空时退化成插件名。给 RuleEditDialog 用的几个只读视图接口。

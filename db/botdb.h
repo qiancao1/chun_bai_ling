@@ -144,6 +144,21 @@ public:
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
 
+    // ==================== 积分（商店货币）系统 ====================
+    // 每个用户一个 **8 字节有符号整数**（qint64）余额，独立存 LMDB 子库 "points"：
+    //   key   = 用户 openid 的 16 字节二进制（与 users 子库同一套 key，别塞十六进制字符串）
+    //   value = qint64 原始 8 字节（本机字节序，与工程里其它 record 一致）
+    // 用途：插件商店扣费（见 pluginpage 的「铃铛商店」）；以后接广告系统加积分也走这里。
+    // ⚠ 没有记录 = 0 分（不预写，省空间）。
+    qint64 getPoints(const QByteArray &openidBin);
+    bool   setPoints(const QByteArray &openidBin, qint64 points);
+    // 加减（delta 可为负；减到 0 就停在 0，不会出现负分）。返回加完后的余额，失败返回 0。
+    qint64 addPoints(const QByteArray &openidBin, qint64 delta, bool *ok = nullptr);
+    // 扣费：**原子**（读-改-写同一个写事务 + 一把锁，多线程并发也不会双花）。
+    //   余额不足 → false（余额不变），*balanceAfter = 当前余额；
+    //   成功     → true，*balanceAfter = 扣完后的余额。
+    bool   spendPoints(const QByteArray &openidBin, qint64 cost, qint64 *balanceAfter = nullptr);
+
     quint64 getUserTodayMsgCount(const QByteArray &openidBin);
     quint64 getGroupTodayMsgCount(const QByteArray &groupIdBin);
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
@@ -191,6 +206,9 @@ private:
     QMutex m_cacheMutex;  // 如果多线程调用，需要加锁
 
     MDB_dbi m_dbi_account_stats = 0;
+
+    // 积分（商店货币）子库：key = openid 16 字节，value = qint64 余额
+    MDB_dbi m_dbi_points = 0;
 
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）

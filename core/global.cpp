@@ -37,6 +37,10 @@ bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
 QString g_neiw;
+// 商店货币名：默认「铃铛」。改这一处 = 整套商店的指令词与文案单位一起变。
+QString g_currency_name = QStringLiteral("铃铛");
+// 看一次广告给多少积分（商店定价基准：price 一般取它的整数倍）。广告系统接进来后读这个值。
+qint64 g_points_per_ad = 1000;
 Global::Global() {}
 
 int mapTypeToTabIndex(int type)

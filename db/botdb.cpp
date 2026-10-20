@@ -167,6 +167,10 @@ bool BotDB::open()
     rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
     if (rc != MDB_SUCCESS) goto fail;
 
+    // 积分（商店货币）子库：与 users 同时创建，老库升级上来也会自动建好（空库 = 全员 0 分）
+    rc = mdb_dbi_open(txn, "points", MDB_CREATE, &m_dbi_points);
+    if (rc != MDB_SUCCESS) goto fail;
+
 
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
@@ -203,6 +207,7 @@ void BotDB::close()
         if (m_dbi_friends) mdb_dbi_close(m_env, m_dbi_friends);
         if (m_dbi_subscriptions) mdb_dbi_close(m_env, m_dbi_subscriptions);
         if (m_dbi_account_stats) mdb_dbi_close(m_env, m_dbi_account_stats);
+        if (m_dbi_points) mdb_dbi_close(m_env, m_dbi_points);
         mdb_env_close(m_env);
         m_env = nullptr;
     }
@@ -213,6 +218,7 @@ void BotDB::close()
     m_dbi_friends = 0;
     m_dbi_subscriptions = 0;
     m_dbi_account_stats = 0;
+    m_dbi_points = 0;
 
     if (m_saveTimer) {
         m_saveTimer->stop();
@@ -267,6 +273,8 @@ bool BotDB::reopenEnvironment()
     rc = mdb_dbi_open(txn, "subscriptions", MDB_CREATE, &m_dbi_subscriptions);
     if (rc != MDB_SUCCESS) goto reopen_fail;
     rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
+    if (rc != MDB_SUCCESS) goto reopen_fail;
+    rc = mdb_dbi_open(txn, "points", MDB_CREATE, &m_dbi_points);
     if (rc != MDB_SUCCESS) goto reopen_fail;
 
     rc = mdb_txn_commit(txn);
@@ -1318,6 +1326,110 @@ bool BotDB::getAccountStats(uint32_t appid, uint32_t minuteIndex, AccountStats &
     mdb_txn_abort(txn);
     return ok;
 }
+
+// ==================== 积分（商店货币）系统 ====================
+// 子库 "points"：key = openid 的 16 字节二进制，value = qint64 余额（原始 8 字节）。
+// ⚠ 不足 16 字节的 key 用 0 补到 16 —— 与 users 子库的 BinKey 口径一致，
+//   否则同一用户在不同接口下会算出两个不同 key（一会儿有分一会儿 0 分）。
+static QByteArray pointsKey(const QByteArray &openidBin)
+{
+    QByteArray k = openidBin.left(16);
+    if (k.size() < 16) k.append(QByteArray(16 - k.size(), '\0'));
+    return k;
+}
+
+qint64 BotDB::getPoints(const QByteArray &openidBin)
+{
+    if (!m_env || !m_dbi_points) return 0;
+    const QByteArray keyData = pointsKey(openidBin);
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return 0;
+
+    qint64 balance = 0;   // 没记录 = 0 分（getRecord 找不到时保持原值不动）
+    getRecord(txn, m_dbi_points, keyData, &balance, sizeof(balance));
+    mdb_txn_abort(txn);
+    return balance;
+}
+
+bool BotDB::setPoints(const QByteArray &openidBin, qint64 points)
+{
+    if (!m_env || !m_dbi_points) return false;
+    const QByteArray keyData = pointsKey(openidBin);
+    if (points < 0) points = 0;
+
+    return retryWrite([&](MDB_txn *txn) -> int {
+        return putRecord(txn, m_dbi_points, keyData, &points, sizeof(points));
+    });
+}
+
+qint64 BotDB::addPoints(const QByteArray &openidBin, qint64 delta, bool *ok)
+{
+    if (ok) *ok = false;
+    if (!m_env || !m_dbi_points) return 0;
+
+    const QByteArray keyData = pointsKey(openidBin);
+    qint64 result = 0;
+    // 读-改-写放在同一个写事务里（retryWrite 全程持 m_mutex），并发加/扣不会互相覆盖
+    const bool success = retryWrite([&](MDB_txn *txn) -> int {
+        qint64 balance = 0;
+        getRecord(txn, m_dbi_points, keyData, &balance, sizeof(balance));
+        result = balance + delta;
+        if (result < 0) result = 0;      // 不允许负分（减多了就停在 0）
+        return putRecord(txn, m_dbi_points, keyData, &result, sizeof(result));
+    });
+    if (ok) *ok = success;
+    return success ? result : 0;
+}
+
+bool BotDB::spendPoints(const QByteArray &openidBin, qint64 cost, qint64 *balanceAfter)
+{
+    if (cost <= 0) {                       // 0 元商品：算成功，余额原样返回
+        const qint64 cur = getPoints(openidBin);
+        if (balanceAfter) *balanceAfter = cur;
+        return true;
+    }
+    if (!m_env || !m_dbi_points) return false;
+
+    const QByteArray keyData = pointsKey(openidBin);
+
+    // ⚠ 必须自己在 m_mutex 里做「读 → 判断 → 写」：retryWrite 只保证单个事务，
+    //   先 getPoints 再 setPoints 的话，两条并发兑换都能读到旧余额 → 双花。
+    QMutexLocker locker(&m_mutex);
+    for (int retry = 0; retry <= 3; ++retry) {
+        MDB_txn *txn = nullptr;
+        if (mdb_txn_begin(m_env, nullptr, 0, &txn) != MDB_SUCCESS) return false;
+
+        qint64 balance = 0;
+        getRecord(txn, m_dbi_points, keyData, &balance, sizeof(balance));
+
+        if (balance < cost) {              // 买不起：不写库，事务直接丢
+            mdb_txn_abort(txn);
+            if (balanceAfter) *balanceAfter = balance;
+            return false;
+        }
+
+        const qint64 left = balance - cost;
+        int rc = putRecord(txn, m_dbi_points, keyData, &left, sizeof(left));
+        if (rc != MDB_SUCCESS) {           // 写不进去：MAP_FULL 就扩容重试，其它错误直接失败
+            mdb_txn_abort(txn);
+            if (rc == MDB_MAP_FULL && increaseMapSize()) continue;
+            return false;
+        }
+
+        rc = mdb_txn_commit(txn);
+        if (rc == MDB_SUCCESS) {
+            if (balanceAfter) *balanceAfter = left;
+            return true;
+        }
+        // commit 失败：事务已终止，不能再 abort
+        if (rc == MDB_MAP_FULL && increaseMapSize()) continue;
+        return false;
+    }
+    return false;
+}
+
 bool BotDB::getTodayDiff(uint32_t appid, const AccountStats &currentStats, AccountStats &diff)
 {
     uint32_t nowMinute = QDateTime::currentSecsSinceEpoch() / 60;

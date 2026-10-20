@@ -296,6 +296,8 @@ private:
     void richUploadPrepareDone(std::shared_ptr<RichUploadJob> job, const QString &response);
     void richUploadPutNext(std::shared_ptr<RichUploadJob> job);
     void richUploadFinishAll(std::shared_ptr<RichUploadJob> job);
+    // 分片 finish 的**串行**推进（平台要求上一片确认返回后才能提交下一片，不能一次全投出去）
+    void richUploadFinishNext(std::shared_ptr<RichUploadJob> job);
     void richUploadFinishAllFiles(std::shared_ptr<RichUploadJob> job);
     void smallVideoReport(std::shared_ptr<SmallVideoJob> job, const QString &result,
                           qint64 expireTime, bool ok, const QString &outurl);
