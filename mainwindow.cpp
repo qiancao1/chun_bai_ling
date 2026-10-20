@@ -77,12 +77,17 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.4.128"
-#define APP_BUILD_NUMBER 128
+#define APP_VERSION_STR "v1.4.5.131"
+#define APP_BUILD_NUMBER 131
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.4.126 (2026-10-17)
+## v1.4.5.131 (2026-10-20)
+- 修改 每条信息只会投递一次 也就是 一条消息会触发某个插件多个指令 现在改为只触发一个
+- 优化 插件市场ui布局
+- 修改 指令权限 指令改名 改为单独机器人配置
+
+## v1.4.4.128 (2026-10-17)
 - 优化 Win系统 语音部分 使用ffmpeg.dll 减少ffmpeg.exe重复启动的消耗 可以减少300-600ms的启动耗时
 - 优化 聊天室 图片标签没删除问题
 - 优化 插件配置 输入框到对齐 减少行宽

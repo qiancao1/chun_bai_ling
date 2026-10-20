@@ -13,6 +13,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QMap>
+#include <QHash>
+#include <QReadWriteLock>
 #include <QStringList>
 #include <QTextBrowser>
 #include <QJsonObject>
@@ -60,7 +62,8 @@ QString pluginPnameText(const QString &uuid);       // 裸 uuid → "[插件名|
 // 只取「该 uuid 的插件」+「newKey 非空且 != key（真正改过名）」的规则，所以：
 //   · 没改过名的插件 / 关键词匹配（uuid 不在插件表里）→ 空映射 → 原文一字不动（零开销）
 //   · 别的插件的同名指令不受影响
-QString redirectPluginCmdsMarkdown(const QString &text, const QString &uuid);
+// appid = 这条消息是**哪个机器人**发的（改名可以按机器人分开配）；<= 0 / 没配过 → 用默认档。
+QString redirectPluginCmdsMarkdown(const QString &text, const QString &uuid, int appid = 0);
 typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                                             const char* _3, const char* _4, const char* _5,
                                             const char* _6, const char* _7, const char* _8);
@@ -160,6 +163,15 @@ QStringList ruleRoleComboItems();          // 下拉框 item 顺序（与 role =
 int         ruleRoleFromComboIndex(int i); // 下拉下标 → role
 int         ruleRoleToComboIndex(int role);// role → 下拉下标
 bool        ruleRoleMatched(int role, int memberRole);   // 权限判定：这个人能不能用这条指令
+
+// 「某机器人 × 某插件 × 某条指令」的覆盖（按机器人区分的唯一一份数据）：启用类型 + 新指令名。
+// 只存差异：没被单独配置过的机器人根本不在表里 → 匹配时直接用规则自带（= 默认）的值，零额外开销。
+struct BotRuleOverride {
+    int     type   = 0;                 // 匹配方式（防止同名不同匹配方式的指令串味）
+    int     role   = kRuleRoleAll;      // 该机器人下这条指令的启用类型
+    bool    hasNewKey = false;          // 配置里有没有 "n" 字段（有 = 覆盖，哪怕是空串）
+    QString newKey;                     // 该机器人下生效的新指令名（hasNewKey 才有意义；空 = 不改名）
+};
 struct PythonPluginobj {
     //py::dict globals;
 
@@ -266,13 +278,27 @@ public:
     void loadPlugins();
     void dispatch_message(const QString &text, MessageEvent &msg);
 
-    // ==================== 指令编辑（勾选启用 / 重命名）====================
+    // ==================== 指令编辑（启用类型 / 重命名）====================
     // 配置按「插件 id」存；id 为空时退化成插件名。给 RuleEditDialog 用的几个只读视图接口。
     QList<int> ruleConfigPluginIndexes() const;         // 有指令的插件下标（按列表顺序）
     QString    ruleConfigPluginLabel(int index) const;  // 列表里显示的文字
-    QList<RuleConfigRow> ruleConfigRows(int index) const;
+    // appid = 0 / <0 时是「默认（全部机器人）」那一档；传具体 appid 时返回**该机器人**的生效视图
+    // （没单独配过 → 就是默认值，所以打开就能看到它现在实际跑的是什么）。
+    QList<RuleConfigRow> ruleConfigRows(int index, int appid = 0) const;
     bool ruleConfigAllowRename(int index) const;        // 只有新版插件才允许改名（原生库看 onMessagev3 符号；32位/Python/JS 看 sdk 字段）
-    void applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows);   // 存盘 + 立即对活体生效
+    // 存盘 + 立即对活体生效。appid <= 0 → 写「默认」档（启用类型 + 新指令名，全部机器人共用）；
+    // > 0 → 只写该机器人的覆盖（启用类型 + 新指令名；改名按「与默认的差异」存，见 m_ruleCfg 注释）。
+    void applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows, int appid = 0);
+    void clearBotRuleConfig(int index, int appid);      // 删掉该机器人的覆盖 → 重新跟随默认
+    bool hasBotRuleConfig(int index, int appid) const;  // 该插件对某机器人有没有单独配置
+    // 发送管线（core/api.cpp 的 markdown 指令重定向）用：某机器人下这条指令实际生效的新指令名。
+    // 没单独配过 → 返回 baseNewKey；appid <= 0 → 也返回 baseNewKey（零查表）。
+    QString effectiveNewKey(int appid, const QString &pluginKey, int type,
+                            const QString &key, const QString &baseNewKey) const;
+
+    // 机器人下拉用的两个列表（一一对应）。第 0 项固定是「默认（全部机器人）」、appid = 0。
+    QStringList ruleConfigBotLabels() const;
+    QList<int>  ruleConfigBotAppids() const;
 
     void initPluginList(const QList<PluginInfo> &plugins);
     void appendPlugin(const PluginInfo &info);
@@ -392,7 +418,25 @@ private:
     QPushButton *uninstallBtn;   // 卸载按钮
     QPushButton *setBtn;
     QPushButton *bj_zl = nullptr;   // 「编辑指令」按钮
-    QJsonObject m_ruleCfg;          // 指令配置：{ "<插件id或名>": [ {t,k,n,e} ... ] }
+    // 指令配置。结构（2026-10-20 起支持按机器人区分）：
+    //   { "<插件id或名>": {
+    //         "rows": [ {"t":匹配方式,"k":注册原指令,"n":新指令,"r":启用类型} ... ],   // 默认（全部机器人）
+    //         "bots": { "<appid>": { "<注册原指令>": {"t":匹配方式,"r":启用类型,"n":新指令} } }
+    //     } }
+    //   · "bots" 里的 "n" 可以**不写**（= 跟随默认档的改名）；写了空串 = 这个号不改名。
+    // ⚠ 老配置（值是**数组**）读进来时会被 migrateRuleCfg() 直接包成 { "rows": [...] }，行为不变。
+    QJsonObject m_ruleCfg;
+    // 上面 "bots" 的**热路径缓存**（匹配每条消息都要查，不能每次去翻 QJsonObject）：
+    //   appid → 插件key → 注册原指令 → 覆盖
+    QHash<int, QHash<QString, QHash<QString, BotRuleOverride>>> m_botRuleRole;
+    // ⚠ dispatch_message 在 QThreadPool 的**多个工作线程**上并发跑，而保存配置发生在 GUI 线程
+    //   → 这张表必须加锁（重建用写锁、匹配用读锁；读锁路径只有一次 isEmpty 快判 + 一次查表）。
+    mutable QReadWriteLock m_botRoleLock;
+    void rebuildBotRuleRoles();          // 从 m_ruleCfg 重建上面的缓存（载入配置 / 保存后各调一次）
+    // 取某机器人对某条指令的覆盖：role / newKey 都是 **in-out**（传入默认值，命中覆盖就改写）。
+    // 该机器人没单独配过 → 原样返回，等价于改动前；newKey 出参空 = 不改名。
+    void botRuleOverrideOf(int appid, const QString &pluginKey, int type,
+                           const QString &key, int &role, QString &newKey) const;
     int currentSelected_index;
     std::thread m_asyncio_thread; // 改成成员变量
 

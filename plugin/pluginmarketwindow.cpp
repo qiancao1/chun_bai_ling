@@ -91,13 +91,26 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
     m_iconLabel->setFixedSize(48, 48);
     m_iconLabel->setScaledContents(true);
     QPixmap pix(info.iconPath);
+
     if (pix.isNull()) {
         QPixmap fallback(48, 48);
-        fallback.fill(Qt::lightGray);
+        fallback.fill(Qt::transparent); // 填充透明（如果需要白底可以改为 Qt::white）
+
         QPainter painter(&fallback);
-        painter.setPen(Qt::black);
-        painter.setFont(QFont("Arial", 20));
-        painter.drawText(fallback.rect(), Qt::AlignCenter, info.name.left(1));
+        painter.setRenderHint(QPainter::Antialiasing); // 开启抗锯齿，让圆角平滑
+
+        // 设置边框画笔：浅蓝色，线宽2像素
+        QPen pen(QColor("#82B1FF")); // 这里的颜色你可以用取色器吸取图片的颜色
+        pen.setWidth(2);
+        painter.setPen(pen);
+
+        // 设置内部不填充
+        painter.setBrush(Qt::NoBrush);
+
+        // 绘制圆角矩形。注意：rect要往里缩1像素，防止2px的边框被边缘裁剪
+        QRect rect = fallback.rect().adjusted(1, 1, -1, -1);
+        painter.drawRoundedRect(rect, 8, 8); // 8 是圆角的半径，可自行调整
+
         m_iconLabel->setPixmap(fallback);
     } else {
         m_iconLabel->setPixmap(pix);
@@ -131,7 +144,7 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
 
     // ----- 标签 + 版本信息 同一行（水平布局）-----
     QHBoxLayout *tagVersionLayout = new QHBoxLayout;
-    tagVersionLayout->setSpacing(8);
+    tagVersionLayout->setSpacing(3);
 
     // 标签（tags）
     m_tagLabel = new QLabel(info.tags.join(" · "));
@@ -192,8 +205,6 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
 
 
 
-    tagVersionLayout->addWidget(bq_type);
-    tagVersionLayout->addWidget(author);
 
     // 本平台可用性徽标：原生库缺当前平台的包时标出来，安装按钮同时置灰（见 updateStatus）
     if (!PluginMarketMeta::availableOnThisPlatform(info)) {
@@ -202,14 +213,23 @@ PluginCard::PluginCard(const PluginInfo2 &info, QWidget *parent)
         tagVersionLayout->addWidget(bq_plat);
     }
 
+
+
     tagVersionLayout->addWidget(m_tagLabel);
-
-
     tagVersionLayout->addWidget(m_versionLabel);
 
     tagVersionLayout->addStretch();
     // 将各行加入 infoLayout
-    infoLayout->addWidget(m_nameLabel);
+
+
+    QHBoxLayout *tagVersionLayout2 = new QHBoxLayout;
+    tagVersionLayout2->setContentsMargins(0, 0, 0, 0);
+    tagVersionLayout2->setSpacing(3);
+    tagVersionLayout2->addWidget(m_nameLabel);
+    tagVersionLayout2->addWidget(bq_type);
+    tagVersionLayout2->addWidget(author);
+    tagVersionLayout2->addStretch();
+    infoLayout->addLayout(tagVersionLayout2);
     infoLayout->addWidget(m_remarkLabel);
     infoLayout->addLayout(tagVersionLayout);   // 这里替换原来的单独标签行
 

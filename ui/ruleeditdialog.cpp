@@ -76,6 +76,17 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     rv->setContentsMargins(3, 3, 3, 3);
     rv->setSpacing(6);
 
+    // 机器人下拉：默认（全部机器人） / 每个账号。切换就是切「改谁的配置」
+    QHBoxLayout *botRow = new QHBoxLayout;
+    botRow->setSpacing(6);
+    QLabel *botLabel = new QLabel("机器人：");
+    botLabel->setStyleSheet("font-size: 13px; color: #222222;");
+    m_botCombo = new QComboBox;
+    m_botCombo->setMinimumWidth(220);
+    botRow->addWidget(botLabel);
+    botRow->addWidget(m_botCombo, 1);
+    rv->addLayout(botRow);
+
     m_tip = new QLabel;
     m_tip->setWordWrap(true);
     m_tip->setStyleSheet("font-size: 12px; color: #555555;");
@@ -99,6 +110,10 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     rv->addWidget(m_table, 1);
 
     QHBoxLayout *btnRow = new QHBoxLayout;
+    m_followBtn = new QPushButton("跟随默认");
+    m_followBtn->setToolTip("删掉这个机器人的独立配置，重新跟随「默认（全部机器人）」。");
+    m_followBtn->setVisible(false);
+    btnRow->addWidget(m_followBtn);
     btnRow->addStretch();
     QPushButton *saveBtn = new QPushButton("保存修改");
     btnRow->addWidget(saveBtn);
@@ -114,7 +129,21 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     mainLayout->addWidget(split);
 
     connect(m_pluginList, &QListWidget::currentRowChanged, this, &RuleEditDialog::onPluginRowChanged);
+    // ⚠ currentIndexChanged 在 Qt5 是重载的（int / QString）→ 必须显式选 int 那个重载
+    connect(m_botCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &RuleEditDialog::onBotChanged);
+    connect(m_followBtn, &QPushButton::clicked, this, &RuleEditDialog::onFollowDefault);
     connect(saveBtn, &QPushButton::clicked, this, &RuleEditDialog::onSave);
+
+    // 机器人下拉：第 0 项「默认（全部机器人）」= appid 0
+    if (m_page) {
+        m_botAppids = m_page->ruleConfigBotAppids();
+        m_botCombo->addItems(m_page->ruleConfigBotLabels());
+    } else {
+        m_botAppids << 0;
+        m_botCombo->addItem("默认（全部机器人）");
+    }
+    m_curAppid = 0;
 
     reloadPluginList(preselectIndex);
 }
@@ -142,15 +171,32 @@ void RuleEditDialog::onPluginRowChanged(int row)
     loadRowsForListRow(row);
 }
 
+void RuleEditDialog::onBotChanged(int comboRow)
+{
+    if (comboRow < 0 || comboRow >= m_botAppids.size()) return;
+    m_curAppid = m_botAppids.at(comboRow);
+    // 切换机器人时把「另一个机器人上一秒还没保存的改动」直接丢掉 —— 表格是只读视图，
+    // 重新从配置里载入当前这一档，避免把 A 的改动顺手存成 B 的。
+    loadRowsForListRow(m_pluginList->currentRow());
+}
+
 void RuleEditDialog::loadRowsForListRow(int listRow)
 {
     m_table->setRowCount(0);
     m_curPlugin = -1;
+    // 「跟随默认」只对具体机器人有意义；先按档位定可见性，具体插件有没有配过后面再定能不能点
+    m_followBtn->setVisible(m_curAppid > 0);
+    m_followBtn->setEnabled(false);
     if (!m_page || listRow < 0 || listRow >= m_indexes.size()) return;
 
     m_curPlugin = m_indexes[listRow];
     const bool allowRename = m_page->ruleConfigAllowRename(m_curPlugin);
-    const QList<RuleConfigRow> rows = m_page->ruleConfigRows(m_curPlugin);
+    // 具体机器人档：启用类型 / 新指令名都只管这个号（新指令名按「跟默认的差异」存）
+    const bool botScoped   = (m_curAppid > 0);
+    // 是否已经有自己的一份配置（决定「跟随默认」按钮亮不亮）
+    m_followBtn->setEnabled(botScoped && m_page->hasBotRuleConfig(m_curPlugin, m_curAppid));
+
+    const QList<RuleConfigRow> rows = m_page->ruleConfigRows(m_curPlugin, m_curAppid);
     m_table->setRowCount(rows.size());
 
     for (int i = 0; i < rows.size(); ++i) {
@@ -173,11 +219,15 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
         m_table->setItem(i, ColKey, k);
 
         // 2 新指令名：可编辑，留空 = 不改名。旧版插件 → 这一列只读。
+        //   具体机器人档也能改：跟默认档一样就是「跟随默认」，不一样就是该号专用。
         QTableWidgetItem *n = new QTableWidgetItem(r.newKey);
         if (allowRename) {
             n->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-            n->setToolTip("留空 = 沿用原指令名。填了之后机器人用新名字触发；正文原样透传，"
-                          "插件从「命中原指令」参数/字段里判断该走哪条逻辑。");
+            n->setToolTip(botScoped
+                              ? "只对上面这个机器人生效。留空 = 这个号仍用**原指令名**（哪怕默认档改过名）；"
+                                "填成跟默认档一样 = 继续跟随默认（以后默认改名它也自动跟着改）。"
+                              : "留空 = 沿用原指令名。填了之后机器人用新名字触发；正文原样透传，"
+                                "插件从「命中原指令」参数/字段里判断该走哪条逻辑。");
         } else {
             n->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             n->setToolTip("这个插件是旧版（原生库没导出 onMessagev3；32 位 / Python / JS 是插件信息里没带 sdk），"
@@ -192,11 +242,27 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
         m_table->setItem(i, ColType, t);
     }
 
-    m_tip->setText(allowRename
-                       ? QString("共 %1 条指令；「启用类型」决定谁能用这条指令（默认全部人），新指令名留空 = 不改名。保存后立即生效，无需重载插件。")
-                             .arg(rows.size())
-                       : QString("共 %1 条指令；该插件是旧版（原生库没有 v3 入口，或插件信息里没带 sdk），只能改「启用类型」，不支持重命名。")
-                             .arg(rows.size()));
+    // 顶部提示：明确「现在改的是谁」
+    const QString scope = botScoped
+        ? QString("机器人「%1」：只管这个机器人的启用类型和新指令名，改完保存不影响别的机器人。")
+              .arg(m_botCombo->currentText())
+        : QString("默认（全部机器人）：所有没有单独配置过的机器人都跟这一套。");
+    if (!allowRename) {
+        m_tip->setText(scope + QString("\n共 %1 条指令；该插件是旧版（原生库没有 v3 入口，或插件信息里没带 sdk），"
+                                       "只能改「启用类型」，不支持重命名。").arg(rows.size()));
+    } else {
+        m_tip->setText(scope + QString("\n共 %1 条指令；「启用类型」决定谁能用这条指令（默认全部人），"
+                                       "新指令名留空 = 不改名。保存后立即生效，无需重载插件。").arg(rows.size()));
+    }
+}
+
+void RuleEditDialog::onFollowDefault()
+{
+    if (!m_page || m_curPlugin < 0 || m_curAppid <= 0) return;
+    m_page->clearBotRuleConfig(m_curPlugin, m_curAppid);
+    loadRowsForListRow(m_pluginList->currentRow());
+    m_tip->setText(QString("已删掉机器人「%1」的独立配置，重新跟随默认。")
+                       .arg(m_botCombo->currentText()));
 }
 
 void RuleEditDialog::onSave()
@@ -206,7 +272,8 @@ void RuleEditDialog::onSave()
         return;
     }
 
-    // 旧版插件不允许改名：即使列只读了，这里也再兜一层，防止脏值写进配置
+    // 旧版插件不允许改名：即使列只读了，这里也再兜一层，防止脏值写进配置。
+    // （具体机器人档现在也允许改名 —— 存的是「跟默认档的差异」，见 applyRuleConfigRows。）
     const bool allowRename = m_page && m_page->ruleConfigAllowRename(m_curPlugin);
 
     QList<RuleConfigRow> rows;
@@ -228,9 +295,12 @@ void RuleEditDialog::onSave()
         rows.append(r);
     }
 
-    m_page->applyRuleConfigRows(m_curPlugin, rows);
+    m_page->applyRuleConfigRows(m_curPlugin, rows, m_curAppid);
 
     const int keepRow = m_pluginList->currentRow();
     loadRowsForListRow(keepRow);   // 回显规整后的值
-    m_tip->setText(QString("已保存并立即生效，共 %1 条指令。").arg(rows.size()));
+    m_tip->setText(m_curAppid > 0
+                       ? QString("已保存并立即生效：机器人「%1」共 %2 条指令。其他机器人不受影响。")
+                             .arg(m_botCombo->currentText()).arg(rows.size())
+                       : QString("已保存并立即生效（默认，全部机器人），共 %1 条指令。").arg(rows.size()));
 }

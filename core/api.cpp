@@ -4664,7 +4664,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     // 插件侧的 pname 传的是**发起方裸 uuid**（展示标签一律以 '[' 开头）→ 按该插件**自己的**规则表
     // 把正文里的 [注册原名](...) 改写成改名后的指令（插件只认注册名，改不了这个）。
     // 框架 / AI / WebUI / 关键词匹配传的 "[某某|%1ms]" → uuid 空 → 正文一字不动，零副作用。
-    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname));
+    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname), m_info->appid_int);
 
     QString newtext;
     if(m_info->xxwb.isEmpty())
@@ -4712,7 +4712,8 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     }
 
     // 同 send_msgAsync：pname 是插件侧传的裸 uuid 时，按该插件把 [注册原名]() 改成改名后的指令
-    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname));
+    // （改名可以按机器人分开配 → 传本客户端的 appid，取这个号实际生效的名字）
+    text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname), m_info->appid_int);
 
     QString newtext;
     if(m_info->xxwb.isEmpty())

@@ -1719,7 +1719,7 @@ QString AppWindow::tools_fun(const QString &tool_name, const QString &args, cons
     return result;
 }
 
-bool matchRule(const Rule &rule, const MessageEvent &ev);
+bool matchRule(const Rule &rule, const MessageEvent &ev, int role, const QString &newKey) ;
 
 QString onMessageReceived2(const MessageEvent &msg,int i) {
 
@@ -1729,7 +1729,7 @@ QString onMessageReceived2(const MessageEvent &msg,int i) {
         QString reply;
         // 1. 优先按规则匹配
         for (const Rule &rule : std::as_const(m_pluginList[i].python.rules)) {
-            if (matchRule(rule, msg)) {
+            if (matchRule(rule, msg,1,rule.newKey)) {
                 // 调用规则对应的函数
                 py::object ret = rule.function(msg);
                 if (!ret.is_none() && py::isinstance<py::str>(ret)) {

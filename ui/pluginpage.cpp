@@ -196,10 +196,28 @@ void PluginItemWidget::updateInfo(const PluginInfo &info) {
         statusIndicator->setStyleSheet("background: #f38ba8; border-radius: 6px;");
 }
 
+// 指令配置的结构迁移（2026-10-20 起「按机器人区分」）：
+//   老：{ "<插件key>": [ 行... ] }
+//   新：{ "<插件key>": { "rows": [ 行... ], "bots": { "<appid>": { 指令 → {t,r} } } } }
+// 载入时统一包一层（里面一行都不动），存盘就按新结构写。
+static QJsonObject migrateRuleCfg(const QJsonObject &old)
+{
+    QJsonObject out;
+    for (auto it = old.constBegin(); it != old.constEnd(); ++it) {
+        QJsonObject w;
+        if (it.value().isArray()) w["rows"] = it.value().toArray();   // 老格式
+        else                      w = it.value().toObject();          // 新格式
+        out.insert(it.key(), w);
+    }
+    return out;
+}
+
 PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
 {
-    // 指令配置（勾选启用 / 重命名）要在插件开始载入之前就拿到，载入时才能套用
-    m_ruleCfg = g_config.value("plugin_rules").toObject();
+    // 指令配置（启用类型 / 重命名 / 每个机器人的权限覆盖）要在插件开始载入之前就拿到，
+    // 载入时才能套用「默认」那一档；按机器人的覆盖在匹配时现查 m_botRuleRole。
+    m_ruleCfg = migrateRuleCfg(g_config.value("plugin_rules").toObject());
+    rebuildBotRuleRoles();
 
     setupUi();
     initPython();
@@ -1113,6 +1131,22 @@ QStringList ruleRoleComboItems()
 int ruleRoleFromComboIndex(int i) { return i - 1; }
 int ruleRoleToComboIndex(int role) { return qBound(0, role + 1, ruleRoleComboItems().size() - 1); }
 
+// ==================== 插件自带的默认触发权限 ====================
+// 规则 JSON（get_plugin_info 里 equals/contains/… 的每一项）支持**可选**字段 "role"：
+//     {"key":"重启","fun":140713319494384,"role":1}
+// 取值与上面「启用类型」完全一致：-1 停用 / 0 全部人 / 1 超管 / 2 机器人管理 /
+//   3 群主 / 4 群管理 / 5 代管；语义也一样（写 N = 等级 <= N 的人都能触发）。
+// 没写（老插件）→ kRuleRoleAll，与改动前逐字节同行为。
+// 越界值（< -1 或 > 5）按「全部人」处理，免得插件写错一个数字把指令永久锁死。
+// ⚠ 优先级：**插件的默认值 < 用户在「编辑指令」里的设置**（applySavedRuleConfig 在后面套用，用户赢）。
+static int ruleRoleFromJson(const QJsonObject &o)
+{
+    if (!o.contains("role")) return kRuleRoleAll;
+    const int r = o.value("role").toInt(kRuleRoleAll);
+    if (r < kRuleRoleOff || r > 5) return kRuleRoleAll;
+    return r;
+}
+
 // pname 直接当「发起方 uuid」用：展示标签一律以 '[' 开头（"[插件名|%1ms]" / "[关键词匹配|%1ms]" …），
 // 插件侧传的是**裸 uuid**，不带 '[' —— 只看首字符就能区分，不用任何分隔符。
 QString senderUuidFromPname(const QString &pname)
@@ -1131,20 +1165,27 @@ QString pluginPnameText(const QString &uuid)
     return QString();
 }
 
-QString redirectPluginCmdsMarkdown(const QString &input, const QString &uuid)
+QString redirectPluginCmdsMarkdown(const QString &input, const QString &uuid, int appid)
 {
     if (input.isEmpty() || uuid.isEmpty()) return input;
     if (!input.contains(QLatin1Char('[')) || !input.contains(QLatin1Char('(')))
         return input;                       // 快速排除：正文里根本没有 markdown 链接
 
     // 1) 收集「注册原名 → 生效新名」
+    //    改名可以按机器人分开配 → 这里按 appid 取该机器人实际生效的那个（没配过就是默认档）。
     QHash<QString, QString> renames;
     for (const PluginInfo &p : std::as_const(m_pluginList)) {
         if (p.uuid != uuid) continue;
-        auto collect = [&renames](const auto &rules) {
+        const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
+        auto collect = [&renames, &cfgKey, appid](const auto &rules) {
             for (const auto &r : rules) {
-                if (r.newKey.isEmpty() || r.newKey == r.key) continue;
-                renames.insert(r.key, r.newKey);
+                QString newKey = r.newKey;
+                // appid <= 0 / 该机器人没配过 → 原样返回，等价于只看默认档
+                if (appid > 0 && pluginPage)
+                    newKey = pluginPage->effectiveNewKey(appid, cfgKey,
+                                                         static_cast<int>(r.type), r.key, newKey);
+                if (newKey.isEmpty() || newKey == r.key) continue;
+                renames.insert(r.key, newKey);
             }
         };
         if (p.type == 0)                     collect(p.python.rules);
@@ -1215,9 +1256,14 @@ static bool pyFuncWantsCmd(const py::object &fn)
 //   Python → 处理函数第 2 个参数；JS → on_message 第 3 个参数（funs ↔ cmds 一一对应）。
 //   没配过改名的插件走的是与改动前逐字节相同的路径（不拷贝、不重编码）。
 
-bool matchRule(const Rule &rule, const MessageEvent &ev) {
-    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
-    const QString key = ruleMatchKey(rule.key, rule.newKey);
+// role   = 这条指令在**当前这个机器人**下的启用类型（按机器人区分，见 botRuleOverrideOf）。
+// newKey = 同理的「生效新指令名」（空 = 不改名）。两者没单独配过的机器人拿到的就是规则自带的值，
+//          与改动前完全等价。
+// ⚠ newKey 只影响**匹配用的键**；Regex 规则平时直接用预编译好的 rule.regex（rule.newKey 那个），
+//   只有真的按机器人改过名时才临时编译一次（正则 + 按机器人改名是极冷门的组合，不值得为它建缓存）。
+bool matchRule(const Rule &rule, const MessageEvent &ev, int role, const QString &newKey) {
+    if (!ruleRoleMatched(role, ev.member_role)) return false;   // 停用 / 权限不够
+    const QString key = ruleMatchKey(rule.key, newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
@@ -1233,7 +1279,12 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
         return rule.caseSensitive ? msg.contains(key)
                                   : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
-
+        // 按机器人改过名 → 用它的新名现编正则；否则用插件载入时预编译的那个（零开销）
+        if (newKey != rule.newKey) {
+            QRegularExpression::PatternOptions opt = QRegularExpression::NoPatternOption;
+            if (!rule.caseSensitive) opt |= QRegularExpression::CaseInsensitiveOption;
+            return QRegularExpression(key, opt).match(msg).hasMatch();
+        }
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
@@ -1242,9 +1293,9 @@ bool matchRule(const Rule &rule, const MessageEvent &ev) {
     }
     return false;
 }
-bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
-    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
-    const QString key = ruleMatchKey(rule.key, rule.newKey);
+bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev, int role, const QString &newKey) {
+    if (!ruleRoleMatched(role, ev.member_role)) return false;   // 停用 / 权限不够
+    const QString key = ruleMatchKey(rule.key, newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
@@ -1260,7 +1311,12 @@ bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
         return rule.caseSensitive ? msg.contains(key)
                                   : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
-
+        // 按机器人改过名 → 用它的新名现编正则；否则用插件载入时预编译的那个（零开销）
+        if (newKey != rule.newKey) {
+            QRegularExpression::PatternOptions opt = QRegularExpression::NoPatternOption;
+            if (!rule.caseSensitive) opt |= QRegularExpression::CaseInsensitiveOption;
+            return QRegularExpression(key, opt).match(msg).hasMatch();
+        }
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
@@ -1269,9 +1325,9 @@ bool matchRule2(const Rule_Dll &rule, const MessageEvent &ev) {
     }
     return false;
 }
-bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
-    if (!ruleRoleMatched(rule.role, ev.member_role)) return false;   // 停用 / 权限不够
-    const QString key = ruleMatchKey(rule.key, rule.newKey);
+bool matchRule3(const Rule_js &rule, const MessageEvent &ev, int role, const QString &newKey) {
+    if (!ruleRoleMatched(role, ev.member_role)) return false;   // 停用 / 权限不够
+    const QString key = ruleMatchKey(rule.key, newKey);
     QString msg = ev.msg;
     switch (rule.type) {
     case MatchType::Equals:
@@ -1287,7 +1343,12 @@ bool matchRule3(const Rule_js &rule, const MessageEvent &ev) {
         return rule.caseSensitive ? msg.contains(key)
                                   : msg.contains(key, Qt::CaseInsensitive);
     case MatchType::Regex: {
-
+        // 按机器人改过名 → 用它的新名现编正则；否则用插件载入时预编译的那个（零开销）
+        if (newKey != rule.newKey) {
+            QRegularExpression::PatternOptions opt = QRegularExpression::NoPatternOption;
+            if (!rule.caseSensitive) opt |= QRegularExpression::CaseInsensitiveOption;
+            return QRegularExpression(key, opt).match(msg).hasMatch();
+        }
         return rule.regex.match(msg).hasMatch();  // const 操作，线程安全
     }
     case MatchType::event:
@@ -1321,8 +1382,16 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
             }
         };
 
+        // 该插件在配置表里的键（id 优先，空则名）——按机器人查启用类型要用它。
+        // 用**引用**而不是拷贝：dispatch 是每条消息都走的热路径。
+        const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
+
         for (const Rule &rule : std::as_const(p.python.rules)) {
-            if (matchRule(rule, msg)) {
+            int role = rule.role;
+            QString newKey = rule.newKey;      // 空 = 不改名
+            botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
+                              rule.key, role, newKey);
+            if (matchRule(rule, msg, role, newKey)) {
                 if (!gil) gil.emplace();   // 第一次命中才获取，循环内复用
 
                 // 正文一个字不动（用户实输就在 msg.msg 里）。这条指令的「生效命令词」
@@ -1331,7 +1400,7 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
                 // 兼容：老插件只写 1 个形参（def on_x(msg)）→ rule.wantsCmd=false，仍按 1 参调用。
                 py::object ret;
                 if (rule.wantsCmd) {
-                    const QString effCmd = ruleMatchKey(rule.key, rule.newKey);
+                    const QString effCmd = ruleMatchKey(rule.key, newKey);
                     ret = rule.function(msg, effCmd.toStdString());   // async 时返回协程对象
                 } else {
                     ret = rule.function(msg);                         // 老插件：1 参，同旧路径
@@ -1369,6 +1438,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 
     QByteArray utf8 = text.toUtf8();
     int _32=0;
+    // 每条消息最多获取一次：命中第一个 Python 插件时 emplace，本条消息的所有 Python 插件共用。
     std::optional<py::gil_scoped_acquire> gil;
     QJsonArray jsTargets;    // 本轮命中的 JS 插件（uuid + 命中规则名），遍历结束后合成**一帧**投给 node 宿主
     // 32 位易语言侧：把本轮要投的插件收集起来，最后随帧一起投一次。
@@ -1388,9 +1458,14 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
         }
         else if(p.type == 2) //收集命中的 32 位插件，遍历结束后随帧一起投递
         {
+            const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
             if(p.DLL.rules.size()>0){
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
-                    if (matchRule2(rule, msg)) {
+                    int role = rule.role;
+                    QString newKey = rule.newKey;
+                    botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
+                                      rule.key, role, newKey);
+                    if (matchRule2(rule, msg, role, newKey)) {
                         _32++;
                         // 命中即登记一条：插件标识 + 函数指针 + **生效命令词**（+ 一份用户实输兜底）。
                         // fun 是**32 位进程里的地址**（≤ 0x7FFFFFFF，double 能精确表示）；
@@ -1401,7 +1476,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                         one["fun_s"] = QString::number(rule.fun);
                         // cmd = **生效命令词**（界面上改过名就是新名、没改就是原名，绝不为空）：
                         // 易语言拿它去切帧正文里的参数；别用「注册原名」的长度切（改名后长度对不上）。
-                        one["cmd"]   = ruleMatchKey(rule.key, rule.newKey);
+                        one["cmd"]   = ruleMatchKey(rule.key, newKey);
                         one["text"]  = msg.msg;     // 用户实输原文（冗余，正文里也有；插件可自行忽略）
                         plugins32.append(one);
                     }
@@ -1425,11 +1500,16 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             bool hit = p.js.rules.isEmpty();
             QJsonArray funs;    // 命中的规则函数名（顺序与 cmds 一一对应）
             QJsonArray cmds;    // 对应的「生效命令词」；用户实输就在 data 的正文里，不用另传
+            const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
             for (const Rule_js &rule : std::as_const(p.js.rules)) {
-                if (!matchRule3(rule, msg)) continue;
+                int role = rule.role;
+                QString newKey = rule.newKey;
+                botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
+                                  rule.key, role, newKey);
+                if (!matchRule3(rule, msg, role, newKey)) continue;
                 hit = true;
                 funs.append(rule.fun);
-                cmds.append(ruleMatchKey(rule.key, rule.newKey));   // 改名=新名、没改=原名
+                cmds.append(ruleMatchKey(rule.key, newKey));   // 改名=新名、没改=原名
             }
             if (hit) {
                 QJsonObject item;
@@ -1452,12 +1532,17 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             // 三者按优先级取其一，插件导出哪个就走哪条，互不干扰。
             // v3 返回值攒在这里（命中多条用分隔行拼起来，与 Python 插件 return 文本的做法一致）
             QString dllReply;
+            const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
             if (p.DLL.onMessage3) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
-                    if (!matchRule2(rule, msg)) continue;
+                    int role = rule.role;
+                    QString newKey = rule.newKey;
+                    botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
+                                      rule.key, role, newKey);
+                    if (!matchRule2(rule, msg, role, newKey)) continue;
 
                     // 缓冲区显式存活到调用结束，别写成临时对象的 constData()
-                    const QByteArray effCmd = ruleMatchKey(rule.key, rule.newKey).toUtf8(); // 生效命令词（改名=新名）
+                    const QByteArray effCmd = ruleMatchKey(rule.key, newKey).toUtf8(); // 生效命令词（改名=新名）
                     // 返回值 = 插件想让机器人发的话：非空即代发（插件也可以照旧自己调 API 发，两种都行）。
                     // ⚠ 内存所有权：返回的字符串由**插件持有**（静态缓冲 / 字面量），框架只读、绝不释放。
                     const char *ret = p.DLL.onMessage3(utf8.constData(), rule.fun, effCmd.constData());
@@ -1469,7 +1554,11 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                 }
             } else if (p.DLL.onMessage2) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
-                    if (!matchRule2(rule, msg)) continue;
+                    int role = rule.role;
+                    QString newKey = rule.newKey;
+                    botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
+                                      rule.key, role, newKey);
+                    if (!matchRule2(rule, msg, role, newKey)) continue;
 
                     p.DLL.onMessage2(utf8.constData(), rule.fun);
                 }
@@ -1496,6 +1585,11 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
             AppendEventLog("[DLL] " + p.name + " on_message: unknown exception" ,0xff);
         }
     }
+
+    // Python 插件的 GIL 到这儿还掉：后面的 JS 投递 / 32 位桥接写块 / botnomsg 都是纯 C++，
+    // 可能阻塞。自由线程版要求线程在长时间不碰解释器时 detach，否则 GC 的 stop-the-world
+    // 会一直等这个线程。
+    gil.reset();
 
     // JS 插件：把本轮命中的插件（uuid + 各自命中的规则名）合成**一帧**投给 node 宿主，
     // 宿主按 uuid 逐个分发给对应 Worker，并把 funs 交给插件**直接执行**。
@@ -3152,6 +3246,7 @@ QString PluginPage::LoadPlugin_DLL(PluginInfo &info)
                     rule.type = matchType;
                     rule.key = key;
                     rule.fun = fun;
+                    rule.role = ruleRoleFromJson(obj2);   // 插件声明的默认触发权限（没写 = 全部人）
                     rule.caseSensitive = caseSensitive;
                     if (matchType == MatchType::Regex) {
                         QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
@@ -3415,6 +3510,7 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
             rule.type = matchType;
             rule.key = key;
             rule.fun = fun;
+            rule.role = ruleRoleFromJson(obj2);   // 插件声明的默认触发权限（没写 = 全部人）
             rule.caseSensitive = caseSensitive;
             if (matchType == MatchType::Regex) {
                 QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
@@ -3653,12 +3749,23 @@ event = _register_rule("event")
                         caseSensitive = cmd["case_sensitive"].cast<bool>();
                     }
 
+                    // 触发权限：可选字段 "role"（0 全部人 / 1 后台管理 / 2 机器人管理 /
+                    // 3 群主 / 4 群管理 / 5 代管）；没写 = 全部人，越界同样退回全部人
+                    int role = kRuleRoleAll;
+                    if (cmd.contains("role") && !cmd["role"].is_none()) {
+                        try {
+                            const int r = cmd["role"].cast<int>();
+                            if (r >= kRuleRoleOff && r <= 5) role = r;
+                        } catch (...) { role = kRuleRoleAll; }
+                    }
+
                     // 构造 Rule 对象
                     Rule rule;
                     rule.type = matchType;
                     rule.key = keyStr;
                     rule.function = funcObj;
                     rule.wantsCmd = pyFuncWantsCmd(funcObj);   // 2 个形参就传「生效命令词」，1 个不传
+                    rule.role = role;
                     rule.caseSensitive = caseSensitive;
 
                     if (matchType == MatchType::Regex) {
@@ -3765,12 +3872,23 @@ event = _register_rule("event")
                                 caseSensitive = ruleDict["case_sensitive"].cast<bool>();
                             }
 
+                            // 触发权限：可选字段 "role"（0 全部人 / 1 后台管理 / 2 机器人管理 /
+                            // 3 群主 / 4 群管理 / 5 代管）；没写 = 全部人，越界同样退回全部人
+                            int role = kRuleRoleAll;
+                            if (ruleDict.contains("role") && !ruleDict["role"].is_none()) {
+                                try {
+                                    const int r = ruleDict["role"].cast<int>();
+                                    if (r >= kRuleRoleOff && r <= 5) role = r;
+                                } catch (...) { role = kRuleRoleAll; }
+                            }
+
                             // 构造 Rule 对象
                             Rule rule;
                             rule.type = matchType;
                             rule.key = key;
                             rule.function = funcObj;
                             rule.wantsCmd = pyFuncWantsCmd(funcObj);   // 2 个形参就传「生效命令词」，1 个不传
+                            rule.role = role;
                             rule.caseSensitive = caseSensitive;
 
                             // 仅当类型是 Regex 时初始化正则表达式
@@ -3818,12 +3936,22 @@ event = _register_rule("event")
     }
 }
 
-// ==================== 指令配置（启用类型 / 重命名）存取 ====================
+// ==================== 指令配置（启用类型 / 重命名 / 按机器人）存取 ====================
 // 配置以「插件 id」为键，id 为空时退化成插件名，存放在 g_config["plugin_rules"]：
-//   { "<插件id或名>": [ {"t":匹配方式, "k":注册原指令, "n":新指令, "r":启用类型(-1/0..5)} ... ] }
-// ⚠ "r" 是 2026-10-15 起的新字段（原先只有 "e":是否启用 bool）。老配置读的时候按
-//   "e" 折算：true → 0（全部人可用）、false → -1（停用），保证升级后旧配置行为不变；
-//   写的时候 **两个都写**（"r" 给新版读，"e" 给降级回去的老版本读）。
+//   { "<插件id或名>": {
+//         "rows": [ {"t":匹配方式,"k":注册原指令,"n":新指令,"r":启用类型(-1/0..5)} ... ],  // 默认（全部机器人）
+//         "bots": { "<appid>": { "<注册原指令>": {"t":匹配方式,"r":启用类型,"n":新指令} } }  // 每个机器人的覆盖
+//     } }
+// 分层语义：
+//   · "rows"（默认档）**烧进规则对象**（rule.role / rule.newKey），插件载入时套用；
+//   · "bots" 覆盖**启用类型 + 新指令名**，匹配时按 ev.appid 现查（botRuleOverrideOf），
+//     没配过的机器人直接用规则自带值 → 与改动前逐字节相同、热路径零额外开销。
+//     ⚠ "bots" 里的 "n" **可以不存在**（= 跟随默认档的改名）；存在但为空串 = 这个号不改名。
+//       这样「默认把 ping 改成 乒乓」时，某个号仍能用原名 ping。
+// ⚠ 老配置（值是**数组**）在 PluginPage 构造时由 migrateRuleCfg() 包成 { "rows": [...] }，行为不变。
+// ⚠ 行里的 "r" 是 2026-10-15 起的新字段（原先只有 "e":是否启用 bool）。老配置读的时候按
+//   "e" 折算：true → 0（全部人可用）、false → -1（停用）；写的时候 **两个都写**（"r" 给新版读，
+//   "e" 给降级回去的老版本读）。
 // ⚠ 这里只存「差异」：没配过的插件根本不会出现在这张表里。
 static inline QString ruleCfgKeyOf(const PluginInfo &info)
 {
@@ -3861,7 +3989,8 @@ void PluginPage::applySavedRuleConfig(PluginInfo &info)
 {
     const QString key = ruleCfgKeyOf(info);
     if (key.isEmpty()) return;
-    const QJsonArray arr = m_ruleCfg.value(key).toArray();
+    // 只套「默认」那一档（"rows"）。按机器人的 "bots" 不烧进规则对象 —— 匹配时现查。
+    const QJsonArray arr = m_ruleCfg.value(key).toObject().value("rows").toArray();
     if (arr.isEmpty()) return;
 
     // 旧版插件不允许改名 → 配置里残留的新指令名一律不生效（启用/停用照常套用）。
@@ -3874,6 +4003,65 @@ void PluginPage::applySavedRuleConfig(PluginInfo &info)
     case 3:          applyRowsToRules(info.js.rules,     arr); break;
     default: break;
     }
+}
+
+// ---- 「按机器人」的覆盖：热路径缓存 ----
+// 配置里 "bots" 是 JSON，匹配每条消息都去翻 QJsonObject 太贵，所以解析成
+//   m_botRuleRole: appid → 插件key → 注册原指令 → {匹配方式, 启用类型, 是否覆盖改名, 新指令名}
+// 只在「载入配置 / 保存配置」时重建一次（都是用户动作，频率极低）。
+void PluginPage::rebuildBotRuleRoles()
+{
+    QWriteLocker locker(&m_botRoleLock);   // dispatch 在工作线程上读，这里整表重建
+    m_botRuleRole.clear();
+    for (auto it = m_ruleCfg.constBegin(); it != m_ruleCfg.constEnd(); ++it) {
+        const QString pluginKey = it.key();
+        const QJsonObject bots = it.value().toObject().value("bots").toObject();
+        for (auto b = bots.constBegin(); b != bots.constEnd(); ++b) {
+            bool ok = false;
+            const int appid = b.key().toInt(&ok);
+            if (!ok || appid <= 0) continue;          // 0 = 默认档，不参与覆盖
+            auto &dst = m_botRuleRole[appid][pluginKey];
+            const QJsonObject ruleObjs = b.value().toObject();
+            for (auto r = ruleObjs.constBegin(); r != ruleObjs.constEnd(); ++r) {
+                const QJsonObject ro = r.value().toObject();
+                BotRuleOverride ov;
+                ov.type      = ro.value("t").toInt(0);
+                ov.role      = ro.value("r").toInt(kRuleRoleAll);
+                ov.hasNewKey = ro.contains("n");       // 有 "n" 才是覆盖（空串 = 这个号不改名）
+                ov.newKey    = ro.value("n").toString();
+                dst.insert(r.key(), ov);
+            }
+        }
+    }
+}
+
+// 某机器人下某条指令的「启用类型 + 新指令名」。没单独配过 → 原样返回 baseRole / baseNewKey。
+// ⚠ 每条消息的每个插件每条规则都会走这里，所以：
+//   · appid <= 0 / 缓存空 → 直接返回，零分配；
+//   · 查表用**规则原键**（不拼字符串，避免热路径上 QString 分配）。
+void PluginPage::botRuleOverrideOf(int appid, const QString &pluginKey, int type,
+                                   const QString &key, int &role, QString &newKey) const
+{
+    if (appid <= 0 || m_botRuleRole.isEmpty()) return;   // 无锁快路径（绝大多数消息走这里）
+    QReadLocker locker(&m_botRoleLock);
+    const auto b = m_botRuleRole.constFind(appid);
+    if (b == m_botRuleRole.constEnd()) return;      // 这个机器人完全没配过
+    const auto p = b->constFind(pluginKey);
+    if (p == b->constEnd()) return;
+    const auto r = p->constFind(key);
+    if (r == p->constEnd() || r->type != type) return;   // 同名不同匹配方式不串味
+    role = r->role;
+    if (r->hasNewKey) newKey = r->newKey;
+
+}
+
+QString PluginPage::effectiveNewKey(int appid, const QString &pluginKey, int type,
+                                    const QString &key, const QString &baseNewKey) const
+{
+    QString newKey = baseNewKey;
+    int role = kRuleRoleAll;          // 这里不关心启用类型，只为复用同一次查表
+    botRuleOverrideOf(appid, pluginKey, type, key, role, newKey);
+    return newKey;
 }
 
 // ---- 给 RuleEditDialog 用的只读视图 / 提交接口 ----
@@ -3897,19 +4085,65 @@ QString PluginPage::ruleConfigPluginLabel(int index) const
     return QString("%1  [%2]").arg(p.name, pluginTypeName(p.type));
 }
 
-QList<RuleConfigRow> PluginPage::ruleConfigRows(int index) const
+QList<RuleConfigRow> PluginPage::ruleConfigRows(int index, int appid) const
 {
     QList<RuleConfigRow> out;
     if (index < 0 || index >= m_pluginList.size()) return out;
     const PluginInfo &p = m_pluginList[index];
-    auto push = [&out](const auto &rules) {
-        for (const auto &r : rules)
-            out.append(RuleConfigRow{ static_cast<int>(r.type), r.key, r.newKey, r.role });
+    const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
+    // appid > 0 时把该机器人的覆盖叠上去（启用类型 + 新指令名）；
+    // 没配过 → 拿到的就是默认值（= 它现在实际跑的样子）
+    auto push = [this, &out, &cfgKey, appid](const auto &rules) {
+        for (const auto &r : rules) {
+            RuleConfigRow row{ static_cast<int>(r.type), r.key, r.newKey, r.role };
+            if (appid > 0) {
+                int role = r.role;
+                QString newKey = r.newKey;
+                botRuleOverrideOf(appid, cfgKey, row.type, row.key, role, newKey);
+                row.role   = role;
+                row.newKey = newKey;
+            }
+            out.append(row);
+        }
     };
     if (p.type == 0)                       push(p.python.rules);
     else if (p.type == 1 || p.type == 2)   push(p.DLL.rules);
     else if (p.type == 3)                  push(p.js.rules);
     return out;
+}
+
+// 机器人下拉：第 0 项固定是「默认（全部机器人）」、appid = 0，后面每个账号一条。
+QStringList PluginPage::ruleConfigBotLabels() const
+{
+    QStringList out;
+    out << "默认（全部机器人）";
+    for (const auto &acc : std::as_const(m_accounts)) {
+        if (!acc) continue;
+        out << (acc->nickname.isEmpty() ? QString::number(acc->appid_int) : acc->nickname);
+    }
+    return out;
+}
+
+QList<int> PluginPage::ruleConfigBotAppids() const
+{
+    QList<int> out;
+    out << 0;
+    for (const auto &acc : std::as_const(m_accounts)) {
+        if (!acc) continue;
+        out << acc->appid_int;
+    }
+    return out;
+}
+
+bool PluginPage::hasBotRuleConfig(int index, int appid) const
+{
+    if (appid <= 0 || index < 0 || index >= m_pluginList.size()) return false;
+    const PluginInfo &p = m_pluginList[index];
+    const QString &cfgKey = p.id.isEmpty() ? p.name : p.id;
+    QReadLocker locker(&m_botRoleLock);
+    const auto b = m_botRuleRole.constFind(appid);
+    if (b == m_botRuleRole.constEnd()) return false;
+    return b->contains(cfgKey);
 }
 
 // 只有「新版插件」才允许改名。新版标志按插件类型各看各的：
@@ -3930,30 +4164,83 @@ bool PluginPage::ruleConfigAllowRename(int index) const
     return true;
 }
 
-void PluginPage::applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows)
+void PluginPage::applyRuleConfigRows(int index, const QList<RuleConfigRow> &rows, int appid)
 {
     if (index < 0 || index >= m_pluginList.size()) return;
     PluginInfo &p = m_pluginList[index];
     const QString key = ruleCfgKeyOf(p);
     if (key.isEmpty()) return;
 
-    // 1) 整表覆盖（UI 就是全量提交）
-    QJsonArray arr;
-    for (const RuleConfigRow &row : rows) {
-        QJsonObject o;
-        o["t"] = row.type;
-        o["k"] = row.key;
-        o["n"] = row.newKey;
-        o["r"] = row.role;                      // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
-        o["e"] = (row.role > kRuleRoleOff);      // 兼容老版本：非停用即「启用」
-        arr.append(o);
+    QJsonObject cfg = m_ruleCfg.value(key).toObject();
+
+    if (appid <= 0) {
+        // ---- 默认档（全部机器人）：整表覆盖 ----
+        QJsonArray arr;
+        for (const RuleConfigRow &row : rows) {
+            QJsonObject o;
+            o["t"] = row.type;
+            o["k"] = row.key;
+            o["n"] = row.newKey;
+            o["r"] = row.role;                      // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
+            o["e"] = (row.role > kRuleRoleOff);      // 兼容老版本：非停用即「启用」
+            arr.append(o);
+        }
+        cfg["rows"] = arr;
+        m_ruleCfg[key] = cfg;
+
+        rebuildBotRuleRoles();
+        applySavedRuleConfig(p);   // 默认档是烧进规则对象的 → 立刻对活体生效，不必重载插件
+    } else {
+        // ---- 单个机器人：存**启用类型 + 新指令名** ----
+        // 键 = 插件注册的原指令；值 = { t:匹配方式, r:启用类型, n:新指令名 }
+        // 改名按「相对默认的差异」存：跟默认档一样就**不写 "n"**（继续跟随默认，默认以后改了它也跟着变）；
+        // 不一样才写 —— 写空串表示「这个号不改名」（默认把 ping 改成乒乓，这个号仍用 ping）。
+        QHash<QString, QString> defaultNewKey;
+        const QJsonArray defRows = cfg.value("rows").toArray();
+        for (const QJsonValue &v : defRows) {
+            const QJsonObject o = v.toObject();
+            defaultNewKey.insert(o.value("k").toString(), o.value("n").toString());
+        }
+        const bool allowRename = ruleConfigAllowRename(index);
+        QJsonObject one;
+        for (const RuleConfigRow &row : rows) {
+            QJsonObject o;
+            o["t"] = row.type;
+            o["r"] = row.role;
+            if (allowRename) {
+                const QString nk = (row.newKey == row.key) ? QString() : row.newKey;
+                if (nk != defaultNewKey.value(row.key)) o["n"] = nk;
+            }
+            one[row.key] = o;
+        }
+        QJsonObject bots = cfg.value("bots").toObject();
+        bots[QString::number(appid)] = one;
+        cfg["bots"] = bots;
+        m_ruleCfg[key] = cfg;
+
+        rebuildBotRuleRoles();     // 覆盖是匹配时现查的 → 只需刷新缓存，不用碰规则对象
     }
-    m_ruleCfg[key] = arr;
 
-    // 2) 立即对活体生效，不必重载插件
-    applySavedRuleConfig(p);
+    savePlugins();   // 落盘
+}
 
-    // 3) 落盘
+// 删掉某机器人的覆盖 → 该机器人重新跟随「默认」。
+void PluginPage::clearBotRuleConfig(int index, int appid)
+{
+    if (appid <= 0 || index < 0 || index >= m_pluginList.size()) return;
+    const QString key = ruleCfgKeyOf(m_pluginList[index]);
+    if (key.isEmpty()) return;
+
+    QJsonObject cfg = m_ruleCfg.value(key).toObject();
+    QJsonObject bots = cfg.value("bots").toObject();
+    const QString akey = QString::number(appid);
+    if (!bots.contains(akey)) return;
+
+    bots.remove(akey);
+    cfg["bots"] = bots;
+    m_ruleCfg[key] = cfg;
+
+    rebuildBotRuleRoles();
     savePlugins();
 }
 
@@ -4046,6 +4333,7 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
             rule.type = matchType;
             rule.key = key;
             rule.fun = funName;
+            rule.role = ruleRoleFromJson(obj2);   // 插件声明的默认触发权限（没写 = 全部人）
             rule.caseSensitive = caseSensitive;
             if (matchType == MatchType::Regex) {
                 QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
