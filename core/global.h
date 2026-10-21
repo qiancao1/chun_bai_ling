@@ -147,6 +147,14 @@ extern ScheduleConfigWidget *schedule;
 extern int miaomiao32;
 extern int miaomiao;
 extern LmdbKV *cache_db;
+// 上传富媒体（语音 / 视频 / 文件）时，是否计算整文件 md5 / sha1 / md5_10m —— 即
+// upload_prepare 请求里的那三个参数。
+//   · false（默认）：**这三个参数不传也能正常上传**（平台只拿它们做秒传/去重提示），
+//     省掉 2~3 遍整文件扫描（大文件几百 MB，这几遍纯烧 CPU，还占着发起上传的线程）。
+//   · 腾讯并不校验/采信我们传上去的 md5（它自己算），所以视频 ≤80M 的快传路径同样不用算 ——
+//     part_finish 那个 md5 字段在开关关着时也直接省掉，不会失败。
+//   · 想整体恢复老行为：把 global.cpp 里的默认值改成 true 即可，算与传两处都跟着它走。
+extern bool g_upload_calc_hash;
 extern LmdbKV *aidb;
 extern LmdbKV *dsdb;
 extern LmdbKV *accdb;

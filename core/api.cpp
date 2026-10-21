@@ -1446,7 +1446,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 if (!firstProcessed) {
                     firstProcessed = true;
 
-                    QString cacheKey ="imageA_" + fileMd5;
+                    QString cacheKey = m_info->appid + ":imageA_" + fileMd5;
                     bool cacheValid = false;
                     QString cachedUrl;
 
@@ -2921,16 +2921,21 @@ void QQBotClient::uploadRichMediaAsync(int targetType, const QString &openid, in
     if (!onDone) return;
     const qint64 fileSize = data.size();
 
-    // 2. 计算哈希值（本地摘要，微秒~毫秒级，留在当前线程）
-    QCryptographicHash md5Hash(QCryptographicHash::Md5);
-    md5Hash.addData(data);
-    const QString md5 = md5Hash.result().toHex();
-    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
-    sha1Hash.addData(data);
-    const QString sha1 = sha1Hash.result().toHex();
-    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
-    md5_10mHash.addData(data.left(10 * 1024 * 1024));
-    const QString md5_10m = md5_10mHash.result().toHex();
+    // 2. 计算哈希值 —— upload_prepare 的 md5/sha1/md5_10m 是可选参数，不传也能正常上传，
+    //    所以由全局开关 g_upload_calc_hash 控制（默认关）。腾讯并不校验/采信我们传的 md5
+    //    （它自己算），小视频也不例外 —— 关着时连整文件 md5 都不算。
+    QString md5, sha1, md5_10m;
+    if (g_upload_calc_hash) {
+        QCryptographicHash md5Hash(QCryptographicHash::Md5);
+        md5Hash.addData(data);
+        md5 = md5Hash.result().toHex();
+        QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
+        sha1Hash.addData(data);
+        sha1 = sha1Hash.result().toHex();
+        QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+        md5_10mHash.addData(data.left(10 * 1024 * 1024));
+        md5_10m = md5_10mHash.result().toHex();
+    }
     QString name = filename;
     if(name.isEmpty())
         name="文件.bin";
@@ -2944,14 +2949,16 @@ void QQBotClient::uploadRichMediaAsync(int targetType, const QString &openid, in
     }
 
     // 3. prepare：声明真实大小（有多大传多大）
-
     QJsonObject prepJson;
     prepJson["file_type"] = fileType;
     prepJson["file_name"] = name;
     prepJson["file_size"] = (qint64)fileSize;
-    prepJson["md5"]       = md5;
-    prepJson["sha1"]      = sha1;
-    prepJson["md5_10m"]   = md5_10m;
+    // 开关关着 → 三个摘要参数整组不传（平台当没给，照常上传）
+    if (g_upload_calc_hash) {
+        prepJson["md5"]     = md5;
+        prepJson["sha1"]    = sha1;
+        prepJson["md5_10m"] = md5_10m;
+    }
 
     auto job = std::make_shared<RichUploadJob>();
     job->appid      = m_info->appid_int;
@@ -2993,9 +3000,12 @@ void QQBotClient::uploadSmallVideoAsync(int targetType, const QString &openid, c
     prepJson["file_type"] = 2;
     prepJson["file_name"] = filename;
     prepJson["file_size"] = (qint64)data.size();
-    prepJson["md5"]       = md5;
-    prepJson["sha1"]      = sha1;
-    prepJson["md5_10m"]   = md5_10m;
+    // 摘要参数按全局开关传（默认不传）；下面 part_finish 同理，md5 空着就不塞这个字段
+    if (g_upload_calc_hash) {
+        prepJson["md5"]     = md5;
+        prepJson["sha1"]    = sha1;
+        prepJson["md5_10m"] = md5_10m;
+    }
 
     auto job = std::make_shared<SmallVideoJob>();
     job->appid      = m_info->appid_int;
@@ -3059,7 +3069,10 @@ void QQBotClient::smallVideoSubmit(std::shared_ptr<SmallVideoJob> job)
     finJson["upload_id"]  = job->uploadId;
     finJson["part_index"] = job->partIndex;
     finJson["block_size"] = job->data.size();
-    finJson["md5"]        = job->md5;
+    // md5 是「分片摘要」，但腾讯不采信我们给的值（它自己算）→ 开关关着时不传；
+    // 空串别硬塞（格式非法），直接省掉这个字段
+    if (!job->md5.isEmpty())
+        finJson["md5"] = job->md5;
     PostAsync(job->finishUrl, finJson, QString(), 30000,
         onMedia(this, job->appid, [this, job](const QString &, QNetworkReply::NetworkError) {
             auto fr = std::make_shared<FilesRegJob>();
@@ -3818,11 +3831,17 @@ static QStringList mediaCachedInfos(const QString &cached)
 //   · 1 条（整文件 / 单段）与 N 条（真多段）同一个格式，读取侧按 "||" 拆开逐条重发
 //   · 有段失败 → 不写（免得把半截音频缓存下来）
 //   · expire<=0（平台没给 ttl）→ 不写（写了也立刻判过期）
-static void putMediaUploadCache(const QString &mediaType, const QString &fileMd5,
+// ⚠ key 必须以 appid 开头（2026-10-21）：
+//   上传接口返回的 <file_info> 是**跟着上传它的机器人账号走的** —— 里面嵌着该 appid 的
+//   file_uuid / file_id / 权限串，拿去给另一个 appid 发，平台直接判无效（表现：发送失败、
+//   卡住、或者被当成非法文件）。同一份本地文件在 A 号传过，B 号绝对不能复用这条缓存。
+//   所以库里所有上传缓存的键统一是 "<appid>:<类型>_<文件指纹>"，缺了 appid 就是跨号串号。
+static void putMediaUploadCache(const QString &appid, const QString &mediaType, const QString &fileMd5,
                                 const QStringList &infos, qint64 expire, bool allOk)
 {
     if (!cache_db || fileMd5.isEmpty() || !allOk || infos.isEmpty() || expire <= 0) return;
-    const QString key = mediaType + QLatin1Char('_') + fileMd5;   // 用 + 拼接，避免 arg 二次解析 '%'
+    // 用 + 拼接，避免 arg 二次解析 '%'
+    const QString key = appid + QLatin1Char(':') + mediaType + QLatin1Char('_') + fileMd5;
     cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
 }
 
@@ -3972,7 +3991,8 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
     }
     // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
     if (cache_db && !tc->fileMd5.isEmpty()) {
-        const QString cacheKey = mediaType + QLatin1Char('_') + tc->fileMd5;
+        // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效（见 putMediaUploadCache 注释）
+        const QString cacheKey = QString::number(st->appid) + QLatin1Char(':') + mediaType + QLatin1Char('_') + tc->fileMd5;
         // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
         tc->cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
         if (!tc->cachedInfos.isEmpty())
@@ -4098,7 +4118,7 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
     if (!clientAlive(this, st->appid)) return;
     if (job->idx >= job->paths.size()) {
         // 全部段处理完 → 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
-        putMediaUploadCache(tc->mediaType, tc->fileMd5, tc->segInfos, tc->segExpire, tc->segAllOk);
+        putMediaUploadCache(QString::number(st->appid), tc->mediaType, tc->fileMd5, tc->segInfos, tc->segExpire, tc->segAllOk);
         mediaChainFinishTag(st, tc);
         return;
     }
@@ -4395,7 +4415,9 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
         }
         // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
         if (cache_db && !fileMd5.isEmpty()) {
-            QString cacheKey = mediaType + QLatin1Char('_') + fileMd5;
+            // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效
+            //   账号标识与异步链同一口径（appid_int），否则同一文件走同步/异步两条路会各存一份、互不命中
+            QString cacheKey = QString::number(m_info->appid_int) + QLatin1Char(':') + mediaType + QLatin1Char('_') + fileMd5;
             // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
             cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
             if (!cachedInfos.isEmpty())
@@ -4579,7 +4601,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             }
 
             // 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
-            putMediaUploadCache(mediaType, fileMd5, segInfos, segExpire, segAllOk);
+            putMediaUploadCache(QString::number(m_info->appid_int), mediaType, fileMd5, segInfos, segExpire, segAllOk);
         }else{
             // 缓存命中：1 条 = 整文件 / 单段；N 条 = 上次切好的多段 → 逐条原样重发
             QStringList infos;

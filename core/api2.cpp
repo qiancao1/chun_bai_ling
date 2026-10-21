@@ -220,18 +220,23 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     qint64 fileSize = data.size();
     ok=false;
 
-    // 2. 计算哈希值
-    QCryptographicHash md5Hash(QCryptographicHash::Md5);
-    md5Hash.addData(data);
-    md5 = md5Hash.result().toHex();
-    QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
-    sha1Hash.addData(data);
-    QString sha1 = sha1Hash.result().toHex();
-    int tenM = 10 * 1024 * 1024;
-    QByteArray first10M = data.left(tenM);
-    QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
-    md5_10mHash.addData(first10M);
-    QString md5_10m = md5_10mHash.result().toHex();
+    // 2. 计算哈希值（upload_prepare 的 md5/sha1/md5_10m 是可选参数，不传也能正常上传）
+    //    → 由全局开关 g_upload_calc_hash 控制，默认关：语音/文件/视频全都省掉整文件扫描
+    //    （腾讯并不校验/不采信我们传上去的 md5，它只当秒传提示用，算它纯属白烧 CPU）
+    QString sha1, md5_10m;
+    if (g_upload_calc_hash) {
+        QCryptographicHash md5Hash(QCryptographicHash::Md5);
+        md5Hash.addData(data);
+        md5 = md5Hash.result().toHex();
+        QCryptographicHash sha1Hash(QCryptographicHash::Sha1);
+        sha1Hash.addData(data);
+        sha1 = sha1Hash.result().toHex();
+        QCryptographicHash md5_10mHash(QCryptographicHash::Md5);
+        md5_10mHash.addData(data.left(10 * 1024 * 1024));
+        md5_10m = md5_10mHash.result().toHex();
+    } else {
+        md5.clear();
+    }
 
     // 视频分两路：
     //   ≤80M → uploadSmallVideo：prepare 固定申请 1K（返回 1 个分片）→ 整段数据写入 put 链接 →
@@ -249,9 +254,12 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     prepJson["file_type"] = fileType;
     prepJson["file_name"] = filename;
     prepJson["file_size"] = (qint64)fileSize;
-    prepJson["md5"] = md5;
-    prepJson["sha1"] = sha1;
-    prepJson["md5_10m"] = md5_10m;
+    // 三个摘要参数是「秒传/去重」用的可选项：开关关着就整组不传（平台当没给，照常上传）
+    if (g_upload_calc_hash) {
+        prepJson["md5"]     = md5;
+        prepJson["sha1"]    = sha1;
+        prepJson["md5_10m"] = md5_10m;
+    }
     //prepJson["block_size"] = fileSize;
     QString url = get_url(targetType, openid, "upload_prepare");
 
@@ -492,9 +500,12 @@ QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
     prepJson["file_type"] = 2;
     prepJson["file_name"] = filename;
     prepJson["file_size"] = (qint64)1024;
-    prepJson["md5"]     = md5;
-    prepJson["sha1"]    = sha1;
-    prepJson["md5_10m"] = md5_10m;
+    // 摘要参数按全局开关传（默认不传）；下面 part_finish 同理，md5 空着就不塞这个字段
+    if (g_upload_calc_hash) {
+        prepJson["md5"]     = md5;
+        prepJson["sha1"]    = sha1;
+        prepJson["md5_10m"] = md5_10m;
+    }
     QString response = PostSync(get_url(targetType, openid, "upload_prepare"), prepJson, QString(), 30000);
     if (response.isEmpty()) return QString();
     QJsonDocument respDoc = QJsonDocument::fromJson(response.toUtf8());
@@ -532,7 +543,10 @@ QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
     finJson["upload_id"]  = upload_id;
     finJson["part_index"] = partIndex;
     finJson["block_size"] = fileSize;
-    finJson["md5"]        = md5;
+    // md5 是「分片摘要」，但腾讯并不采信我们给的值（它自己算），开关关着时不传也不会失败；
+    // 空串别硬塞进去（格式非法），直接省掉这个字段
+    if (!md5.isEmpty())
+        finJson["md5"] = md5;
     PostSync(get_url(targetType, openid, "upload_part_finish"), finJson, QString(), 30000);
 
     // 4. files 注册：超时循环重试

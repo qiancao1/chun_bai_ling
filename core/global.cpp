@@ -37,6 +37,10 @@ bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
 QString g_neiw;
+// 上传时算不算整文件 md5/sha1/md5_10m（upload_prepare 的可选参数）。默认关：这三个参数不传也能传。
+// 腾讯不采信我们传的 md5（它自己算），所以小视频快传的 part_finish md5 也一起省。
+// ⚠ 以后要恢复老行为只改这里。
+bool g_upload_calc_hash = true;
 // 商店货币名：默认「铃铛」。改这一处 = 整套商店的指令词与文案单位一起变。
 QString g_currency_name = QStringLiteral("铃铛");
 // 看一次广告给多少积分（商店定价基准：price 一般取它的整数倍）。广告系统接进来后读这个值。
