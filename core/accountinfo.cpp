@@ -147,7 +147,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.tq_ychf = obj["tq_ychf"].toInt();
     info.tqhy = obj["tqhy"].toString();
     info.rq_ychf=obj["rq_ychf"].toInt();
-    info.ychfwcl = obj["ychfwcl"].toBool();
+    info.ychfwcl = obj["ychfwcl"].toBool(true);
     info.message_received = obj["message_received"].toInt();
     info.message_sent = obj["message_sent"].toInt();
 

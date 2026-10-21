@@ -154,6 +154,19 @@ class QQApi:
                               "false" if wait else "true",   # _6：默认异步
                               None)
 
+    # ---------- 旧名字：兼容老插件（台风查询 / 舒尔特方格训练 等都在调） ----------
+    # 语义与 send_messageEx / send_message 完全一致（默认异步、调完立刻返回 {}），
+    # 只是少了 wait 参数。新插件请直接用 send_messageEx。
+    def send_msgEx(self, msg: qq_api.MessageEvent, text: str,
+                   is_wakeup: bool = False, wait: bool = False) -> Dict:
+        """发送消息（传入 MessageEvent）。等同 send_messageEx。"""
+        return self.send_messageEx(msg, text, is_wakeup, wait)
+
+    def send_msg(self, appid: int, type_: int, openid: str, text: str,
+                 msgid: str = "", is_wakeup: bool = False, wait: bool = False) -> Dict:
+        """发送普通消息。等同 send_message。"""
+        return self.send_message(appid, type_, openid, text, msgid, is_wakeup, wait)
+
     async def send_message_async(self, appid: int, type_: int, openid: str, text: str,
                                  msgid: str = "", is_wakeup: bool = False) -> Dict:
         """**真异步**发送：等框架的回调回来，再继续执行后面的 py 代码。
