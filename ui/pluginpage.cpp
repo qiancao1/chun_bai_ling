@@ -1785,6 +1785,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                         one["cmd"]   = ruleMatchKey(rule.key, newKey);
                         one["text"]  = msg.msg;     // 用户实输原文（冗余，正文里也有；插件可自行忽略）
                         plugins32.append(one);
+                        break;
                     }
                 }
             }else{
@@ -1816,6 +1817,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                 hit = true;
                 funs.append(rule.fun);
                 cmds.append(ruleMatchKey(rule.key, newKey));   // 改名=新名、没改=原名
+                break;
             }
             if (hit) {
                 QJsonObject item;
@@ -1857,6 +1859,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                         if (dllReply.isEmpty()) dllReply = s;
                         else dllReply += "\n---\n" + s;
                     }
+                    break;
                 }
             } else if (p.DLL.onMessage2) {
                 for (const Rule_Dll &rule : std::as_const(p.DLL.rules)) {
@@ -1867,6 +1870,7 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                     if (!matchRule2(rule, msg, role, newKey)) continue;
 
                     p.DLL.onMessage2(utf8.constData(), rule.fun);
+                    break;
                 }
             }
 
