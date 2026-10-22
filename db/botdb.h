@@ -123,6 +123,8 @@ public:
     QList<QString> getAllGroupIds();
     uint32_t getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc=false);
     uint32_t getOrUpdateUser(const QString &openid, QString &name);//不能删
+    // 同上，额外带出审核后的昵称 review_name（可能为空，没审核过就是空串）
+    uint32_t getOrUpdateUser(const QString &openid, QString &name, QString &review_name);
     bool getUserBySeqId(uint32_t seq_id, UserRecord &outRecord);
 
     bool updateUserBySeqId(uint32_t seq_id, const UserRecord &newRecord);

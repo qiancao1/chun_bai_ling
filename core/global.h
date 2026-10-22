@@ -26,6 +26,7 @@
 #include "blacklistpage.h"
 #include "homepage.h"
 #include "keywordpunishconfigwidget.h"
+#include "materialwidget.h"
 #include "nickreviewwidget.h"
 #include "pluginpage.h"
 #include "scheduleconfigwidget.h"
@@ -106,6 +107,8 @@ struct cnb_data{
 
 
 extern NickReviewWidget *m_nickReviewWidget;
+// 「内置功能 → 素材」页：管理当前机器人的 Markdown 图片素材（平台 /v2/media-images）
+extern MaterialWidget *material_ui;
 extern QString g_admin;
 extern QString g_ip;
 extern QListWidget *robotListWidget;

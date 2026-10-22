@@ -200,7 +200,6 @@ class PluginMarketWindow : public QDialog {
 public:
     explicit PluginMarketWindow(QWidget *parent = nullptr);
     ~PluginMarketWindow();
-
 private slots:
     void refreshList();
     void onSearchChanged(const QString &text);
@@ -230,10 +229,19 @@ private:
     QLabel *m_statusLabel;
 
 
+    // Tab 下标：**必须与 setupUI() 里 tabBar->addTab() 的顺序严格一致**，
+    // 以后加 tab / 调顺序只改这里，不要再在过滤逻辑里写裸数字（1 / 2 那种）。
+    enum MarketTab {
+        TabAvailable = 0,   // 可用插件：市场全部
+        TabNotInstalled,    // 未安装：市场里有、本机没装
+        TabInstalled,       // 已安装
+        TabHasUpdate        // 可更新
+    };
+
     QString m_currentCategory;
     QString m_plugin_type_str;
     QString m_currentKeyword;
-    int m_currentTabIndex;      // 0=可用,1=已安装,2=可更新
+    int m_currentTabIndex;      // MarketTab 之一
     int Installed_type=0;
     QNetworkAccessManager *m_networkManager;
     bool m_isLoading;

@@ -40,6 +40,14 @@ using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)
 //   outurl     ：加过时间戳的 raw_url（只有走 prepare/finish/files 的本地文件才有）
 using MediaUploadDone = std::function<void(const QString &result, qint64 expireTime,
                                            const QString &md5, bool ok, const QString &outurl)>;
+
+// 「上传图片素材」一条龙（prepare → PUT COS → complete）的回调。
+//   ok    ：成败
+//   info  ：成功时 = complete 的返回体（image_id / url / ttl / preview_url）；
+//           失败时可能带平台原始返回（便于界面展示），也可能为空
+//   error ：失败原因，已翻译成一句人话（可直接弹给用户）；成功时为空
+// ⚠ 回调在 NetManager 的线程池线程执行，UI 侧必须 QMetaObject::invokeMethod 投回主线程。
+using MediaImageDone = std::function<void(bool ok, const QJsonObject &info, const QString &error)>;
 struct logdb
 {
     QString groupId;     // 群id / 子频道id / 私聊对方的id
@@ -212,6 +220,24 @@ public:
     QString updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks);
     QString deletePanel(const QString& panelId, Callback callbacks);
     QString updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks);
+
+    // ==================== 素材管理（Markdown 图片素材） ====================
+    // 文档：https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html
+    // 素材**按机器人隔离**：每个 appid 用自己的 access_token 调用，配额（默认 100 张）、
+    // 有效期（滑动 90 天）、qqbot-media:// 引用链接都不互通 —— 所以这些都挂在 QQBotClient 上，
+    // 天然跟着「当前账号」走，调用方不用额外传 appid。
+    // 平台限制：单张 ≤ 10MB；只认 png/jpeg/gif/webp，且扩展名必须与 content_type 一致。
+    QString mediaImagePrepare(const QString &fileName, const QString &contentType, qint64 fileSize,
+                              const QString &md5, const QString &sha1, Callback callbacks = Callback());
+    QString mediaImagePut(const QString &presignedUrl, const QByteArray &data, const QString &contentType,
+                          int timeoutMs = 120000, Callback callbacks = Callback());
+    QString mediaImageComplete(const QString &uploadId, const QString &md5, Callback callbacks = Callback());
+    QString listMediaImages(const QString &cursor, Callback callbacks = Callback());
+    QString deleteMediaImage(const QString &imageId, Callback callbacks = Callback());
+    // 一条龙：本地文件 → prepare → PUT → complete。
+    // 注意这里 md5/sha1 是**平台强制要求**的（unlike 富媒体上传，那边有 g_upload_calc_hash 开关可省），
+    // 所以内部一律现算；文件超 10MB / 格式不认 / 打不开时直接回调失败，不发请求。
+    void uploadMediaImage(const QString &filePath, MediaImageDone onDone);
 void parseMessageEvent(QJsonObject &payload,const QString &text);
 
 public slots:
@@ -315,6 +341,12 @@ private:
                            std::shared_ptr<MediaSegJob> job);
     void mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, std::shared_ptr<MediaTagCtx> tc,
                                   const QString &url, const QString &errInfo);
+
+    // ── 素材上传链（状态结构体定义在 api2.cpp；三步串行推进，每步都是回调，不阻塞调用线程）──
+    struct MediaImageJob;
+    void mediaImageStepPrepare(std::shared_ptr<MediaImageJob> job);
+    void mediaImageStepPut(std::shared_ptr<MediaImageJob> job);
+    void mediaImageStepComplete(std::shared_ptr<MediaImageJob> job);
     QString uploadRichMedia(int targetType, const QString& groupId, int fileType, const QString& filePath, qint64& expireTime, QString &md5, bool &ok, QString &outurl);
     QString uploadRichMedia(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename,
                             qint64& expireTime,QString &md5, bool &ok, QString &outurl);

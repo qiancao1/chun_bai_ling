@@ -8,7 +8,7 @@
 
 // -------------------------- ButtonData --------------------------
 ButtonData::ButtonData() : id(-1), style(0), actionType(0), permissionType(2),
-    reply(false), enter(false), anchor(0), subscribeTemplateId(0) {}
+    reply(false), enter(true), anchor(0), subscribeTemplateId(0) {}
 
 bool ButtonData::fromJson(const QJsonObject &obj) {
     buttonId = obj["id"].toString();
@@ -22,7 +22,7 @@ bool ButtonData::fromJson(const QJsonObject &obj) {
     unsupportTips = action["unsupport_tips"].toString();
     groups = action["group_id"].toString();
     reply = action["reply"].toBool(false);
-    enter = action["enter"].toBool(false);
+    enter = action["enter"].toBool(true);
     anchor = action["anchor"].toInt(0);
     QJsonObject permission = action["permission"].toObject();
     permissionType = permission["type"].toInt(2);

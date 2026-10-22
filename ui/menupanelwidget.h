@@ -35,6 +35,8 @@ class MenuPanelWidget : public QWidget
 public:
     explicit MenuPanelWidget(QWidget *parent = nullptr);
     QQBotClient *m_botClient = nullptr;
+    QTabWidget *m_tabWidget;
+
 
 signals:
     void needRefreshTable();  // 异步刷新信号

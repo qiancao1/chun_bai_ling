@@ -756,7 +756,7 @@ void NickReviewWidget::onAiApprove()
     });
 
     QFuture<QString> future = QtConcurrent::run([=]() -> QString {
-        return ai_ui->Ai_post(m_aimode->currentText(), aiPrompt, 0);
+        return ai_ui->Ai_post(m_aimode->currentText(), aiPrompt, 180000);
     });
     watcher->setFuture(future);
 

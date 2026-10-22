@@ -77,11 +77,20 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.5.136"
-#define APP_BUILD_NUMBER 136
+#define APP_VERSION_STR "v1.4.6.143"
+#define APP_BUILD_NUMBER 143
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.6.143 (2026-10-22)
+- 修复 pysdk 中 get_user_id 参数用错问题
+- 优化 插件市场 增加未安装插件筛选
+- 修改 插件sdk 增加获取 审核后昵称
+- 优化 昵称审核 哪里ai审核等待超时30秒改180秒 防止ai超时
+- 优化 按钮生成 自动发送默认启用
+- 修复 强制昵称 中昵称为空会往原始json插入乱码问题
+- 增加 素材管理 用户写订阅或者某些内容时 可以使用常驻图片
+
 ## v1.4.5.136 (2026-10-20)
 - 修改 每条信息只会投递一次 也就是 一条消息会触发某个插件多个指令 现在改为只触发一个
 - 优化 插件市场ui布局
@@ -200,9 +209,6 @@ QString Homev=R"(
 - 修复 一个大小写导致的缓存 过期了 还在使用的 bug
 - 修复 webui 发送消息错误的问题
 - 修复 因挑战ai优先级导致的报错 没判断下标长度 导致访问溢出
-
-
-## v1.2.15.58 (2026-09-04)
 - 修复 没有自动刷新 token问题 <-实际上是以前是定时器 刷新我为了优化删掉了 然后添加添加新的定时刷新
 - 优化 挑战 ai优先级 但是如果你使用 js 易语言 等插件 会等待1s 如果仍然没有触发指令 就触发ai
 
@@ -212,8 +218,6 @@ QString Homev=R"(
 - 增加 踢人 等指令
 - 修复 不小心删除掉py 专用线程 导致python异步函数 无法使用
 - 修复 没选中插件时点击 编辑插件报错问题
-
-## v1.2.13.56 (2026-09-02)
 - 增加 扫码登录
 - 修复 丢失的addbot 指令 增加新的addbot2指令
 - 增加 信息小尾巴开源每条小尾巴添加信息
@@ -232,8 +236,6 @@ QString Homev=R"(
 - 增加 分群 违禁词撤回(饼) 全局违禁词撤回<-用不到应该
 - 增加 入群验证
 - 增加 对linux系统的支持
-
-## v1.2.10.50 (2026-08-22)
 - 修复 cos图床不可用问题
 - 优化 内网并发上传
 
@@ -408,6 +410,7 @@ MenuPanelWidget *ui_MenuPanel=nullptr;
 QListWidget *robotListWidget=nullptr;
 QTabWidget *configTabWidget2=nullptr;
 NickReviewWidget *m_nickReviewWidget=nullptr;
+MaterialWidget *material_ui=nullptr;
 
 bool 强制审核昵称=false;
 int m_currentBotIndex = -1;
@@ -791,6 +794,8 @@ void MainWindow::setupUi()
     htmltoimg = new HtmlToImageWidget(this);
 
     m_nickReviewWidget = new NickReviewWidget(this);
+    // 素材页：每个机器人各自一套（配额/链接/有效期都按 appid 隔离），切号时靠 setAppId 换数据
+
 
 
     ai_ui = new AiWidget;//要慢于其他使用ai的功能创建
@@ -881,13 +886,15 @@ void MainWindow::setupUi()
     configTabWidget2->addTab(schedule, "订阅|定时");
     configTabWidget2->addTab(ai_ui, "Ai");
 
+
+
     connect(configTabWidget2, &QTabWidget::currentChanged,
             [this](){
                 if(!ui_MenuPanel->m_botClient)
                 {
                     _g_qieh=true;
                 }
-                if(configTabWidget2->currentIndex()==0 && _g_qieh){
+                if(configTabWidget2->currentIndex()==0 && _g_qieh && ui_MenuPanel->m_tabWidget->currentIndex()!=2){
                     _g_qieh=false;
                     ui_MenuPanel->switchBot();
 
@@ -1024,6 +1031,7 @@ void MainWindow::setupUi()
 
         ui_qunguan->列表行被单击();
         m_nickReviewWidget->setAppId(g_appid);
+        material_ui->setAppId(g_appid);
 
         if(configTabWidget2->currentIndex()==0){
                 ui_MenuPanel->switchBot();

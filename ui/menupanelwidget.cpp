@@ -31,7 +31,7 @@ void MenuPanelWidget::setupUI()
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
 
-    QTabWidget *tabWidget = new QTabWidget(this);
+     m_tabWidget = new QTabWidget(this);
 
     // ==================== 第一个 Tab：菜单（保留原样） ====================
     QWidget *menuTab = new QWidget;
@@ -193,10 +193,11 @@ void MenuPanelWidget::setupUI()
     commandTab->setLayout(commandTabLayout);
 
     // ==================== 将两个 Tab 加入 TabWidget ====================
-    tabWidget->addTab(menuTab, "菜单");
-    tabWidget->addTab(commandTab, "指令");
-
-    mainLayout->addWidget(tabWidget);
+    m_tabWidget->addTab(menuTab, "菜单");
+    m_tabWidget->addTab(commandTab, "指令");
+    material_ui = new MaterialWidget(this);
+    m_tabWidget->addTab(material_ui, "素材");
+    mainLayout->addWidget(m_tabWidget);
 
     // 状态栏（全局）
     m_statusBar = new QStatusBar(this);

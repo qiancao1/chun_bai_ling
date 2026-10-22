@@ -1189,7 +1189,7 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
             else if(t.role ==1 &&ev.member_role<=5){}
             else if(t.role==2){} else
             {
-                return QString("订阅失败 订阅该功能 需要 %1 才能触发").arg(t.role==0?"机器人管理|后台管理":"群主|管理员|代管");
+                return QString("取消订阅失败 取消订阅该功能 需要 %1 才能触发").arg(t.role==0?"机器人管理|后台管理":"群主|管理员|代管");
             }
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
             订阅名 = "[删除订阅：" + t.remark + "|%1ms]";

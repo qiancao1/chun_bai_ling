@@ -294,8 +294,16 @@ class QQApi:
     def get_openid(self,appid: int ,user_id:int) -> Dict:
         return self._callback(self.API_GET_USER_OPENID, appid, str(user_id))
         
-    def get_user_name(self,appid:int ,user_id:int) -> Dict:
-        return self._callback(self.API_GET_USER_NAME, appid, str(user_id))
+    def get_user_name(self,appid:int ,user_id: Union[int, str], use_default: bool = True) -> Dict:
+        """取昵称。
+
+        :param user_id: 文本：短 id（1024 或 "1024"）与 32 字节长 id 都认，内部统一转字符串
+        :param use_default: True 取默认昵称（用户自己设的/原始的）；
+                            False 只取**审核后的安全昵称**，没有审核结果时昵称为空，
+                            调用方自己回退（例如显示短 id）
+        """
+        return self._callback(self.API_GET_USER_NAME, appid, str(user_id),
+                              "true" if use_default else "false")
 
     def http_request(self, url: str, method: str = "GET", headers: dict = None, body: bytes = None, timeout: int = 30) -> dict:
         headers_json = json.dumps(headers or {})
@@ -305,12 +313,12 @@ class QQApi:
      # ---------- 补充的 API 封装 ----------
     def get_user_id(self, appid: int, user: str) -> Dict:
         """
-        根据用户整数ID获取用户内部ID（或用户信息）
+        按 32 字节 openid 换框架短 id（整数）
         :param appid: Bot appid
-        :param user: 32字节那个
-        :return: 整数id
+        :param user: 32字节那个（文本）
+        :return: 框架回包，短 id 形如 "1024" 或 {"user_id": 1024}
         """
-        return self._callback(self.API_ID_GET_USER_ID, appid, str(user_id))
+        return self._callback(self.API_ID_GET_USER_ID, appid, str(user))
 
     def htmlimg1(self, text: str, width: int) -> Dict:
         """

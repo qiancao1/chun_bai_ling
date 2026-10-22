@@ -2268,7 +2268,9 @@ void PluginPage::rebuildConfigPanel(int index)
     QJsonParseError perr;
     const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &perr);
     if (perr.error != QJsonParseError::NoError || !doc.isArray()) {
-        qWarning() << "get_config_list 返回的内容不是 JSON 数组:" << json.left(200);
+        QString err = QString("插件：%1 get_config_list 返回的内容不是 JSON 数组:%2").arg(m_pluginList[index].name,json.left(200))  ;
+        qWarning() << err;
+        AppendEventLog(err);
         configScroll->setVisible(false);
         return;
     }

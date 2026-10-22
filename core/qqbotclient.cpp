@@ -151,6 +151,7 @@ void QQBotClient::start()
         }
 
         m_accessToken = newToken;
+        //qDebug() << m_info->appid<<"|" << m_accessToken;
         int expiresIn = obj.value("expires_in").toString().toInt();
         qint64 now = QDateTime::currentSecsSinceEpoch();
         m_tokenExpireTime = now + expiresIn-50;
@@ -269,7 +270,10 @@ void QQBotClient::onRefreshReplyFinished()
             return ;
         }
         m_accessToken2=newToken;
+
         std::swap(m_accessToken2,m_accessToken); //防止多线程
+
+
         int expiresIn = obj.value("expires_in").toString().toInt();
         m_tokenExpireTime = now + expiresIn-50;
         AppendEventLog(QString("%1 Token 刷新->%2")
@@ -1154,7 +1158,9 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     ev.raw = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
     if(强制审核昵称)
     {
-        ev.raw.replace(escapeJson(name),escapeJson(ev.nickname));
+        QString oldname =escapeJson(name);
+        if(!name.isEmpty())
+            ev.raw.replace(oldname,escapeJson(ev.nickname));
     }
 
 

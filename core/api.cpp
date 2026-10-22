@@ -674,20 +674,29 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         }
 
         QString text = toQString(_1);
-        if(!g_botdb.contains(appid)) break ;
+        // _2 = 是否取「默认昵称」：true / 不传 → 原始 nickname（老行为）；
+        //      false → 审核后的正式昵称 name（可能为空，没审核过就是空串）
+        bool use_default = (_2 == nullptr || strlen(_2) == 0) ? true : toBool(_2);
 
         BotDB *db = g_botdb[appid];
 
         if(text.size()==32)
         {
-            QString name;
-            db->getOrUpdateUser(text,name);
-            result = name.toStdString();
-        }else{
-            UserRecord user{};
-            db->getUserBySeqId(text.toInt(),user);
-            result =user.nickname;
+            // 长 id：一次调用同时拿到原始昵称和审核后的昵称（后者可能为空）
+            QString name, review_name;
+            db->getOrUpdateUser(text, name, review_name);
+            result = (use_default ? name : review_name).toStdString();
+            break;
         }
+
+        UserRecord userShort{};
+        if(!db->getUserBySeqId((uint32_t)text.toInt(), userShort))
+        {
+            result = "";
+            break;
+        }
+
+        result = use_default ? std::string(userShort.nickname) : std::string(userShort.name);
         break;
     }
     case API_ID_PYTHON_HTTP: {
@@ -1075,12 +1084,99 @@ void get_ref(QString &text,QString &message_reference)
 std::future<QString> uploadimg(const QString &filePath);
 void uploadimgCb(const QString &filePath, std::function<void(QString)> onDone);
 
+// 原样放行、**不做任何上传**的图片地址：
+//   · http(s) 外链 —— 平台自己去取；
+//   · qqbot-media://image/v1/<token> —— 「素材」页上传后拿到的引用链接，平台发送时自动转存，
+//     本地上传反而会失败（它根本不是本地文件）。
+// 统一走这里，免得每个分支各写一遍 startsWith。
+static bool isPassThroughImageUrl(const QString &url)
+{
+    return url.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+        || url.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+        || url.startsWith(QLatin1String("qqbot-media://"), Qt::CaseInsensitive);
+}
+
+// Markdown 图片 ![alt](url) 的匹配串。**不需要处理的地址直接在匹配阶段排掉**，
+// 免得先抠出来占一个 allTags/replacements 槽位再 continue 掉：
+//   · mdPass  = markdown 消息（type==1）用：http(s) 和 qqbot-media:// 都原样发出去，
+//               平台自己去取 / 自己转存，框架这边一个字都不用改；
+//   · mdMedia = 纯文本 / ark（type 0/2）用：图片要被抠出来当媒体发（info = url），
+//               所以 http 仍要匹配，**只排 qqbot-media** —— 它不是能下载的地址，
+//               塞进 info 只会上传失败，留着原文反而无害。
+static const QRegularExpression& mdImageRegexPassThrough()
+{
+    static const QRegularExpression re(R"(!\[([^\]]*)\]\(((?!\s*(?:https?:|qqbot-media:))[^)]*)\))");
+    return re;
+}
+
+static const QRegularExpression& mdImageRegexMedia()
+{
+    static const QRegularExpression re(R"(!\[([^\]]*)\]\(((?!\s*qqbot-media:)[^)]*)\))");
+    return re;
+}
+
+// 给「按 type 选正则」用：type==1 → markdown（http 也放行）
+static const QRegularExpression& mdImageRegexFor(int type)
+{
+    return type == 1 ? mdImageRegexPassThrough() : mdImageRegexMedia();
+}
+
+// 给「放行」的图片补尺寸标记（与原来 needPadding 的规则完全一致）：
+//   无尺寸       → 补 #1000px #0px（宽 1000、高自适应）
+//   只有宽度     → 补 #0px
+//   已有宽高     → 原样
+// 平台对没写 #宽px #高px 的图会按原始尺寸渲染，AI 十次有八次忘写，所以这步不能省。
+static QString padImageAltForMarkdown(const QString &alt)
+{
+    static const QRegularExpression sizeRe(R"(#(\d+)px)");
+    QList<int> sizes;
+    QRegularExpressionMatchIterator sit = sizeRe.globalMatch(alt);
+    while (sit.hasNext()) sizes.append(sit.next().captured(1).toInt());
+
+    if (sizes.size() >= 2) return alt;                       // 已经有宽高：一个字都不动
+    if (sizes.size() == 1)                                   // 只有宽度：补高度 0（自适应）
+        return alt.trimmed() + QLatin1String(" #0px");
+
+    QString core = alt;                                      // 无尺寸：去掉残留标记后补 1000 宽
+    core.remove(sizeRe);
+    core = core.trimmed();
+    return core.isEmpty() ? QStringLiteral("#1000px #0px")
+                          : core + QLatin1String(" #1000px #0px");
+}
+
+// markdown 里 http(s) / qqbot-media 的图片**不参与上传**（原样发出去），
+// 但尺寸标记还得补 —— 所以单开这一趟轻量替换：
+// 只做一个正则扫描 + 原地改写，不建 allTags、不算 md5、不读文件、不发请求。
+// 放在真正扫描本地图片之前跑，避免两套下标互相打架。
+static void normalizePassThroughImageSizes(QString &text)
+{
+    if (!text.contains(QLatin1String("]("))) return;          // 快筛：没有 markdown 链接
+
+    static const QRegularExpression re(R"(!\[([^\]]*)\]\((\s*(?:https?:|qqbot-media:)[^)]*)\))",
+                                       QRegularExpression::CaseInsensitiveOption);
+    QList<QRegularExpressionMatch> hits;
+    QRegularExpressionMatchIterator it = re.globalMatch(text);
+    while (it.hasNext()) hits.append(it.next());
+
+    // 从后往前改，前面的下标才不会失效
+    for (int i = hits.size() - 1; i >= 0; --i) {
+        const QRegularExpressionMatch &m = hits.at(i);
+        const QString alt = m.captured(1);
+        const QString newAlt = padImageAltForMarkdown(alt);
+        if (newAlt == alt) continue;
+        text.replace(m.capturedStart(), m.capturedLength(),
+                     QStringLiteral("![%1](%2)").arg(newAlt, m.captured(2)));
+    }
+}
+
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
                                       QString &message_reference)
 {
     get_ref(text, message_reference);
-    static const QRegularExpression mdImgRe(R"(!\[([^\]]*)\]\(([^)]*)\))");
+    // md 消息里放行的图（http / qqbot-media）先补齐尺寸；纯文本 / ark 不涉及 markdown，跳过
+    if (type == 1) normalizePassThroughImageSizes(text);
+    const QRegularExpression &mdImgRe = mdImageRegexFor(type);
     static const QRegularExpression sizeRe(R"(#(\d+)px)");
     // ---------- 1. 定义统一的图片标签结构 ----------
     struct ImgTag {
@@ -1149,6 +1245,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         QString alt = match.captured(1).trimmed();
         QString url = match.captured(2).trimmed();
         if (url.isEmpty()) continue;
+        // 正则里已经排过了，这里再兜一层大小写变体（HTTP:// 之类）：
+        //   type==1 → http(s) / qqbot-media 都放行；type 0/2 → 只有 qqbot-media 放行
+        if (type == 1 ? isPassThroughImageUrl(url)
+                      : url.startsWith(QLatin1String("qqbot-media:"), Qt::CaseInsensitive))
+            continue;
 
         // 提取所有尺寸标记 #数字px
 
@@ -1263,10 +1364,10 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         for (int idx = 0; idx < allTags.size(); ++idx) {
             ImgTag &tag = allTags[idx];
             QString newUrl = tag.url;
-            bool isHttp = newUrl.startsWith("http://", Qt::CaseInsensitive) ||
-                          newUrl.startsWith("https://", Qt::CaseInsensitive);
+            // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
+            const bool isPassThrough = isPassThroughImageUrl(newUrl);
 
-            if (!isHttp && !newUrl.isEmpty()) {
+            if (!isPassThrough && !newUrl.isEmpty()) {
                 QString fileMd5;
                 if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
                     continue;
@@ -1424,11 +1525,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         for (int idx = 0; idx < allTags.size(); ++idx) {
         ImgTag &tag = allTags[idx];
         QString newUrl = tag.url;
-        bool isHttp = newUrl.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
-                      newUrl.startsWith(QLatin1String("https://"), Qt::CaseInsensitive);
+        // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
+        const bool isPassThrough = isPassThroughImageUrl(newUrl);
 
         // ---------- 仅对本地非 HTTP 路径执行上传 ----------
-        if (!isHttp && !newUrl.isEmpty()) {
+        if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
             // 计算 MD5 并获取文件实际宽高（会写入 tag.width / tag.height）
             if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
@@ -1834,7 +1935,10 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
     // ---------- 阶段1：解析 + 缓存 + 整理（调用线程同步执行） ----------
     QString &text = st->text;
     get_ref(text, st->message_reference);
-    static const QRegularExpression mdImgRe(R"(!\[([^\]]*)\]\(([^)]*)\))");
+    // 异步版只服务 type==1（markdown）：放行的 http / qqbot-media 图先补齐尺寸
+    normalizePassThroughImageSizes(text);
+    // 异步版只服务 type==1（markdown），走「放行版」正则
+    const QRegularExpression &mdImgRe = mdImageRegexPassThrough();
     static const QRegularExpression sizeRe(R"(#(\d+)px)");
 
     struct ImgTag {
@@ -1897,6 +2001,8 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
         QString alt = match.captured(1).trimmed();
         QString url = match.captured(2).trimmed();
         if (url.isEmpty()) continue;
+        // 正则已排过；再兜一层大小写变体（HTTP:// 之类）——md 消息里这两类都原样发出去
+        if (isPassThroughImageUrl(url)) continue;
 
         QRegularExpressionMatchIterator sizeIt = sizeRe.globalMatch(alt);
         QList<int> sizes;
@@ -1961,10 +2067,10 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
     for (int idx = 0; idx < allTags.size(); ++idx) {
         ImgTag &tag = allTags[idx];
         QString newUrl = tag.url;
-        bool isHttp = newUrl.startsWith("http://", Qt::CaseInsensitive) ||
-                      newUrl.startsWith("https://", Qt::CaseInsensitive);
+        // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
+        const bool isPassThrough = isPassThroughImageUrl(newUrl);
 
-        if (!isHttp && !newUrl.isEmpty()) {
+        if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
             if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
                 continue;

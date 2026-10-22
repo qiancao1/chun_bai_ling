@@ -550,6 +550,7 @@ QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QStr
         for(int i2=0; i2<3; ++i2) {
 
             QByteArray response = Ai_post3(url, key, sxw, timeoutMs);
+            //qDebug() <<response;
             AiParseResult r = parseAiResponse(response, key, sxw, err, obj);
             if (r == AiParseResult::TokenOverflow) continue;   // 删了一条历史，重试
             if (r == AiParseResult::Failed) return QString();

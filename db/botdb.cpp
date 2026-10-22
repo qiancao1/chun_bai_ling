@@ -479,8 +479,16 @@ static QString fetchGroupNameFromApi(QQBotClient *qqbot, const QString &groupIdH
 }
 uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
 {
+    QString review_name;
+    return getOrUpdateUser(openid, name, review_name);
+}
+
+uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name, QString &review_name)
+{
     uint32_t resultSeq = 0;
     UserRecord finalUser{};
+
+    review_name.clear();   // 纯输出参数，没查到时保持空串
 
     QByteArray userKeyBytes = QByteArray::fromHex(openid.toUtf8());
     BinKey userKey{};
@@ -496,6 +504,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
         auto itUser = m_userCache.find(userKey);
         if (itUser != m_userCache.end()) {
             const UserRecord &cachedUser = itUser.value();
+            review_name = QString::fromUtf8(cachedUser.name);
             if (name.isEmpty()) {
                 name = QString::fromUtf8(cachedUser.nickname);  // 库里的 nickname 保证是干净的 UTF-8
                 return cachedUser.seq_id;
@@ -565,6 +574,7 @@ uint32_t BotDB::getOrUpdateUser(const QString &openid, QString &name)
     });
 
     if (success && resultSeq != 0) {
+        review_name = QString::fromUtf8(finalUser.name);   // 审核后的正式昵称，可能为空
         // 回填缓存：否则上面那条「缓存命中」分支会一直拿着旧昵称，
         // 每次调用都判定「昵称不同」→ 反复写库。
         // 这里直接用零初始化的 BinKey 写 m_userCache，不走 updateUserCache()

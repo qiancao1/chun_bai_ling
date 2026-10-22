@@ -182,6 +182,7 @@ set(PROJECT_SOURCES_ALL
     ui/ui_menupanelwidget.ui
     core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
+    ui/materialwidget.h ui/materialwidget.cpp
     core/api2.cpp
     core/cnbuploader.cpp
     core/qcffmpeg.h core/qcffmpeg.cpp

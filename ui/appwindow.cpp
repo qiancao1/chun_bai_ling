@@ -354,8 +354,10 @@ class QQApi:
     def get_openid(self,appid: int ,user_id:int) -> Dict:
         return self._callback(self.API_GET_USER_OPENID, appid, str(user_id))
 
-    def get_user_name(self,appid:int ,user_id: str) -> Dict:
-        return self._callback(self.API_GET_USER_NAME, appid, str(user_id))
+    def get_user_name(self,appid:int ,user_id: str, use_default: bool = True) -> Dict:
+        # use_default=True 取默认昵称；False 取审核后的昵称（可能为空）
+        return self._callback(self.API_GET_USER_NAME, appid, str(user_id),
+                              "true" if use_default else "false")
     #释放gil 的http
 
     def get_user_id(self, appid: int, user: str) -> Dict:

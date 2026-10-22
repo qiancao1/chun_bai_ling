@@ -4,6 +4,11 @@
 #include "global.h"
 #include <QRandomGenerator>
 #include <QThread>            // QThread::msleep 需要完整类型
+// 素材管理（/v2/media-images）要用到：读文件、算 md5/sha1、拼 query 里的 cursor
+#include <QFile>
+#include <QFileInfo>
+#include <QUrl>
+#include <QCryptographicHash>
 
 QString get_url(int type,const QString &openid,const QString &text = QString(),const QString &text2 = QString());
 void flushCosPutList(QList<CosPutPoolEntry> list);
@@ -1185,4 +1190,218 @@ QString QQBotClient::deletePanel(const QString& panelId, Callback callbacks)
 QString QQBotClient::updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks)
 {
     return put2("https://api.bot.qq.com/v2/panels/" + panelId + "/target", QJsonDocument(targetData).toJson(QJsonDocument::Compact), QString(), 10000, callbacks);
+}
+
+// ==================== 素材管理（Markdown 图片素材） ====================
+// 文档：https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html
+//
+// 平台那套「素材」= 预上传的图片，成功后拿到 qqbot-media://image/v1/<token>，
+// 直接写进 msg_type=2 的 markdown.content（![说明 #宽px #高px](qqbot-media://…)），
+// 发送时平台自动转存，不依赖任何外网图床。
+//
+// 三步走：POST /v2/media-images/prepare → PUT <presigned_url> → POST /v2/media-images/complete
+//
+// ⚠ 素材**按机器人隔离**：配额（默认 100 张）、滑动有效期（90 天）、引用链接各自独立，
+//   所以这些函数必须是 QQBotClient 的成员 —— token / X-Union-Appid 都跟着当前账号。
+// ⚠ 与富媒体上传（uploadRichMedia*）是**两套东西**：那套是发消息用的 file_info，
+//   这套是 Markdown 里长期引用的图片，返回值/有效期/配额全不通用。
+
+namespace {
+
+// 扩展名 → MIME。平台只认这四种，且 file_name 的后缀必须与 content_type 匹配，否则 40035001
+QString mediaImageMime(const QString &fileName)
+{
+    const QString suffix = QFileInfo(fileName).suffix().toLower();
+    if (suffix == QLatin1String("png"))  return QStringLiteral("image/png");
+    if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg"))
+        return QStringLiteral("image/jpeg");
+    if (suffix == QLatin1String("gif"))  return QStringLiteral("image/gif");
+    if (suffix == QLatin1String("webp")) return QStringLiteral("image/webp");
+    return QString();
+}
+
+// 平台错误串 → 一句人话。返回体长这样：{"code":40035007,"message":"图片数量超过上限"}
+// 成功时的返回里没有 code，所以这里只在解析出 message 时使用，空响应兜底成「无响应」。
+QString mediaImageErrorText(const QString &response)
+{
+    QJsonParseError perr{};
+    const QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8(), &perr);
+    if (perr.error == QJsonParseError::NoError && doc.isObject()) {
+        const QJsonObject o = doc.object();
+        const QJsonObject inner = o.value(QStringLiteral("data")).toObject();  // 个别网关包一层 data
+        const QJsonObject err = inner.contains(QStringLiteral("message")) ? inner : o;
+        const int code = err.value(QStringLiteral("code")).toInt();
+        const QString msg = err.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty())
+            return code != 0 ? QString("错误 %1：%2").arg(code).arg(msg) : msg;
+    }
+    const QString trimmed = response.trimmed();
+    return trimmed.isEmpty() ? QStringLiteral("请求失败（无响应）") : trimmed;
+}
+
+// 平铺 / 包一层 data 两种返回都认（文档示例是平铺的，网关偶尔会包）
+QJsonObject mediaImageBody(const QString &response)
+{
+    const QJsonObject root = QJsonDocument::fromJson(response.toUtf8()).object();
+    const QJsonObject inner = root.value(QStringLiteral("data")).toObject();
+    return inner.isEmpty() ? root : inner;
+}
+
+} // namespace
+
+// 1. 申请图片上传：返回 upload_id / presigned_url / expires_in（upload_id 4 小时内有效）
+QString QQBotClient::mediaImagePrepare(const QString &fileName, const QString &contentType,
+                                       qint64 fileSize, const QString &md5, const QString &sha1,
+                                       Callback callbacks)
+{
+    QJsonObject obj;
+    obj["file_name"]    = fileName;
+    obj["file_size"]    = fileSize;
+    obj["content_type"] = contentType;
+    obj["md5"]          = md5;
+    obj["sha1"]         = sha1;
+    return Post("https://api.bot.qq.com/v2/media-images/prepare", obj, QString(), 15000, callbacks);
+}
+
+// 2. 用 presigned_url 直传二进制。
+//    Content-Type 必须与 prepare 声明的**完全一致**，否则 COS 直接 403（这是最容易踩的一步）。
+QString QQBotClient::mediaImagePut(const QString &presignedUrl, const QByteArray &data,
+                                   const QString &contentType, int timeoutMs, Callback callbacks)
+{
+    if (presignedUrl.isEmpty()) return QString();
+    return put2(presignedUrl, data, contentType, timeoutMs, callbacks);
+}
+
+// 3. 完成上传：md5 必须是 COS 对象的 ETag（= 文件内容 md5），服务端会自己比对，
+//    对不上返回 40035003（上传任务不存在/过期/不属于当前机器人也报这个码）
+QString QQBotClient::mediaImageComplete(const QString &uploadId, const QString &md5, Callback callbacks)
+{
+    QJsonObject obj;
+    obj["upload_id"] = uploadId;
+    obj["md5"]       = md5;
+    return Post("https://api.bot.qq.com/v2/media-images/complete", obj, QString(), 20000, callbacks);
+}
+
+// 4. 查询有效图片：按上传时间倒序，首页不传 cursor，翻页用上一页的 next_cursor（空 = 末页）
+QString QQBotClient::listMediaImages(const QString &cursor, Callback callbacks)
+{
+    QString url = QStringLiteral("https://api.bot.qq.com/v2/media-images");
+    if (!cursor.isEmpty())
+        url += QStringLiteral("?cursor=") + QString::fromUtf8(QUrl::toPercentEncoding(cursor));
+    return Get(url, QString(), 15000, callbacks);
+}
+
+// 5. 删除图片（释放配额）。删完引用链接立即失效，但**已发出的消息不受影响**
+//    （平台在发送时已经转存了副本）。image_id 不存在返回 40035008。
+QString QQBotClient::deleteMediaImage(const QString &imageId, Callback callbacks)
+{
+    const QString url = QStringLiteral("https://api.bot.qq.com/v2/media-images/")
+                        + QString::fromUtf8(QUrl::toPercentEncoding(imageId))
+                        + QStringLiteral("/delete");
+    return Delete(url, QJsonObject(), QString(), 15000, callbacks);
+}
+
+// ---- 一条龙上传：本地文件 → prepare → PUT → complete ----
+
+// 上传链的共享状态（挂 shared_ptr，回调里一直活着；不写自引用的 std::function —— 那会成环不释放）
+struct QQBotClient::MediaImageJob {
+    QByteArray data;
+    QString fileName;
+    QString contentType;
+    QString md5;
+    QString sha1;
+    QString uploadId;
+    QString presignedUrl;
+    MediaImageDone done;
+};
+
+void QQBotClient::uploadMediaImage(const QString &filePath, MediaImageDone onDone)
+{
+    if (!onDone) return;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        onDone(false, QJsonObject(), QString("打不开文件：%1").arg(filePath));
+        return;
+    }
+    const QByteArray data = file.readAll();
+    file.close();
+
+    const QString fileName = QFileInfo(filePath).fileName();
+    if (data.isEmpty()) {
+        onDone(false, QJsonObject(), QString("文件是空的：%1").arg(fileName));
+        return;
+    }
+    // 10MB 是平台硬上限（40035002）；本地先挡掉，省得白传一遍
+    if (data.size() > 10 * 1024 * 1024) {
+        onDone(false, QJsonObject(),
+               QString("图片 %1 有 %2MB，超过平台 10MB 上限").arg(fileName).arg(data.size() / 1024.0 / 1024.0, 0, 'f', 1));
+        return;
+    }
+    const QString mime = mediaImageMime(fileName);
+    if (mime.isEmpty()) {
+        onDone(false, QJsonObject(), QString("%1 不是平台支持的格式（只收 png / jpg / gif / webp）").arg(fileName));
+        return;
+    }
+
+    auto job = std::make_shared<MediaImageJob>();
+    job->data        = data;
+    job->fileName    = fileName;
+    job->contentType = mime;
+    job->done        = onDone;
+    // 摘要一是平台必填，二是 complete 要拿 md5 跟 COS 的 ETag 比对 —— 所以这里省不掉
+    job->md5  = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Md5).toHex());
+    job->sha1 = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha1).toHex());
+
+    mediaImageStepPrepare(job);
+}
+
+void QQBotClient::mediaImageStepPrepare(std::shared_ptr<MediaImageJob> job)
+{
+    mediaImagePrepare(job->fileName, job->contentType, job->data.size(), job->md5, job->sha1,
+                      [this, job](const QString &resp, QNetworkReply::NetworkError err) {
+        if (err != QNetworkReply::NoError) {
+            job->done(false, QJsonObject(), "申请上传失败：" + mediaImageErrorText(resp));
+            return;
+        }
+        const QJsonObject o = mediaImageBody(resp);
+        job->uploadId     = o.value("upload_id").toString();
+        job->presignedUrl = o.value("presigned_url").toString();
+        if (job->uploadId.isEmpty() || job->presignedUrl.isEmpty()) {
+            job->done(false, o, mediaImageErrorText(resp));
+            return;
+        }
+        mediaImageStepPut(job);
+    });
+}
+
+void QQBotClient::mediaImageStepPut(std::shared_ptr<MediaImageJob> job)
+{
+    // 直传 COS：这一步不认 QQ Bot 的鉴权头，签名全在 URL 的 query 里（put2 会带上不影响）；
+    // 唯一硬要求是 Content-Type == prepare 里的 content_type
+    mediaImagePut(job->presignedUrl, job->data, job->contentType, 120000,
+                  [this, job](const QString &resp, QNetworkReply::NetworkError err) {
+        if (err != QNetworkReply::NoError) {
+            job->done(false, QJsonObject(), "上传图片数据失败：" + mediaImageErrorText(resp));
+            return;
+        }
+        mediaImageStepComplete(job);
+    });
+}
+
+void QQBotClient::mediaImageStepComplete(std::shared_ptr<MediaImageJob> job)
+{
+    mediaImageComplete(job->uploadId, job->md5,
+                       [job](const QString &resp, QNetworkReply::NetworkError err) {
+        if (err != QNetworkReply::NoError) {
+            job->done(false, QJsonObject(), "完成上传失败：" + mediaImageErrorText(resp));
+            return;
+        }
+        const QJsonObject o = mediaImageBody(resp);
+        if (o.value("image_id").toString().isEmpty() || o.value("url").toString().isEmpty()) {
+            job->done(false, o, mediaImageErrorText(resp));
+            return;
+        }
+        job->done(true, o, QString());
+    });
 }

@@ -368,8 +368,10 @@ void PluginMarketWindow::setupUI() {
     mainLayout->addWidget(toolBar);
 
     // ----- Tab切换 -----
+    // ⚠ 顺序必须与头文件里的 MarketTab 枚举一致（TabAvailable / TabNotInstalled / TabInstalled / TabHasUpdate）
     QTabBar *tabBar = new QTabBar;
     tabBar->addTab("可用插件");
+    tabBar->addTab("未安装");
     tabBar->addTab("已安装");
     tabBar->addTab("可更新");
     tabBar->setExpanding(false);
@@ -474,8 +476,9 @@ void PluginMarketWindow::filterAndDisplay() {
         }
 
         // Tab 过滤
-        if (m_currentTabIndex == 1 && !info.isInstalled) continue;
-        if (m_currentTabIndex == 2 && !info.hasUpdate) continue;
+        if (m_currentTabIndex == TabNotInstalled && info.isInstalled)  continue;
+        if (m_currentTabIndex == TabInstalled    && !info.isInstalled) continue;
+        if (m_currentTabIndex == TabHasUpdate    && !info.hasUpdate)   continue;
 
         if (!PluginMarketMeta::availableOnThisPlatform(info)) ++unavailable;
 
