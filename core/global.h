@@ -158,6 +158,10 @@ extern LmdbKV *cache_db;
 //     part_finish 那个 md5 字段在开关关着时也直接省掉，不会失败。
 //   · 想整体恢复老行为：把 global.cpp 里的默认值改成 true 即可，算与传两处都跟着它走。
 extern bool g_upload_calc_hash;
+// 发送耗时统计总开关（诊断用，默认关，详见 global.cpp 里的说明）。
+//   on  → addmsglog 拼成「[插件名|处理ms|图片上传ms|发送ms]内容」（各保留 2 位小数）；
+//   off → 只拼「[插件名]内容」，一个时钟都不取。
+extern bool g_msg_time_stat;
 extern LmdbKV *aidb;
 extern LmdbKV *dsdb;
 extern LmdbKV *accdb;

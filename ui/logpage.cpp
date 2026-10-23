@@ -614,6 +614,8 @@ void LogPage::setupUi()
     qbload = makeTabBtn("加载这些数量");
     chbox = new QCheckBox("显示完整json");
     chboxStat = new QCheckBox("图片上传统计");
+    chboxTimeStat = new QCheckBox("发送耗时统计");
+    chboxTimeStat->setChecked(g_msg_time_stat);      // 与总开关当前值对齐（临时状态，不落盘）
     btnEventTab->setChecked(true);
     logs = new QLineEdit ;
     logs->setText("10000");
@@ -638,6 +640,7 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnChannelTab);
     tabLayout->addWidget(btnChannelPrivateTab);
     tabLayout->addStretch();
+    tabLayout->addWidget(chboxTimeStat);
     tabLayout->addWidget(chbox);
     tabLayout->addWidget(chboxStat);
     tabLayout->addWidget(logs);
@@ -946,6 +949,9 @@ void LogPage::setupUi()
     });
     connect(chboxStat, &QCheckBox::clicked, this, [this]{
         imgStat = chboxStat->isChecked();   // 临时状态，不落盘
+    });
+    connect(chboxTimeStat, &QCheckBox::clicked, this, [this]{
+        g_msg_time_stat = chboxTimeStat->isChecked();   // 临时状态，不落盘；下一条消息立即生效
     });
     connect(btnEventTab, &QPushButton::clicked, this, [this]{ switchTab(0); });
     connect(btnGroupTab, &QPushButton::clicked, this, [this]{ switchTab(1); });

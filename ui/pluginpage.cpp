@@ -653,7 +653,7 @@ void PluginPage::setupUi()
     connect(tjzl, &QPushButton::clicked, this, [this]() {
         QString text;
         text.reserve(4096);
-
+        int zls=0;//统计指令数量
         for (const auto &plugin : std::as_const(m_pluginList)) {
             text.append(QStringLiteral("插件: %1\n").arg(plugin.name));
             if (plugin.type == 0)  // 仅处理已启用的插件
@@ -666,6 +666,7 @@ void PluginPage::setupUi()
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.python.rules) {
                         groups[rule.type].append(ruleDisplayText(rule));
+                        zls++;
                     }
                     // 2. 记录类型首次出现的顺序（保持注册顺序）
                     QList<MatchType> typeOrder;
@@ -700,6 +701,7 @@ void PluginPage::setupUi()
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.DLL.rules) {
                         groups[rule.type].append(ruleDisplayText(rule));
+                        zls++;
                         if (!typeOrder.contains(rule.type))
                             typeOrder.append(rule.type);
                     }
@@ -731,6 +733,7 @@ void PluginPage::setupUi()
                     QMap<MatchType, QStringList> groups;
                     for (const auto &rule : plugin.js.rules) {
                         groups[rule.type].append(ruleDisplayText(rule));
+                        zls++;
                     }
                     // 2. 记录类型首次出现的顺序（保持注册顺序）
                     QList<MatchType> typeOrder;
@@ -759,7 +762,7 @@ void PluginPage::setupUi()
             }
         }
         // 内容多时 QMessageBox 会被屏幕挤住、显示不全也不能滚动 —— 改用可滚动的文本窗口
-        ScrollTextDialog::show(this, "插件注册指令", text);
+        ScrollTextDialog::show(this, "插件注册指令",QString("%1\n\n注册的指令数量：%2").arg(text).arg(zls));
     });
 
     connect(ai_c_j, &QPushButton::clicked,this, [this]() {

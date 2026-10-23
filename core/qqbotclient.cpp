@@ -367,6 +367,18 @@ void logMessageEvent(const QString &botName, MessageEvent &ev) {
         break;
     }
 }
+// 媒体标签形如 [image,height=…,width=…,name=文件名,type=…,text=…,size=…,url=…]
+// ——下游（ui/chatpage 清标签、日志页、插件）全靠 ',' 和 ']' 切分，文件名 / 识别文本里
+// 只要混进一个 ']'，标签就会被提前切断，后半截（size=…,url=…]）整段漏进正文。
+// 所以写进标签的字段值统一把 ']' 转成 URL 编码 %5D；要还原就 QUrl::fromPercentEncoding。
+static QString escapeTagValue(const QString &v)
+{
+    if (!v.contains(QLatin1Char(']'))) return v;   // 绝大多数消息走这条，不做多余拷贝
+    QString s = v;
+    s.replace(QLatin1Char(']'), QLatin1String("%5D"));
+    return s;
+}
+
 void tiqfuj(const QJsonObject &d ,QString &msg){
     QString extraInfo;
 
@@ -377,7 +389,7 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
     for (const QJsonValue &attVal : attachments) {
         QJsonObject att = attVal.toObject();
         QString contentType = att["content_type"].toString();
-        QString filename = att["filename"].toString();
+        QString filename = escapeTagValue(att["filename"].toString());   // 文件名可能带 ']'
         int size = att["size"].toDouble();
         QString url = att["url"].toString();
 
@@ -390,7 +402,7 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
         } else if (contentType.contains("file")) {
             prefix = "[file,name=";
         } else if (contentType.contains("voice")) {
-            asr_refer_text = att["asr_refer_text"].toString();
+            asr_refer_text = escapeTagValue(att["asr_refer_text"].toString());   // 识别文本同样可能带 ']'
             QString url2 = att["voice_wav_url"].toString();
             if(!url2.isEmpty())
             {
@@ -417,7 +429,7 @@ void tiqfuj(const QJsonObject &d ,QString &msg){
                 QJsonDocument doc = QJsonDocument::fromJson(decoded);
                 if (!doc.isNull() && doc.isObject()) {
                     QJsonObject obj = doc.object();
-                    text = obj["text"].toString();
+                    text = escapeTagValue(obj["text"].toString());   // 表情说明同样可能带 ']'
                 }
 
 
@@ -1052,7 +1064,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             }
         }
     }
-
+    if(m_info->pbbot && ev.bot) return;
     if (ev.type == 0 && ev.subType == 2 && (ev.bitmap & BIT_RUQUN_YZ))
     {
         setGroupRestrictChatSetting(ev.groupId,ev.user,30*1440*60-1,[this,ev](const QString &resp,auto){
@@ -1095,7 +1107,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         }
     }
     */
-    if(m_info->pbbot && ev.bot) return;
+
     if(ev.msg=="菜单")
     {
         if(!m_info->caidan.isEmpty())

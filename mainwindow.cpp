@@ -77,11 +77,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.6.143"
-#define APP_BUILD_NUMBER 143
+#define APP_VERSION_STR "v1.4.7.145"
+#define APP_BUILD_NUMBER 145
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.7.145 (2026-10-22)
+- 优化 耗时统计
+- 优化 聊天室 右键菜单增加新内容 图片标签问题
+
 ## v1.4.6.143 (2026-10-22)
 - 修复 pysdk 中 get_user_id 参数用错问题
 - 优化 插件市场 增加未安装插件筛选

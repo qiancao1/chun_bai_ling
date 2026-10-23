@@ -81,6 +81,7 @@ private:
     QPushButton *qbload = nullptr;
     QCheckBox *chbox;
     QCheckBox *chboxStat;   // 图片上传统计开关（勾选后 api 侧输出耗时+张数，不落盘）
+    QCheckBox *chboxTimeStat;   // 发送耗时统计开关（直接改 g_msg_time_stat：消息前缀带上 处理|图片|发送 耗时，不落盘）
     // 五个Tab对应的View和Model
     QTableView *eventListView = nullptr;
     QTableView *groupListView = nullptr;

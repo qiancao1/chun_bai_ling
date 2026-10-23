@@ -36,6 +36,11 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QThreadPool>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QDataStream>
+#include <QRegularExpression>
 static QCache<QString, QPixmap> avatarCache;
 static QCache<QString, QStringList> s_wrapCache; //行数缓存
 static const int WRAP_CACHE_SIZE = 500;
@@ -130,20 +135,58 @@ static QString simplifyCommandLinks(const QString &content)
     return out;
 }
 
-// 去掉消息里的媒体标签本体：[image,…] [video,…] [audio,…] [file,…] [f,…] [record,…]
-// 这些标签的内容长这样（直接显示就是一坨 URL 文本）：
-//   [image,size=4059,url=https://multimedia.nt.qq.com.cn/download?appid=…&spec=0]
-// 媒体本身另有渲染/双击逻辑，正文里不该再留标签。
-static QString stripMediaTags(const QString &content)
+// 去掉图片标签本体：[image,…] [img,…]
+// 标签内容长这样（直接显示就是一坨 URL 文本）：
+//   [image,height=980,width=862,name=x.jpg,type=image/jpeg,text=,size=83207,url=https://…&spec=0]
+// 图片本身另有渲染/双击逻辑，正文里不该再留标签。
+// 注意：视频/语音/文件标签按要求不动，原样留在正文里。
+static QString stripImageTags(const QString &content)
 {
-    static const char *kTags[] = {
-        "[image,", "[record,", "[img,", "[f,"
-    };
     QString out = content;
-    for (const char *raw : kTags) {
-        const QString tag = QString::fromLatin1(raw);
-        if (out.contains(tag))
-            out = replaceBetweenAll(out, tag, "]", "");
+
+    // ① 完整标签里最靠谱的形态：…url=https://…]（以 url 结尾）。
+    //    放在最前面是因为标签里 name / text 万一带了 ']'，「遇到 ] 就停」的切法会在那里断掉，
+    //    剩下的 `size=490700,url=…]` 就整段漏进正文（截图里那一坨 URL 就是它）。
+    static const QRegularExpression reUrlTag(
+        QStringLiteral("\\[(?:image|img),.*?url=(?:https?|ftp)://[^\\s\\]]*\\]"),
+        QRegularExpression::DotMatchesEverythingOption);
+    out.remove(reUrlTag);
+
+    // ② 其它形态：本地文件 [image,path=…,] 等
+    static const QRegularExpression reTag(
+        QStringLiteral("\\[(?:image|img),[^\\[\\]]*\\]"),
+        QRegularExpression::DotMatchesEverythingOption);
+    out.remove(reTag);
+
+    // ③ 残缺片段：前缀被上游吃掉，只剩属性串「size=123,url=https://…]」——也清掉。
+    //    结尾那个 ']' 是必需的（不然用户手打的 url=https://… 会被误删）；
+    //    前面只认行首 / 空白 / '['，故意不认 ','，否则会把 [audio,name=…] 这种
+    //    视频/语音/文件标签从中间劈开，留下半截 "[audio,"
+    static const QRegularExpression reOrphan(
+        QStringLiteral("(?:^|(?<=[\\s\\[]))(?:[A-Za-z_]+=[^,\\]\\n]*,)*url=(?:https?|ftp)://[^\\s\\]]*\\]"),
+        QRegularExpression::DotMatchesEverythingOption | QRegularExpression::MultilineOption);
+    out.remove(reOrphan);
+
+    // ④ 连 ']' 都没了的半截标签（日志被截断时会出现）：从标签头删到行尾
+    static const QRegularExpression reHalf(
+        QStringLiteral("\\[(?:image|img),[^\\n]*$"),
+        QRegularExpression::MultilineOption);
+    out.remove(reHalf);
+
+    // 纯图消息删完就是空串；顺手把删标签留下的首尾空行/空格剪掉，
+    // 免得 prepareMessageData 里 split('\n') 多出一行空白
+    while (out.startsWith(QLatin1Char('\n')) ||
+           out.startsWith(QLatin1Char('\r')) ||
+           out.startsWith(QLatin1Char(' ')) ||
+           out.startsWith(QLatin1Char('\t')))
+        out.remove(0, 1);
+    while (!out.isEmpty()) {
+        const QChar c = out.at(out.size() - 1);
+        if (c == QLatin1Char('\n') || c == QLatin1Char('\r')
+                || c == QLatin1Char(' ') || c == QLatin1Char('\t'))
+            out.chop(1);
+        else
+            break;
     }
     return out;
 }
@@ -615,9 +658,9 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     data.imagePath = imageSrc;        // 原始来源：本地路径 或 URL
     data.imageIsLocal = isLocal;
     data.imageLocalFile = isLocal ? imageSrc : resolveImageFile(imageSrc);
-    // 2. 去掉媒体标签本体（[image,…] / [video,…] / [file,…] …），只留纯文本
-    //    —— 只清理 [image, 的话，视频/语音/文件标签会整段留在正文里变成一坨 URL
-     content = stripMediaTags(content);
+    // 2. 去掉图片标签本体（[image,…] / [img,…]），只留纯文本
+    //    视频/语音/文件的标签不处理，仍按原样留在正文里
+     content = stripImageTags(content);
 
     // Markdown 图片：图已单独取出来渲染，正文里不该再留 alt / 尺寸 / url
     {
@@ -682,6 +725,14 @@ BubbleDelegate::CachedData BubbleDelegate::prepareMessageData(const QString &raw
     }
     data.textWidth = qMin(qMax(textWidth, 48), maxBubbleWidth);
     data.textHeight = lines.size() * m_textFm->height() + 4;
+
+    // 只有媒体、没有正文的消息：别让空文本再占一行高度（否则图片上方会多出一条空白带）
+    if (content.trimmed().isEmpty()) {
+        data.displayText.clear();
+        data.wrappedLines.clear();
+        data.textWidth = 0;
+        data.textHeight = 0;
+    }
 
     // 5. 计算高度 —— sizeHint 与 paint 共用这一份，保证两者永远一致
     int nameHeight = isSelf ? 0 : m_nameFm->height() + 4;
@@ -1438,18 +1489,149 @@ bool ChatPage::eventFilter(QObject *obj, QEvent *event) {
 }
 void ChatPage::showContactListContextMenu(const QPoint &pos)
 {
+    if(isGroupMode!=0 && isGroupMode!=1) return;
     QPoint globalPos = contactList->mapToGlobal(pos);
     QMenu menu;
     QModelIndex index = contactList->indexAt(pos);
     if (index.isValid()) {
 
+        // 列表项里存的数据：UserRole = appid，UserRole+1 = 群id，UserRole+3 = 显示名
+        const QString id    = index.data(Qt::UserRole + 1).toString();
+        const int     appid = index.data(Qt::UserRole).toInt();
+        QString groupName   = index.data(Qt::UserRole + 3).toString();
+        if (groupName.isEmpty()) groupName = id;
+
         QAction *sztx = menu.addAction("设置群头像");
+        QAction *qkxx = menu.addAction("查看群信息");
+
+        // 「从全量群删除」只在群里确实存在全量群记录时才给（普通群列表里的群也可能同时在）
+        bool inAllGroups = false;
+        {
+            QMutexLocker locker(&m_GMutex);
+            inAllGroups = 全量群.contains(id);
+        }
+        QAction *delAll = nullptr;
+        if (inAllGroups) {
+            menu.addSeparator();
+            delAll = menu.addAction("从全量群删除");
+        }
+
+        // --- 查看群信息：调 get_groups_bot_state（api2.cpp） ---
+        connect(qkxx, &QAction::triggered, this, [this, id, appid, groupName]() {
+            if (id.isEmpty()) {
+                QMessageBox::warning(this, "错误", "未获取到群ID");
+                return;
+            }
+            QQBotClient *client = m_botClients.value(appid, nullptr);
+            if (!client) {
+                QMessageBox::warning(this, "错误",
+                                     QString("未找到 appid=%1 对应的机器人，无法查询群信息").arg(appid));
+                return;
+            }
+
+            // 回调跑在线程池线程 → 这里只做解析拼串，弹窗回主线程（qApp 永不析构，安全）
+            client->get_groups_bot_state(id, [id, appid, groupName]
+                                         (const QString &rsp, QNetworkReply::NetworkError) {
+                QString body = rsp;
+                int nlPos = body.indexOf("\n[Network Error");
+                if (nlPos >= 0) body = body.left(nlPos);
+
+                QString text;
+                QJsonParseError pe{};
+                QJsonDocument doc = QJsonDocument::fromJson(body.trimmed().toUtf8(), &pe);
+                if (!doc.isObject()) {
+                    text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回（非JSON）：\n%4")
+                               .arg(groupName, id, QString::number(appid), body.trimmed());
+                } else {
+                    QJsonObject obj = doc.object();
+                    const int code = obj.value("code").toInt(0);   // 成功一般没有 code 字段
+                    const bool hasKnown = obj.contains("member_openid") || obj.contains("joined_at")
+                            || obj.contains("member_role") || obj.contains("recv_msg_setting")
+                            || obj.contains("allow_proactive_msg");
+
+                    if (code != 0) {
+                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回错误：code=%4\n%5")
+                                   .arg(groupName, id, QString::number(appid),
+                                        QString::number(code), obj.value("message").toString());
+                    } else if (!hasKnown) {
+                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回：\n%4")
+                                   .arg(groupName, id, QString::number(appid),
+                                        QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Indented)).trimmed());
+                    } else {
+                        QString openid   = obj.value("member_openid").toString();
+                        QString joinedAt = obj.value("joined_at").toString();
+                        QString role     = obj.value("member_role").toString();
+                        QString recv     = obj.value("recv_msg_setting").toString();
+
+                        if (role == "owner")        role = "群主";
+                        else if (role == "admin")   role = "管理员";
+                        else if (role == "member")  role = "普通成员";
+                        else if (role.isEmpty())    role = "未知";
+
+                        if (recv == "all")                   recv = "全部消息";
+                        else if (recv == "only_mention")     recv = "仅被艾特时";
+                        else if (recv == "mention_and_context") recv = "被艾特及上下文";
+                        else if (recv.isEmpty())             recv = "未知";
+
+                        QString proactive = obj.contains("allow_proactive_msg")
+                                ? (obj.value("allow_proactive_msg").toBool() ? QString("允许") : QString("不允许"))
+                                : QString("未知");
+
+                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n"
+                                       "机器人 OpenID：%4\n入群时间：%5\n"
+                                       "机器人身份：%6\n主动推送：%7\n接收消息：%8")
+                                   .arg(groupName, id, QString::number(appid),
+                                        openid.isEmpty()   ? QString("未知") : openid,
+                                        joinedAt.isEmpty() ? QString("未知") : joinedAt,
+                                        role, proactive, recv);
+                    }
+                }
+
+                QMetaObject::invokeMethod(qApp, [text]() {
+                    QMessageBox box(QApplication::activeWindow());
+                    box.setWindowTitle("群信息");
+                    box.setIcon(QMessageBox::Information);
+                    box.setText(text);
+                    box.exec();
+                });
+            });
+        });
+
+        // --- 从全量群删除（只删本地记录，不会退群） ---
+        if (delAll) {
+            connect(delAll, &QAction::triggered, this, [this, id, groupName]() {
+                if (id.isEmpty()) return;
+                if (QMessageBox::question(this, "从全量群删除",
+                                          QString("确定要把 %1 从「全量群」列表里删除吗？\n\n"
+                                                  "只删除本地记录，不会让机器人退群。").arg(groupName),
+                                          QMessageBox::Yes | QMessageBox::No,
+                                          QMessageBox::No) != QMessageBox::Yes)
+                    return;
+
+                {
+                    QMutexLocker locker(&m_GMutex);   // 写文件必须和哈希在同一把锁内
+                    if (!全量群.contains(id)) return;
+                    全量群.remove(id);
+                    QFile file("data/全量群.hash");
+                    if (file.open(QIODevice::WriteOnly)) {
+                        QDataStream out(&file);
+                        out.setVersion(QDataStream::Qt_5_15);
+                        out << 全量群;   // 直接序列化整个 QHash
+                        file.close();
+                    }
+                }
+
+                // 正在看的就是这个群 → 顺手清空右侧会话
+                if (currentContactId == id) {
+                    currentContactId.clear();
+                    msgModel->clear();
+                }
+                updateAllContactLists(isGroupMode);   // 刷新列表（模式不变）
+            });
+        }
 
         // --- 设置群头像逻辑 ---
-        connect(sztx, &QAction::triggered, this, [this, index]() {
-            // 3. 替换这里：从 index 中获取数据
-            QString id = index.data(Qt::UserRole + 1).toString();
-
+        connect(sztx, &QAction::triggered, this, [this, id]() {
             if (id.isEmpty()) {
                 QMessageBox::warning(this, "错误", "未获取到群ID");
                 return;
@@ -1560,6 +1742,7 @@ void ChatPage::updateAllContactLists(int index)
                 c.lastMsgTime = "无信息";      // 忽略
             else
                 c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
+
             addDataToModel(appid, c,0);
 
         }
@@ -1667,7 +1850,10 @@ void ChatPage::updateAllContactLists(int index)
             c.lastMsgTime = msg.msg;     // 最新消息内容
         } else {
             c.name = msg.Gname;
-            c.lastMsgTime = msg.name + ": " + msg.msg;
+            if(msg.msg.isEmpty())
+                c.lastMsgTime =  "BOT: " + msg.direction;
+            else
+                c.lastMsgTime = msg.name + ": " + msg.msg;
         }
 
         if (c.name.isEmpty()) {

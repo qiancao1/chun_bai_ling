@@ -1145,8 +1145,10 @@ static QString padImageAltForMarkdown(const QString &alt)
 }
 
 // markdown 里 http(s) / qqbot-media 的图片**不参与上传**（原样发出去），
-// 但尺寸标记还得补 —— 所以单开这一趟轻量替换：
-// 只做一个正则扫描 + 原地改写，不建 allTags、不算 md5、不读文件、不发请求。
+// 但尺寸标记还得补 —— 平台对没写 #宽px #高px 的图按原始尺寸渲染（AI 十次有八次忘写），
+// qqbot-media 的素材图同样会撑爆。所以两类都补，规则一致：
+//   无尺寸 → #1000px #0px；只有宽度 → 补 #0px；已有宽高 → 不动。
+// 纯正则一趟 + 原地改写：不建 allTags、不算 md5、不读文件、不发请求。
 // 放在真正扫描本地图片之前跑，避免两套下标互相打架。
 static void normalizePassThroughImageSizes(QString &text)
 {
@@ -5143,10 +5145,15 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     return r;
 }
 
+// 发送耗时统计：账本结构体在 qqbotclient.h（MsgTimeStat）—— 因为「处理/图片/发送」三段要拼进
+// 「[插件名|%1ms]」那个方括号，而拼的动作在 core/api2.cpp 的 addmsglog 收尾处。
+// 这里只负责在关键节点 mark() / addMedia() / addSend()，再把账本交给 addmsglog。
+
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
                                     const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
 {
     CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
+    auto st = std::make_shared<MsgTimeStat>();   // 耗时统计账本（开关关掉时全程空转）
     if(type!=18){
         if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
     }
@@ -5181,6 +5188,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     bianl(type,index,newtext,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
     if(newtext.contains("[get url") || newtext.contains("[post url"))
         newtext = processText(newtext);
+    // 处理耗时基准：addmsglog 里 [插件名|%1ms] 的那个 %1 就是它。
+    // ⚠ 这行**不归 g_msg_time_stat 管** —— 全项目十几个 "[xx|%1ms]" 串都吃这个值，
+    //   关掉统计只能停掉「新增的图片/返回耗时」，不能让它们全变成 0ms。
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
     QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,MessageLogContext());//检查也没有要发送 的语言视频 文件 原位修改text
@@ -5190,7 +5200,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(newtext.isEmpty() && mbise)
     {
         QString response = R"({"message":"发送内容不能为空"})";
-        addmsglog(response,index,pname,text,now_us,type,openid);
+        addmsglog(response,index,pname,text,now_us,type,openid,st);
         return response;
     }
     int seq_index=0;
@@ -5209,62 +5219,95 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     {
         if(!mbise)
         {
+            st->mark();   // 图片耗时起点
             newtext = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            st->addMedia();
             QString textA = forbidden->filterText(newtext);
             response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
-            addmsglog(response,index,pname,text,now_us,type,openid);
+            st->addSend();
+            addmsglog(response,index,pname,text,now_us,type,openid,st);
             return response;
         }
         if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
         {
+            st->mark();
             newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            st->addMedia();
             QString textA = forbidden->filterText(newtext);
             //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
             response = R"({"message":"暂时不支持模板方式"})";
         }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
+            st->mark();
             newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
             response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+            st->addSend();
         }else {
+            st->mark();
             newtext = processImageTags(newtext,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
             QString url = get_url(type, openid, "messages");
             response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,MessageLogContext(),noref);
+            st->addSend();
         }
-        addmsglog(response,index,pname,newtext,now_us,type,openid);
+        addmsglog(response,index,pname,newtext,now_us,type,openid,st);
         return response;
     }
     if(!mbise)
     {
+        st->mark();
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        st->addSend();
     }
     if(!mode && m_info->markdown || mode && sendType==1)
     {
+        st->mark();
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        st->addSend();
     }else{
 
+        st->mark();
         newtext = processImageTags(newtext,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        st->addSend();
     }
-    addmsglog(response,index,pname,newtext,now_us,type,openid);
+    addmsglog(response,index,pname,newtext,now_us,type,openid,st);
     return response;
 
 
 }
 
-QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
+// send_messagesAsync / send_messagesAsync2 的**公共实现**（派发逻辑只此一份）。
+//   两者真正的差别只有两处，全部用参数表达，不再各写一遍 200 行：
+//     ① preParsed：Async2 的 mb / 按钮 / 小尾巴是 send_msgAsync 在**取 api 之前**就解析好的
+//        （[get url] 分支：按钮必须先解析，正文要等 api 回来才是最终版），这里不能重复 bianl；
+//     ② 媒体：Async2 原先调**同步** sendOneMedia（会把主线程堵在转码/上传里），现在两者都走异步链。
+//   seq_index 两者完全一致：命中序号 → 1；否则随机 2..99（原先 Async2 写死 2，已统一）。
+// ⚠ 回调契约：**每条路径都必须把 ctx.cb 触发恰好一次** —— send_messages* 是唯一会触发它的地方，
+//   所以凡是不派发 send_messages* 就返回的路径（纯媒体 / noref / 模板不支持），都在下面手工补一次。
+QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, const QString &pname, QString text,
+                                          const QString &msgid, bool is_wakeup, bool mode, int sendType,
+                                          bool noref, Callback cb, bool preParsed,
+                                          const QString &mbIn, const QJsonArray &promptKbIn,
+                                          const QJsonValue &kbIn)
 {
     CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
+    // 耗时统计账本（开关关掉时全程空转）：挂到 ctx 上（见下面的 ctxT），由 addmsglog 收尾结算。
+    auto st = std::make_shared<MsgTimeStat>();
 
     QString newtext = text;
-    if(text.contains("#python"))
+    if(!preParsed && text.contains("#python"))
     {
         MessageEvent ev;
         ev.appid = m_info->appid_int;
@@ -5274,6 +5317,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
         newtext =python_code(text,ev);
     }
 
+    // 处理耗时基准（[插件名|%1ms] 的 %1）—— 同上，不归 g_msg_time_stat 管
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
     MessageLogContext ctx;
@@ -5286,32 +5330,41 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
     ctx.cb =cb;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index = index;
-    QJsonValue keyboard;
-    QJsonArray prompt_keyboard;
-    QString message_reference,mb;
-    QString textB = normalizeNewlinesToCR(newtext); //处理换行
-    bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    QJsonValue keyboard = kbIn;
+    QJsonArray prompt_keyboard = promptKbIn;
+    QString message_reference,mb = mbIn;
+    QString textB;
+    if (preParsed) {
+        // 换行归一化 + bianl 都已由调用方做过（send_msgAsync），这里照搬原文，重复解析会把
+        // 同一场合的按钮/小尾巴再拆一遍（按钮会叠加、小尾巴会重复追加）
+        textB = newtext;
+    } else {
+        textB = normalizeNewlinesToCR(newtext); //处理换行
+        bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
+    }
 
 
 
     // ── 媒体标签：异步（回调版）；正文发送挪进回调，等媒体处理完再走 ──
     // 原先是同步 sendOneMedia —— 带媒体的异步发送会把**调用线程**（Python 那条共享 asyncio 线程、
-    // 插件页线程等）堵在 ffmpeg 转码 / 上传网络等待里。改成回调版后本函数立刻返回 "{}"。
-    // ⚠ 回调契约：**每条路径都必须把 ctx.cb 触发恰好一次** —— send_messages* 是唯一会触发它的地方，
-    //   所以凡是不派发 send_messages* 就返回的路径（纯媒体 / noref / 模板不支持），都在下面手工补一次。
+    // 插件页线程、以及 Async2 走的主线程）堵在 ffmpeg 转码 / 上传网络等待里。改成回调版后立刻返回 "{}"。
     const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
     const int indexCopy = index;
     const QString mbCopy = mb;
 
     auto sendTextPart = [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, indexCopy, mbCopy,
-                         is_wakeup, mode, sendType, noref, ctx](const QString &textB, const QString &mediaResp) {
+                         is_wakeup, mode, sendType, noref, ctx, st](const QString &textB, const QString &mediaResp) {
+        // 账本跟着 ctx 往下走：send_messages* 收尾（addmsglog）时把「图/返/总」拼进 pname 方括号。
+        // 开关关掉时 ctxT 就是 ctx 的副本，cb 原样，零额外开销。
+        MessageLogContext ctxT = ctx;
+        ctxT.tstat = st;
         // 正文被媒体标签吃光：媒体那步已经在 sendOneMediaAsync 里发完了，但下面**所有**分支都以
         // send_messages* 结尾，ctx.cb 只在那些函数里被触发 —— 直接 return 的话调用方的回调
         // 永远不会来（插件按 _ASYNC_TIMEOUT 干等 60s，Python 的 await 同理）。
         // 这里把媒体那次的响应原样交出去；mediaResp 为空 = 压根没有媒体（消息本来就是空的）→ 回 {} 当作"已处理"。
         if (textB.isEmpty()) {
-            if (ctx.cb) ctx.cb(mediaResp.isEmpty() ? QStringLiteral("{}") : mediaResp,
-                               QNetworkReply::NoError);
+            if (ctxT.cb) ctxT.cb(mediaResp.isEmpty() ? QStringLiteral("{}") : mediaResp,
+                                 QNetworkReply::NoError);
             return;
         }
 
@@ -5326,7 +5379,7 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
             seq_index = 1;
         else if(noref) {
             // 与上面纯媒体同理：这条路径不派发 send_messages*，ctx.cb 不会被触发 → 调用方干等超时
-            if (ctx.cb) ctx.cb(QStringLiteral("{}"), QNetworkReply::NoError);
+            if (ctxT.cb) ctxT.cb(QStringLiteral("{}"), QNetworkReply::NoError);
             return;
         }
         else seq_index = QRandomGenerator::global()->bounded(2,100);
@@ -5336,42 +5389,44 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
         {
             if(!mbise)
             {
+                st->mark();   // 图片耗时起点（回调里 addMedia 收口）
                 processImageTagsAsync(mbCopy,1,type,openid,
-                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
                     (const QString &tb, const QString &, const QString &mr) {
+                        st->addMedia();
                         QString textA = forbidden->filterText(tb);
-                        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
+                        send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT,noref);
                     });
                 return;
             }
             if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
             {
                 // 与同步版一致：模板方式暂不支持（同步版这里返回 {"message":"暂时不支持模板方式"}，
-                // 异步版无返回值，记一条日志）
-                QString tbTpl = textB;
-                QString fiTpl, mrTpl;
-                (void)processImageTags(tbTpl,1,fiTpl,type,openid,mrTpl);//处理图片 + 回复
-                QString textA = forbidden->filterText(tbTpl);
-                Q_UNUSED(textA);
+                // 异步版无返回值，记一条日志）。这里也**不再**预处理图片 —— 反正不发，
+                // processImageTags 只会白跑一遍图片下载/处理。
                 AppendEventLog(QStringLiteral("异步发送：模板方式（markdown_pd_mb / sendType==2）暂不支持，已跳过正文发送"));
-                // 同上：没有派发 send_messages*，必须自己把本次的「响应」交出去（与同步版返回值对齐）
-                if (ctx.cb) ctx.cb(QStringLiteral(R"({"message":"暂时不支持模板方式"})"),
-                                   QNetworkReply::NoError);
+                // 没有派发 send_messages*，必须自己把本次的「响应」交出去（与同步版返回值对齐）
+                if (ctxT.cb) ctxT.cb(QStringLiteral(R"({"message":"暂时不支持模板方式"})"),
+                                     QNetworkReply::NoError);
             }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
             {
+                st->mark();
                 processImageTagsAsync(textB,1,type,openid,
-                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                    [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
                     (const QString &tb, const QString &, const QString &mr) {
+                        st->addMedia();
                         QString textA = forbidden->filterText(tb);//违禁词过滤
-                        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                        send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
                     });
             }else {
+                st->mark();
                 processImageTagsAsync(textB,2,type,openid,
-                    [this, type, openid, msgIdCopy, seq_index, ctx, noref]
+                    [this, type, openid, msgIdCopy, seq_index, ctxT, st, noref]
                     (const QString &tb, const QString &fi, const QString &mr) {
+                        st->addMedia();
                         QString textA = forbidden->filterText(tb);//违禁词过滤
                         QString url = get_url(type, openid, "messages");
-                        send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
+                        send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctxT,noref);
                     });
             }
             return;
@@ -5379,27 +5434,33 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
 
         if(!mbise) //模板 一般用不到
         {
+            st->mark();
             processImageTagsAsync(textB,1,type,openid,
-                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
                 (const QString &tb, const QString &, const QString &mr) {
+                    st->addMedia();
                     QString textA = forbidden->filterText(tb);
-                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
                 });
         }
         if(!mode && m_info->markdown || mode && sendType==1)
         {
+            st->mark();
             processImageTagsAsync(textB,1,type,openid,
-                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
                 (const QString &tb, const QString &, const QString &mr) {
+                    st->addMedia();
                     QString textA = forbidden->filterText(tb);//违禁词过滤
-                    send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                    send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
                 });
         }else{
+            st->mark();
             processImageTagsAsync(textB,0,type,openid,
-                [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
+                [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
                 (const QString &tb, const QString &fi, const QString &mr) {
+                    st->addMedia();
                     QString textA = forbidden->filterText(tb);//违禁词过滤
-                    send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
+                    send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
                 });
         }
     };
@@ -5410,117 +5471,26 @@ QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QS
                       });
     return "{}";
 }
+// ── 两个公开入口：都只是「预处理差异」的描述，派发逻辑全在 sendMessagesAsyncCore ──
+QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
+                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
+{
+    // preParsed=false：自己跑 #python / 换行归一化 / bianl
+    return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
+                                 /*preParsed=*/false, QString(), QJsonArray(), QJsonValue());
+}
+
 QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
                                          const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
                                          const QJsonArray &prompt_keyboard, const QJsonValue  &keyboard, Callback cb)
 {
-    CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
-    QString mb=mb2;
-    auto now = std::chrono::steady_clock::now();
-    qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    MessageLogContext ctx;
-    ctx.index = 0;
-    ctx.pname = pname;                     // 拷贝
-    ctx.jsonString = text;
-    ctx.now_us = now_us;
-    ctx.type = type;
-    ctx.openid = openid;
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
-    ctx.index = index;
-    ctx.cb =cb;
-    QString message_reference;
-    QString newtext2 = sendOneMedia(type,openid,pname,text,now_us,msgid,is_wakeup,mode,sendType,noref,ctx);//检查也没有要发送 的语言视频 文件 原位修改text
-
-    // 纯媒体（正文被媒体标签吃光）：sendOneMedia 已经把媒体发完了，而下面**所有**分支都以
-    // send_messages* 结尾才触发 ctx.cb —— 直接 return 的话调用方的回调永远不会来（干等超时）。
-    // 这里把媒体那次的响应交出去；newtext2 为空 = 压根没内容，回 {} 当作"已处理"。
-    if (text.isEmpty()) {
-        if (ctx.cb) ctx.cb(newtext2.isEmpty() ? QStringLiteral("{}") : newtext2, QNetworkReply::NoError);
-        return newtext2;
-    }
-
-    bool mbise= mb.isEmpty();
-    if(text.isEmpty() && mbise) return  R"({"message":"发送内容不能为空"})";
-    int seq_index=0;
-    bool ok=false;
-    if(index>=0){
-
-        g_logdb[type+1]->setBuffer_250(index,ok);
-    }
-    if(ok)
-        seq_index = 1;
-    else if(noref) {
-        // 与纯媒体同理：这条路径不派发 send_messages*，必须自己给回执，否则调用方干等超时
-        if (ctx.cb) ctx.cb(QStringLiteral("{}"), QNetworkReply::NoError);
-        return "{}";
-    }
-    else seq_index = 2;
-
-    QString response="{}",fileinfo;
-    const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
-    if(type==1 || type ==3)
-    {
-        if(!mbise)
-        {
-            processImageTagsAsync(mb,1,type,openid,
-                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-                (const QString &tb, const QString &, const QString &mr) {
-                    QString textA = forbidden->filterText(tb);
-                    send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx,noref);
-                });
-            return response;
-        }
-        if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
-        {
-            text = processImageTags(text,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
-            QString textA = forbidden->filterText(text);
-            //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
-            response = R"({"message":"暂时不支持模板方式"})";
-        }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
-        {
-            processImageTagsAsync(text,1,type,openid,
-                [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-                (const QString &tb, const QString &, const QString &mr) {
-                    QString textA = forbidden->filterText(tb);//违禁词过滤
-                    send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-                });
-        }else {
-            processImageTagsAsync(text,2,type,openid,
-                [this, type, openid, msgIdCopy, seq_index, ctx, noref]
-                (const QString &tb, const QString &fi, const QString &mr) {
-                    QString textA = forbidden->filterText(tb);//违禁词过滤
-                    QString url = get_url(type, openid, "messages");
-                    send_messages_pd(url,msgIdCopy,textA,fi,mr,seq_index,ctx,noref);
-                });
-        }
-        return response;
-    }
-
-    if(!mbise) //模板 一般用不到
-    {
-        processImageTagsAsync(text,1,type,openid,
-            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &, const QString &mr) {
-                QString textA = forbidden->filterText(tb);
-                send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }
-    if(!mode && m_info->markdown || mode && sendType==1)
-    {
-        processImageTagsAsync(text,1,type,openid,
-            [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &, const QString &mr) {
-                QString textA = forbidden->filterText(tb);
-                send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }else{
-        processImageTagsAsync(text,0,type,openid,
-            [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctx, noref]
-            (const QString &tb, const QString &fi, const QString &mr) {
-                QString textA = forbidden->filterText(tb);
-                send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctx, noref);
-            });
-    }
-    return response;
+    // 与 send_messagesAsync 共用 sendMessagesAsyncCore，差别只在预处理：
+    //   mb / 按钮 / 小尾巴 已由 send_msgAsync 在**取 api 之前**解析好（[get url] 分支：按钮必须先
+    //   解析，而正文要等 api 异步回来才是最终版本）→ preParsed=true，不再 bianl，
+    //   也不重复跑 #python 和 normalizeNewlinesToCR（那两件在 send_msgAsync 里已经做完了）。
+    // 顺带修掉两个老问题：媒体改走异步链（原来同步 sendOneMedia 会把主线程堵在转码/上传里），
+    // 且不会再出现「纯媒体时 send_Media 先触发一次 ctx.cb、正文再触发一次」的双回调。
+    return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
+                                 /*preParsed=*/true, mb2, prompt_keyboard, keyboard);
 }
 

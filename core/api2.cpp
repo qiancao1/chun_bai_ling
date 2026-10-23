@@ -16,12 +16,32 @@ QList<CosPutPoolEntry> takeCosPutPending();
 
 
 
-void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid)
+void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid,
+                            std::shared_ptr<MsgTimeStat> tstat)
 {
-    // 插件侧的 pname 传的是**裸 uuid**（不以 '[' 开头）→ 按插件表还原成展示标签 "[插件名|%1ms]"，
-    // 日志/聊天窗里看不出跟以前有任何区别；框架 / AI / 关键词匹配传的 "[某某|%1ms]" 原样用。
-    if (!pname.startsWith(QLatin1Char('[')))
-        pname = pluginPnameText(pname);
+    // ── 先把 pname 归一成「标签本体」（不含方括号）──
+    //   两种传法都吃：
+    //     · 裸插件名 / 裸 uuid（新写法）→ 方括号、耗时全在下面现拼；
+    //     · 老的 "[插件名|%1ms]" / "[关键词匹配]" → 剥掉方括号当标签，%1 仍按处理耗时填。
+    QString label = pname;
+    if (!label.startsWith(QLatin1Char('['))) {
+        const QString t = pluginPnameText(label);              // 裸 uuid → "[插件名|%1ms]"
+        if (!t.isEmpty()) {
+            label = t;
+        } else {
+            // 查不到：可能传的本来就是展示名（新写法）→ 原样用；
+            // 也可能是插件表里没有的 uuid → 保持老行为（不带前缀）。
+            bool hex32 = (label.size() == 32);
+            for (const QChar c : label) {
+                const QChar lo = c.toLower();
+                if (!(lo >= QLatin1Char('0') && lo <= QLatin1Char('9'))
+                    && !(lo >= QLatin1Char('a') && lo <= QLatin1Char('f'))) { hex32 = false; break; }
+            }
+            if (hex32) label.clear();
+        }
+    }
+    if (label.startsWith(QLatin1Char('[')) && label.endsWith(QLatin1Char(']')))
+        label = label.mid(1, label.size() - 2);                // 只留标签本体
 
     QJsonDocument doc = QJsonDocument::fromJson(response.toUtf8());
     QJsonObject obj = doc.object();
@@ -44,14 +64,31 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
         qint64 diff_us = now_us - us;
         diff_ms = diff_us / 1000.0;
     }
+
+    // ── 前缀只在这一处拼 ──
+    //   开计时：[插件名|处理ms|图片上传ms|发送ms]内容  如 [测试插件|0.12ms|0.00ms|400.35ms]测试文本
+    //   关计时：[插件名]内容            （老写法里 "|%1ms" 那截直接去掉）
+    const bool timing = tstat ? tstat->on : g_msg_time_stat;
+    QString prefix;
+    if (!label.isEmpty()) {
+        if (label.endsWith(QLatin1String("|%1ms")))
+            label.chop(5);                                      // 老写法：连 "|%1ms" 一起去掉
+        else
+            label.remove(QLatin1String("%1"));
+        if (timing) {
+            // 处理耗时统一用这里算出的 diff_ms（老写法的 %1 也走这条）；没有账本时后两段补 0.00
+            const QString tail = tstat ? tstat->suffix(diff_ms)
+                                       : QStringLiteral("|%1ms|0.00ms|0.00ms").arg(diff_ms, 0, 'f', 2);
+            prefix = QLatin1Char('[') + label + tail + QLatin1Char(']');
+        } else {
+            prefix = QLatin1Char('[') + label + QLatin1Char(']');
+        }
+    }
     if(openid == chatPage->currentContactId)
     {
         QMetaObject::invokeMethod(this, [=]() {
             Message m("","",true, QDateTime::currentDateTime().toString("hh:mm:ss"),"","[ref,msg_idx="+ref+"]","");
-            if(pname.contains("%1"))
-                m.direction = pname.arg(diff_ms) + text;
-            else
-                m.direction = pname + text;
+            m.direction = prefix + text;
             if (deleteid.isEmpty() && message != "消息提交安全审核成功")
             {
                 m.direction+="\n\n--------------------------\n\n"+response;
@@ -68,10 +105,7 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
         g_logdb[tabIndex]->readLog(m_info->appid,openid,index,msg);
         msg.plugin_ch = deleteid;
 
-        if(pname.contains("%1"))
-            msg.direction = pname.arg(diff_ms) + text;
-        else
-            msg.direction = pname + text;
+        msg.direction = prefix + text;
 
         msg.Color_0 = Color_0;
         if (deleteid.isEmpty() && message != "消息提交安全审核成功")
@@ -91,15 +125,13 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     msg.isSelf = true;
     msg.plugin_ch = deleteid;
     msg.Color_0 = Color_0;
+
     if(!ref.isEmpty())
         msg.hf="[ref,msg_idx="+ref+"]";
     else
         msg.hf.clear();
 
-    if(pname.contains("%1"))
-        msg.direction = pname.arg(diff_ms) + text;
-    else
-        msg.direction = pname + text;
+    msg.direction = prefix + text;
 
     if (deleteid.isEmpty() && message != "消息提交安全审核成功")
     {
@@ -643,7 +675,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
               [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
                   if(ctx.cb)
                       ctx.cb(resp,err);
               });
@@ -673,7 +705,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
               [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
                   if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
@@ -768,7 +800,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
               [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
                   if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
@@ -854,7 +886,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
         postRawAsync(url, postData, headers2, 20000,
                      [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                          addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                                   ctx.now_us, ctx.type, ctx.openid);
+                                   ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
                      });
         return QString();
     }
@@ -909,7 +941,7 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
               [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
                   if(ctx.cb) ctx.cb(resp,err);
 
               });

@@ -30,6 +30,7 @@
 #include <future>
 #include <memory>
 #include <qnetworkreply.h>
+#include <chrono>
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 
 // 「上传富媒体」异步链的统一回调（同步版靠出参 ok / expireTime / md5 / outurl 回值，异步版改走这里）
@@ -95,6 +96,63 @@ struct MessageEvent
 
     QString toString() const;
 };
+// ── 发送耗时统计账本（总开关 g_msg_time_stat，默认关）──
+// send_messages / sendMessagesAsyncCore 在关键节点 mark()，最后 addmsglog 收尾时把结果拼到
+// 「[插件名|%1ms]」那个方括号的末尾，例如：
+//     [测试插件|0.12ms|0.00ms|400.35ms]测试文本
+//     处理 = 收消息 → 进发送函数；图片上传 = 图片下载/处理/上传；发送 = 调发送接口 → 响应回来
+// 开关关掉时所有方法直接 return，一个 steady_clock::now() 都不取；addmsglog 只拼 [插件名]。
+extern bool g_msg_time_stat;   // 定义在 core/global.cpp
+struct MsgTimeStat
+{
+    bool   on      = false;
+    double mediaMs = 0.0;      // 图片下载 / 处理 / 上传
+    double sendAcc = 0.0;      // 已结算的「发送返回」耗时
+    std::chrono::steady_clock::time_point t0{}, tMark{};
+
+    MsgTimeStat()
+    {
+        on = g_msg_time_stat;
+        if (on) { t0 = std::chrono::steady_clock::now(); tMark = t0; }
+    }
+    void mark() { if (on) tMark = std::chrono::steady_clock::now(); }
+    void addMedia()
+    {
+        if (!on) return;
+        const auto n = std::chrono::steady_clock::now();
+        mediaMs += std::chrono::duration<double, std::milli>(n - tMark).count();
+        tMark = n;
+    }
+    void addSend()
+    {
+        if (!on) return;
+        const auto n = std::chrono::steady_clock::now();
+        sendAcc += std::chrono::duration<double, std::milli>(n - tMark).count();
+        tMark = n;
+    }
+    // 返回耗时：已结算部分 + 上次 mark 到现在（异步路径不调 addSend，收尾时现算）
+    double sendMs() const
+    {
+        if (!on) return 0.0;
+        return sendAcc + std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - tMark).count();
+    }
+    double totalMs() const
+    {
+        if (!on) return 0.0;
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - t0).count();
+    }
+    // 方括号里追加的那一截："|0.12ms|0.00ms|400.35ms"（处理|图片上传|发送，开关关掉时返回空串）
+    QString suffix(double handleMs) const
+    {
+        if (!on) return QString();
+        return QStringLiteral("|%1ms|%2ms|%3ms")
+                   .arg(handleMs, 0, 'f', 2)
+                   .arg(mediaMs, 0, 'f', 2)
+                   .arg(sendMs(), 0, 'f', 2);
+    }
+};
 struct MessageLogContext {
     QString openid;
     QString pname;
@@ -103,6 +161,9 @@ struct MessageLogContext {
     qint64 now_us;
     int index;
     int type;
+    // 发送耗时账本（addmsglog 收尾时把统计拼进 pname 方括号）。用 shared_ptr：异步回调和账本
+    // 得一起活着，ctx 被拷进 PostAsync 的 lambda 后原 lambda 早就没了。
+    std::shared_ptr<MsgTimeStat> tstat;
 
 
 };
@@ -295,6 +356,18 @@ private:
                            const MessageLogContext &ctx,
                            std::function<void(const QString &, const QString &)> onDone);
 
+    // ── send_messagesAsync / send_messagesAsync2 的**唯一实现**（两个公开入口只剩预处理差异）──
+    //   preParsed=false：自己做 #python 替换 / 换行归一化 / bianl（按钮+小尾巴）—— send_messagesAsync
+    //   preParsed=true ：mb / prompt_kb / keyboard 由调用方**已经解析好**，这里直接用、不再 bianl
+    //                    —— send_messagesAsync2（send_msgAsync 的 [get url] 分支：按钮必须先解析，
+    //                    而正文要等 api 异步回来才是最终版本，没法等回来再解析）
+    //   seq_index 两条路径一致：命中序号 → 1；否则随机 2..99（noref 直接回 {} 不发）。
+    QString sendMessagesAsyncCore(int type, const QString &openid, const QString &pname, QString text,
+                                 const QString &msgid, bool is_wakeup, bool mode, int sendType,
+                                 bool noref, Callback cb, bool preParsed,
+                                 const QString &mbIn, const QJsonArray &promptKbIn,
+                                 const QJsonValue &kbIn);
+
     // ── 上传的异步回调版（与同名同步函数逐段对应；把 PostSync / put 换成 PostAsync / 回调式 put）──
     // 递归一律写成「成员函数 + shared_ptr 状态」，**不用**自引用的 std::function（那会形成引用环永不释放）。
     void uploadRichMedia_urlAsync(int targetType, const QString &openid, int fileType,
@@ -373,7 +446,9 @@ private:
                                                      const QString &md5, bool ok, const QString &outurl)> onDone);
     // pname 传值：插件侧直接把**发起方 uuid**当 pname 传（不带 '['）→ 内部先用 pluginPnameText()
     // 还原成展示标签 "[插件名|%1ms]" 再显示；带 '[' 的普通标签原样用。
-    void addmsglog(const QString &response, int index, QString pname, const QString &text, qint64 now_us, int type, const QString &openid);
+    // tstat：发送耗时账本（可为空）。非空且总开关打开时，addmsglog 会把「处理/图片上传/发送」三段拼进 pname 的方括号。
+    void addmsglog(const QString &response, int index, QString pname, const QString &text, qint64 now_us, int type, const QString &openid,
+                   std::shared_ptr<MsgTimeStat> tstat = nullptr);
     void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();

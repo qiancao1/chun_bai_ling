@@ -45,6 +45,15 @@ bool g_upload_calc_hash = true;
 QString g_currency_name = QStringLiteral("铃铛");
 // 看一次广告给多少积分（商店定价基准：price 一般取它的整数倍）。广告系统接进来后读这个值。
 qint64 g_points_per_ad = 1000;
+// ── 发送耗时统计总开关（诊断用，默认关）──
+// 前缀统一在 addmsglog（core/api2.cpp）里拼，pname 传「插件名」就行：
+//     [插件名|处理耗时|图片上传耗时|发送耗时]内容
+//     如 [测试插件|0.12ms|0.00ms|400.35ms]测试文本
+//     处理 = 收消息 → 进发送函数（原 %1）；图片上传 = 图片下载/处理/上传；发送 = 调接口 → 响应回来
+//   老的 "[插件名|%1ms]" 传法照旧吃，%1 那段改成这里算出的处理耗时。
+// 关掉后：一个 steady_clock::now() 都不取，前缀就是干净的 [插件名]（老写法里的 "|%1ms" 一并去掉）。
+// ⚠ 改成 true 就是「默认就统计」，别处不用动。
+bool g_msg_time_stat = false;
 Global::Global() {}
 
 int mapTypeToTabIndex(int type)
