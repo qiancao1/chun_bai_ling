@@ -447,8 +447,11 @@ private:
     // pname 传值：插件侧直接把**发起方 uuid**当 pname 传（不带 '['）→ 内部先用 pluginPnameText()
     // 还原成展示标签 "[插件名|%1ms]" 再显示；带 '[' 的普通标签原样用。
     // tstat：发送耗时账本（可为空）。非空且总开关打开时，addmsglog 会把「处理/图片上传/发送」三段拼进 pname 的方括号。
+    // recordErr：这次失败要不要额外写进「发送错误」独立库（g_errlogdb）。默认 true；
+    //   只有「媒体上传失败时补记的那条 [image,path=…]」传 false —— 那一条本身就只是说明，真正的
+    //   报错紧接着还会走一次 send_*，避免同一次失败在错误库里留两条。
     void addmsglog(const QString &response, int index, QString pname, const QString &text, qint64 now_us, int type, const QString &openid,
-                   std::shared_ptr<MsgTimeStat> tstat = nullptr);
+                   std::shared_ptr<MsgTimeStat> tstat = nullptr, bool recordErr = true);
     void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();

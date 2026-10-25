@@ -57,6 +57,7 @@ QJsonObject g_config;
 QList<PluginInfo> m_pluginList;
 LmdbKV *cache_db=nullptr;
 std::array<std::unique_ptr<LogDB>, 5> g_logdb;
+std::unique_ptr<LogDB> g_errlogdb;      // 发送错误独立库（见 global.h 的说明）
 QHash<int, CardWidget*> g_CW;
 QHash<int, BotDB*> g_botdb;
 QList<PluginInfo2> m_allPlugins;
@@ -714,6 +715,16 @@ void initDBs() {
 
         } else {
             g_logdb[i] = std::move(db);
+        }
+    }
+    // 发送错误独立库：结构与 logdb_* 完全一样（同一个 LogDB 类），只是单独一个目录，
+    // 专门存「发送失败」的记录，方便单独看/单独清。开不了就留 nullptr（写入点全判空）。
+    {
+        auto edb = std::make_unique<LogDB>(QStringLiteral("botdb/logdb_err"));
+        if (!edb->open()) {
+            qCritical() << "打开发送错误数据库失败";
+        } else {
+            g_errlogdb = std::move(edb);
         }
     }
 }

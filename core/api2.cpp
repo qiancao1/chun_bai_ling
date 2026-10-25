@@ -17,7 +17,7 @@ QList<CosPutPoolEntry> takeCosPutPending();
 
 
 void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid,
-                            std::shared_ptr<MsgTimeStat> tstat)
+                            std::shared_ptr<MsgTimeStat> tstat, bool recordErr)
 {
     // ── 先把 pname 归一成「标签本体」（不含方括号）──
     //   两种传法都吃：
@@ -51,6 +51,48 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     QString deleteid = obj["id"].toString();
     QJsonObject obj2 =obj["ext_info"].toObject();
     QString ref = obj2["ref_idx"].toString();
+
+    // ── 「发送错误」独立库（g_errlogdb）的唯一写入点 ──
+    //   就是「把这条失败的 Message 原样复制一份到另一个库」：
+    //   下面两处把 msg.Color_0 改成 0xff0000（= 平台没回 id、真没发出去）的地方各调一次，
+    //   传进去的 msg 里 direction 已经拼好了平台响应，一个字都不用另造。
+    //   ⚠ 原来的逻辑（拼 direction / 标红 / updateLog / findRowBySeq / 广播）完全不动，两份并存。
+    //   recordErr=false 只给「媒体上传失败时补记的那条 [image,path=…]」用 —— 它本身不是一次发送，
+    //   真正的报错紧接着还会再走一次 send_*，避免同一次失败在错误库里留两条。
+    // ── 「发送内容」列显示什么？= 用户发来的原文（触发这次回复的那条）──
+    //   不是插件要回的内容 —— 插件回的那段在「平台回应」列（direction = prefix + text …）。
+    //   ok 分支：msg 本身是 readLog 把那条入站消息读回来的，msg.msg 已经是用户原文，不用管。
+    //   非 ok 分支（主动发送 / seq 丢了）：msg 是现造的、msg 字段为空 →
+    //   到主日志里反查本会话最近一条带文本的记录补上（顺带补发送人），否则那列一片空白。
+    auto fillUserText = [&](Message &m) {
+        if (!m.msg.isEmpty()) return;
+        const QString &appidStr = m_info->appid;
+        // seq 传 int 最大值 = 从库末尾往前扫（getRecentLogs 只收 < seq 的记录）
+        const QList<Message> recent = g_logdb[mapTypeToTabIndex(type)]->getRecentLogs(
+            appidStr, openid, 2147483647, 30, true);
+        for (const Message &r : recent) {
+            if (r.msg.isEmpty()) continue;
+            m.msg = r.msg;
+            if (m.user.isEmpty()) m.user = r.user;   // 发送人列原来也是空的，一并补上
+            if (m.name.isEmpty()) m.name = r.name;
+            break;
+        }
+    };
+
+    auto appendErrCopy = [&](const Message &m) {
+        if (!recordErr || !g_errlogdb) return;
+        Message em = m;
+        em.isSelf = true;              // 这份是「机器人发出去的（虽然失败了）」
+        em.Color_0 = 0xff0000;
+        fillUserText(em);              // 「发送内容」列 = 用户原文
+        // 「没命中序号」的那条失败（主动发送）原本根本没 set 过 timestamp，这里补一个，
+        // 否则错误页的时间列是空的。不会改到原来那条 msg。
+        if (em.timestamp.isEmpty())
+            em.timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+        em.seq = static_cast<int>(g_errlogdb->appendLog(m_info->appid, openid, em));
+        // seq 要用错误库里新分配的序号（日志页靠它拼 key 回查/定位这一行）
+        if (logPage) logPage->onNewLogAdded(5, static_cast<uint64_t>(em.seq), m_info->appid_int, openid, em);
+    };
 
     int tabIndex = mapTypeToTabIndex(type);
     m_info->message_sent++;
@@ -112,6 +154,7 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
         {
             msg.direction+="\n\n--------------------------\n\n"+response;
             msg.Color_0 = 0xff0000;
+            appendErrCopy(msg);          // 同一条 msg 再复制一份进「发送错误」库
         }
 
         g_logdb[tabIndex]->updateLog(m_info->appid,openid,index,msg);
@@ -137,6 +180,7 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     {
         msg.direction+="\n\n--------------------------\n\n"+response;
         msg.Color_0 = 0xff0000;
+        appendErrCopy(msg);              // 同一条 msg 再复制一份进「发送错误」库
     }
 
     msg.seq = g_logdb[tabIndex]->appendLog(m_info->appid,openid,msg);

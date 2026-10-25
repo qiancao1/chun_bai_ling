@@ -31,6 +31,8 @@ struct LogColumn {
     int defaultWidth;
 };
 
+class LogDB;
+
 
 class LogPage : public QWidget
 {
@@ -65,6 +67,9 @@ private:
 
     QTableView* currentListView();
 
+    // 当前 tab 对应的库：0..4 → g_logdb[i]；5（发送错误）→ g_errlogdb（独立错误库）
+    LogDB *dbForTab(int tab) const;
+
 
     int getColumnIndex(LogField field) const;
     // 获取指定行指定字段的显示文本
@@ -76,6 +81,7 @@ private:
     QPushButton *btnPrivateTab = nullptr;
     QPushButton *btnChannelTab = nullptr;
     QPushButton *btnChannelPrivateTab = nullptr;
+    QPushButton *btnErrorTab = nullptr;      // 「发送错误」tab（读 g_errlogdb 独立库）
     QLineEdit *logs;
     QPushButton *qbload = nullptr;
     QCheckBox *chbox;
@@ -86,6 +92,7 @@ private:
     QTableView *channelListView = nullptr;
     QTableView *privateListView = nullptr;
     QTableView *channelPrivateListView = nullptr;
+    QTableView *errorListView = nullptr;     // 第 6 个 tab：发送错误
 
 
     int m_currentBotId=0;

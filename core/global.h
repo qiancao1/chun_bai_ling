@@ -170,6 +170,11 @@ extern QString ws_token;
 extern cos_data g_cos;
 extern cnb_data g_cnb;
 extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
+// 发送错误独立库（botdb/logdb_err）：**只** 记「发不出去」的消息。
+//   由 addmsglog（core/api2.cpp）在「平台没回 id = 失败」时额外写一条，原来的
+//   「把响应拼进对应日志的 direction」逻辑一字不动（两份并存，互不影响）。
+//   日志页第 6 个 tab「发送错误」读它。库没打开时为 nullptr，所有写入点都要判空。
+extern std::unique_ptr<LogDB> g_errlogdb;
 extern WebSocketServer *ws_server;
 extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
 #ifdef _WIN32

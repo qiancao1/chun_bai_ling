@@ -1085,6 +1085,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
             {
                 db->close();
             }
+            if (g_errlogdb) g_errlogdb->close();   // 发送错误库也要先关，否则重启后新进程打开同名环境失败
             pluginPage->foruninstall_Plugin();
             QThreadPool::globalInstance()->waitForDone();
             QString program = QCoreApplication::applicationFilePath();

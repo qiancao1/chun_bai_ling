@@ -4282,7 +4282,8 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                     }
                     addmsglog(errInfo, -1, logPname,
                               QStringLiteral("[%1,path=%2,]").arg(tagName, upPath),
-                              st->now_us, st->type, st->openid);
+                              st->now_us, st->type, st->openid,
+                              /*tstat=*/nullptr, /*recordErr=*/false);   // 这条只是「本来要发的媒体」，真正的报错紧接着还会走一次 send_*
                 }
 
                 if (st->ctx.openid.isEmpty())

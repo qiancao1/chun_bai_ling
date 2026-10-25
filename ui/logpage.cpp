@@ -115,6 +115,14 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
                 g_logdb[i]->appendLog("0", "0", mes);
         }
     }
+    // 「发送错误」独立库（第 6 个 tab 的数据源）：上限 10 万条（可用 err_logs 覆盖）。
+    // ⚠ 只在**本次启动**（= 上次退出后重启）第一次建这个页面时清一次 —— LogPage 被重建
+    //   （切号/重建 UI）时不再清，避免把还没看的错误记录顺手删掉。
+    static bool errDbCleaned = false;
+    if (!errDbCleaned && g_errlogdb) {
+        errDbCleaned = true;
+        g_errlogdb->cleanDatabase(qMax(1000, g_config["err_logs"].toInt(100000)));
+    }
 
 
     setupUi();
@@ -122,6 +130,14 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
     m_flushTimer = new QTimer(this);
     connect(m_flushTimer, &QTimer::timeout, this, &LogPage::flushPendingRows);
     m_flushTimer->start(1000);
+}
+
+// 当前 tab 对应的库：0..4 → g_logdb[i]；5（发送错误）→ g_errlogdb（独立的错误库）
+LogDB *LogPage::dbForTab(int tab) const
+{
+    if (tab == 5) return g_errlogdb.get();
+    if (tab >= 0 && tab < static_cast<int>(g_logdb.size())) return g_logdb[tab].get();
+    return nullptr;
 }
 
 LogPage::~LogPage() {
@@ -134,7 +150,7 @@ void LogPage::switchTab(int index)
     leiji=0;
     tabStack->setCurrentIndex(index);
 
-    QList<QPushButton*> btns = {btnEventTab, btnGroupTab, btnPrivateTab, btnChannelTab, btnChannelPrivateTab};
+    QList<QPushButton*> btns = {btnEventTab, btnGroupTab, btnPrivateTab, btnChannelTab, btnChannelPrivateTab, btnErrorTab};
     for (int i = 0; i < btns.size(); ++i) {
         btns[i]->setChecked(i == index);
     }
@@ -209,7 +225,7 @@ void LogPage::loadMore(int limit)
     if (m_loading || !m_hasMore || !m_model) return;
     m_loading = true;
 
-    LogDB *db = g_logdb [currentTabIndex].get();
+    LogDB *db = dbForTab(currentTabIndex);
     if (!db) {
         m_loading = false;
         return;
@@ -254,7 +270,8 @@ void LogPage::loadMore(int limit)
                      << new QStandardItem(msg.msg);
             break;
         case 1:
-        case 2: {
+        case 2:
+        case 5: {   // 5 = 发送错误：列结构与群聊一致（时间/机器人/会话/发送人/发送内容/平台回应）
             rowItems << new QStandardItem(msg.timestamp)
                      << new QStandardItem(botName)
                      << new QStandardItem(msg.Gname.isEmpty() ? groupId : msg.Gname)
@@ -291,7 +308,9 @@ void LogPage::loadMore(int limit)
             }
         }
         // 创建 rowItems 后
-        if(currentTabIndex>=2 || currentTabIndex==0)
+        //   事件(0)、频道(2)、私聊(3)、频道私聊(4)：4 列居中（时间/机器人/会话/发送人）
+        //   群聊(1)、发送错误(5)：6 列，前 5 列居中，回应列靠左
+        if(currentTabIndex==0 || (currentTabIndex>=2 && currentTabIndex<=4))
         {
 
             for (int i=0;i< 4;++i) {
@@ -375,6 +394,7 @@ void LogPage::flushPendingRows()
         switch (data.type) {
         case 1: // 群聊
         case 2: // 频道
+        case 5: // 发送错误（独立错误库，列结构与群聊一致）
             rowItems << new QStandardItem(data.msg.timestamp)
                      << new QStandardItem(botName)
                      << new QStandardItem(openid)
@@ -412,7 +432,7 @@ void LogPage::flushPendingRows()
         }
 
         // 对齐设置
-        if (data.type >= 2 || data.type == 0) {
+        if (data.type == 0 || (data.type >= 2 && data.type <= 4)) {
             for (int i = 0; i < 4 && i < rowItems.size(); ++i)
                 rowItems[i]->setTextAlignment(Qt::AlignCenter);
         } else {
@@ -474,6 +494,7 @@ QTableView* LogPage::currentListView()
     case 2: return channelListView;
     case 3: return privateListView;
     case 4: return channelPrivateListView;
+    case 5: return errorListView;
     default: return nullptr;
     }
 }
@@ -521,6 +542,7 @@ void LogPage::setTableHeaders()
     case 2: headers << "时间" << "机器人" << "群号" << "发送人" << "接收内容" << "回应"; break;
     case 3:
     case 4: headers << "时间" << "机器人" << "发送人" << "接收内容" << "回应"; break;
+    case 5: headers << "时间" << "机器人" << "群/目标 ID" << "发送人" << "发送内容" << "平台回应"; break;
     default: headers.clear(); return;
     }
 
@@ -540,7 +562,7 @@ void LogPage::setTableHeaders()
 
     if (colCount >= 3) view->setColumnWidth(2, 120);
     if (colCount >= 4) view->setColumnWidth(3, 120);
-    if(currentTabIndex==1 || currentTabIndex==2)
+    if(currentTabIndex==1 || currentTabIndex==2 || currentTabIndex==5)
 
         hHeader->setSectionResizeMode(5, QHeaderView::Stretch);
     else
@@ -560,6 +582,7 @@ int LogPage::getColumnIndex(LogField field) const
         }
     case 1: // 群聊
     case 2: // 频道
+    case 5: // 发送错误（列结构与群聊一致）
         switch (field) {
         case Field_Time: return 0;
         case Field_BotName: return 1;
@@ -611,6 +634,8 @@ void LogPage::setupUi()
     btnPrivateTab = makeTabBtn("频道");
     btnChannelTab = makeTabBtn("私聊");
     btnChannelPrivateTab = makeTabBtn("频道私聊");
+    // 「发送错误」：读独立错误库 g_errlogdb（addmsglog 里发送失败的 msg 会复制一份进去）
+    btnErrorTab = makeTabBtn("发送错误");
     qbload = makeTabBtn("加载这些数量");
     chbox = new QCheckBox("显示完整json");
     chboxTimeStat = new QCheckBox("发送计时");
@@ -638,6 +663,7 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnPrivateTab);
     tabLayout->addWidget(btnChannelTab);
     tabLayout->addWidget(btnChannelPrivateTab);
+    tabLayout->addWidget(btnErrorTab);
     tabLayout->addStretch();
     tabLayout->addWidget(chbox);
     tabLayout->addWidget(chboxTimeStat);
@@ -715,8 +741,21 @@ void LogPage::setupUi()
             QAction *gotoChat   = menu.addAction("转到聊天室");
             QAction *viewAvatar = menu.addAction("查看发送人头像");
 
+            // 「发送错误」tab 的记录只有「发失败」语义：撤回/管理员/转聊天室都用不上，隐藏掉
+            if (currentTabIndex == 5) {
+                setbotadmin->setVisible(false);
+                delbotadmin->setVisible(false);
+                ch->setVisible(false);
+                chbr->setVisible(false);
+                gotoChat->setVisible(false);
+            }
+
             QAction *selected = menu.exec(view->viewport()->mapToGlobal(pos));
             if (!selected) return;
+
+            // 当前 tab 的库：0..4 = g_logdb[i]，5 = 发送错误独立库 g_errlogdb
+            LogDB *db = dbForTab(currentTabIndex);
+            if (!db) return;
 
             if (selected == delbotadmin) {
                 QModelIndex idx = m_model->index(index.row(), 0);
@@ -733,7 +772,7 @@ void LogPage::setupUi()
                         return;
                     }
                     Message msg;
-                    g_logdb[currentTabIndex]->readLog(key,msg);
+                    db->readLog(key,msg);
 
 
                     QString &admin = m_accounts[index]->admin;
@@ -766,7 +805,7 @@ void LogPage::setupUi()
                         return;
                     }
                     Message msg;
-                    g_logdb[currentTabIndex]->readLog(key,msg);
+                    db->readLog(key,msg);
 
 
                     QString &admin = m_accounts[index]->admin;
@@ -801,7 +840,7 @@ void LogPage::setupUi()
 
                 QString key = m_model->data(idx, Qt::UserRole).toString();
                 Message msg;
-                g_logdb[currentTabIndex]->readLog(key,msg);
+                db->readLog(key,msg);
                 QApplication::clipboard()->setText(msg.user);
 
             } else if (selected == copyRow) {
@@ -847,7 +886,7 @@ void LogPage::setupUi()
                 QModelIndex idx = m_model->index(index.row(), 0);
                 const QString key = m_model->data(idx, Qt::UserRole).toString();
                 Message msg;
-                g_logdb[currentTabIndex]->readLog(key, msg);
+                db->readLog(key, msg);
                 const QStringList list = key.split(":");
                 showSenderAvatar(this, list.value(1).toInt(), msg.user,
                                  msg.name.isEmpty() ? msg.user : msg.name);
@@ -858,7 +897,7 @@ void LogPage::setupUi()
                 QString key = m_model->data(idx, Qt::UserRole).toString();
 
                 Message msg;
-                g_logdb[currentTabIndex]->readLog(key,msg);
+                db->readLog(key,msg);
                 if(msg.plugin_ch.isEmpty())
                 {
                     QMessageBox::warning(this,"","撤回失败 msgid为空 不能撤回");
@@ -876,7 +915,7 @@ void LogPage::setupUi()
                     msg.plugin_ch="[已撤回]";
                     msg.direction = "[已撤回]\n"+msg.direction;
                     msg.Color_0 = 0xAB56F6;
-                    g_logdb[currentTabIndex]->updateLog(key,msg);
+                    db->updateLog(key,msg);
                     return ;
                 }
                 QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");
@@ -888,7 +927,7 @@ void LogPage::setupUi()
                 QString key = m_model->data(idx, Qt::UserRole).toString();
 
                 Message msg;
-                g_logdb[currentTabIndex]->readLog(key,msg);
+                db->readLog(key,msg);
                 if(msg.ch.isEmpty())
                 {
                     QMessageBox::warning(this,"","撤回失败 msgid为空 不能撤回");
@@ -907,7 +946,7 @@ void LogPage::setupUi()
                     msg.ch="[已撤回]";
                     msg.msg = "[已撤回]\n"+msg.msg;
                     msg.Color_0 = 0x20A362;
-                    g_logdb[currentTabIndex]->updateLog(key,msg);
+                    db->updateLog(key,msg);
                     return ;
                 }
                 QMessageBox::warning(this,"","撤回失败 指定appid:"+QString::number(appid)+" 不在线");
@@ -934,6 +973,7 @@ void LogPage::setupUi()
     createLogView(channelListView, 2);
     createLogView(privateListView, 3);
     createLogView(channelPrivateListView, 4);
+    createLogView(errorListView, 5);
 
 
 
@@ -953,6 +993,7 @@ void LogPage::setupUi()
     connect(btnPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(2); });
     connect(btnChannelTab, &QPushButton::clicked, this, [this]{ switchTab(3); });
     connect(btnChannelPrivateTab, &QPushButton::clicked, this, [this]{ switchTab(4); });
+    connect(btnErrorTab, &QPushButton::clicked, this, [this]{ switchTab(5); });
 
     connect(qbload, &QPushButton::clicked, this, [this]{ switchTabEx(currentTabIndex,logs->text().toInt()); });
 
