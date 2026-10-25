@@ -77,14 +77,17 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.7.145"
-#define APP_BUILD_NUMBER 145
+#define APP_VERSION_STR "v1.4.7.147"
+#define APP_BUILD_NUMBER 147
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.7.145 (2026-10-22)
+## v1.4.7.147 (2026-10-22)
 - 优化 耗时统计
 - 优化 聊天室 右键菜单增加新内容 图片标签问题
+- 以及 其他无关紧要的小优化
+- 修复 内置ai超时30秒改180秒 部分ai回复慢可能超时 导致返回空
+- 修复 32位try陷入无限循环 的bug <--部分电脑
 
 ## v1.4.6.143 (2026-10-22)
 - 修复 pysdk 中 get_user_id 参数用错问题

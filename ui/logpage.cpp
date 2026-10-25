@@ -613,8 +613,7 @@ void LogPage::setupUi()
     btnChannelPrivateTab = makeTabBtn("频道私聊");
     qbload = makeTabBtn("加载这些数量");
     chbox = new QCheckBox("显示完整json");
-    chboxStat = new QCheckBox("图片上传统计");
-    chboxTimeStat = new QCheckBox("发送耗时统计");
+    chboxTimeStat = new QCheckBox("发送计时");
     chboxTimeStat->setChecked(g_msg_time_stat);      // 与总开关当前值对齐（临时状态，不落盘）
     btnEventTab->setChecked(true);
     logs = new QLineEdit ;
@@ -640,9 +639,8 @@ void LogPage::setupUi()
     tabLayout->addWidget(btnChannelTab);
     tabLayout->addWidget(btnChannelPrivateTab);
     tabLayout->addStretch();
-    tabLayout->addWidget(chboxTimeStat);
     tabLayout->addWidget(chbox);
-    tabLayout->addWidget(chboxStat);
+    tabLayout->addWidget(chboxTimeStat);
     tabLayout->addWidget(logs);
     tabLayout->addWidget(qbload);
     panelLayout->addLayout(tabLayout);
@@ -946,9 +944,6 @@ void LogPage::setupUi()
 
     connect(chbox, &QCheckBox::clicked, this, [this]{
         wanzjson = chbox->isChecked();
-    });
-    connect(chboxStat, &QCheckBox::clicked, this, [this]{
-        imgStat = chboxStat->isChecked();   // 临时状态，不落盘
     });
     connect(chboxTimeStat, &QCheckBox::clicked, this, [this]{
         g_msg_time_stat = chboxTimeStat->isChecked();   // 临时状态，不落盘；下一条消息立即生效

@@ -156,6 +156,8 @@ AI: 难绷
 发送视频 音频 文件 [file,path=本地路径 或 路径] 其他类型同理  [Audio,path=xx] [video,path=xx]
 你发送的是md语法 发送图片用 ![图片](本地路径|链接)
 允许使用 # *** 等md语法标签
+
+注意 使用 write_log 函数 保存一些有趣的事情 还在值得记录的事情 这是长期记忆
 </system_instructions>
 )";
 
@@ -309,6 +311,7 @@ AI: 难绷
 发送视频 音频 文件 [file,path=本地路径 或 路径] 其他类型同理  [Audio,path=xx] [video,path=xx]
 你发送的是md语法 发送图片用 ![图片](本地路径|链接)
 允许使用 # *** 等md语法标签
+注意 使用 write_log 函数 保存一些有趣的事情 还在值得记录的事情 这是长期记忆
 </system_instructions>
 )";
 

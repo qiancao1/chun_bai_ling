@@ -181,7 +181,15 @@ void CardWidget::refreshDisplay() {
     }
     m_avatarLabel->setPixmap(pix.scaled(42, 42, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
 
-    m_nicknameLabel->setText(m_info->nickname.isEmpty() ? "未命名" : m_info->nickname);
+    // 昵称太长会把卡片撑变形（类型标签、右侧按钮被挤出可视区）：
+    // 最多显示 10 个字符，超出用 … 收尾，完整昵称放 tooltip 里
+    const QString fullNick = m_info->nickname.isEmpty() ? QStringLiteral("未命名") : m_info->nickname;
+    const int kNickMaxChars = 10;
+    QString showNick = fullNick;
+    if (showNick.length() > kNickMaxChars)
+        showNick = showNick.left(kNickMaxChars - 1) + QStringLiteral("…");
+    m_nicknameLabel->setText(showNick);
+    m_nicknameLabel->setToolTip(showNick == fullNick ? QString() : fullNick);
 
     if(m_info->type == 0 && m_info->sandbox){
          m_typeLabel->setText("ws (沙箱模式)");

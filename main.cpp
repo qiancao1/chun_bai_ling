@@ -283,36 +283,142 @@ static void safeCleanup()
 #ifdef _WIN32
 #include <windows.h>
 #include <DbgHelp.h>
+#include <tlhelp32.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <exception>
+#include <QDebug>
 #pragma comment(lib, "DbgHelp.lib")
 
-// ---------- 生成 minidump（带时间戳） ----------
-static void writeMiniDump(EXCEPTION_POINTERS* ep)
+// ═══════════════════════════════════════════════════════════════════════════
+// 崩溃捕获（2026-10-23 重写：旧版只有 SetUnhandledExceptionFilter，漏得多）
+//
+// 旧版「崩溃了没抓到」的四类真实原因：
+//   ① c0000374 堆损坏 / c0000409 栈缓冲区溢出 / 一切 __fastfail：
+//      ntdll 检查到之后直接 NtRaiseFailFastException —— **根本不是 SEH 异常**，
+//      SetUnhandledExceptionFilter 一次都不会被调用，只在系统事件日志里留
+//      APPCRASH（故障模块 StackHash_xxx、偏移 ...FROM_ntdll+...）。
+//      → 这类进程内抓不到，只能靠 WER LocalDumps 落盘（工程根目录 enable_wer_localdumps.reg）。
+//   ② std::terminate（未捕获 C++ 异常 / noexcept 违约 / 线程析构时仍 joinable）
+//      → abort()。旧代码为了关弹框把 _CALL_REPORTFAULT 也清掉了，于是 abort 变成
+//      _exit(3)：进程秒退、dump 没有、日志也没有 —— 「跑一段时间突然消失」多半是这条。
+//   ③ qFatal → abort()，同上。
+//   ④ 插件 DLL（Go/C# 运行时、Python 扩展）运行期 LoadLibrary 后会自己调
+//      SetUnhandledExceptionFilter，把我们的顶掉 —— 跑得越久加载的插件越多，越容易中。
+//
+// 现在四道网：
+//   VCH   AddVectoredContinueHandler  —— 真正的最后一道，不受 filter 被顶掉影响
+//   SUEF  SetUnhandledExceptionFilter —— 普通访问违例等
+//   terminate / qFatal / 非法参数 / 纯虚调用
+//   定时重挂 filter（reArmCrashHandler，搭主循环里那个每分钟的 QTimer）
+// ═══════════════════════════════════════════════════════════════════════════
+
+static char   s_appDir[MAX_PATH] = {0};   // 程序目录（不带末尾反斜杠）
+static char   s_exePath[MAX_PATH] = {0};
+static HANDLE s_fatalEvent = NULL;        // 「崩溃处理已开始」，watchdog 盯着它
+
+// 崩溃路径里一律 Win32 + 静态缓冲：堆很可能已经坏了，QString/QFile 会二次崩
+static void nowStamp(char *out, size_t n)
 {
     SYSTEMTIME st;
     GetLocalTime(&st);
-    char name[MAX_PATH];
-    wsprintfA(name, "crash_%04d%02d%02d_%02d%02d%02d.dmp",
-              st.wYear, st.wMonth, st.wDay,
-              st.wHour, st.wMinute, st.wSecond);
+    _snprintf_s(out, n, _TRUNCATE, "[%04d-%02d-%02d %02d:%02d:%02d]",
+                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+}
 
-    HANDLE hFile = CreateFileA(name, GENERIC_WRITE, 0, NULL,
+static void rawLogf(const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\crash.log", s_appDir);
+    HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ,
+                           NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SetFilePointer(h, 0, NULL, FILE_END);
+    DWORD wrote = 0;
+    WriteFile(h, buf, (DWORD)n, &wrote, NULL);
+    FlushFileBuffers(h);
+    CloseHandle(h);
+}
+
+// 崩溃地址 → 「模块名+偏移」。插件 DLL 崩了能一眼看出是哪个 .dll，不用猜。
+static void addrToModule(uintptr_t addr, char *out, size_t n)
+{
+    _snprintf_s(out, n, _TRUNCATE, "0x%llX", (unsigned long long)addr);
+    if (!addr) return;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return;
+
+    MODULEENTRY32W me;
+    me.dwSize = sizeof(me);
+    if (Module32FirstW(snap, &me)) {
+        do {
+            const uintptr_t base = (uintptr_t)me.modBaseAddr;
+            if (addr >= base && addr < base + me.modBaseSize) {
+                char name[MAX_PATH * 2] = {0};
+                WideCharToMultiByte(CP_ACP, 0, me.szModule, -1, name, sizeof(name) - 1, NULL, NULL);
+                _snprintf_s(out, n, _TRUNCATE, "%s+0x%llX", name,
+                            (unsigned long long)(addr - base));
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+}
+
+// ---------- 生成 minidump（带时间戳 + 触发路径） ----------
+// 路径固定用程序目录：服务器上多是快捷方式/计划任务启动，工作目录未必是程序目录，
+// 旧版写相对路径 → dump 掉到别处去了，看起来就像「没抓到」。
+static bool writeMiniDump(EXCEPTION_POINTERS* ep, const char* tag)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE,
+                "%s\\crash_%04d%02d%02d_%02d%02d%02d_%s.dmp", s_appDir,
+                st.wYear, st.wMonth, st.wDay,
+                st.wHour, st.wMinute, st.wSecond, tag);
+
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return;
+    if (hFile == INVALID_HANDLE_VALUE) return false;
 
     MINIDUMP_EXCEPTION_INFORMATION mei;
-    mei.ThreadId          = GetCurrentThreadId();
-    mei.ExceptionPointers = ep;
-    mei.ClientPointers    = FALSE;
+    MINIDUMP_EXCEPTION_INFORMATION* pMei = NULL;
+    if (ep && ep->ExceptionRecord) {
+        mei.ThreadId          = GetCurrentThreadId();
+        mei.ExceptionPointers = ep;
+        mei.ClientPointers    = FALSE;
+        pMei = &mei;
+    }
 
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
-                      hFile, MiniDumpNormal, &mei, NULL, NULL);
+    // 比 MiniDumpNormal 多带数据段 + 间接引用的内存：Release 下只留 Normal 的话，
+    // 局部变量全是问号，栈也常走不全。故意不选 MiniDumpWithFullMemory ——
+    // 跑久了的进程内存很大，写盘几十秒会把重启拖死（而堆损坏反正也靠 WER 那边取）。
+    const MINIDUMP_TYPE mt = (MINIDUMP_TYPE)(
+        MiniDumpWithDataSegs | MiniDumpWithThreadInfo |
+        MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory |
+        MiniDumpWithProcessThreadData);
+
+    const BOOL ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                                      hFile, mt, pMei, NULL, NULL);
     CloseHandle(hFile);
+    return ok != FALSE;
 }
 
 // ---------- 重启循环保护：60 秒内最多重启 3 次 ----------
 static bool shouldRestart()
 {
-    const char* flagFile = "restart_guard.tmp";
+    // 和 dump / crash.log 放一起（程序目录），不跟工作目录走
+    const QString flagFile = QString::fromLocal8Bit(s_appDir) + QStringLiteral("/restart_guard.tmp");
     const int   MAX_RESTART = 3;
     const qint64 WINDOW_SEC = 60;
 
@@ -345,50 +451,218 @@ static bool shouldRestart()
     return count <= MAX_RESTART;
 }
 
-// ---------- Windows 崩溃处理 ----------
-LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
+// ---------- 真正的崩溃处理：dump → 日志 → 清理 → 重启（顺序不能换） ----------
+static void fatalWork(EXCEPTION_POINTERS* ep, const char* tag)
 {
-    writeMiniDump(ep);
+    const DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+    const void* addr = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionAddress : nullptr;
 
-    // 先判断是否还允许重启，再决定清理
-    bool doRestart = shouldRestart();
+    char where[600] = {0};
+    if (addr) addrToModule((uintptr_t)addr, where, sizeof(where));
 
-    // 崩溃现场清理（每个都独立保护）
+    // ① 先落盘：dump 比什么都值钱，任何清理都不能跑在它前面
+    const bool dumped = writeMiniDump(ep, tag);
+
+    char ts[64];
+    nowStamp(ts, sizeof(ts));
+    rawLogf("%s Crash tag=%s code=0x%08lX tid=%lu at=%s dump=%s\r\n",
+            ts, tag, (unsigned long)code, (unsigned long)GetCurrentThreadId(),
+            addr ? where : "(none)", dumped ? "ok" : "FAILED");
+
+    // ② 现场清理：让 32 位加载器/插件知道我没了（每个都独立保护）
     safeCleanup();
 
-    // 记录崩溃日志（异步安全：只写文件）
-    {
-        QFile f("crash.log");
-        if (f.open(QIODevice::Append)) {
-            f.write(QDateTime::currentDateTime()
-                        .toString("[yyyy-MM-dd hh:mm:ss] ").toUtf8());
-            f.write(QString("Crash code=0x%1\n")
-                        .arg((quintptr)ep->ExceptionRecord->ExceptionCode, 0, 16)
-                        .toUtf8());
-            f.close();
-        }
-    }
-
-    // 重启自身
-    if (doRestart) {
+    // ③ 重启自身
+    if (shouldRestart()) {
         restartSelf();
+        rawLogf("%s restart launched\r\n", ts);
     } else {
-        // 超过重启次数，弹一次提示（此路径已很少走到，相对安全）
-        MessageBoxA(NULL,
-                    "程序反复崩溃，已停止自动重启。\n请查看 crash_*.dmp。",
-                    "崩溃", MB_OK | MB_ICONERROR);
+        // 超过重启次数，弹一次提示（用 W 版，源码是 /utf-8，A 版会显示成乱码）
+        MessageBoxW(NULL,
+                    L"程序反复崩溃，已停止自动重启。\n请查看程序目录下的 crash_*.dmp / crash.log。",
+                    L"崩溃", MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
+}
+
+struct FatalCtx { EXCEPTION_POINTERS* ep; const char* tag; };
+
+static DWORD WINAPI fatalOnNewThread(LPVOID p)
+{
+    FatalCtx* c = (FatalCtx*)p;
+    fatalWork(c->ep, c->tag);
+    return 0;
+}
+
+static void handleFatal(EXCEPTION_POINTERS* ep, const char* tag)
+{
+    // 只跑一次：可能 VCH 和 SUEF 都进来，也可能几个线程同时崩
+    static volatile LONG entered = 0;
+    if (InterlockedExchange(&entered, 1) != 0) Sleep(INFINITE);
+
+    if (s_fatalEvent) SetEvent(s_fatalEvent);   // 告诉 watchdog：开始干活了
+
+    const DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+    if (code == 0xC00000FD /*STATUS_STACK_OVERFLOW*/) {
+        // 栈已经爆了，当前线程随便一个调用都可能再炸 —— 换个 1MB 栈的线程干活
+        static FatalCtx ctx;
+        ctx.ep  = ep;
+        ctx.tag = tag;
+        HANDLE h = CreateThread(NULL, 1 << 20, fatalOnNewThread, &ctx, 0, NULL);
+        if (h) { WaitForSingleObject(h, 120000); CloseHandle(h); }
+    } else {
+        fatalWork(ep, tag);
     }
 
     // 直接结束，不跑 atexit / 全局析构，避免二次崩溃
     TerminateProcess(GetCurrentProcess(), 1);
+    Sleep(INFINITE);
+}
+
+// ---------- 入口一：SetUnhandledExceptionFilter（普通访问违例等） ----------
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
+{
+    handleFatal(ep, "SEH");
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// ---------- 入口二：Vectored Continue Handler ----------
+// SEH 全都没接住之后、UnhandledExceptionFilter 之前被调用。
+// 它不依赖那个「可以被别人 SetUnhandledExceptionFilter 覆盖」的全局槽位，
+// 所以插件 DLL 抢了 filter 也照样能进这里。
+static LONG CALLBACK VectoredContinueCrashHandler(EXCEPTION_POINTERS* ep)
+{
+    handleFatal(ep, "VCH");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// ---------- 入口三：std::terminate（未捕获 C++ 异常 / noexcept 违约 / joinable 线程析构） ----------
+// 默认行为是 abort()，什么痕迹都不留 —— 「跑一段时间突然消失」的头号嫌疑。
+static void onTerminate()
+{
+    static char what[512];
+    what[0] = 0;
+
+    if (std::current_exception()) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& e) {
+            _snprintf_s(what, sizeof(what), _TRUNCATE, "%s", e.what() ? e.what() : "(null what)");
+        } catch (...) {
+            _snprintf_s(what, sizeof(what), _TRUNCATE, "(non-std exception)");
+        }
+    } else {
+        _snprintf_s(what, sizeof(what), _TRUNCATE, "(no active exception)");
+    }
+
+    char ts[64];
+    nowStamp(ts, sizeof(ts));
+    rawLogf("%s terminate: %s\r\n", ts, what);
+
+    handleFatal(nullptr, "terminate");
+}
+
+// ---------- 入口四：CRT 非法参数 / 纯虚调用 ----------
+static void onInvalidParameter(const wchar_t* expression, const wchar_t* function,
+                               const wchar_t* file, unsigned int line, uintptr_t)
+{
+    char ts[64];
+    nowStamp(ts, sizeof(ts));
+    rawLogf("%s invalid_parameter: func=%ls file=%ls line=%u expr=%ls\r\n",
+            ts,
+            function ? function : L"",
+            file ? file : L"",
+            line,
+            expression ? expression : L"");
+    handleFatal(nullptr, "invalid_param");
+}
+
+static void onPurecall()
+{
+    char ts[64];
+    nowStamp(ts, sizeof(ts));
+    rawLogf("%s pure_virtual_call\r\n", ts);
+    handleFatal(nullptr, "purecall");
+}
+
+// ---------- 入口五：qFatal（Qt 自己的 abort 路径） ----------
+static QtMessageHandler s_prevQtHandler = nullptr;
+
+static void qcCrashMessageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
+{
+    if (type == QtFatalMsg) {
+        const QByteArray u8 = msg.toUtf8();       // 中文会变乱码，但至少知道是哪条
+        char ts[64];
+        nowStamp(ts, sizeof(ts));
+        rawLogf("%s qFatal: %s\r\n", ts, u8.constData());
+        handleFatal(nullptr, "qFatal");
+    }
+
+    // 必须把非致命的照原样放出去，否则 qDebug/qCritical 的输出全没了
+    if (s_prevQtHandler) {
+        s_prevQtHandler(type, ctx, msg);
+        return;
+    }
+    // 之前没人装过 handler → 我们自己补 Qt 默认行为（stderr + 调试器输出）
+    const QByteArray line = msg.toLocal8Bit() + '\n';
+    fputs(line.constData(), stderr);
+    fflush(stderr);
+    const QString dbg = msg + QLatin1Char('\n');
+    OutputDebugStringW(reinterpret_cast<const wchar_t*>(dbg.utf16()));
+}
+
+// ---------- watchdog：handler 自己卡住时强杀 ----------
+// MiniDumpWriteDump 在「堆被锁住 / 堆已坏」的进程里很容易卡死，那就变成一个没有 dump
+// 也没有重启的僵尸进程。给 30 秒，超时直接从外部杀掉。
+static DWORD WINAPI crashWatchdogThread(LPVOID)
+{
+    WaitForSingleObject(s_fatalEvent, INFINITE);
+    Sleep(30000);
+    TerminateProcess(GetCurrentProcess(), 3);
+    return 0;
 }
 
 void setupCrashHandler()
 {
+    // ① 路径先固定下来：崩溃时不能再依赖工作目录
+    GetModuleFileNameA(NULL, s_exePath, MAX_PATH);
+    strcpy_s(s_appDir, MAX_PATH, s_exePath);
+    for (int i = (int)strlen(s_appDir) - 1; i >= 0; --i) {
+        if (s_appDir[i] == '\\' || s_appDir[i] == '/') { s_appDir[i] = 0; break; }
+    }
+
+    // ② 别让 WER 弹框把进程挂在服务器桌面上（dump 我们自己写）
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+
+    // ③ 堆检查：发现堆被踩坏就立刻中止（默认就开，这里显式设一次）
+    HeapSetInformation(GetProcessHeap(), HeapEnableTerminationOnCorruption, NULL, 0);
+
+    // ④ 五道入口全挂上
     SetUnhandledExceptionFilter(CrashHandler);
-    // 关掉 CRT 的 abort 弹框，让 SEH 接管
-    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    AddVectoredContinueHandler(1, VectoredContinueCrashHandler);
+    std::set_terminate(onTerminate);
+    _set_invalid_parameter_handler(onInvalidParameter);
+    _set_purecall_handler(onPurecall);
+    s_prevQtHandler = qInstallMessageHandler(qcCrashMessageHandler);
+
+    // ⑤ abort() 只关掉弹框文字，**保留 _CALL_REPORTFAULT**：
+    //    这样 abort 会以 STATUS_FATAL_APP_EXIT 抛出来、进得了 filter；
+    //    旧代码连 REPORTFAULT 一起清了 → abort 变 _exit(3)，无 dump 无日志，静默消失。
+    _set_abort_behavior(0, _WRITE_ABORT_MSG);
+
+    // ⑥ watchdog
+    s_fatalEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    CreateThread(NULL, 64 * 1024, crashWatchdogThread, NULL, 0, NULL);
+
+    rawLogf("---- crash handler armed (pid=%lu) dir=%s ----\r\n",
+            (unsigned long)GetCurrentProcessId(), s_appDir);
+}
+
+// 定时重挂：插件 DLL 运行期 LoadLibrary 后可能把 filter / terminate 换掉。
+// 在主循环那个每分钟的 QTimer 里顺手调一次，代价可以忽略。
+void reArmCrashHandler()
+{
+    SetUnhandledExceptionFilter(CrashHandler);
+    std::set_terminate(onTerminate);
 }
 
 #else
@@ -576,7 +850,13 @@ int main(int argc, char *argv[]) {
         // 不做全库扫描，所以条数再多也不会有卡顿，也不会长时间占着缓存库的锁。
         {
             QTimer *cacheRotateTimer = new QTimer(&a);
-            QObject::connect(cacheRotateTimer, &QTimer::timeout, &a, []() { ensureCacheDb(); });
+            QObject::connect(cacheRotateTimer, &QTimer::timeout, &a, []() {
+                ensureCacheDb();
+                // 插件 DLL 运行期加载后可能把 SetUnhandledExceptionFilter 顶掉，每分钟重挂一次
+#ifdef _WIN32
+                reArmCrashHandler();
+#endif
+            });
             cacheRotateTimer->start(60 * 1000);
         }
 

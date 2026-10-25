@@ -1795,12 +1795,9 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
         std::atomic<bool> phase1Done{false};
         bool completed = false;           // 防重复收尾（mutex 内访问）
         QList<CosPutPoolEntry> parked;    // 备用线程 park 的池条目
-        QElapsedTimer timer;              // 上传总耗时（日志页勾选「图片上传统计」时输出）
-        std::atomic<int> uploadCount{0};  // 实际发起上传的图片数（缓存命中不算）
     };
     auto st = std::make_shared<AsyncState>();
     st->text = textIn;
-    st->timer.start();
 
     // ---------- 收尾：替换文本 + re-park + convert + onDone ----------
     auto completeAll = [appid, st, onDone]() {
@@ -1852,11 +1849,6 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                 parkCosPutEntry(e);
             st->parked.clear();
         }
-
-        // 图片上传统计（日志页勾选「图片上传统计」时输出，临时开关不落盘）
-        if (logPage && logPage->imgStat && st->uploadCount.load() > 0)
-            AppendEventLog(QString("图片上传：%1 张，耗时 %2ms")
-                               .arg(st->uploadCount.load()).arg(st->timer.elapsed()));
 
         if (m_botClients.value(appid) != c) return;   // onDone 前再确认一次
         text = convertMarkdownLinksToXml(text);       // 与堵塞版 type==1 收尾一致
@@ -2128,7 +2120,6 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             if (!cacheValid) {
                 // 需要上传：先计数再发起（发起可能同步重入回调，保证计数完整）
                 ++st->pending;
-                ++st->uploadCount;   // 上传统计（日志页勾选时输出）
                 uploadimgCb(newUrl, [st, handleResult, replaceIdx](QString uploadedUrl) {
                     handleResult(replaceIdx, uploadedUrl);
                 });

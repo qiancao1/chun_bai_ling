@@ -36,6 +36,8 @@
 bool 框架退出=false;
 int miaomiao32=0;
 int miaomiao=0;
+QString wuqx= "机器人需要是管理员才能执行当前命令呢\n请将机器人添加到管理员列表后再试试\n如果已经是管理员 请艾特一次机器人后在试试\n**注意：得开启机器人接收全部信息,艾特机器人才有效果**\n\n---\n\n具体教程：1.点击机器人头像\n2.点击右上角设置\n3.机器人可获得群聊信息 改为 获取全部信息\n注意本操作只能群主设置 并且QQ版本不能过低";
+
 QString g_neiw;
 // 上传时算不算整文件 md5/sha1/md5_10m（upload_prepare 的可选参数）。默认关：这三个参数不传也能传。
 // 腾讯不采信我们传的 md5（它自己算），所以小视频快传的 part_finish md5 也一起省。
@@ -2233,7 +2235,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 
             if (ev.msg == "获取加群列表")
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 auto *c = m_botClients[ev.appid];
                 QString js = c->getjoin_request_list(ev.groupId,30);
 
@@ -2279,7 +2281,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             if (ev.msg == "一键同意加群")
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                if(!ev.bot_admin) return wuqx;
                 auto *c = m_botClients[ev.appid];
                 // 获取最多30条加群申请
                 QString js = c->getjoin_request_list(ev.groupId, 40);
@@ -2315,7 +2317,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             if (ev.msg.startsWith("同意加群"))
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                if(!ev.bot_admin) return wuqx;
                 QString QID,joinRequestId;
                 QString text = ev.msg;
                 text.remove("同意加群");
@@ -2337,7 +2339,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             if (ev.msg == "禁言列表")
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                 if(!ev.bot_admin) return wuqx;
                 auto *c = m_botClients[ev.appid];
                 QString js = c->getGroupRestrictChatSetting(ev.groupId);
                 QJsonParseError parseError;
@@ -2393,7 +2395,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     return "";
                 }
                 if (!ev.bot_admin) {
-                    return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                    return wuqx;
                 }
 
                 QString QID = match.captured(1).isEmpty() ? match.captured(2) : match.captured(1);
@@ -2406,7 +2408,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             if (ev.msg.startsWith("#确认移除")) {
 
                 if (!ev.bot_admin) {
-                    return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                    return wuqx;
                 }
 
 
@@ -2433,7 +2435,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
 
             if (ev.msg.contains("禁言")) {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                if(!ev.bot_admin) return wuqx;
                 auto [QID, sj] = parseBanCommand(ev.msg);
 
                 if (QID.isEmpty()) {
@@ -2480,7 +2482,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             if (ev.msg.contains("解禁"))
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                if(!ev.bot_admin) return wuqx;
                 QString text = ev.msg;
                 text.remove("解禁");
                 QString QID;
@@ -2496,7 +2498,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             if (ev.msg == "一键解禁")
             {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试(如果已经是管理员 请艾特一次机器人后在试试)";
+                if(!ev.bot_admin) return wuqx;
                 auto *c = m_botClients[ev.appid];
                 QString immediateReply = "⏳ 正在执行一键解禁，请稍候...";
                 c->getGroupRestrictChatSetting(ev.groupId, [=](const QString& jsonStr, QNetworkReply::NetworkError err) {
@@ -2577,7 +2579,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     }
                     return QString("[撤回] 已撤回机器人自己的 %1 条消息").arg(deleted);
                 } else {
-                    if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                    if(!ev.bot_admin) return wuqx;
                     for (const auto &m : std::as_const(msgList)) {
                         if (m.user != targetId) continue;
                         if (deleted < 3) {
@@ -2604,7 +2606,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 }
             }
             if (ev.msg == "设置刷屏检测") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (ev.bitmap & BIT_SHUA_P)  return "当前已经开启 刷屏检测";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2624,7 +2626,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return "关闭刷屏检测成功";
             }
             if (ev.msg == "开申请加群提示") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (ev.bitmap & BIT_AUTO_JOJN_KG)  return "当前已经开启 申请加群提示";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2643,7 +2645,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return "关闭申请加群提示成功";
             }
             if (ev.msg == "开违禁词检测") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (ev.bitmap & BIT_PUNISH)  return "当前已经开启 申请加群提示";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2662,7 +2664,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return "关闭违禁词检测成功";
             }
             if (ev.msg == "开自动同意加群") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (ev.bitmap & BIT_AUTO_JOJN)  return "当前已经开启 自动同意加群";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2682,7 +2684,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return "关闭自动同意加群成功";
             }
             if (ev.msg == "开入群验证") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (ev.bitmap & BIT_RUQUN_YZ)  return "当前已经开启 入群验证";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2718,7 +2720,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 return "设置自动同意加群答案 完成 这里是不显示答案的 最长128直接 相当于42个中文 使用（,） 英文逗号分割多个关键词 可以不设置关键词 会全部通过 然后 没处理可能是 接口跳用超频率";
             }
             if (ev.msg == "设置入群提示") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (!(ev.bitmap & BIT_ruqun))  return "当前已经设置 入群提示";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;
@@ -2737,7 +2739,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
 
             if (ev.msg == "设置退群提示") {
-                if(!ev.bot_admin) return "机器人需要是管理员才能执行当前命令呢 请将机器人添加到管理员列表后再试试";
+                if(!ev.bot_admin) return wuqx;
                 if (!(ev.bitmap & BIT_tuiqun))  return "当前已经设置 退群提示";
                 auto *db = g_botdb[info->appid_int];
                 GroupRecord2 gid;

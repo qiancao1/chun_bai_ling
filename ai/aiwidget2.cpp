@@ -826,7 +826,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         // 决策请求异步发出，本函数立即返回（不再占着线程池的 worker 干等）
         // 先占住 isProcessing，避免回调回来之前定时器又触发一轮
         setSessionProcessing(openid, true);
-        Ai_postsAsync(MessageEvent(), model_index, juece_mode, 60000,
+        Ai_postsAsync(MessageEvent(), model_index, juece_mode, 180000,
             [this, openid, info, model_index, baseContext, pendings, ev](const QString &fh) {
             //qDebug() << "ai决策："<<fh << "|"<<ev.msg;
                 flushPendingMessagesTail(openid, info, model_index, baseContext,
@@ -973,7 +973,7 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
         }
     }
 
-    int timeoutMs = 30000;
+    int timeoutMs = 180000;
     // 异步请求：发出后立即返回，worker 线程被放回去干别的活。
     // ctxPtr 全程共享，请求过程中追加的 AI 回复/工具结果会写进它，
     // 回调里原样交给 onAsyncReply 存上下文（和同步版传引用等价）。
@@ -990,11 +990,11 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
             QQBotClient *bot = m_botClients.value(ev.appid);
             if (!bot) return;
             BotDB *db = g_botdb.value(ev.appid);
+            if(!reply.contains("![img](tmp")){
+                if(reply.contains("![img]("))
+                    reply.replace("![img](","![img](image/"+info->appid+"/");
+            }
 
-            if(reply.contains("![img]("))
-                reply.replace("![img](","![img](image/"+info->appid+"/");
-            if(reply.contains("![ima]("))
-                reply.replace("![ima](","![img](image/"+info->appid+"/");
             QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid
             if(atlist.size()!=0 && db)
             {

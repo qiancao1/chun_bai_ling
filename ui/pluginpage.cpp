@@ -525,7 +525,7 @@ void PluginPage::setupUi()
     connect(reloadBtn, &QPushButton::clicked, [this](){
 
         Reload_Plugin(currentSelected_index);
-        updatePluginItemInUI(currentSelected_index);
+
     });
 
     connect(openDirBtn, &QPushButton::clicked, [this]() {
@@ -2542,6 +2542,7 @@ bool PluginPage::Reload_Plugin(int index) //32ok
             m_pluginList[index].id = m_pluginList[index].name;
         }
         updatePluginItemInUI(index);
+        showAutoCloseMessageBox("成功","[重载插件]"+m_pluginList[index].name+" 成功 本信息只显示1秒",1000);
         return true;
     }
 
