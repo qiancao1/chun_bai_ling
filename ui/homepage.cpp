@@ -849,11 +849,18 @@ static void clearLayoutItems(QLayout *layout)
         if (QWidget *w = item->widget()) {
             w->setParent(nullptr);
             w->deleteLater();
+            delete item;                  // 包装用的 QWidgetItem，和控件是两块内存
         } else if (QLayout *sub = item->layout()) {
             clearLayoutItems(sub);
+            // ⚠ sub 就是 item 本身（QLayout 继承自 QLayoutItem，takeAt 取出来的
+            //    子布局就是这个 QLayout 的地址）—— 删一次就够了。
+            // 旧代码这里 delete sub 之后又落到下面的 delete item，
+            // 同一块堆内存释放两遍 → ntdll 报 c0000374（堆损坏）→ fail-fast，
+            // 进程当场闪退、连 dump 都留不下。首页榜单重建时必踩。
             delete sub;
+        } else {
+            delete item;                  // spacer / stretch 之类
         }
-        delete item;
     }
 }
 
@@ -905,7 +912,9 @@ void HomePage::refreshPluginMessageRanking()
                   if (a.first != b.first) return a.first > b.first;
                   return a.second < b.second;
               });
-    if (ranked.size() > kTopPluginCount) ranked.reserve(kTopPluginCount);
+    // 只留前 kTopPluginCount 个（Qt5 的 QList 没有 resize，reserve 又不会缩短，
+    // 原来那句 `ranked.reserve(...)` 等于没限制，榜单一长就会把所有插件都画出来）
+    while (ranked.size() > kTopPluginCount) ranked.removeLast();
 
     QStringList order;
     order.reserve(ranked.size());

@@ -77,12 +77,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.7.149"
-#define APP_BUILD_NUMBER 149
+#define APP_VERSION_STR "v1.4.7.151"
+#define APP_BUILD_NUMBER 151
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.7.149 (2026-10-22)
+## v1.4.7.151 (2026-10-26)
 - 优化 耗时统计
 - 优化 聊天室 右键菜单增加新内容 图片标签问题
 - 以及 其他无关紧要的小优化
@@ -90,6 +90,7 @@ QString Homev=R"(
 - 修复 32位try陷入无限循环 的bug <--部分电脑
 - 修复 易语言子程序指针 调用方式不支持 多线程问题<- 易语言原生问题 不是我的代码 我只是让他支持多线程
 - 增加 日志增加错误界面
+- 修复 点击首页会导致框架直接闪退问题 因为指针被重复释放
 
 ## v1.4.6.143 (2026-10-22)
 - 修复 pysdk 中 get_user_id 参数用错问题
