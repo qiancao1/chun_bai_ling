@@ -777,7 +777,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     QList<PendingMessage> pendings;
     if (!send) pendings = session.pendingMessages;
 
-    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
+    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type,session.bot_admin);
 
     // 构造空 MessageEvent
     MessageEvent ev;
