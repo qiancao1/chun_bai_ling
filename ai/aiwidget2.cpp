@@ -803,17 +803,21 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         QJsonArray msgs = juece_mode["messages"].toArray();
         QJsonObject systemMsg;
         systemMsg["role"] = "system";
-        systemMsg["content"] = "你是群聊对话中决策AI\n你的任务是查看下面对话 是否有对话提到了你，以及和你的设定相符合的内容，\n"
-                               "1.如你主要扮演原神中的纳西妲，当聊天内容包含原神你就可以返回'【提到】'\n"
-                               "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到\n"
-                               "3.或者你的上下文正在聊天\n"
-                               "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他\n"
-                               "5.不能长期不回复，所以偶尔 决策 【提到】\n"
-                               "6.出现<@id> 等内容 不是艾特你\n"
-                               "7.群用户发送指令性内容可能是在和其他机器人玩，不需要回复\n"
-                               "8.**特别注意 你只是决策 不参与回复**\n"
-                               "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
-                               "下面是用户给你的角色设定：\n"+setting;
+        QString sysTxt = "你是群聊对话中决策AI\n你的任务是查看下面对话 是否有对话提到了你，以及和你的设定相符合的内容，\n"
+                         "1.如你主要扮演原神中的纳西妲，当聊天内容包含原神你就可以返回'【提到】'\n"
+                         "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到\n"
+                         "3.或者你的上下文正在聊天\n"
+                         "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他\n"
+                         "5.不能长期不回复，所以偶尔 决策 【提到】\n"
+                         "6.出现<@id> 等内容 不是艾特你\n"
+                         "7.群用户发送指令性内容可能是在和其他机器人玩，不需要回复\n"
+                         "8.**特别注意 你只是决策 不参与回复**\n";
+        if (ev.bot_admin)   // 机器人不是管理员就别给管群能力（给了也撤不掉，白浪费一次接口）
+            sysTxt += "9.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
+                      "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否\n";
+        sysTxt += "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
+                  "下面是用户给你的角色设定：\n" + setting;
+        systemMsg["content"] = sysTxt;
         msgs[0] = systemMsg;
         QJsonObject systemMsg2;
         systemMsg2["role"] = "user";
@@ -843,6 +847,44 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                              true, QString(), pendings, ev);
 }
 
+// ===== <del:N>（撤回，N = 日志 seq）/ <mt:短id,秒>（禁言）=====
+// 标签一律从文本里删掉；只有机器人是管理员才真执行，不是就只删标签、剩下的内容照发。
+// 回复正文和决策 AI 的输出都走这里（决策那条不发送正文，但同样能管群）。
+static QString runActTags(QString text, const MessageEvent &ev, QQBotClient *bot, BotDB *db)
+{
+    QRegularExpression reAct("<(del|mt):([^>]*)>");
+    QVector<QPair<QString, QString>> acts;
+    auto it = reAct.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        acts.append(qMakePair(m.captured(1), m.captured(2)));
+    }
+    text.remove(reAct);
+    if (!bot || !ev.bot_admin) return text;
+    for (const auto &act : std::as_const(acts)) {
+        if (act.first == "del") {           // 撤回：seq → 日志库里那条的 ch（平台消息id）
+            Message dm;
+            if (g_logdb[ev.type+1])
+                g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,
+                                            act.second.toULongLong(),dm);
+            if(!dm.ch.isEmpty())
+                bot->delete_messages(ev.type,ev.groupId,dm.ch,[](auto, auto){ return; });
+        } else {                            // 禁言：短id → 转 32 字节 openid
+            const QStringList a = act.second.split(",");
+            QString user;
+            if(db) db->getOpenIdBySeqId(a.value(0).trimmed().toInt(),user);
+            if(user.isEmpty()) continue;
+            const qint64 sec = a.value(1).trimmed().toLongLong();
+            if(ev.type==1)                  // 频道
+                bot->set_mute(ev.groupId,user,sec);
+            else                            // 群
+                bot->setGroupRestrictChatSetting(ev.groupId,user,static_cast<int>(sec),
+                                                 [](auto, auto){ return; });
+        }
+    }
+    return text;
+}
+
 // flushPendingMessages 的后半段：可能是紧跟在上面同步执行，也可能在决策请求的回调里执行
 void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info, int model_index,
                                        QJsonObject baseContext,
@@ -851,6 +893,9 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
 {
     if (m_shuttingDown) return;   // 正在析构（本函数可能在回调线程执行）
     if (!info) return;
+
+    // 决策 AI 也会输出 <del:N>/<mt:id,秒>（它不发送正文，所以只在这里执行标签、把标签从文本里删掉）
+    const QString decText = runActTags(fh, ev, m_botClients.value(ev.appid), g_botdb.value(ev.appid));
 
     for (const PendingMessage &pm : pendings) {
         appendPendingMessageToContext(baseContext, pm);
@@ -862,7 +907,7 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
         Message msg;
         QDateTime currentDateTime = QDateTime::currentDateTime();
         msg.timestamp = currentDateTime.toString("yyyy-MM-dd HH:mm:ss");
-        msg.msg = QString("%1(%2) ai决策 不返回内容：%3").arg(info->Ai_nickname,openid,fh);
+        msg.msg = QString("%1(%2) ai决策 不返回内容：%3").arg(info->Ai_nickname,openid,decText);
         logPage->onNewLogAdded(0,0,0,"",msg);
 
         baseContext.remove("tools");
@@ -1024,39 +1069,8 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                 reply.replace(QString("<seq:%1>").arg(seqid),msg.hf);
             }
 
-            // 撤回 <del:N>（N=日志seq）/ 禁言 <mt:短id,秒>：标签一律先删掉，
-            // 机器人是管理员才执行，不是就只删标签、把剩下的内容照常发出去
-            {
-                QRegularExpression reAct("<(del|mt):([^>]*)>");
-                QVector<QPair<QString, QString>> acts;
-                auto it = reAct.globalMatch(reply);
-                while (it.hasNext()) {
-                    const QRegularExpressionMatch m = it.next();
-                    acts.append(qMakePair(m.captured(1), m.captured(2)));
-                }
-                reply.remove(reAct);
-                for (const auto &act : std::as_const(acts)) {
-                    if (!ev.bot_admin) continue;
-                    if (act.first == "del") {           // 撤回：seq → 日志库里那条的 ch（平台消息id）
-                        Message dm;
-                        g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,
-                                                    act.second.toULongLong(),dm);
-                        if(!dm.ch.isEmpty())
-                            bot->delete_messages(ev.type,ev.groupId,dm.ch,[](auto, auto){ return; });
-                    } else {                            // 禁言：短id → 转 32 字节 openid
-                        const QStringList a = act.second.split(",");
-                        QString user;
-                        if(db) db->getOpenIdBySeqId(a.value(0).trimmed().toInt(),user);
-                        if(user.isEmpty()) continue;
-                        const qint64 sec = a.value(1).trimmed().toLongLong();
-                        if(ev.type==1)                  // 频道
-                            bot->set_mute(ev.groupId,user,sec);
-                        else                            // 群
-                            bot->setGroupRestrictChatSetting(ev.groupId,user,static_cast<int>(sec),
-                                                             [](auto, auto){ return; });
-                    }
-                }
-            }
+            // 撤回 <del:N> / 禁言 <mt:短id,秒>（标签删掉；不是管理员就只删标签不执行）
+            reply = runActTags(reply, ev, bot, db);
 
             QStringList text = reply.split("|#|#|");
 

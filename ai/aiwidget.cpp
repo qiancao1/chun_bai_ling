@@ -2363,7 +2363,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 setting.replace("{appid}",info->appid);
                 setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
                 if(bot_admin)
-                    setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个id\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
+                    setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
                 break;
             }else if(type ==0 || type ==1)
             {
@@ -2376,7 +2376,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                     setting.replace("{角色设定}",sd.content);
                     setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
                     if(bot_admin)
-                        setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个id\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
+                        setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
                     break;
                 }
 
