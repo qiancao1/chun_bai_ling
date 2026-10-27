@@ -814,7 +814,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                          "8.**特别注意 你只是决策 不参与回复**\n";
         if (ev.bot_admin)   // 机器人不是管理员就别给管群能力（给了也撤不掉，白浪费一次接口）
             sysTxt += "9.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
-                      "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否\n";
+                      "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否 你也可以直接返回 【提到】 让另一个Ai处理 并且回复\n";
         sysTxt += "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
                   "下面是用户给你的角色设定：\n" + setting;
         systemMsg["content"] = sysTxt;
