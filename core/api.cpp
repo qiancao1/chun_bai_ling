@@ -1171,6 +1171,22 @@ static void normalizePassThroughImageSizes(QString &text)
     }
 }
 
+// 本地图片路径不存在时的默认图：运行目录下的「图片不存在.webp」（程序目录优先，其次工作目录）。
+// 没找到返回空 —— 调用方保持原行为（跳过该标签）。
+static QString missingImagePlaceholderPath()
+{
+    static const QStringList s_bases = {
+        QCoreApplication::applicationDirPath(),
+        QDir::currentPath()
+    };
+    for (const QString &base : s_bases) {
+        if (base.isEmpty()) continue;
+        const QString p = QDir(base).filePath(QStringLiteral("图片不存在.webp"));
+        if (QFileInfo(p).isFile()) return p;
+    }
+    return QString();
+}
+
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
                                       QString &message_reference)
@@ -1371,6 +1387,15 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
             if (!isPassThrough && !newUrl.isEmpty()) {
                 QString fileMd5;
+                // 本地文件不存在（或不是文件）→ 用运行目录下的默认图「图片不存在.webp」顶上，
+                // 否则下面的 calculateFileMD5AndSize 会失败、这个标签就原样残留在正文里
+                if (!QFileInfo(newUrl).isFile()) {
+                    const QString placeholder = missingImagePlaceholderPath();
+                    if (placeholder.isEmpty())
+                        continue;                       // 连默认图都没有 → 保持原行为
+                    newUrl = placeholder;
+                    tag.url = placeholder;              // 回退路径也指向默认图
+                }
                 if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
                     continue;
 
@@ -1533,6 +1558,15 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
         // ---------- 仅对本地非 HTTP 路径执行上传 ----------
         if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
+            // 本地文件不存在（或不是文件）→ 用运行目录下的默认图「图片不存在.webp」顶上，
+            // 否则下面的 calculateFileMD5AndSize 会失败、这个标签就原样残留在正文里
+            if (!QFileInfo(newUrl).isFile()) {
+                const QString placeholder = missingImagePlaceholderPath();
+                if (placeholder.isEmpty())
+                    continue;                           // 连默认图都没有 → 保持原行为
+                newUrl = placeholder;
+                tag.url = placeholder;                  // 回退路径也指向默认图
+            }
             // 计算 MD5 并获取文件实际宽高（会写入 tag.width / tag.height）
             if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
                 continue;
@@ -2066,6 +2100,14 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
 
         if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
+            // 与堵塞版一致：本地文件不存在 → 换成运行目录下的默认图「图片不存在.webp」
+            if (!QFileInfo(newUrl).isFile()) {
+                const QString placeholder = missingImagePlaceholderPath();
+                if (placeholder.isEmpty())
+                    continue;                       // 连默认图都没有 → 保持原行为
+                newUrl = placeholder;
+                tag.url = placeholder;
+            }
             if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
                 continue;
 

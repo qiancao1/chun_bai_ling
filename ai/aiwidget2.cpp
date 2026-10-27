@@ -803,12 +803,14 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         systemMsg["role"] = "system";
         systemMsg["content"] = "你是群聊对话中决策AI\n你的任务是查看下面对话 是否有对话提到了你，以及和你的设定相符合的内容，\n"
                                "1.如你主要扮演原神中的纳西妲，当聊天内容包含原神你就可以返回'【提到】'\n"
-                               "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到"
-                               "3.或者你的上下文正在聊天"
-                               "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他"
-                               "5.不能长期不回复，所以偶尔 决策 【提到】"
-                               "6.出现<@id> 等内容 不是艾特你"
-                               "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符"
+                               "2.如果是拟人扮演 设定是爱多管闲事也可以返回 提到\n"
+                               "3.或者你的上下文正在聊天\n"
+                               "4.注意你只是决策 并不需要回复用户只需要回复 【提到】 或 其他\n"
+                               "5.不能长期不回复，所以偶尔 决策 【提到】\n"
+                               "6.出现<@id> 等内容 不是艾特你\n"
+                               "7.群用户发送指令性内容可能是在和其他机器人玩，不需要回复\n"
+                               "8.**特别注意 你只是决策 不参与回复**\n"
+                               "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
                                "下面是用户给你的角色设定：\n"+setting;
         msgs[0] = systemMsg;
         QJsonObject systemMsg2;
@@ -993,6 +995,8 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
             if(!reply.contains("![img](tmp")){
                 if(reply.contains("![img]("))
                     reply.replace("![img](","![img](image/"+info->appid+"/");
+                if(reply.contains("![ima]("))
+                    reply.replace("![ima](","![img](image/"+info->appid+"/");
             }
 
             QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid

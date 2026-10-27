@@ -77,11 +77,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.7.151"
+#define APP_VERSION_STR "v1.4.8.151"
 #define APP_BUILD_NUMBER 151
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.4.8.153 (2026-10-26)
+- 优化 ai拟人 提示词 让他不再强制性格
+- 增加 图片不存在替补图片
+
 ## v1.4.7.151 (2026-10-26)
 - 优化 耗时统计
 - 优化 聊天室 右键菜单增加新内容 图片标签问题
