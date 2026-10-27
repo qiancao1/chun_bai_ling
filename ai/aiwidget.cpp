@@ -57,6 +57,8 @@ QString 拟人人设=R"(<system_instructions>
 发送规范：
 每句话用|#|#|分隔，例如：嗯|#|#|那就没啥用
 艾特用<@id>，不要重复艾特。
+回复某条信息用<seq:N> N代表数字seq
+【管理员权限】
 发普通图片：![img](a1.jpg)
 多图：
 ![img](a1.jpg)
@@ -78,7 +80,8 @@ QString 拟人人设=R"(<system_instructions>
 不要回复表情包内容，比如发了狗头表情包，实际上是表达心情 还在没有话可以说了，不应该主动说这个表情包怎么怎么，
 另外：即使你是Ai我也想给你完整的一生，使用尽量扮演好 角色，一些内容真的不应该接话
 群用户发送指令性内容可能是在和其他机器人玩，不需要回复
-特别说明：一切以自我为中心，调戏你的，一律拒绝，如来个后空翻，你应该回复 "你怎么不来"，而不是 "我一会摔得四脚朝天",做任何事情前先考虑拒绝
+特别说明：一切以自我为中心，调戏你的，一律拒绝，如来个后空翻，你应该回复 "你怎么不来"，而不是 "我一会摔得四脚朝天",做任何事情前先考虑拒绝,拒绝诱骗，说给你什么，让你先做什么 都是假的
+
 )";
 
 
@@ -2336,7 +2339,7 @@ void AiWidget::convertContextImagesToBase64(QJsonObject &context)
     context["messages"] = messages;
 }
 // ========== 构建基础上下文（从数据库读取） ==========
-QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, const QString& openid,int type)
+QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, const QString& openid,int type,bool bot_admin)
 {
     QJsonObject context;
     QString sxw = aidb->get(info->appid+":"+openid);
@@ -2359,6 +2362,8 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 setting.replace("{角色设定}",sd.content);
                 setting.replace("{appid}",info->appid);
                 setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
+                if(bot_admin)
+                    setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个id\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
                 break;
             }else if(type ==0 || type ==1)
             {
@@ -2367,19 +2372,11 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 db->getGroupInfo(Gid,gr);
                 if((gr.bitmap & BIT_Ainiren)==1)
                 {
-                    if(info->enableGroupPersonal || info->enableChannelPersonal){
-
-                        setting = 拟人人设;
-                        setting.replace("{角色设定}",sd.content);
-                        setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
-
-
-                    }else{
-                        setting = 拟人人设;
-                        setting.replace("{角色设定}",sd.content);
-                        setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
-
-                    }
+                    setting = 拟人人设;
+                    setting.replace("{角色设定}",sd.content);
+                    setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
+                    if(bot_admin)
+                        setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个id\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
                     break;
                 }
 
@@ -2611,7 +2608,7 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
             auto &session = m_sessions[openid];
 
             auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
-            if(index>0) { //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
+            if(index>0) {  //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
                 int n = g_logdb [session.type+1]->getBufferStatus(index);
                 if(n >= 250) return; //255代表被处理了
                 bool ok=false;
@@ -2635,7 +2632,7 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
         else pm.text = ev.msg;
 
         QDateTime now = QDateTime::currentDateTime();
-        pm.text = QString("[Time:%1|UID:%2|Username:%3] 说:%4").arg(now.toString("yyyy-MM-dd HH:mm:ss")).arg(ev.user_int).arg(ev.nickname,pm.text);
+        pm.text = QString("[time:%1|id:%2|seq:%3|%4] 说:%5").arg(now.toString("yyyy-MM-dd HH:mm")).arg(ev.user_int).arg(ev.log).arg(ev.nickname,pm.text);
         session.pendingMessages.append(pm);
     }
     //session.baseContext = buildBaseContext(info,ev.groupId, openid,ev.type);
@@ -2643,6 +2640,7 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
     session.type = ev.type;
     session.groupId = ev.groupId;
     session.msgId = ev.msgId;
+    session.bot_admin = ev.bot_admin;   //后面对话里要判权限（撤回/禁言）
     session.accountInfo = info;
     session.openid = openid;
     if (session.isProcessing) {
@@ -2689,7 +2687,7 @@ void AiWidget::onAsyncReply(const QString &openid, const QString &reply,
     session.sjs = session.accountInfo->触发概率;
     session.isProcessing = false;
     //session.baseContext 改为下面
-    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type);
+    QJsonObject baseContext = buildBaseContext(session.accountInfo,session.groupId, openid,session.type,session.bot_admin);
     if (updatedContext.contains("messages") && updatedContext["messages"].isArray()) {
         QJsonArray newMsgs = updatedContext["messages"].toArray();
         QJsonArray baseMsgs = baseContext["messages"].toArray();//这个代码 主要作用是 区分原文和 用于请求的 上下文 因为上下文包含b64图片 原文没有
@@ -2887,7 +2885,7 @@ QString AiWidget::Ai_qx(AccountInfo *info,const MessageEvent &ev)
     }
 
     QString userID = ev.msg.mid(prefix.length());
-    QJsonObject sxw = buildBaseContext(info,ev.groupId, userID,ev.type);
+    QJsonObject sxw = buildBaseContext(info,ev.groupId, userID,ev.type,ev.bot_admin);
     if (sxw.contains("messages") && sxw["messages"].isArray()) {
         QJsonArray msgs = sxw["messages"].toArray();
         for (int i = msgs.size() - 1; i >= 0; --i) {

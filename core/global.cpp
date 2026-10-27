@@ -1827,7 +1827,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         }
     }
 
-    pluginPage->dispatch_message(ev.raw,ev);
+    int outlen= pluginPage->dispatch_message(ev.raw,ev);
 
     ret = ai_ui->Ai_qx(info,ev);
     if(ret.isEmpty() || !ev.op){
@@ -1848,6 +1848,8 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
         client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
+    if(ev.at_you && ev.subType==0)
+        botnomsg(ev.appid,ev.type,ev.groupId,ev.msgId,outlen);
 }
 
 

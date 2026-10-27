@@ -10,6 +10,7 @@
 #include "netmanager.h"
 #include <memory>
 #include <QPointer>
+#include <QRegularExpression>
 
 extern bqbgl *ai_bqbgl;
 
@@ -395,7 +396,7 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
     if (arr.isEmpty()) {
         ret.finished = true;
         ret.failed   = true;
-        ret.err      = "返回的 choices 为空 请确认接口是否正确\n";
+        ret.err      = "返回的 choices 为空 请确认接口是否正确\n接口返回:\n"+QJsonDocument(obj).toJson().left(200);
         return ret;
     }
     QJsonObject obj2 = arr.at(0).toObject();
@@ -786,6 +787,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
     ev.msgId = session.msgId;
     ev.user = session.openid;
     ev.msg = "";
+    ev.bot_admin = session.bot_admin;   //这是手工拼的空 ev，不补的话永远是 false → 撤回/禁言永远不执行
 
     if(!send && session.type==0 && info->juece && session.cflx!=1 && !pendings.isEmpty()){
         QJsonObject juece_mode=baseContext;
@@ -1010,9 +1012,52 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                     {
                         reply.remove("<@"+uid+">");
                     }else
-                        reply.replace("<@"+uid+">","<@"+user+">") ;
+                        reply.replace("<@"+uid+">","<qqbot-at-user id=\""+user+"\" />") ;
                 }
             }
+
+            if(reply.contains("<seq:")){
+                uint64_t seqid = extractBetween(reply,"<seq:",">").toDouble();
+                int index =ev.type+1;
+                Message msg;
+                g_logdb[index]->readLog(QString::number(ev.appid),ev.groupId,seqid,msg);
+                reply.replace(QString("<seq:%1>").arg(seqid),msg.hf);
+            }
+
+            // 撤回 <del:N>（N=日志seq）/ 禁言 <mt:短id,秒>：标签一律先删掉，
+            // 机器人是管理员才执行，不是就只删标签、把剩下的内容照常发出去
+            {
+                QRegularExpression reAct("<(del|mt):([^>]*)>");
+                QVector<QPair<QString, QString>> acts;
+                auto it = reAct.globalMatch(reply);
+                while (it.hasNext()) {
+                    const QRegularExpressionMatch m = it.next();
+                    acts.append(qMakePair(m.captured(1), m.captured(2)));
+                }
+                reply.remove(reAct);
+                for (const auto &act : std::as_const(acts)) {
+                    if (!ev.bot_admin) continue;
+                    if (act.first == "del") {           // 撤回：seq → 日志库里那条的 ch（平台消息id）
+                        Message dm;
+                        g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,
+                                                    act.second.toULongLong(),dm);
+                        if(!dm.ch.isEmpty())
+                            bot->delete_messages(ev.type,ev.groupId,dm.ch,[](auto, auto){ return; });
+                    } else {                            // 禁言：短id → 转 32 字节 openid
+                        const QStringList a = act.second.split(",");
+                        QString user;
+                        if(db) db->getOpenIdBySeqId(a.value(0).trimmed().toInt(),user);
+                        if(user.isEmpty()) continue;
+                        const qint64 sec = a.value(1).trimmed().toLongLong();
+                        if(ev.type==1)                  // 频道
+                            bot->set_mute(ev.groupId,user,sec);
+                        else                            // 群
+                            bot->setGroupRestrictChatSetting(ev.groupId,user,static_cast<int>(sec),
+                                                             [](auto, auto){ return; });
+                    }
+                }
+            }
+
             QStringList text = reply.split("|#|#|");
 
             // 串行发送：上一条的回调回来了再发下一条（原来是一次性全发出去，长回复会乱序）。

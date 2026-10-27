@@ -342,7 +342,7 @@ public:
     bool disable_Plugin(PluginInfo &info);//禁用
     void savePlugins();
     void loadPlugins();
-    void dispatch_message(const QString &text, MessageEvent &msg);
+    int dispatch_message(const QString &text, MessageEvent &msg);
 
     // ==================== 铃铛商店（框架级指令）====================
     // 「<货币名>商店」/「兑换物品 序号 数量 其他内容」都由框架直接处理，插件只需在

@@ -530,8 +530,51 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
 // SEH 全都没接住之后、UnhandledExceptionFilter 之前被调用。
 // 它不依赖那个「可以被别人 SetUnhandledExceptionFilter 覆盖」的全局槽位，
 // 所以插件 DLL 抢了 filter 也照样能进这里。
+//
+// ⚠ 2026-10-27：VCH 看得到 **已经被人处理掉的 first-chance 异常**，不能一律当崩溃 ——
+//   Debug 版 Qt5Cored 用 RaiseException(0x406D1388) 给线程起名（Release 版没这段代码），
+//   Qt 自己用 __try/__except 吃掉了，我们却当场写 dump + TerminateProcess + 重启，
+//   于是「Debug 裸跑必崩、挂调试器不崩、Release 不崩」。这类"通知"一律放行，
+//   只有下面这张真·崩溃表里的码才走 fatalWork。
+static bool isFatalSehCode(DWORD code)
+{
+    switch (code) {
+    case 0xC0000005:   // STATUS_ACCESS_VIOLATION
+    case 0xC000001D:   // STATUS_ILLEGAL_INSTRUCTION
+    case 0xC00000FD:   // STATUS_STACK_OVERFLOW
+    case 0xC000008C:   // STATUS_ARRAY_BOUNDS_EXCEEDED
+    case 0xC000008E:   // STATUS_FLOAT_DIVIDE_BY_ZERO
+    case 0xC0000090:   // STATUS_FLOAT_INVALID_OPERATION
+    case 0xC0000094:   // STATUS_INTEGER_DIVIDE_BY_ZERO
+    case 0xC0000095:   // STATUS_INTEGER_OVERFLOW
+    case 0xC0000096:   // STATUS_PRIVILEGED_INSTRUCTION
+    case 0xC0000374:   // STATUS_HEAP_CORRUPTION（fail-fast，正常到不了这）
+    case 0xC0000409:   // STATUS_STACK_BUFFER_OVERRUN（fail-fast，同上）
+        return true;
+    default:
+        return false;
+    }
+}
+
+// 被放行的通知码只在 crash.log 里留个痕（限条数，避免 qDebug 级别刷屏）：
+//   0x406D1388 MS_VC_EXCEPTION（线程命名）  0x40010006 / 0x4001000A（OutputDebugString）
+//   0x40080201 / 0x40080202（RoOriginateError）  0xE06D7363（C++ 异常）
+//   0x80000003 / 0x80000004（__debugbreak / 单步）
+static volatile LONG s_notifyLogged = 0;
+
 static LONG CALLBACK VectoredContinueCrashHandler(EXCEPTION_POINTERS* ep)
 {
+    const DWORD code = (ep && ep->ExceptionRecord) ? ep->ExceptionRecord->ExceptionCode : 0;
+    if (!isFatalSehCode(code)) {
+        if (InterlockedIncrement(&s_notifyLogged) <= 200) {
+            char ts[64];
+            nowStamp(ts, sizeof(ts));
+            rawLogf("%s ignore notify code=0x%08lX tid=%lu\r\n",
+                    ts, (unsigned long)code, (unsigned long)GetCurrentThreadId());
+        }
+        return EXCEPTION_CONTINUE_SEARCH;   // 让 Qt / 插件自己的 __except 去处理
+    }
+
     handleFatal(ep, "VCH");
     return EXCEPTION_CONTINUE_SEARCH;
 }

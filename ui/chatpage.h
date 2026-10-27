@@ -26,7 +26,7 @@ struct Message {
     QString name;
     QString hf; //回复用
     QString ch; //撤回消息用
-    QString plugin_ch;
+    QString plugin_ch;//撤回机器人信息
     QString direction;
     QString ref_name;
     QString ref_msg;

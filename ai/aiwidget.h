@@ -79,6 +79,7 @@ struct SessionContext {
     int dslx=0; //0常规对话 1定时N秒 1定时N分钟
     int duihts=0;
     int cflx=0;//触发类型 1艾特 2其他
+    bool bot_admin=false; //机器人是不是管理员 跟着最近一条 ev 更新（flushPendingMessagesTail 里手工拼的 ev 要带上它）
     // 用 QSharedPointer：AI 请求在线程池线程跑，回调里还会接着用 memory，
     // 裸指针会被主线程的清理(clearSessionResources)提前 delete → use-after-free。
     // QSharedPointer 的引用计数是原子的，跨线程拷贝安全，持有副本即可保证对象活着。
@@ -307,7 +308,7 @@ private:
     QHash<QString,QJsonObject> m_fun;
 
 
-    QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type);
+    QJsonObject buildBaseContext(AccountInfo* info, const QString &Gid, const QString& openid, int type, bool bot_admin);
     void flushPendingMessages(const QString& openid,bool send);
 
     // flushPendingMessages 的后半段：决策结果出来之后（可能是异步回调里）接着走

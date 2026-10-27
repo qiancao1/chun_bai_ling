@@ -1727,7 +1727,7 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
     return true;
 }
 
-void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
+int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 {
 
     QByteArray utf8 = text.toUtf8();
@@ -1738,12 +1738,8 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
     // 不再往下发给插件 / 32 位 / JS，也不会被 AI 再兜一条（内部已置 msg.op）。
     // ⚠ 这里传的是**原始帧** text：与插件 onMessagev3 第 1 个参数同一份，插件拿它取正文/群号。
     if (handleShopCommand(text, msg)) {
-        if (msg.at_you && msg.subType == 0) {
-            // addint = 254 → 内部 +1 正好饱和成 255（「已处理」哨兵）：
-            // 既不会发「未被处理回应」，后面 global.cpp 看到 n>=250 也不会再让 AI 兜一条。
-            botnomsg(msg.appid, msg.type, msg.groupId, msg.msgId, 254);
-        }
-        return;
+
+        return 254;
     }
 
 
@@ -1926,9 +1922,8 @@ void PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
     }
 
 #endif
-    if(msg.at_you && msg.subType==0)
-        botnomsg(msg.appid,msg.type,msg.groupId,msg.msgId,(_32==0)+jsTargets.isEmpty());
 
+   return (_32==0)+jsTargets.isEmpty();
 }
 
 
