@@ -131,6 +131,7 @@ set(PROJECT_SOURCES_ALL
     ui/ruleeditdialog.cpp ui/ruleeditdialog.h
 
     ui/scrolltextdialog.h
+    ui/multilinedelegate.h
     ui/buttoneditor.h ui/buttoneditor.cpp
     ui/botruleconfigwidget.h ui/botruleconfigwidget.cpp
     ui/textreplaceconfigwidget.h ui/textreplaceconfigwidget.cpp

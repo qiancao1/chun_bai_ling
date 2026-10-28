@@ -344,6 +344,30 @@ public:
     void loadPlugins();
     int dispatch_message(const QString &text, MessageEvent &msg);
 
+    // ==================== AI 工具：直接调用某个插件的一条注册指令 ====================
+    // 与 dispatch_message 的区别：**不做关键词匹配**，按「插件 + 注册原指令 + 匹配方式」定位
+    // 到那一条规则直接调，所以 AI 调哪条就只跑哪条，不会顺带触发别的插件 / 框架指令。
+    //
+    //   pluginId / pluginName  插件身份（id 优先，空则名）；按 findPluginIndexByIdentity 查
+    //   matchType              该规则注册时的 MatchType 整数值（防同名不同匹配方式串味）
+    //   key                    插件注册的**原始**指令（不是改名后的）
+    //   argsText               AI 给的参数原文（可为空）；内部会拼成 "生效指令 参数…" 塞进 ev.msg
+    //   ev                     调用方持有的事件副本（appid / type / groupId / user / msgId 都要有）
+    //   outText                有**同步返回值**时填这里（Python 插件 return 的文本 / 原生库 onMessagev3 返回值）
+    //   err                    失败原因
+    // 返回 0  = outText 可用，调用到此结束
+    //      1  = 已投递，但这个插件/这条入口**没有返回值**（JS / 32 位易语言 / 老式原生库）
+    //           → 调用方应等「发送拦截」（global.h 的 toolGateWait）
+    //     -1  = 失败（err 已填）
+    int invokeToolCommand(const QString &pluginId, const QString &pluginName,
+                          int matchType, const QString &key, const QString &argsText,
+                          MessageEvent &ev, QString &outText, QString &err);
+
+    // 该指令在某机器人下**实际生效**的命令词（界面上改过名 = 新名，没改 = 注册原名）。
+    // 插件不存在 / 找不到这条规则时原样返回 key。
+    QString effectiveCommandWord(const QString &pluginId, const QString &pluginName,
+                                 int matchType, const QString &key, int appid) const;
+
     // ==================== 铃铛商店（框架级指令）====================
     // 「<货币名>商店」/「兑换物品 序号 数量 其他内容」都由框架直接处理，插件只需在
     // get_plugin_info 里注册 "shop"（见上面 ShopItem_Dll / ShopItem_py 的说明）。

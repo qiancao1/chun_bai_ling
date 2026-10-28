@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QSpinBox>
 #include <functional>
 #include <memory>
 #include <QMutex>
@@ -62,6 +63,35 @@ struct Ai_Fun {
     QString p1,p2,p3,p4,p5,p6,p7,p8;
 
 };
+
+// ==================== 插件工具（把插件的指令注册成 AI 工具）====================
+// 「插件工具」页里勾选的每一条指令 = 一个工具。存 data/plugin_tools.json。
+// 调用链：AI 返回 tool_calls → handleAiResponse（aiwidget2.cpp）认领 toolName →
+//         AiWidget::runPluginTool → pluginPage->invokeToolCommand（pluginpage.cpp）。
+// 返回值的两种来源：
+//   ① 同步返回值：Python 插件 return 的文本 / 原生库 onMessagev3 的返回值；
+//   ② 发送拦截：JS / 32 位易语言 / 只调发送 API 的插件没有返回值，
+//      调插件前先 toolGateBegin 设一道 gate（见 core/global.h）—— 插件往本会话发的消息
+//      在 API_ID_SEND_MESSAGES 入口就被扣下，**不真发出去**，正文交给 AI 决定怎么处理。
+struct PluginToolItem {
+    QString     pluginId;      // 插件 id（空 = 按名字认）
+    QString     pluginName;    // 插件名（界面上显示 / 日志用）
+    int         matchType = 0; // 注册时的 MatchType 整数值（防同名不同匹配方式串味）
+    QString     key;           // 插件注册的**原始**指令
+    QString     toolName;      // 给 AI 的函数名（自动生成，稳定不变）
+    QString     desc;          // 工具说明（AI 看的）；空 = 按指令名自动生成
+    QStringList params;        // 参数说明 p1..pN（空 = 一个可留空的 p1）
+    bool        enabled = false;
+};
+
+// 插件工具调用器：runToolLoop 只负责「按顺序跑 tool_calls」，具体怎么等结果交给它。
+// 目前只有一种实现 —— 阻塞等（runPluginTool：卡住当前线程，最多 m_pluginToolWaitMs = 3 秒）。
+// 留成函数对象只是为了让工具循环和「等结果」解耦，不是异步。
+// cb 必须**恰好调用一次**，参数是给 AI 看的结果文本。
+using PluginToolInvoker = std::function<void(const PluginToolItem &,
+                                             const QString &args,
+                                             const MessageEvent &ev,
+                                             std::function<void(const QString &)> cb)>;
 
 // AI 回复回调：异步请求完成时调用（在线程池线程执行，不是主线程）
 using AiReplyCb = std::function<void(const QString&)>;
@@ -283,6 +313,43 @@ private:
     void 刷新模型();
     void 内置函数();
     void 内置函数(const QString &Nmae,const QString &remark,const QStringList &params);
+
+    // ============== 插件工具 (tab 4)：把插件的指令注册成 AI 工具 ==============
+    void loadPluginTools();                    // 读 data/plugin_tools.json
+    void savePluginTools() const;              // 写回
+    void refreshPluginToolPlugins();           // 重扫 m_pluginList，填左侧插件列表（保留当前选中）
+    void rebuildPluginToolTable();             // 按当前选中的插件重建右侧指令表
+    void rebuildPluginToolIndex();             // enabled 项 → m_pluginToolByName
+    QJsonObject pluginToolFunctionJson(const PluginToolItem &it) const;  // 单个工具的 schema
+    PluginToolItem *findPluginToolItem(const QString &pluginId, int matchType, const QString &key);
+    // AI 真正调用一个插件工具：argsJson = tool_call 的 arguments（JSON 文本）。
+    // 永远返回一段给 AI 看的文本（失败/超时也是文本，不让整轮对话断掉）。
+    // ⚠ **阻塞**：会卡住当前线程等插件把话说完，硬上限 3 秒（m_pluginToolWaitMs）。
+    QString runPluginTool(const PluginToolItem &it, const QString &argsJson, const MessageEvent &ev);
+    // 前半段：p1..p8 拼参数、按 msgid 里的 seq 补真实发送人。
+    static QString ptJoinArgs(const QString &argsJson);
+    void ptFillSender(MessageEvent &ev);
+
+    // 插件工具页的槽（指针式 connect 要私有成员函数即可）
+    void onPluginToolPluginChanged(int row);
+    void onPluginToolItemChanged(QTableWidgetItem *item);
+    void onPluginToolWaitChanged(int secs);
+
+    QListWidget *pluginToolPluginList = nullptr;   // 左：插件
+    QTableWidget *pluginToolTable = nullptr;       // 右：该插件的指令（带勾选）
+    QPushButton *pluginToolRefreshBtn = nullptr;
+    QSpinBox    *pluginToolWaitSpin = nullptr;     // 没返回值时最多等几秒
+    QList<PluginToolItem> m_pluginTools;           // 全部配置项（enabled 才算注册）
+    QHash<QString, int>   m_pluginToolByName;      // toolName → m_pluginTools 下标（只含 enabled）
+    // ⚠ 上面两张表在 GUI 线程写（勾选/改说明），却在**线程池线程**读（get_tools / handleAiResponse
+    //   调工具）→ 所有读写都要持这把锁，否则 QList 扩容时读侧会踩到已释放的内存。
+    mutable QMutex m_pluginToolsMutex;
+    QString pluginToolCfgPath = "data/plugin_tools.json";
+    int     m_pluginToolWaitMs = 3000;   // 阻塞等待上限（界面 1~3 秒，代码里再 clamp 一次）
+    // 右侧表当前显示的插件 + 每行对应的规则（只读视图，不把 py::object 暴露到 UI 层）
+    struct PluginToolRow { int matchType = 0; QString key; QString view; };
+    QList<PluginToolRow> m_pluginToolRows;
+    int m_pluginToolCurPlugin = -1;
     // ============== 工具/函数配置 (tab 3) ==============
     QTableWidget *funcListTable;       // 左侧：备注列表
     QPushButton *funcListDelBtn;       // 左侧：删除选中
@@ -332,7 +399,18 @@ private:
         QString err;
         QString text;           // finished 且 !failed=最终回复
     };
+    // 处理一次 AI 响应：追加上下文 + 执行工具调用（同步阻塞，插件工具最多等 3 秒）。
     AiStepResult handleAiResponse(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw);
+
+    // 前半段：解析 choices、追加 assistant 消息、把正文发出去。
+    // 返回 false = 已经彻底结束（ret 里填好了失败原因），调用方直接返回即可。
+    bool beginAiStep(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw,
+                     AiStepResult &ret, QJsonArray &toolCalls, QString &text);
+    // 工具循环：按 inv 逐个跑 tool_calls，跑完（或遇到 interrupt）就 done。
+    // textIn 是「没调成任何工具时要吐出来的正文」（和旧逻辑一致）。
+    void runToolLoop(const QJsonArray &calls, const MessageEvent &ev,
+                     std::shared_ptr<QJsonObject> sxw, const QString &textIn,
+                     PluginToolInvoker inv, std::function<void(AiStepResult)> done);
 
     // 异步核心：单次接口上的「重试 + 多轮工具调用」状态机
     void Ai_postAsyncCore(const MessageEvent &ev, const QString &url, const QString &key,

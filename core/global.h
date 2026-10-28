@@ -221,6 +221,27 @@ void botnomsg(int appid, int type, const QString &openid, const QString &msgid, 
 // 主动推送有频率限制，被动回复基本没有（官方 100 条/秒）→ 保险起见默认按 60 条/秒发。
 // 只有「真的带上了 msgid」的发送才需要调它；msgid 为空（主动推送）不要调。
 void paceMsgIdReply(int perSec = 60);
+
+// ================== AI 插件工具调用：发送拦截 ==================
+// 背景：AI 把插件的某条指令当工具调时，Python（return 文本）/ 原生库（onMessagev3 返回值）
+// 能直接拿到结果；但 JS / 32 位易语言 / 只调发送 API 的插件**没有返回值**，它们只会「把话发出去」。
+// 做法：**在发送入口扣下，不真发出去** ——
+//   1) 调插件前 toolGateBegin() 领一个 token，并把交给插件的 msgid 改写成
+//         "|-<token>|<真实 msgid>"          （toolGateMsgId）
+//      负数下标让 splitWrappedMsgId 返回 index<0 → 所有「按 index 改日志 / 并进入站那条」的分支
+//      自动跳过，而真实 msgid 仍在第二个 '|' 之后（插件要用也不缺东西）。
+//   2) 插件调 API_ID_SEND_MESSAGES 时，工具侧先 toolGateTokenFromMsgId() 从 msgid 里认出 token，
+//      命中全局表 → 正文塞进表里、**直接当发送成功返回**（一个字都不出这台机器，不 POST、不写日志）；
+//      没命中（token 过期/不是这次调用）→ 照常发送。
+//   3) AI 线程 toolGateWait() 阻塞在条件变量上，被唤醒就取（首条之后静默 quietMs 即认为说完）。
+//      ⚠ 这条等待是**阻塞**的，上限 3 秒（AiWidget::runPluginTool 里 clamp）。
+//   注：插件**主动推送**（msgid 传空）拦不到 —— 那种不管它，照常发。
+int  toolGateBegin();                                    // 领一个 token（> 0）
+void toolGateEnd(int token);                             // 收工（没收到也要调）
+QString toolGateMsgId(int token, const QString &realMsgId); // 拼 "|-token|真实msgid"
+int  toolGateTokenFromMsgId(const QString &msgid);       // 反解 token（不是本机制的 = 0）
+bool toolGateIntercept(int token, const QString &text);  // 发送入口调；命中=true（别发了）
+QStringList toolGateWait(int token, int waitMs, int quietMs); // 阻塞等被扣下的正文
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms

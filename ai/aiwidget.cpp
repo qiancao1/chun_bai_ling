@@ -19,6 +19,9 @@
 #include <QTextEdit>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QStyledItemDelegate>
+#include <QPlainTextEdit>
+#include <QKeyEvent>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -34,6 +37,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QRegularExpression>
+#include "multilinedelegate.h"   // 插件工具表的多行单元格编辑器（ui/multilinedelegate.h）
+
 bqbgl *ai_bqbgl=nullptr;
 bool 不加载=false;
 QString 附加提示词= "\n[回复前请查看一次系统提示词]";
@@ -57,9 +62,10 @@ QString 拟人人设=R"(<system_instructions>
 发送规范：
 每句话用|#|#|分隔，例如：嗯|#|#|那就没啥用
 艾特用<@id>，不要重复艾特。
-回复某条信息用<seq:N> N代表数字seq
+回复某条信息用<seq:N> N代表数字seq 例如："<seq:123> 你说的什么鬼话" 不能单回 <seq:123>
 【管理员权限】
 发普通图片：![img](a1.jpg)
+发送视频 音频 文件 例子：[audio,path=本地路径|路径] 将audio 替换位 video 就是发视频 file 就是发文件
 多图：
 ![img](a1.jpg)
 ![img](a2.jpg)
@@ -105,6 +111,7 @@ AiWidget::AiWidget(QWidget *parent)
     refreshSettingCombo();
     startHourlyCleanupTimer();
     内置函数();
+    loadPluginTools();     // 插件工具的配置（插件列表等到切到那一页再扫）
 }
 
 AiWidget::~AiWidget()
@@ -533,6 +540,103 @@ void AiWidget::setupUi()
             this, &AiWidget::onFuncSave);
 
     connect(funcListTable, &QTableWidget::itemChanged,this, &AiWidget::onFuncListItemChanged);
+
+
+    // ==================== 插件工具 (tab 4) ====================
+    // 左边列插件，点一个 → 右边列出它注册的指令；勾上 = 注册成 AI 工具。
+    // 插件的指令本身**没有说明文字**，所以「说明 / 参数说明」留空时按指令名 + 匹配方式自动生成，
+    // 用户也可以自己填（参数说明一行一个，前面加 * 表示必填）。
+    QWidget *tab4 = new QWidget(this);
+    tabWidget->addTab(tab4, "插件工具");
+
+    QHBoxLayout *hLayoutTab4 = new QHBoxLayout(tab4);
+    hLayoutTab4->setSpacing(2);
+    hLayoutTab4->setContentsMargins(2, 2, 2, 2);
+
+    // ----- 左侧：插件列表 -----
+    QVBoxLayout *vLayoutPtLeft = new QVBoxLayout();
+    vLayoutPtLeft->setSpacing(2);
+
+    pluginToolPluginList = new QListWidget(tab4);
+    pluginToolPluginList->setMaximumWidth(180);
+    vLayoutPtLeft->addWidget(pluginToolPluginList);
+
+    pluginToolRefreshBtn = new QPushButton("刷新插件", tab4);
+    pluginToolRefreshBtn->setToolTip("重新扫描已加载的插件（装完新插件后点一下）");
+    vLayoutPtLeft->addWidget(pluginToolRefreshBtn);
+
+    hLayoutTab4->addLayout(vLayoutPtLeft, 0);
+
+    // ----- 右侧：指令表 -----
+    QVBoxLayout *vLayoutPtRight = new QVBoxLayout();
+    vLayoutPtRight->setSpacing(2);
+
+    QLabel *lblPtHint = new QLabel(
+        "打勾 = 注册成 AI 工具。"
+        "「工具说明」写这个工具干什么用（留空自动生成）；"
+        "「参数」一行一个参数，行首加 * 表示必填，留空 = 没有参数。"
+        "（双击单元格编辑，回车换行，点别处保存）", tab4);
+    lblPtHint->setWordWrap(true);
+    vLayoutPtRight->addWidget(lblPtHint);
+
+    pluginToolTable = new QTableWidget(tab4);
+    pluginToolTable->setColumnCount(3);
+    pluginToolTable->setHorizontalHeaderLabels(
+        QStringList() << "启用 / 指令" << "工具说明（给 AI）" << "参数（一行一个）");
+    pluginToolTable->verticalHeader()->setVisible(false);
+    pluginToolTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    pluginToolTable->setColumnWidth(0, 190);
+    pluginToolTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    pluginToolTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    pluginToolTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    // 「工具说明」「参数」两列要能写多行：换多行编辑器 + 行高跟着内容长，否则多行内容看不全
+    auto *ptMultiEdit = new MultiLineDelegate(pluginToolTable);
+    pluginToolTable->setItemDelegateForColumn(1, ptMultiEdit);
+    pluginToolTable->setItemDelegateForColumn(2, ptMultiEdit);
+    pluginToolTable->setWordWrap(true);
+    pluginToolTable->verticalHeader()->setMinimumSectionSize(30);
+    pluginToolTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    // 这三列的含义挂表头，鼠标停一下就能看（正文里不再写原理）
+    pluginToolTable->horizontalHeaderItem(0)->setToolTip(
+        "第一列打勾 = 把这条指令注册成 AI 工具。\n"
+        "括号里的「原:xxx」表示插件改名后，插件代码里注册的原始指令名。");
+    pluginToolTable->horizontalHeaderItem(1)->setToolTip(
+        "这个工具是干什么用的，原样作为工具描述发给 AI。\n"
+        "留空 = 自动生成一句（插件名 + 指令 + 匹配方式）。\n"
+        "例：查询某城市的天气，参数是城市名。");
+    pluginToolTable->horizontalHeaderItem(2)->setToolTip(
+        "一行一个参数，顺序就是 p1、p2…；行首加 * 表示必填。\n"
+        "双击编辑，回车换行，点别处保存。\n"
+        "例：\n* 城市名，如 北京\n  天数，1-7，默认 1\n"
+        "全空 = 给 AI 一个可留空的 p1（想传参数就往后拼，插件按空格切正文）。");
+    vLayoutPtRight->addWidget(pluginToolTable);
+
+    QHBoxLayout *hBtnPt = new QHBoxLayout();
+    hBtnPt->addWidget(new QLabel("没返回值时最多等", tab4));
+    pluginToolWaitSpin = new QSpinBox(tab4);
+    pluginToolWaitSpin->setRange(1, 3);          // 这段是阻塞等待，硬上限 3 秒
+    pluginToolWaitSpin->setSuffix(" 秒");
+    pluginToolWaitSpin->setValue(3);
+    pluginToolWaitSpin->setMaximumWidth(90);
+    hBtnPt->addWidget(pluginToolWaitSpin);
+    hBtnPt->addWidget(new QLabel("（超时就告诉 AI「插件没有返回内容」）", tab4));
+    hBtnPt->addStretch();
+    vLayoutPtRight->addLayout(hBtnPt);
+
+    hLayoutTab4->addLayout(vLayoutPtRight, 1);
+
+    connect(pluginToolPluginList, &QListWidget::currentRowChanged,
+            this, &AiWidget::onPluginToolPluginChanged);
+    connect(pluginToolRefreshBtn, &QPushButton::clicked,
+            this, &AiWidget::refreshPluginToolPlugins);
+    connect(pluginToolTable, &QTableWidget::itemChanged,
+            this, &AiWidget::onPluginToolItemChanged);
+    connect(pluginToolWaitSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &AiWidget::onPluginToolWaitChanged);
+    // 切到这个页才扫插件表：插件是启动后才陆续加载的，构造时扫不一定扫得到
+    connect(tabWidget, &QTabWidget::currentChanged, this, [this, tab4](int i) {
+        if (i >= 0 && tabWidget->widget(i) == tab4) refreshPluginToolPlugins();
+    });
 
 
     aisxw *ai_sxw = new aisxw(this);   // 创建 plts 对象
@@ -2038,6 +2142,17 @@ QJsonArray AiWidget::get_tools(const AccountInfo *info)
         toolsArray.append(toolObj);
     }
 
+    // ---- 插件工具（「插件工具」页里勾选的插件指令）----
+    // 故意**不看** acc->tools：那一栏是「内置函数 / 自写 Python 函数」按机器人分开的开关，
+    // 插件工具是全局注册的（勾上就对所有账号的 AI 生效）。要按机器人关，去插件详情页禁用插件即可。
+    QList<PluginToolItem> ptList;
+    {
+        QMutexLocker lk(&m_pluginToolsMutex);
+        for (const PluginToolItem &it : m_pluginTools)
+            if (it.enabled && !it.toolName.isEmpty()) ptList.append(it);
+    }
+    for (const PluginToolItem &it : std::as_const(ptList))
+        toolsArray.append(pluginToolFunctionJson(it));
 
     return toolsArray;
 
@@ -2066,6 +2181,517 @@ void AiWidget::内置函数()
 
     funcListTable->selectRow(0);
     onFuncListCurrentCellChanged(0, 0, -1, -1);
+}
+
+// ==================== 插件工具：把插件的指令注册成 AI 工具 ====================
+// 为什么要有这一套：插件的「指令」是给用户手打的，注册时只给了匹配方式（完全相等 / 开头匹配…），
+// **没有任何说明文字和参数定义**。AI 不知道它存在、也不知道参数怎么填，所以这里：
+//   ① 把已加载插件 → 指令列出来，用户勾一条就注册一个工具；
+//   ② 说明 / 参数说明用户可以自己填，留空就按「插件名 + 指令 + 匹配方式」自动生成，
+//      默认给一个可留空的 p1（AI 想补参数就往后拼，插件那边按空格切即可）；
+//   ③ 调用走 pluginPage->invokeToolCommand（不经关键词匹配，只跑这一条）。
+// 返回值：Python return 的文本 / 原生库 onMessagev3 的返回值直接可用；
+//         JS、32 位易语言、以及那些自己调发送 API 的插件没有返回值 → 在发送入口把它们
+//         想说出口的话**扣下来**（msgid 打 "|-token|" 标记 + 全局 gate 表），一个字都不发出去，
+//         正文直接交给 AI 决定怎么处理。
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped);   // 定义在 core/api2.cpp
+
+static QString ptIdentity(const QString &id, const QString &name)
+{
+    return id.isEmpty() ? name : id;
+}
+
+static QString pluginToolMatchName(int t)
+{
+    switch (t) {
+    case 0: return "完全相等";
+    case 1: return "开头匹配";
+    case 2: return "结尾匹配";
+    case 3: return "包含";
+    case 4: return "正则";
+    case 5: return "事件";
+    default: return "未知";
+    }
+}
+
+// 指令 → 合法的函数名。OpenAI 的 function.name 只吃 [a-zA-Z0-9_-] 且 ≤64 字符，
+// 中文指令 sanitize 完是空的 → 用 "cmd" 占位，靠后面的哈希保证唯一（插件不改名就一直不变）。
+static QString pluginToolMakeName(const QString &identity, int matchType, const QString &key)
+{
+    QString base;
+    for (const QChar c : key) {
+        const ushort u = c.unicode();
+        if ((u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') || u == '_' || u == '-')
+            base += c;
+        if (base.size() >= 16) break;
+    }
+    if (base.isEmpty()) base = QStringLiteral("cmd");
+    const QString seed = identity + "|" + QString::number(matchType) + "|" + key;
+    const QString hash = QString::fromLatin1(
+        QCryptographicHash::hash(seed.toUtf8(), QCryptographicHash::Md5).toHex().left(8));
+    return QStringLiteral("pt_") + base + "_" + hash;
+}
+
+void AiWidget::loadPluginTools()
+{
+    QList<PluginToolItem> items;
+    int waitMs = 10000;
+
+    QFile f(pluginToolCfgPath);
+    if (f.open(QIODevice::ReadOnly)) {
+        const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+        const QJsonArray arr = root["items"].toArray();
+        for (const QJsonValue &v : arr) {
+            const QJsonObject o = v.toObject();
+            PluginToolItem it;
+            it.pluginId   = o["pid"].toString();
+            it.pluginName = o["pname"].toString();
+            it.matchType  = o["t"].toInt();
+            it.key        = o["k"].toString();
+            it.toolName   = o["n"].toString();
+            it.desc       = o["d"].toString();
+            it.enabled    = o["e"].toBool();
+            const QJsonArray ps = o["p"].toArray();
+            for (const QJsonValue &pv : ps) it.params.append(pv.toString());
+            if (it.key.isEmpty()) continue;
+            if (it.toolName.isEmpty())
+                it.toolName = pluginToolMakeName(ptIdentity(it.pluginId, it.pluginName), it.matchType, it.key);
+            items.append(it);
+        }
+        const int w = root["wait_ms"].toInt();
+        if (w > 0) waitMs = w;
+    }
+    m_pluginToolWaitMs = qBound(1000, waitMs, 3000);   // 阻塞等待，上限 3 秒
+
+    {
+        QMutexLocker lk(&m_pluginToolsMutex);
+        m_pluginTools = items;
+    }
+    rebuildPluginToolIndex();
+
+    if (pluginToolWaitSpin) {
+        不加载 = 1;      // 回填别写盘
+        pluginToolWaitSpin->setValue(m_pluginToolWaitMs / 1000);
+        不加载 = 0;
+    }
+}
+
+void AiWidget::savePluginTools() const
+{
+    QJsonArray arr;
+    {
+        QMutexLocker lk(&m_pluginToolsMutex);
+        for (const PluginToolItem &it : m_pluginTools) {
+            QJsonObject o;
+            o["pid"]   = it.pluginId;
+            o["pname"] = it.pluginName;
+            o["t"]     = it.matchType;
+            o["k"]     = it.key;
+            o["n"]     = it.toolName;
+            o["d"]     = it.desc;
+            o["e"]     = it.enabled;
+            QJsonArray ps;
+            for (const QString &p : it.params) ps.append(p);
+            o["p"] = ps;
+            arr.append(o);
+        }
+    }
+    QJsonObject root;
+    root["wait_ms"] = m_pluginToolWaitMs;
+    root["items"]   = arr;
+
+    QDir().mkpath(QFileInfo(pluginToolCfgPath).absolutePath());
+    QFile f(pluginToolCfgPath);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+void AiWidget::rebuildPluginToolIndex()
+{
+    QHash<QString, int> idx;
+    {
+        QMutexLocker lk(&m_pluginToolsMutex);
+        for (int i = 0; i < m_pluginTools.size(); ++i) {
+            const PluginToolItem &it = m_pluginTools.at(i);
+            if (!it.enabled || it.toolName.isEmpty()) continue;
+            idx.insert(it.toolName, i);
+        }
+    }
+    QMutexLocker lk(&m_pluginToolsMutex);
+    m_pluginToolByName = idx;
+}
+
+PluginToolItem *AiWidget::findPluginToolItem(const QString &identity, int matchType, const QString &key)
+{
+    // 调用方负责持锁（GUI 线程的表格回调里都是先加锁再用）
+    for (int i = 0; i < m_pluginTools.size(); ++i) {
+        PluginToolItem &it = m_pluginTools[i];
+        if (it.matchType != matchType || it.key != key) continue;
+        if (ptIdentity(it.pluginId, it.pluginName) != identity) continue;
+        return &it;
+    }
+    return nullptr;
+}
+
+void AiWidget::refreshPluginToolPlugins()
+{
+    if (!pluginToolPluginList || !pluginToolTable) return;
+
+    // 记下当前选中的插件身份，重建后尽量保持在同一行
+    QString keepIdentity;
+    if (m_pluginToolCurPlugin >= 0 && m_pluginToolCurPlugin < m_pluginList.size()) {
+        const PluginInfo &p = m_pluginList.at(m_pluginToolCurPlugin);
+        keepIdentity = ptIdentity(p.id, p.name);
+    }
+
+    {
+        QSignalBlocker blocker(pluginToolPluginList);
+        不加载 = 1;
+        pluginToolPluginList->clear();
+        for (int i = 0; i < m_pluginList.size(); ++i) {
+            const PluginInfo &p = m_pluginList.at(i);
+            int n = 0;
+            if (p.type == 0) {
+                for (const Rule &r : p.python.rules) if (r.role > kRuleRoleOff) ++n;
+            } else if (p.type == 3) {
+                for (const Rule_js &r : p.js.rules) if (r.role > kRuleRoleOff) ++n;
+            } else {
+                for (const Rule_Dll &r : p.DLL.rules) if (r.role > kRuleRoleOff) ++n;
+            }
+            if (n == 0) continue;    // 没注册指令的插件（老式每条都喂的除外）不列
+
+            auto *item = new QListWidgetItem(QString("%1 (%2)").arg(p.name).arg(n));
+            item->setData(Qt::UserRole, i);                              // m_pluginList 下标
+            item->setData(Qt::UserRole + 1, ptIdentity(p.id, p.name));    // 稳定身份
+            item->setToolTip(QString("%1\n类型：%2\n指令数：%3%4")
+                                 .arg(p.name)
+                                 .arg(p.type == 0 ? "Python" : p.type == 1 ? "原生库"
+                                      : p.type == 2 ? "DLL32(易语言)" : "JS")
+                                 .arg(n)
+                                 .arg(p.enabled ? "" : "\n（插件当前已停用，工具调用会直接报错）"));
+            pluginToolPluginList->addItem(item);
+            if (!keepIdentity.isEmpty() && ptIdentity(p.id, p.name) == keepIdentity)
+                pluginToolPluginList->setCurrentRow(pluginToolPluginList->count() - 1);
+        }
+        不加载 = 0;
+    }
+
+    if (pluginToolPluginList->count() == 0) {
+        m_pluginToolCurPlugin = -1;
+        m_pluginToolRows.clear();
+        不加载 = 1;
+        pluginToolTable->setRowCount(0);
+        不加载 = 0;
+        return;
+    }
+    if (pluginToolPluginList->currentRow() < 0)
+        pluginToolPluginList->setCurrentRow(0);
+    onPluginToolPluginChanged(pluginToolPluginList->currentRow());
+}
+
+void AiWidget::onPluginToolPluginChanged(int row)
+{
+    if (不加载) return;
+    if (row < 0 || row >= pluginToolPluginList->count()) {
+        m_pluginToolCurPlugin = -1;
+        return;
+    }
+    m_pluginToolCurPlugin = pluginToolPluginList->item(row)->data(Qt::UserRole).toInt();
+    rebuildPluginToolTable();
+}
+
+void AiWidget::rebuildPluginToolTable()
+{
+    if (!pluginToolTable) return;
+
+    不加载 = 1;
+    pluginToolTable->setRowCount(0);
+    m_pluginToolRows.clear();
+
+    if (m_pluginToolCurPlugin < 0 || m_pluginToolCurPlugin >= m_pluginList.size()) {
+        不加载 = 0;
+        return;
+    }
+    const PluginInfo &p = m_pluginList.at(m_pluginToolCurPlugin);
+    const QString identity = ptIdentity(p.id, p.name);
+
+    // 收集「启用」的指令（停用的不列：勾了也调不动）
+    struct RawRule { int t; QString key; QString view; };
+    QList<RawRule> raws;
+    if (p.type == 0) {
+        for (const Rule &r : p.python.rules) {
+            if (r.role <= kRuleRoleOff) continue;
+            raws.append({ static_cast<int>(r.type), r.key,
+                          r.newKey.isEmpty() ? r.key : (r.newKey + "  (原:" + r.key + ")") });
+        }
+    } else if (p.type == 3) {
+        for (const Rule_js &r : p.js.rules) {
+            if (r.role <= kRuleRoleOff) continue;
+            raws.append({ static_cast<int>(r.type), r.key,
+                          r.newKey.isEmpty() ? r.key : (r.newKey + "  (原:" + r.key + ")") });
+        }
+    } else {
+        for (const Rule_Dll &r : p.DLL.rules) {
+            if (r.role <= kRuleRoleOff) continue;
+            raws.append({ static_cast<int>(r.type), r.key,
+                          r.newKey.isEmpty() ? r.key : (r.newKey + "  (原:" + r.key + ")") });
+        }
+    }
+
+    pluginToolTable->setRowCount(raws.size());
+    for (int row = 0; row < raws.size(); ++row) {
+        const RawRule &r = raws.at(row);
+
+        PluginToolItem cfg;
+        bool hasCfg = false;
+        {
+            QMutexLocker lk(&m_pluginToolsMutex);
+            if (const PluginToolItem *found = findPluginToolItem(identity, r.t, r.key)) {
+                cfg = *found;
+                hasCfg = true;
+            }
+        }
+
+        // 第 0 列：勾选 + 指令名合成一格（指令名只用来认，不能改；匹配方式/工具名塞 tooltip）
+        auto *cCmd = new QTableWidgetItem(r.view);
+        cCmd->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        cCmd->setCheckState((hasCfg && cfg.enabled) ? Qt::Checked : Qt::Unchecked);
+        cCmd->setToolTip(QString("匹配：%1\n工具名：%2\n插件原指令：%3")
+                             .arg(pluginToolMatchName(r.t),
+                                  hasCfg ? cfg.toolName : pluginToolMakeName(identity, r.t, r.key),
+                                  r.key));
+        pluginToolTable->setItem(row, 0, cCmd);
+
+        auto *cDesc = new QTableWidgetItem(hasCfg ? cfg.desc : QString());
+        cDesc->setToolTip(cDesc->text().isEmpty()
+            ? "双击填写：这个工具是干什么用的（会当成工具描述发给 AI）。\n"
+              "留空 = 自动生成一句（插件名 + 指令 + 匹配方式）。"
+            : cDesc->text());
+        pluginToolTable->setItem(row, 1, cDesc);
+
+        auto *cPar = new QTableWidgetItem(hasCfg ? cfg.params.join('\n') : QString());
+        cPar->setToolTip(cPar->text().isEmpty()
+            ? "双击填写：一行一个参数（顺序就是 p1、p2…），行首加 * 表示必填。\n"
+              "回车换行，点别处保存。\n"
+              "留空 = 给 AI 一个可留空的 p1。"
+            : cPar->text());
+        pluginToolTable->setItem(row, 2, cPar);
+
+        m_pluginToolRows.append({ r.t, r.key, r.view });
+    }
+    不加载 = 0;
+}
+
+void AiWidget::onPluginToolItemChanged(QTableWidgetItem *item)
+{
+    if (不加载 || !item) return;
+    const int row = item->row();
+    if (row < 0 || row >= m_pluginToolRows.size()) return;
+    if (m_pluginToolCurPlugin < 0 || m_pluginToolCurPlugin >= m_pluginList.size()) return;
+
+    const PluginInfo &p = m_pluginList.at(m_pluginToolCurPlugin);
+    const QString identity = ptIdentity(p.id, p.name);
+    const PluginToolRow &r = m_pluginToolRows.at(row);
+
+    const QTableWidgetItem *chk = pluginToolTable->item(row, 0);
+    const bool wantOn = chk && chk->checkState() == Qt::Checked;
+
+    QMutexLocker lk(&m_pluginToolsMutex);
+    PluginToolItem *cfg = findPluginToolItem(identity, r.matchType, r.key);
+    if (!cfg) {
+        // 先填说明再勾也允许：这里照样建一条（enabled 跟着当前勾选状态走）
+        PluginToolItem ni;
+        ni.pluginId   = p.id;
+        ni.pluginName = p.name;
+        ni.matchType  = r.matchType;
+        ni.key        = r.key;
+        ni.toolName   = pluginToolMakeName(identity, r.matchType, r.key);
+        ni.enabled    = wantOn;
+        m_pluginTools.append(ni);
+        cfg = &m_pluginTools.last();
+    }
+
+    switch (item->column()) {
+    case 0: cfg->enabled = wantOn; break;          // 勾选框和指令名在同一格
+    case 1: cfg->desc    = item->text(); break;
+    case 2: {
+        cfg->params.clear();
+        const QStringList lines = item->text().split('\n');
+        for (const QString &line : lines) {
+            const QString s = line.trimmed();
+            if (!s.isEmpty()) cfg->params.append(s);
+        }
+        break;
+    }
+    default: break;
+    }
+    lk.unlock();
+
+    rebuildPluginToolIndex();
+    savePluginTools();
+}
+
+void AiWidget::onPluginToolWaitChanged(int secs)
+{
+    if (不加载) return;
+    m_pluginToolWaitMs = qBound(1, secs, 3) * 1000;
+    savePluginTools();
+}
+
+QJsonObject AiWidget::pluginToolFunctionJson(const PluginToolItem &it) const
+{
+    QJsonObject functionObj;
+    functionObj["name"] = it.toolName;
+
+    QString desc = it.desc.trimmed();
+    if (desc.isEmpty()) {
+        // 插件没给说明 → 按「插件 + 指令 + 匹配方式」自动编一句，至少让 AI 知道这是干什么的
+        desc = QString("调用插件「%1」的指令「%2」（%3）。"
+                       "插件想把内容发到聊天里时会被拦下来转交给你（不会自动发出），"
+                       "拿到的就是它原本要说的话 —— 要不要发、怎么发由你决定。")
+                   .arg(it.pluginName, it.key, pluginToolMatchName(it.matchType));
+    }
+    // 不管说明是不是用户自己写的，都要告诉 AI：媒体标签是可直接发送的（回复链路会解析）
+    desc += QStringLiteral("\n（返回里如果带 [image,path=…] / [video,…] / [audio,…] / [file,…] 这类标签，"
+                           "那是可以直接发送的媒体内容，想发就原样放进你的回复。）");
+    functionObj["description"] = desc;
+
+    QJsonObject parameters;
+    parameters["type"] = "object";
+    QJsonObject properties;
+    QJsonArray required;
+
+    if (it.params.isEmpty()) {
+        // 默认给一个可留空的参数：指令后面要补东西时 AI 就填这里，插件按空格切。
+        QJsonObject p1;
+        p1["type"] = "string";
+        p1["description"] = "指令后面的参数（可留空；多个参数用空格分隔）";
+        properties["p1"] = p1;
+    } else {
+        int n = 0;
+        for (const QString &raw : it.params) {
+            QString d = raw.trimmed();
+            if (d.isEmpty()) continue;
+            const bool must = d.startsWith('*');     // 行首 * = 必填
+            if (must) d = d.mid(1).trimmed();
+            const QString key = QString("p%1").arg(++n);
+            QJsonObject pd;
+            pd["type"] = "string";
+            pd["description"] = d;
+            properties[key] = pd;
+            if (must) required.append(key);
+        }
+        if (n == 0) {    // 全是空行 → 退回默认那个可选参数
+            QJsonObject p1;
+            p1["type"] = "string";
+            p1["description"] = "指令后面的参数（可留空；多个参数用空格分隔）";
+            properties["p1"] = p1;
+        }
+    }
+
+    parameters["properties"] = properties;
+    if (!required.isEmpty()) parameters["required"] = required;
+    functionObj["parameters"] = parameters;
+
+    QJsonObject toolObj;
+    toolObj["type"] = "function";
+    toolObj["function"] = functionObj;
+    return toolObj;
+}
+
+// p1..p8 按顺序拼成一行（插件按空格切参数，和用户手打一致）。同步/回调两版共用。
+QString AiWidget::ptJoinArgs(const QString &argsJson)
+{
+    QStringList parts;
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(argsJson.toUtf8(), &err);
+    if (err.error == QJsonParseError::NoError && doc.isObject()) {
+        const QJsonObject o = doc.object();
+        for (int i = 1; i <= 8; ++i) {
+            const QJsonValue v = o.value(QString("p%1").arg(i));
+            QString s = v.isString() ? v.toString()
+                      : v.isDouble() ? QString::number(v.toDouble()) : QString();
+            s = s.trimmed();
+            if (!s.isEmpty()) parts.append(s);
+        }
+    }
+    return parts.join(QLatin1Char(' '));
+}
+
+// flushPendingMessages 拼的 ev 里 user 可能等于 groupId（群不开「群个人」时 openid 就是群号），
+// 插件要的是真正的发送人 → 按 msgid 里的日志下标把那条入站消息读回来补上。
+void AiWidget::ptFillSender(MessageEvent &ev)
+{
+    const int baseSeq = splitWrappedMsgId(ev.msgId).first;
+    if (baseSeq <= 0) return;
+    LogDB *ldb = g_logdb[mapTypeToTabIndex(ev.type)].get();
+    if (!ldb) return;
+    Message m;
+    if (ldb->readLog(QString::number(ev.appid), ev.groupId, static_cast<uint64_t>(baseSeq), m)) {
+        if (!m.user.isEmpty()) ev.user = m.user;
+        if (!m.name.isEmpty()) ev.nickname = m.name;
+    }
+}
+
+QString AiWidget::runPluginTool(const PluginToolItem &it, const QString &argsJson, const MessageEvent &evIn)
+{
+    // ---- 1) 参数 + 事件副本（补真实发送人）----
+    const QString argsText = ptJoinArgs(argsJson);
+    MessageEvent ev = evIn;
+    ptFillSender(ev);
+
+    // ---- 3) 设一道 gate：插件接下来要发的话会被扣在这里，一个字都不会真发出去 ----
+    //    msgid 打上 "|-<token>|" 前缀（真实 msgid 原样保留在第二个 '|' 后面）：
+    //    插件把 msgid 原样传回来时，发送入口一眼就能认出「这是工具调用触发的」并扣下。
+    //    ⚠ 插件主动推送（msgid 为空）拦不到 —— 那种不管它，照常发。
+    if (!pluginPage) return QStringLiteral("插件管理器还没初始化，无法调用插件指令。");
+    const int gate = toolGateBegin();
+    ev.msgId = toolGateMsgId(gate, ev.msgId);
+
+    // ---- 4) 调插件（不经关键词匹配，只跑这一条）----
+    QString out, errMsg;
+    const int rc = pluginPage->invokeToolCommand(it.pluginId, it.pluginName,
+                                                it.matchType, it.key, argsText,
+                                                ev, out, errMsg);
+
+    if (rc < 0) {
+        toolGateEnd(gate);
+        return QString("调用插件指令失败：%1").arg(errMsg);
+    }
+
+    // ---- 5) 取被扣下的消息 ----
+    //   · 同步有返回值（Python return / 原生库 onMessagev3 返回值）→ 只顺手收一下已经拦到的
+    //     （最多 300ms，静默 150ms 就走），避免为了一句额外的补充白等；
+    //   · 没有返回值（JS / 32 位易语言 / 纯发送型插件）→ 等它把话说完（首条后静默 600ms），
+    //     ⚠ 这段是**阻塞**当前线程的，所以硬上限 3 秒（再久也不等，缺的内容让 AI 自己说明）。
+    const int waitMs = qBound(300, m_pluginToolWaitMs, 3000);
+    QStringList got = (rc == 0) ? toolGateWait(gate, 300, 150)
+                                : toolGateWait(gate, waitMs, 600);
+    toolGateEnd(gate);
+
+    // ---- 6) 合并：同步返回值在前，被扣下的消息按顺序补在后面（去重）----
+    //    ⚠ 富媒体标签（[image,path=…] / [video,…] / [audio,…] / [file,…]）**原样保留**：
+    //       AI 的回复走 send_messagesAsync → processImageTagsAsync，带标签就能真发出去。
+    QStringList lines;
+    if (rc == 0) {
+        const QString v = out.trimmed();
+        if (!v.isEmpty()) lines.append(v);
+    }
+    for (const QString &t : std::as_const(got)) {
+        const QString v = t.trimmed();
+        if (v.isEmpty() || lines.contains(v)) continue;
+        lines.append(v);
+    }
+    if (!lines.isEmpty())
+        return lines.join(QLatin1Char('\n'));
+
+    // ---- 7) 还是什么都没有 ----
+    if (rc > 0)
+        return QString("插件「%1」已执行指令「%2」，但没有输出任何内容"
+                       "（既没有返回值，也没有发消息）。")
+                   .arg(it.pluginName, it.key);
+    return QString("插件「%1」执行了指令「%2」，返回的是空文本。").arg(it.pluginName, it.key);
 }
 
 QString AiWidget::generateHash(const QString &url)
@@ -2363,7 +2989,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                 setting.replace("{appid}",info->appid);
                 setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
                 if(bot_admin)
-                    setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
+                    setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id\n当你看见有这段文本时代表你有管理员权限");
                 break;
             }else if(type ==0 || type ==1)
             {
@@ -2376,7 +3002,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
                     setting.replace("{角色设定}",sd.content);
                     setting.replace("【表情包】",ai_bqbgl->get_bqb(info->appid));
                     if(bot_admin)
-                        setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id");
+                        setting.replace("【管理员权限】","撤回别人信息<del:N> N代表数字seq 和回复同一个seqid 看见打广告时处理\n禁言别人<mt:id,时间(秒)> id用<@id>那种短id\n当你看见有这段文本时代表你有管理员权限");
                     break;
                 }
 

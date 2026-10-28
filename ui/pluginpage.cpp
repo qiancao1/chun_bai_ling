@@ -1927,6 +1927,223 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 }
 
 
+// ==================== AI 工具：直接调用某个插件的一条注册指令 ====================
+// 入口在 AiWidget::runPluginTool（ai/aiwidget.cpp），由 handleAiResponse 的工具调用分支触发。
+// 这里只负责「把这条指令真跑一遍」，返回值语义见 pluginpage.h 的注释。
+
+// 给插件用的「消息帧」：正常入站链路直接复用原始帧（字段最全）；
+// AI 工具调用时手边只有一个 MessageEvent（raw 是空的）→ 按入站帧的结构补一份最小可用的。
+static QString buildToolFrame(const MessageEvent &ev)
+{
+    if (!ev.raw.isEmpty()) return ev.raw;
+
+    QJsonObject d;
+    d["id"]      = ev.msgId;          // 已经是包装后的 msgid（|-token|真实msgid），插件原样带回去就能被捕获
+    d["content"] = ev.msg;
+    if (ev.type == 0 || ev.type == 1) d["group_openid"] = ev.groupId;
+    else                              d["openid"]       = ev.groupId;
+
+    QJsonObject author;
+    author["id"]           = ev.user;
+    author["union_openid"] = ev.user;
+    author["username"]     = ev.nickname;
+    author["member_role"]  = (ev.member_role == 3) ? "owner"
+                           : (ev.member_role == 4) ? "admin" : "member";
+    d["author"]    = author;
+    d["timestamp"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+
+    QJsonObject p;
+    p["t"]    = ev.msgType.isEmpty()
+                ? (ev.type == 0 ? "GROUP_AT_MESSAGE_CREATE"
+                                : (ev.type == 2 ? "C2C_MESSAGE_CREATE" : "AT_MESSAGE_CREATE"))
+                : ev.msgType;
+    p["d"]           = d;
+    p["appid"]       = ev.appid;
+    p["user_id"]     = ev.user_int;
+    p["type"]        = ev.type;
+    p["member_role"] = ev.member_role;
+    p["at_you"]      = ev.at_you;
+    p["username"]    = ev.nickname;
+    return QString::fromUtf8(QJsonDocument(p).toJson(QJsonDocument::Compact));
+}
+
+QString PluginPage::effectiveCommandWord(const QString &pluginId, const QString &pluginName,
+                                        int matchType, const QString &key, int appid) const
+{
+    const int index = findPluginIndexByIdentity(pluginId, pluginName);
+    if (index < 0 || index >= m_pluginList.size()) return key;
+
+    const PluginInfo &p = m_pluginList.at(index);
+    const QString cfgKey = p.id.isEmpty() ? p.name : p.id;
+
+    QString newKey;   // 默认档的改名（空 = 没改）
+    if (p.type == 0) {
+        for (const Rule &r : p.python.rules)
+            if (r.key == key && static_cast<int>(r.type) == matchType) { newKey = r.newKey; break; }
+    } else if (p.type == 3) {
+        for (const Rule_js &r : p.js.rules)
+            if (r.key == key && static_cast<int>(r.type) == matchType) { newKey = r.newKey; break; }
+    } else {
+        for (const Rule_Dll &r : p.DLL.rules)
+            if (r.key == key && static_cast<int>(r.type) == matchType) { newKey = r.newKey; break; }
+    }
+    // 再叠一层「按机器人」的覆盖（改名可以按机器人分开配）
+    int role = kRuleRoleAll;
+    botRuleOverrideOf(appid, cfgKey, matchType, key, role, newKey);
+    return ruleMatchKey(key, newKey);
+}
+
+int PluginPage::invokeToolCommand(const QString &pluginId, const QString &pluginName,
+                                  int matchType, const QString &key, const QString &argsText,
+                                  MessageEvent &ev, QString &outText, QString &err)
+{
+    outText.clear();
+    err.clear();
+
+    const int index = findPluginIndexByIdentity(pluginId, pluginName);
+    if (index < 0 || index >= m_pluginList.size()) { err = "插件未加载（可能已卸载或被重载）"; return -1; }
+    PluginInfo &p = m_pluginList[index];
+    if (!p.enabled)             { err = "插件已停用"; return -1; }
+    if (p.appid.contains(ev.appid)) { err = "当前机器人在该插件里被禁用"; return -1; }
+
+    // 正文 = 生效命令词 + 参数，和用户手打的一模一样：
+    // 插件拿 cmd（第 2/3 个参数）切正文就能取到参数，不用为 AI 调用另开一套。
+    const QString effCmd = effectiveCommandWord(pluginId, pluginName, matchType, key, ev.appid);
+
+    // 参数里可能已经把命令词带上了（AI 照用户口气写「唱歌 晴天」，或者干脆整句丢进 p1）：
+    // 直接拼会变成「唱歌 唱歌 晴天」→ 先剥掉开头的命令词，再按需补一次。
+    QString body = argsText.trimmed();
+    auto stripCmd = [&body](const QString &w) -> bool {
+        if (w.isEmpty()) return false;
+        if (body.compare(w, Qt::CaseInsensitive) == 0) { body.clear(); return true; }
+        if (body.startsWith(w + QLatin1Char(' '), Qt::CaseInsensitive)) {
+            body = body.mid(w.size() + 1).trimmed();
+            return true;
+        }
+        // 中文常不打空格（「唱歌晴天」）：只有命令词 >= 2 字才这么剥，
+        // 免得单字命令词（如「点」）把「点歌 晴天」吃成「歌 晴天」。
+        if (w.size() >= 2 && body.startsWith(w, Qt::CaseInsensitive)) {
+            body = body.mid(w.size()).trimmed();
+            return true;
+        }
+        return false;
+    };
+    if (!stripCmd(effCmd) && effCmd != key.trimmed())
+        stripCmd(key.trimmed());        // 插件改过名时，AI 也可能用原始指令名
+
+    ev.msg = body.isEmpty() ? effCmd : (effCmd + QLatin1Char(' ') + body);
+
+    // ---------- Python ----------
+    if (p.type == 0) {
+        int hit = -1;
+        for (int i = 0; i < p.python.rules.size(); ++i) {
+            const Rule &r = p.python.rules.at(i);
+            if (r.key == key && static_cast<int>(r.type) == matchType) { hit = i; break; }
+        }
+        if (hit < 0) { err = "插件里找不到这条指令（插件可能已更新，请重新勾选）"; return -1; }
+        const Rule &rule = p.python.rules.at(hit);
+        if (rule.role <= kRuleRoleOff) { err = "这条指令在框架里被设为禁用"; return -1; }
+        if (!rule.function)            { err = "插件函数未就绪"; return -1; }
+
+        try {
+            py::gil_scoped_acquire gil;
+            py::object ret = rule.wantsCmd ? rule.function(ev, effCmd.toStdString())
+                                           : rule.function(ev);
+            // 协程：异步的自己跑，没有同步返回值 → 交给回包捕获
+            if (!ret.is_none() && !m_asyncio_mod.is_none() &&
+                m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
+                if (!m_run_coro_func.is_none() && !m_loop.is_none())
+                    m_run_coro_func(ret, m_loop);
+                return 1;
+            }
+            if (!ret.is_none() && py::isinstance<py::str>(ret)) {
+                outText = QString::fromStdString(py::str(ret).cast<std::string>());
+            }
+        } catch (const std::exception &e) {
+            err = QString("[Python] ") + QString::fromUtf8(e.what());
+            return -1;
+        }
+        return outText.isEmpty() ? 1 : 0;
+    }
+
+    // ---------- 原生库 / 32 位易语言（规则表同构） ----------
+    if (p.type == 1 || p.type == 2) {
+        int hit = -1;
+        for (int i = 0; i < p.DLL.rules.size(); ++i) {
+            const Rule_Dll &r = p.DLL.rules.at(i);
+            if (r.key == key && static_cast<int>(r.type) == matchType) { hit = i; break; }
+        }
+        if (hit < 0) { err = "插件里找不到这条指令（插件可能已更新，请重新勾选）"; return -1; }
+        const Rule_Dll &rule = p.DLL.rules.at(hit);
+        if (rule.role <= kRuleRoleOff) { err = "这条指令在框架里被设为禁用"; return -1; }
+
+        const QString frame = buildToolFrame(ev);
+        const QByteArray frameUtf8 = frame.toUtf8();
+        const QByteArray effCmdUtf8 = effCmd.toUtf8();   // 显式存活到调用结束
+
+        if (p.type == 1) {
+            if (p.DLL.onMessage3) {
+                const char *ret = p.DLL.onMessage3(frameUtf8.constData(), rule.fun, effCmdUtf8.constData());
+                if (ret && *ret) outText = QString::fromUtf8(ret);   // 插件持有这块内存，框架只读
+                return outText.isEmpty() ? 1 : 0;
+            }
+            if (p.DLL.onMessage2) { p.DLL.onMessage2(frameUtf8.constData(), rule.fun); return 1; }
+            if (p.DLL.onMessage)  { p.DLL.onMessage(frameUtf8.data());                return 1; }
+            err = "插件没有可调用的消息入口";
+            return -1;
+        }
+
+        // 32 位：和 dispatch_message 一样，把「命中项」并进帧顶层 plugins[] 投过去
+#ifdef _WIN32
+        if (!bridge) { err = "32 位模块未启动（miaomiao32 不在运行）"; return -1; }
+        QJsonObject doc = QJsonDocument::fromJson(frameUtf8.constData()).object();
+        if (doc.isEmpty()) { err = "构造 32 位消息帧失败"; return -1; }
+        QJsonObject one;
+        one["uuid"]  = p.uuid;
+        one["fun"]   = double(rule.fun);
+        one["fun_s"] = QString::number(rule.fun);
+        one["cmd"]   = effCmd;
+        one["text"]  = ev.msg;
+        QJsonArray arr;
+        arr.append(one);
+        doc["plugins"] = arr;
+        bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData());
+        return 1;
+#else
+        err = "当前平台不支持 32 位插件";
+        return -1;
+#endif
+    }
+
+    // ---------- JS ----------
+    if (p.type == 3) {
+        QString jsFun;
+        for (const Rule_js &r : p.js.rules) {
+            if (r.key == key && static_cast<int>(r.type) == matchType) { jsFun = r.fun; break; }
+        }
+        if (!jsFun.isEmpty()) {
+            // 老式 JS 插件（没有规则表）允许 rules 为空；那种情况下不带 funs，由插件自己判断
+        } else if (!p.js.rules.isEmpty()) {
+            err = "插件里找不到这条指令（插件可能已更新，请重新勾选）";
+            return -1;
+        }
+
+        QJsonObject item;
+        item["uuid"] = p.uuid;
+        QJsonArray funs, cmds;
+        if (!jsFun.isEmpty()) { funs.append(jsFun); cmds.append(effCmd); }
+        item["funs"] = funs;
+        item["cmds"] = cmds;
+        QJsonArray items;
+        items.append(item);
+        NodePluginManager::instance().postEventBatchAsync(items, "on_message", buildToolFrame(ev), QString());
+        return 1;
+    }
+
+    err = QString("不支持的插件类型：%1").arg(p.type);
+    return -1;
+}
+
 //选中列表
 void PluginPage::onPluginSelected(int row)
 {

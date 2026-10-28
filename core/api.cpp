@@ -593,6 +593,23 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
         // 把 [原指令]() 重定向成生效指令；addmsglog 再按 uuid 还原成 "[插件名|%1ms]" 显示。
         // 关键词匹配没有插件（uuid 不在插件表），照旧传展示标签，正文一字不动。
         const QString pn = (strcmp(uuid, g_keyuuid2) != 0) ? toQString(uuid) : pname;
+
+        // ── AI 插件工具调用：插件要「说」的话在这里被扣下，交给 AI 决定发不发 ──
+        // 调插件前框架把 msgid 打成了 "|-<token>|<真实msgid>"（见 core/global.h）；
+        // 这里认出 token 就直接当发送成功返回 —— 不 POST、不写日志，一个字都不出这台机器。
+        // token 查不到（插件延迟发送、工具调用早结束了）→ 照常发出去，不吞消息。
+        {
+            const int gateTok = toolGateTokenFromMsgId(msgid);
+            if (gateTok > 0 && toolGateIntercept(gateTok, text)) {
+                // ⚠ Python SDK 的 *_async 版在等回执：不回调的话协程会一直挂到超时。
+                //   这里给一个和真发送成功一样的 "{}"，让它以为发出去了。
+                if (!reqId.isEmpty())
+                    deliverPluginAsyncResult(reqId, QStringLiteral("{}"));
+                result = "{}";
+                break;
+            }
+        }
+
         if(toBool(_6))
         {
             if(reqId.isEmpty())

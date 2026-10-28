@@ -1,5 +1,6 @@
 #include "keywordmatchconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
+#include "multilinedelegate.h"   // 单元格多行编辑（回车换行）
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -247,6 +248,17 @@ void KeywordMatchConfigWidget::initTable() {
     ruleTable->setColumnWidth(4, 200);
     ruleTable->setColumnWidth(5, 200);
     ruleTable->verticalHeader()->setVisible(true);
+
+    // 关键词 / 回复内容 / 禁止词 / 参数不满足回复 → 多行编辑器（回车换行，Ctrl+回车确认）；
+    // 匹配类型（下拉）和参数数量（纯数字）保持默认单行。
+    auto *mlDelegate = new MultiLineDelegate(ruleTable);
+    for (int c = 0; c < headers.size(); ++c) {
+        if (c == COL_MATCH_TYPE || c == 4) continue;    // 4 = 参数数量
+        ruleTable->setItemDelegateForColumn(c, mlDelegate);
+    }
+    ruleTable->setWordWrap(true);
+    ruleTable->verticalHeader()->setMinimumSectionSize(30);          // 单行的行别再被压矮
+    ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 }
 
 

@@ -19,6 +19,8 @@
  */
 
 #include "global.h"
+#include <QWaitCondition>   // AI 插件工具调用的发送拦截：等被扣下的消息（见 global.h）
+#include <QSharedPointer>   // gate 表存 shared_ptr（QWaitCondition 不可拷贝）
 #include <QMessageBox>
 #include <qtcpserver.h>
 #include <QNetworkReply>
@@ -76,6 +78,116 @@ int mapTypeToTabIndex(int type)
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 
+// ================== AI 插件工具调用：发送拦截（说明见 global.h） ==================
+// 一张进程内的「拦截表」：AI 调插件前登记一个 token 并把 msgid 打上标记，
+// 插件往出发消息时在发送入口被认出、扣在这里 —— 消息**不会**真的 POST 到平台。
+// 唤醒走 QWaitCondition（不是空转轮询）：拦截线程 append 完就 wakeAll。
+// ⚠ 存 QSharedPointer：QWaitCondition 不可拷贝，QHash::insert 要求 value 可拷贝。
+namespace {
+struct ToolGate {
+    QStringList    texts;         // 扣下来的所有正文（按到达顺序）
+    qint64         lastMs = 0;    // 最后一条到达的毫秒时间戳（判「静默」用）
+    QWaitCondition cond;          // 有新内容 / 要收工 → 唤醒等待方
+};
+QMutex                              g_toolGateMutex;
+QHash<int, QSharedPointer<ToolGate>> g_toolGates;
+int                                 g_toolGateNext = 0;   // 自增 token（永不复用）
+}
+
+int toolGateBegin()
+{
+    QMutexLocker lk(&g_toolGateMutex);
+    const int token = ++g_toolGateNext;
+    g_toolGates.insert(token, QSharedPointer<ToolGate>::create());
+    return token;
+}
+
+void toolGateEnd(int token)
+{
+    if (token <= 0) return;
+    QMutexLocker lk(&g_toolGateMutex);
+    auto it = g_toolGates.find(token);
+    if (it != g_toolGates.end()) {
+        it.value()->cond.wakeAll();   // 叫醒可能还在等的线程（它会看到表里没自己了 → 直接返回）
+        g_toolGates.erase(it);
+    }
+}
+
+QString toolGateMsgId(int token, const QString &realMsgId)
+{
+    // 负数下标：splitWrappedMsgId 解析出来 < 0，所有「按 index 改日志」的分支都会跳过，
+    // 但真实 msgid 还在第二个 '|' 之后，插件想用照样能用。
+    if (token <= 0) return realMsgId;
+    return QStringLiteral("|-%1|%2").arg(token).arg(realMsgId);
+}
+
+int toolGateTokenFromMsgId(const QString &msgid)
+{
+    // 形如 "|-12|xxxx" → 12。不是这个格式一律 0（照常发送）。
+    if (!msgid.startsWith(QLatin1String("|-"))) return 0;
+    const int bar = msgid.indexOf(QLatin1Char('|'), 2);
+    if (bar <= 2) return 0;
+    bool ok = false;
+    const int token = msgid.mid(2, bar - 2).toInt(&ok);
+    return (ok && token > 0) ? token : 0;
+}
+
+// 发送入口调：命中就返回 true（调用方当发送成功，直接 return，不真发）。
+bool toolGateIntercept(int token, const QString &text)
+{
+    if (token <= 0 || text.isEmpty()) return false;
+    QMutexLocker lk(&g_toolGateMutex);
+    auto it = g_toolGates.find(token);
+    if (it == g_toolGates.end()) return false;   // token 早过期（插件延迟发）→ 让它正常发出去
+    ToolGate *g = it.value().data();
+    g->texts.append(text);
+    g->lastMs = QDateTime::currentMSecsSinceEpoch();
+    g->cond.wakeAll();                           // 叫醒在等的 AI 线程
+    return true;
+}
+
+// 等被扣下来的话：
+//   收到第一条之后不立刻走 —— 插件常常连发好几条（分段/多图），
+//   所以再等 quietMs 的「静默」才认为说完了；总时长上限 waitMs。
+QStringList toolGateWait(int token, int waitMs, int quietMs)
+{
+    if (token <= 0) return QStringList();
+    if (waitMs <= 0) waitMs = 10000;
+    if (quietMs < 0) quietMs = 0;
+
+    const qint64 start = QDateTime::currentMSecsSinceEpoch();
+    QMutexLocker lk(&g_toolGateMutex);
+
+    for (;;) {
+        // ⚠ 必须持一份 shared_ptr：等待期间 toolGateEnd 可能把条目 erase 掉，
+        //    只拿裸指针的话 QWaitCondition 会被析构，而我们正睡在它身上（未定义行为）。
+        QSharedPointer<ToolGate> g;
+        {
+            auto it = g_toolGates.find(token);
+            if (it == g_toolGates.end()) return QStringList();   // 被 toolGateEnd 收走了
+            g = it.value();
+        }
+
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const qint64 elapsed = now - start;
+
+        if (!g->texts.isEmpty() && now - g->lastMs >= quietMs)
+            return g->texts;                                  // 说完了（静默够久）
+        if (elapsed >= waitMs)
+            return g->texts;                                  // 到点（可能一条都没有）
+
+        // 睡到「下一个该判断的时刻」：静默窗口到期 or 总超时，取近的那个
+        qint64 slice = waitMs - elapsed;
+        if (!g->texts.isEmpty())
+            slice = qMin(slice, quietMs - (now - g->lastMs));
+        if (slice <= 0) slice = 1;
+        g->cond.wait(&g_toolGateMutex, static_cast<unsigned long>(slice));
+        if (框架退出) {                                       // 正在退出：别拖着线程池
+            auto it2 = g_toolGates.find(token);
+            return (it2 == g_toolGates.end()) ? QStringList() : it2.value()->texts;
+        }
+    }
+}
 
 // 被动回复（带 msgid）全局限速：所有调用线程共用一个「时间片队列」，
 // 所以 plts 的好友线程 + 群线程、schedule 的多账号任务加起来也是约 perSec 条/秒。

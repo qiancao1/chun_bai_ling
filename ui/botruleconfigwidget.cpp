@@ -2,6 +2,7 @@
 
 #include "botruleconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
+#include "multilinedelegate.h"   // 单元格多行编辑（回车换行）
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -183,6 +184,17 @@ void BotRuleConfigWidget::initTable()
 
     // 让匹配类型列不可直接编辑（实际使用 cell widget 覆盖）
     ruleTable->setItemDelegateForColumn(COL_MATCH_TYPE, nullptr);
+
+    // 备注 / 禁止词 / 按钮JSON / 候选词 都用多行编辑器（回车换行，Ctrl+回车确认）；
+    // 匹配类型列是下拉（cell widget），跳过。
+    auto *mlDelegate = new MultiLineDelegate(ruleTable);
+    for (int c = 0; c < headers.size(); ++c) {
+        if (c == COL_MATCH_TYPE) continue;
+        ruleTable->setItemDelegateForColumn(c, mlDelegate);
+    }
+    ruleTable->setWordWrap(true);                                        // 不换行显示 = 多行也看不全
+    ruleTable->verticalHeader()->setMinimumSectionSize(30);              // 单行的行别再被压矮
+    ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 }
 
 

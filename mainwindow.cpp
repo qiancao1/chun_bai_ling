@@ -77,15 +77,17 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.4.8.151"
-#define APP_BUILD_NUMBER 151
+#define APP_VERSION_STR "v1.4.8.156"
+#define APP_BUILD_NUMBER 156
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.4.8.153 (2026-10-26)
+## v1.4.8.156 (2026-10-26)
 - 优化 ai拟人 提示词 让他不再强制性格
 - 增加 图片不存在替补图片
 - 优化 内置ai 现在如果有管理员权限 可以撤回消息 禁言某人
+- 增加 新的UI界面 以及ai可以调插件内容了
+- 优化 问答 按钮 等 表格可以 多行输入了
 
 ## v1.4.7.151 (2026-10-26)
 - 优化 耗时统计

@@ -1,5 +1,6 @@
 #include "textreplaceconfigwidget.h"
 #include "global.h"  // 提供 extern QList<AccountInfo> m_accounts;
+#include "multilinedelegate.h"   // 单元格多行编辑（回车换行）
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -176,6 +177,14 @@ void TextReplaceConfigWidget::initTable()
     ruleTable->setHorizontalHeaderLabels(headers);
     ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     ruleTable->verticalHeader()->setVisible(true);
+
+    // 四列都是自由文本，全部给多行编辑器（回车换行，Ctrl+回车确认）
+    auto *mlDelegate = new MultiLineDelegate(ruleTable);
+    for (int c = 0; c < headers.size(); ++c)
+        ruleTable->setItemDelegateForColumn(c, mlDelegate);
+    ruleTable->setWordWrap(true);
+    ruleTable->verticalHeader()->setMinimumSectionSize(30);          // 单行的行别再被压矮
+    ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 }
 
 

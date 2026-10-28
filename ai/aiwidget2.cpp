@@ -387,24 +387,27 @@ static QString normalizeInlineB64Images(const QString &content)
     return out;
 }
 
-// 处理一次 AI 响应：追加上下文 + 执行工具调用（同步 / 异步链路共用）
-AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw)
+// 一次 AI 响应的前半段（同步 / 异步两条链路共用）：
+//   解析 choices → 追加 assistant 消息进上下文 → 把这一轮要说的正文发出去（异步串行，不阻塞）。
+// 返回 false = 已经彻底结束（ret 里填好了失败原因），调用方直接返回/回调即可。
+bool AiWidget::beginAiStep(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw,
+                           AiStepResult &ret, QJsonArray &toolCalls, QString &text)
 {
-    AiStepResult ret;
+    ret = AiStepResult();
 
     QJsonArray arr = obj["choices"].toArray();
     if (arr.isEmpty()) {
         ret.finished = true;
         ret.failed   = true;
         ret.err      = "返回的 choices 为空 请确认接口是否正确\n接口返回:\n"+QJsonDocument(obj).toJson().left(200);
-        return ret;
+        return false;
     }
     QJsonObject obj2 = arr.at(0).toObject();
     QJsonObject obj3 = obj2["message"].toObject();
 
     const QJsonArray arr2 = obj3["tool_calls"].toArray();
     obj3.remove("reasoning_content");
-    QString text  = normalizeInlineB64Images(obj3["content"].toString());
+    text = normalizeInlineB64Images(obj3["content"].toString());
 
     obj3["content"] = text;
 
@@ -416,53 +419,116 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
         sxw["messages"] = msgs;
     }
 
-    bool ok = false;
-    if (!arr2.isEmpty()) {
-        //不传递appid 也不会传递 函数所以这里是调不到的
-        if (!text.isEmpty() && m_botClients.contains(ev.appid)) {
-            QQBotClient *bot = m_botClients.value(ev.appid);
+    toolCalls = arr2;
+    if (arr2.isEmpty()) return true;   // 没有工具调用：调用方把 text 当结果就完事
 
-            if (bot) {
-                // 异步串行发送：上一条的回调回来了再发下一条，全程不阻塞当前线程
-                // （原来是 send_msgAsync + doWork(1000) 同步等）。bot 用 QPointer 兜底：
-                // 回调要等一个网络往返，期间机器人可能被删/切换，裸指针会变野指针。
-                QPointer<QQBotClient> botSafe(bot);
-                auto texts = std::make_shared<QStringList>();
-                if (bot->m_info->niren) {
-                    for (const QString &s : text.split("|#|#|"))
-                        if (!s.isEmpty()) texts->append(s);
-                } else if (!text.isEmpty()) {
-                    texts->append(text);
-                }
+    // 有工具调用 → 先把这一轮的正文发出去。
+    // 异步串行发送：上一条的回调回来了再发下一条，全程不阻塞当前线程
+    // （原来是 send_msgAsync + doWork(1000) 同步等）。bot 用 QPointer 兜底：
+    // 回调要等一个网络往返，期间机器人可能被删/切换，裸指针会变野指针。
+    if (!text.isEmpty() && m_botClients.contains(ev.appid)) {
+        QQBotClient *bot = m_botClients.value(ev.appid);
 
-                auto sendStep = std::make_shared<AsyncStep>();
-                sendStep->fn = [botSafe, ev, texts](const AsyncStepPtr &self, int i, int) {
-                    if (!botSafe) return;              // 机器人已失效，整链结束
-                    if (i >= texts->size()) return;    // 全部发完
-                    QString t = texts->at(i);
-                    botSafe->send_msgAsync(ev.type, ev.groupId, "[AI系统]", t, ev.msgId,
-                                           false, false, 0, false,
-                        [self, i](const QString &, QNetworkReply::NetworkError) {
-                            self->fn(self, i + 1, 0);  // 无论成败都继续下一条（与旧行为一致）
-                        });
-                };
-                sendStep->fn(sendStep, 0, 0);
-                text = QString();
+        if (bot) {
+            QPointer<QQBotClient> botSafe(bot);
+            auto texts = std::make_shared<QStringList>();
+            if (bot->m_info->niren) {
+                for (const QString &s : text.split("|#|#|"))
+                    if (!s.isEmpty()) texts->append(s);
+            } else if (!text.isEmpty()) {
+                texts->append(text);
             }
+
+            auto sendStep = std::make_shared<AsyncStep>();
+            sendStep->fn = [botSafe, ev, texts](const AsyncStepPtr &self, int i, int) {
+                if (!botSafe) return;              // 机器人已失效，整链结束
+                if (i >= texts->size()) return;    // 全部发完
+                QString t = texts->at(i);
+                botSafe->send_msgAsync(ev.type, ev.groupId, "[AI系统]", t, ev.msgId,
+                                       false, false, 0, false,
+                    [self, i](const QString &, QNetworkReply::NetworkError) {
+                        self->fn(self, i + 1, 0);  // 无论成败都继续下一条（与旧行为一致）
+                    });
+            };
+            sendStep->fn(sendStep, 0, 0);
+            text = QString();
         }
+    }
+    return true;
+}
 
-        for (const QJsonValue &value : arr2) {
-            QJsonObject a = value.toObject();
-            QJsonObject function = a["function"].toObject();
-            QString tool_name = function["name"].toString();
-            QString args = function["arguments"].toString();
-            QString callID = a["id"].toString();
+// 工具循环（同步 / 异步共用）：一条条跑 tool_calls，跑完再 done。
+//   插件工具 → 交给 inv（同步链路=阻塞等，异步链路=回调等），结果回来接着跑下一条；
+//   内置函数 → 就地同步处理（本来就是同步的）。
+// 收尾：调成功过工具 → done(finished=false)（带新上下文再发一轮）；
+//       一个都没调成 → done(finished=true, text=textIn)。
+void AiWidget::runToolLoop(const QJsonArray &calls, const MessageEvent &ev,
+                           std::shared_ptr<QJsonObject> sxw, const QString &textIn,
+                           PluginToolInvoker inv, std::function<void(AiStepResult)> done)
+{
+    // 用 shared_ptr 持有上下文：递归续跑时只有这里一直抓着它，避免被提前释放。
+    auto okFlag = std::make_shared<bool>(false);
 
-            QString data = 内置函数处理(ev,tool_name,args,sxw["model"].toString());
+    auto step = std::make_shared<AsyncStep>();
+    step->fn = [this, calls, ev, sxw, textIn, inv, done, okFlag]
+               (const AsyncStepPtr &self, int i, int) {
+        QJsonObject &ctx = *sxw;
+
+        for (; i < calls.size(); ++i) {
+            const QJsonObject a = calls.at(i).toObject();
+            const QJsonObject function = a["function"].toObject();
+            const QString tool_name = function["name"].toString();
+            const QString args      = function["arguments"].toString();
+            const QString callID    = a["id"].toString();
+
+            // ---- 插件工具（「插件工具」页里勾选的插件指令）----
+            // 名字对上了就交给 inv 去调那个插件，不走下面的内置函数 / 自写 Python 函数表；
+            // 返回给 AI 的文本有三种来源：插件同步返回值 / 被拦截到的它自己发的消息 / 错误说明。
+            {
+                PluginToolItem ptItem;
+                bool isPluginTool = false;
+                {
+                    QMutexLocker lk(&m_pluginToolsMutex);
+                    const auto pit = m_pluginToolByName.constFind(tool_name);
+                    if (pit != m_pluginToolByName.constEnd()) {
+                        const int ti = pit.value();
+                        if (ti >= 0 && ti < m_pluginTools.size()) {
+                            ptItem = m_pluginTools.at(ti);
+                            isPluginTool = true;
+                        }
+                    }
+                }
+                if (isPluginTool && inv) {
+                    // 结果回来（同步立刻 / 异步稍后）→ 追加 tool 消息 → 继续下一个 tool_call
+                    inv(ptItem, args, ev,
+                        [this, sxw, self, i, tool_name, callID, args, okFlag, ptItem, ev]
+                        (const QString &data) {
+                            QJsonObject &ctx = *sxw;
+                            AppendEventLog(QString("[%1]Ai调用插件工具:%2(%3)\n参数：%4\n\n结果：%5")
+                                               .arg(ev.appid)
+                                               .arg(tool_name, ptItem.key, args, data));
+                            if (ctx.contains("messages") && ctx["messages"].isArray()) {
+                                QJsonArray msgs = ctx["messages"].toArray();
+                                QJsonObject toolMsg;
+                                toolMsg["role"] = "tool";
+                                toolMsg["content"] = data;
+                                toolMsg["tool_call_id"] = callID;
+                                toolMsg["name"] = tool_name;
+                                msgs.append(toolMsg);
+                                ctx["messages"] = msgs;
+                            }
+                            *okFlag = true;
+                            self->fn(self, i + 1, 0);
+                        });
+                    return;   // 挂起：异步时线程立刻回去，同步时 cb 已经在上面的调用里跑完了
+                }
+            }
+
+            QString data = 内置函数处理(ev,tool_name,args,ctx["model"].toString());
             if(!data.isEmpty())
             {
                 AppendEventLog(QString("[%1]执行函数:%2\n参数：%3\n\n结果：%4").arg(ev.appid).arg(tool_name,args,data));
-                QJsonArray msgs = sxw["messages"].toArray();
+                QJsonArray msgs = ctx["messages"].toArray();
                 QJsonObject toolMsg;
                 toolMsg["role"] = "tool";
                 toolMsg["content"] = data;
@@ -473,7 +539,7 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
                     toolMsg["pycode"]=function;
                 }
                 msgs.append(toolMsg);
-                sxw["messages"] = msgs;
+                ctx["messages"] = msgs;
                 if (tool_name == "run_python" && data.contains("[待确认]"))
                 {
                     int index = accinfo(ev.appid);
@@ -490,46 +556,82 @@ AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const 
                         keyboard = "\n未设置管理员，请在框架设置管理员后再试。本次审核无效，Python代码不会执行。";
                     }
 
-                    ret.finished = true;
-                    ret.text = data + keyboard;  // 审核信息 + 键盘
-                    return ret;
+                    AiStepResult r;
+                    r.finished = true;
+                    r.text = data + keyboard;  // 审核信息 + 键盘
+                    done(r);
+                    return;
                 }
-                ok = true;
+                *okFlag = true;
             }else{
                 for (const auto &fun : std::as_const(functionList)) {
                     if (fun.funcName != tool_name) continue;
-                    data = _tools(fun.code, args, ev,sxw["model"].toString());
+                    data = _tools(fun.code, args, ev,ctx["model"].toString());
 
                     if (data.isEmpty()) {
                         data = "函数返回空";
                     }
                     AppendEventLog(QString("[%1]Ai执行函数:%2:结果：%3").arg(ev.appid).arg(tool_name,data));
-                    if (sxw.contains("messages") && sxw["messages"].isArray()) {
-                        QJsonArray msgs = sxw["messages"].toArray();
+                    if (ctx.contains("messages") && ctx["messages"].isArray()) {
+                        QJsonArray msgs = ctx["messages"].toArray();
                         QJsonObject toolMsg;
                         toolMsg["role"] = "tool";
                         toolMsg["content"] = data;
                         toolMsg["tool_call_id"] = callID;
                         toolMsg["name"] = tool_name;
                         msgs.append(toolMsg);
-                        sxw["messages"] = msgs;
+                        ctx["messages"] = msgs;
                     }
                     if(fun.interrupt) {
-                        ret.finished = true;
-                        ret.text = data;
-                        return ret;
+                        AiStepResult r;
+                        r.finished = true;
+                        r.text = data;
+                        done(r);
+                        return;
                     }
-                    ok = true;
+                    *okFlag = true;
                     break;
                 }
             }
         }
-        if (ok) return ret;   // 调完工具，带着新上下文再发一轮
+
+        AiStepResult r;
+        if (*okFlag) {
+            done(r);                 // finished=false → 带着新上下文再发一轮
+        } else {
+            r.finished = true;
+            r.text = textIn;
+            done(r);
+        }
+    };
+
+    step->fn(step, 0, 0);
+}
+
+// 同步外壳：内部用「阻塞调用器」，runToolLoop 一返回 done 就已经被调过了。
+AiWidget::AiStepResult AiWidget::handleAiResponse(const QJsonObject &obj, const MessageEvent &ev, QJsonObject &sxw)
+{
+    AiStepResult ret;
+    QJsonArray toolCalls;
+    QString text;
+    if (!beginAiStep(obj, ev, sxw, ret, toolCalls, text)) return ret;
+    if (toolCalls.isEmpty()) {
+        ret.finished = true;
+        ret.text = text;
+        return ret;
     }
 
-    ret.finished = true;
-    ret.text = text;
-    return ret;
+    AiStepResult out;
+    // 借用调用方的 sxw（不接管所有权，空删除器）→ 和异步版统一走 shared_ptr
+    std::shared_ptr<QJsonObject> sxwRef(&sxw, [](QJsonObject *){});
+    runToolLoop(toolCalls, ev, sxwRef, text,
+        [this](const PluginToolItem &it, const QString &args, const MessageEvent &e,
+               std::function<void(const QString &)> cb) {
+            const QString data = runPluginTool(it, args, e);
+            if (cb) cb(data);
+        },
+        [&out](AiStepResult r) { out = r; });
+    return out;
 }
 
 QString AiWidget::Ai_post(const MessageEvent &ev, const QString &url, const QString &key, QJsonObject &sxw, QString &err, int timeoutMs)
@@ -603,6 +705,9 @@ void AiWidget::Ai_postAsyncCore(const MessageEvent &ev, const QString &url, cons
                 }
                 // 三次都超 token：和同步版一样，带着最后一次的 obj 往下走
                 // （choices 为空 → 记错并返回空，让 Ai_postsAsyncCore 换 key）
+                //
+                // 插件工具调用是**阻塞**的：没返回值时在这里同步等最多 3 秒，
+                // 拿不到就让 AI 自己说明，不再搞挂起续延那一套。
                 AiStepResult s = handleAiResponse(obj, ev, *sxw);
                 if (!s.finished) {
                     self->fn(self, round + 1, 0);
@@ -814,7 +919,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                          "8.**特别注意 你只是决策 不参与回复**\n";
         if (ev.bot_admin)   // 机器人不是管理员就别给管群能力（给了也撤不掉，白浪费一次接口）
             sysTxt += "9.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
-                      "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否 你也可以直接返回 【提到】 让另一个Ai处理 并且回复\n";
+                      "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否 你也可以直接返回 【提到】 让另一个Ai处理 并且回复\n当你看见有这段文本时代表你有管理员权限\n";
         sysTxt += "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
                   "下面是用户给你的角色设定：\n" + setting;
         systemMsg["content"] = sysTxt;
