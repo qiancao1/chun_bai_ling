@@ -2454,7 +2454,11 @@ void AiWidget::rebuildPluginToolTable()
         }
 
         // 第 0 列：勾选 + 指令名合成一格（指令名只用来认，不能改；匹配方式/工具名塞 tooltip）
-        auto *cCmd = new QTableWidgetItem(r.view);
+        // 正则 / 事件的「指令」不是命令词，加个后缀，免得用户以为它是能直接打的话
+        QString viewText = r.view;
+        if (r.t == 4)      viewText += QStringLiteral("  [正则]");
+        else if (r.t == 5) viewText += QStringLiteral("  [事件]");
+        auto *cCmd = new QTableWidgetItem(viewText);
         cCmd->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         cCmd->setCheckState((hasCfg && cfg.enabled) ? Qt::Checked : Qt::Unchecked);
         cCmd->setToolTip(QString("匹配：%1\n工具名：%2\n插件原指令：%3")
@@ -2552,6 +2556,21 @@ QJsonObject AiWidget::pluginToolFunctionJson(const PluginToolItem &it) const
                        "拿到的就是它原本要说的话 —— 要不要发、怎么发由你决定。")
                    .arg(it.pluginName, it.key, pluginToolMatchName(it.matchType));
     }
+    // ⚠ 正则 / 事件两类要给 AI 额外说清楚，否则它填的参数一定对不上：
+    //   · 正则：key 是模式串（不是命令词）。框架调用时**不会**重新走正则匹配（按 key+type 直接定位规则），
+    //     但插件内部通常自己拿正文再跑一次正则 → 必须让它填「能被该正则命中」的完整文本。
+    //   · 事件：key 是消息类型，主动调用一般没效果，提前讲明白，免得 AI 白调一次。
+    if (it.matchType == 4) {
+        // ⚠ 先单独 arg 再拼：desc 是用户填的，里面如果有 %1 会被这一步顺手替换掉
+        const QString note = QString("（这条指令是**正则匹配**，正则：%1。你给的参数会**原样**成为正文，"
+                                     "请把它写成能被这条正则匹配的完整文本 —— 正则里的 ^ $ \\s (.+) 等符号"
+                                     "要按格式换成实际内容，不要只丢一个关键字，也不要把正则符号本身写进去。）")
+                                 .arg(it.key);
+        desc += QLatin1Char('\n') + note;
+    } else if (it.matchType == 5) {
+        desc += QStringLiteral("\n（这是一条**事件触发**指令，平时由消息事件唤起；"
+                               "你主动调用它通常不会有实际效果。）");
+    }
     // 不管说明是不是用户自己写的，都要告诉 AI：媒体标签是可直接发送的（回复链路会解析）
     desc += QStringLiteral("\n（返回里如果带 [image,path=…] / [video,…] / [audio,…] / [file,…] 这类标签，"
                            "那是可以直接发送的媒体内容，想发就原样放进你的回复。）");
@@ -2562,11 +2581,16 @@ QJsonObject AiWidget::pluginToolFunctionJson(const PluginToolItem &it) const
     QJsonObject properties;
     QJsonArray required;
 
+    // 正则规则的参数不是「指令后面补的词」，而是「能命中那条正则的整句话」，默认描述要区别对待
+    const QString defP1Desc = (it.matchType == 4)
+        ? QStringLiteral("能被上面那条正则匹配的完整文本（会原样作为正文，例：正则 ^天气\\s+(.+)$ → 填「天气 北京」）")
+        : QStringLiteral("指令后面的参数（可留空；多个参数用空格分隔）");
+
     if (it.params.isEmpty()) {
         // 默认给一个可留空的参数：指令后面要补东西时 AI 就填这里，插件按空格切。
         QJsonObject p1;
         p1["type"] = "string";
-        p1["description"] = "指令后面的参数（可留空；多个参数用空格分隔）";
+        p1["description"] = defP1Desc;
         properties["p1"] = p1;
     } else {
         int n = 0;
@@ -2585,7 +2609,7 @@ QJsonObject AiWidget::pluginToolFunctionJson(const PluginToolItem &it) const
         if (n == 0) {    // 全是空行 → 退回默认那个可选参数
             QJsonObject p1;
             p1["type"] = "string";
-            p1["description"] = "指令后面的参数（可留空；多个参数用空格分隔）";
+            p1["description"] = defP1Desc;
             properties["p1"] = p1;
         }
     }

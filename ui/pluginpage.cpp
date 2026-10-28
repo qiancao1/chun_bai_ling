@@ -2010,28 +2010,37 @@ int PluginPage::invokeToolCommand(const QString &pluginId, const QString &plugin
     // 插件拿 cmd（第 2/3 个参数）切正文就能取到参数，不用为 AI 调用另开一套。
     const QString effCmd = effectiveCommandWord(pluginId, pluginName, matchType, key, ev.appid);
 
-    // 参数里可能已经把命令词带上了（AI 照用户口气写「唱歌 晴天」，或者干脆整句丢进 p1）：
-    // 直接拼会变成「唱歌 唱歌 晴天」→ 先剥掉开头的命令词，再按需补一次。
-    QString body = argsText.trimmed();
-    auto stripCmd = [&body](const QString &w) -> bool {
-        if (w.isEmpty()) return false;
-        if (body.compare(w, Qt::CaseInsensitive) == 0) { body.clear(); return true; }
-        if (body.startsWith(w + QLatin1Char(' '), Qt::CaseInsensitive)) {
-            body = body.mid(w.size() + 1).trimmed();
-            return true;
-        }
-        // 中文常不打空格（「唱歌晴天」）：只有命令词 >= 2 字才这么剥，
-        // 免得单字命令词（如「点」）把「点歌 晴天」吃成「歌 晴天」。
-        if (w.size() >= 2 && body.startsWith(w, Qt::CaseInsensitive)) {
-            body = body.mid(w.size()).trimmed();
-            return true;
-        }
-        return false;
-    };
-    if (!stripCmd(effCmd) && effCmd != key.trimmed())
-        stripCmd(key.trimmed());        // 插件改过名时，AI 也可能用原始指令名
+    // ⚠ 正则 / 事件这两类的 key **不是「用户会打的命令词」**：
+    //   · 正则：key 是模式串（如 ^点歌\s+(.+)$），当成命令词拼进正文，插件只会拿到一串正则文本；
+    //   · 事件：key 是消息类型（ev.msgType == key），正文本来就没有意义。
+    // 所以这两类正文只放参数本身 —— 正则该怎么写参数，靠注册工具时给 AI 的描述说明白
+    // （AI 把「能被该正则匹配的完整一句话」当参数传进来即可）。
+    const bool keyIsPattern = (matchType == static_cast<int>(MatchType::Regex)
+                               || matchType == static_cast<int>(MatchType::event));
 
-    ev.msg = body.isEmpty() ? effCmd : (effCmd + QLatin1Char(' ') + body);
+    QString body = argsText.trimmed();
+    if (!keyIsPattern) {
+        auto stripCmd = [&body](const QString &w) -> bool {
+            if (w.isEmpty()) return false;
+            if (body.compare(w, Qt::CaseInsensitive) == 0) { body.clear(); return true; }
+            if (body.startsWith(w + QLatin1Char(' '), Qt::CaseInsensitive)) {
+                body = body.mid(w.size() + 1).trimmed();
+                return true;
+            }
+            // 中文常不打空格（「唱歌晴天」）：只有命令词 >= 2 字才这么剥，
+            // 免得单字命令词（如「点」）把「点歌 晴天」吃成「歌 晴天」。
+            if (w.size() >= 2 && body.startsWith(w, Qt::CaseInsensitive)) {
+                body = body.mid(w.size()).trimmed();
+                return true;
+            }
+            return false;
+        };
+        if (!stripCmd(effCmd) && effCmd != key.trimmed())
+            stripCmd(key.trimmed());        // 插件改过名时，AI 也可能用原始指令名
+    }
+
+    ev.msg = keyIsPattern ? body
+                          : (body.isEmpty() ? effCmd : (effCmd + QLatin1Char(' ') + body));
 
     // ---------- Python ----------
     if (p.type == 0) {

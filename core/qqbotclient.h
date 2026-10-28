@@ -94,7 +94,7 @@ struct MessageEvent
     bool bot_admin = false; //true时 机器人是管理员 不是就不要多管闲事了
     bool op=false; //本条消息是否被处理
 
-    QString toString() const;
+
 };
 // ── 发送耗时统计账本（总开关 g_msg_time_stat，默认关）──
 // send_messages / sendMessagesAsyncCore 在关键节点 mark()，最后 addmsglog 收尾时把结果拼到
