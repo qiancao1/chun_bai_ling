@@ -81,7 +81,11 @@ struct PluginToolItem {
     QString     toolName;      // 给 AI 的函数名（自动生成，稳定不变）
     QString     desc;          // 工具说明（AI 看的）；空 = 按指令名自动生成
     QStringList params;        // 参数说明 p1..pN（空 = 一个可留空的 p1）
-    bool        enabled = false;
+    bool        enabled = false; // 旧字段（全局开关）。现在看 bots；读老配置时 true 会迁成 bots={"*"}
+    // 启用这条工具的机器人（appid_int 字符串，按机器人各管各的）。
+    //   "*" = 所有机器人 —— 旧版全局勾选迁移过来的标记，用户一改动就展开成具体 appid；
+    //   空     = 谁都没开。
+    QStringList bots;
 };
 
 // 插件工具调用器：runToolLoop 只负责「按顺序跑 tool_calls」，具体怎么等结果交给它。
@@ -319,7 +323,13 @@ private:
     void savePluginTools() const;              // 写回
     void refreshPluginToolPlugins();           // 重扫 m_pluginList，填左侧插件列表（保留当前选中）
     void rebuildPluginToolTable();             // 按当前选中的插件重建右侧指令表
-    void rebuildPluginToolIndex();             // enabled 项 → m_pluginToolByName
+    void rebuildPluginToolIndex();             // 有 toolName 的项 → m_pluginToolByName
+    // 某台机器人是否启用这条插件工具（bots 里带 "*" = 所有机器人，旧配置迁移标记）
+    static bool pluginToolEnabledFor(const PluginToolItem &it, int appid);
+    QString currentBotName() const;            // 当前 g_appid 对应的机器人名（界面提示用）
+    QStringList allBotAppids() const;          // 现有全部机器人的 appid 字符串（展开 "*" 用）
+    QString pluginToolHintText() const;        // 「插件工具」页顶部那句提示（含当前机器人）
+    void refreshPluginToolChecks();            // 切机器人后只刷勾选状态 + 提示，不重扫插件表
     QJsonObject pluginToolFunctionJson(const PluginToolItem &it) const;  // 单个工具的 schema
     PluginToolItem *findPluginToolItem(const QString &pluginId, int matchType, const QString &key);
     // AI 真正调用一个插件工具：argsJson = tool_call 的 arguments（JSON 文本）。
@@ -338,9 +348,10 @@ private:
     QListWidget *pluginToolPluginList = nullptr;   // 左：插件
     QTableWidget *pluginToolTable = nullptr;       // 右：该插件的指令（带勾选）
     QPushButton *pluginToolRefreshBtn = nullptr;
+    QLabel      *pluginToolHintLabel = nullptr;    // 顶部提示（显示当前机器人）
     QSpinBox    *pluginToolWaitSpin = nullptr;     // 没返回值时最多等几秒
-    QList<PluginToolItem> m_pluginTools;           // 全部配置项（enabled 才算注册）
-    QHash<QString, int>   m_pluginToolByName;      // toolName → m_pluginTools 下标（只含 enabled）
+    QList<PluginToolItem> m_pluginTools;           // 全部配置项（是否对某台机器人启用看 bots）
+    QHash<QString, int>   m_pluginToolByName;      // toolName → m_pluginTools 下标（含未启用的，调用前再校验）
     // ⚠ 上面两张表在 GUI 线程写（勾选/改说明），却在**线程池线程**读（get_tools / handleAiResponse
     //   调工具）→ 所有读写都要持这把锁，否则 QList 扩容时读侧会踩到已释放的内存。
     mutable QMutex m_pluginToolsMutex;

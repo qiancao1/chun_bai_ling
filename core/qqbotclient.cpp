@@ -534,6 +534,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.replyTo = arr[0].toString();
         ev.replyTo = "[ref," + ev.replyTo + "]";   // 即使是空字符串也会变成 "[ref,]"
     }
+    // {"GroupName":"","appid":1905546017,"at_you":true,"d":{"author":{"bot":false,"id":"D0FEE1BB2C4337938253AEE41CBAD5BA","union_openid":"","user_openid":"D0FEE1BB2C4337938253AEE41CBAD5BA","username":""},"content":"我修一下","id":"|2595|ROBOT1.0_ywBzYQkDL1uFWoqCZF32tTNVn0f.mTDu1jzjWD0RCVfSk1USgkiaF9q.DcuW5LZ7OK-AXTnr4eAgKiV-f3ThB0u56.I.t8nR20lTtezOE1M!","message_scene":{"ext":["msg_idx=REFIDX_+Ip3jQeJF8XuafCVXijnStvW0epW8l4WIUWHi4Eyynazf7Rnwc4XGk38ylCLBZh5JRBrgYZtQM8XVFFuI/ox48EQdru1AMJZOUWZA8UsJgzx61BPHoHyrfRUG8EmwYTF"],"source":"default"},"message_type":0,"msg_elements":null,"timestamp":"2026-10-28T22:30:14+08:00"},"id":"C2C_MESSAGE_CREATE:crp49uosqsyjfmaieepbyq5boo5ecglkrnhqoyk2xlrvnalz48ppb8ix6asuhn","member_role":3,"op":0,"s":3,"t":"C2C_MESSAGE_CREATE","type":2,"user_id":1,"username":""}
+    //-----------------------
 
     // ========== 1. 消息类事件（已有） ==========
     if (ev.msgType == "GROUP_AT_MESSAGE_CREATE" || ev.msgType == "GROUP_MESSAGE_CREATE") {
@@ -600,7 +602,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.nickname = author.value("username").toString();
         ev.msgId = d.value("id").toString();
         ev.msg = d.value("content").toString();
-        ev.replyTo = d.value("message_scene").toString();
+
         ev.member_role = 3;
         ev.at_you=true;
     }

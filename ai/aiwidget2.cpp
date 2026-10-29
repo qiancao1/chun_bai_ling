@@ -386,6 +386,172 @@ static QString normalizeInlineB64Images(const QString &content)
     if (out.size() > 10000) out = out.left(10000); // 防止异常内容撑爆上下文
     return out;
 }
+static QString runActTags(QString text, const MessageEvent &ev, QQBotClient *bot, BotDB *db)
+{
+    QRegularExpression reAct("<(del|mt):([^>]*)>");
+    QVector<QPair<QString, QString>> acts;
+    auto it = reAct.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        acts.append(qMakePair(m.captured(1), m.captured(2)));
+    }
+    text.remove(reAct);
+    if (!bot || !ev.bot_admin) return text;
+    for (const auto &act : std::as_const(acts)) {
+        if (act.first == "del") {           // 撤回：seq → 日志库里那条的 ch（平台消息id）
+            Message dm;
+            if (g_logdb[ev.type+1])
+                g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,
+                                              act.second.toULongLong(),dm);
+            if(!dm.ch.isEmpty())
+                bot->delete_messages(ev.type,ev.groupId,dm.ch,[](auto, auto){ return; });
+        } else {                            // 禁言：短id → 转 32 字节 openid
+            const QStringList a = act.second.split(",");
+            QString user;
+            if(db) db->getOpenIdBySeqId(a.value(0).trimmed().toInt(),user);
+            if(user.isEmpty()) continue;
+            const qint64 sec = a.value(1).trimmed().toLongLong();
+            if(ev.type==1)                  // 频道
+                bot->set_mute(ev.groupId,user,sec);
+            else                            // 群
+                bot->setGroupRestrictChatSetting(ev.groupId,user,static_cast<int>(sec),
+                                                 [](auto, auto){ return; });
+        }
+    }
+    return text;
+}
+
+// ── <seq:N>：引用某条消息 ───────────────────────────────────────────────
+// 提示词要求写成「<seq:123> 你说的什么鬼话」，但模型时不时会把它单独发一条。
+// 平台侧「引用」必须带正文，只有引用会直接报错，所以补两道兜底：
+//   · 整条只剩引用 → 当没内容，不发（不报错）；
+//   · 拆段后某段只剩引用 → 把标记挂到相邻那段上，跟着正文一起发。
+static bool isPureRefText(const QString &trimmed)
+{
+    // ⚠ msg_idx 的值是平台的 REFIDX_xxx（不是纯数字），所以这里只认「非 ] 的任意字符」；
+    //   写成 \\d+ 的话真引用标记一个都匹配不上，整段标记会被当成正文发出去。
+    static const QRegularExpression re(QStringLiteral("^(?:\\[ref,[^\\]]*\\]\\s*)+$"));
+    return !trimmed.isEmpty() && re.match(trimmed).hasMatch();
+}
+
+// 把「只剩引用标记」的段合并到相邻段（优先并到后一条；后头没正文了就并到最后一条）。
+// 整条全是引用时返回空表 —— 调用方拿到空表就不会发，也就不会撞平台报错。
+static QStringList foldLooseRefSegments(const QStringList &segs)
+{
+    QString carry;                     // 摘下来待挂的引用标记（平台只认一个引用，多了就留第一个）
+    QStringList out;
+    for (const QString &s : segs) {
+        const QString t = s.trimmed();
+        if (t.isEmpty()) continue;
+        if (isPureRefText(t)) {
+            if (carry.isEmpty()) carry = t;
+            continue;
+        }
+        out.append(carry.isEmpty() ? s : carry + s);   // 正文段原样保留（缩进/换行不动）
+        carry.clear();
+    }
+    if (!carry.isEmpty() && !out.isEmpty())
+        out.last() += carry;
+    return out;
+}
+
+// <seq:N> → 那条消息的引用标记 [ref,msg_idx=…]（发送前由 get_ref 解析成真正的引用）。
+// 读不到原消息（seq 过期 / 跨会话）就只把标签删掉，绝不留下半截标记。
+// ⚠ 模型写这个标签的格式很飘（`<seq: 12>`、`<SEQ:12>`、`<seq:12 >`），所以按正则认，别用固定串 replace，
+//   否则没替换掉的那半截会当正文被单独发出去。
+static void applySeqTag(QString &text, const MessageEvent &ev)
+{
+    // 单独成段：整段只有一个 <seq:N>（前后允许空白）
+    static const QRegularExpression reAlone(QStringLiteral("^\\s*<seq:\\s*\\d+\\s*>\\s*$"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression reTag(QStringLiteral("<seq:\\s*(\\d+)\\s*>"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression reAny(QStringLiteral("<seq:[^>]*>"),
+                                          QRegularExpression::CaseInsensitiveOption);
+
+    if (!text.contains(QStringLiteral("<seq:"), Qt::CaseInsensitive)) return;   // 没标签，原样不动
+
+    // ① 先按 |#|#| 分割
+    QStringList segs = text.split(QStringLiteral("|#|#|"));
+
+    // ② 单独成段的 <seq:N> 并到下一条正文上
+    //    「<seq:12>|#|#|你说的啥」→「<seq:12>你说的啥」；
+    //    后面没正文了（「嗯|#|#|<seq:12>」）就并到上一条末尾；整条只有标签 → segs 变空，调用方不发。
+    for (int k = 0; k < segs.size(); ) {
+        if (!reAlone.match(segs.at(k)).hasMatch()) { ++k; continue; }
+        const QString tag = segs.at(k).trimmed();
+        segs.removeAt(k);
+        if (k < segs.size())
+            segs[k] = tag + segs.at(k);           // 并到下一条前面
+        else if (!segs.isEmpty())
+            segs.last() += tag;                   // 没有下一条了就并到上一条
+        // 剩余为空：整条只有这个标签，保持空表
+    }
+
+    // ③ 再把每段里的 <seq:N> 转成那条消息的引用标记（分段转，多个段各自带引用都合法）
+    for (QString &seg : segs) {
+        const QRegularExpressionMatch m = reTag.match(seg);
+        if (!m.hasMatch()) { seg.remove(reAny); continue; }   // 只有写歪的 <seq:xxx>：删掉，别发出去
+
+        const uint64_t seqid = m.captured(1).toULongLong();
+        int index = ev.type + 1;
+        Message msg;
+        if (g_logdb[index])
+            g_logdb[index]->readLog(QString::number(ev.appid), ev.groupId, seqid, msg);
+
+        seg.replace(m.capturedStart(), m.capturedLength(), msg.hf.trimmed());  // 读不到原消息就是空
+        seg.remove(reAny);                                            // 多出来的 / 写歪的一律删掉
+    }
+
+    text = segs.join(QStringLiteral("|#|#|"));
+}
+
+// 按 |#|#| 切段，并把「太短的段（少于5个字）」并到下一条一起发 —— 一句话就俩字没必要单独发一条。
+// 最后一段没有下一条，就并到上一段。两条发送链（同步 beginAiStep / 异步 flushPendingMessagesTail）都走这里。
+static QStringList splitReplySegments(const QString &reply)
+{
+    QStringList text = foldLooseRefSegments(reply.split("|#|#|"));
+    for (int k = 0; k + 1 < text.size(); ) {
+        if (text.at(k).trimmed().size() < 5) {
+            text[k + 1] = text.at(k).trimmed() + text.at(k + 1);
+            text.removeAt(k);
+        } else {
+            ++k;
+        }
+    }
+    if (text.size() > 1 && text.last().trimmed().size() < 5) {
+        const int last = text.size() - 1;
+        text[last - 1] = text.at(last - 1).trimmed() + text.at(last).trimmed();
+        text.removeLast();
+    }
+    return text;
+}
+
+// ![img](路径)：路径自己带了目录（含 / 或 \）就原样保留，只有纯文件名才补 image/<appid>/ 前缀。
+// 否则模型照着提示词写 image/<appid>/a1.jpg 时会被再拼一层，变成 image/<appid>/image/<appid>/a1.jpg。
+// 顺带把模型写成 ![ima](…) 的纠正成 ![img](…)。两条发送链共用。
+static void fixImgPath(QString &text, const QString &appid)
+{
+    static const QRegularExpression re(QStringLiteral("!\\[im(?:g|a)\\]\\(([^)\\r\\n]*)\\)"));
+    QRegularExpressionMatchIterator it = re.globalMatch(text);
+    if (!it.hasNext()) return;                    // 没有图片标记，原样不动
+
+    QString out;
+    out.reserve(text.size() + 32);
+    int last = 0;
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString p = m.captured(1).trimmed();
+        out += text.mid(last, m.capturedStart() - last);
+        const bool hasDir = p.contains(QLatin1Char('/')) || p.contains(QLatin1Char('\\'));
+        out += QStringLiteral("![img](")
+               + (hasDir ? p : QStringLiteral("image/") + appid + QLatin1Char('/') + p)
+               + QLatin1Char(')');
+        last = m.capturedEnd();
+    }
+    out += text.mid(last);
+    text = out;
+}
 
 // 一次 AI 响应的前半段（同步 / 异步两条链路共用）：
 //   解析 choices → 追加 assistant 消息进上下文 → 把这一轮要说的正文发出去（异步串行，不阻塞）。
@@ -432,10 +598,36 @@ bool AiWidget::beginAiStep(const QJsonObject &obj, const MessageEvent &ev, QJson
         if (bot) {
             QPointer<QQBotClient> botSafe(bot);
             auto texts = std::make_shared<QStringList>();
+            BotDB *db = g_botdb.value(ev.appid);
+            fixImgPath(text, bot->m_info->appid);   // 路径已带目录的不再加 image/<appid>/ 前缀
+
+            QStringList atlist = takeAllTextMiddle(text,"<@",">",false);//将短id转 unid
+            if(atlist.size()!=0 && db)
+            {
+                for( auto &uid : atlist)
+                {
+                    QString user;
+                    db->getOpenIdBySeqId(uid.toInt(),user);
+                    if(user.isEmpty())
+                    {
+                        text.remove("<@"+uid+">");
+                    }else
+                        text.replace("<@"+uid+">","<qqbot-at-user id=\""+user+"\" />") ;
+                }
+            }
+
+            applySeqTag(text, ev);
+
+            // 撤回 <del:N> / 禁言 <mt:短id,秒>（标签删掉；不是管理员就只删标签不执行）
+            text = runActTags(text, ev, bot, db);
+
             if (bot->m_info->niren) {
-                for (const QString &s : text.split("|#|#|"))
+
+                for (const QString &s : splitReplySegments(text))
                     if (!s.isEmpty()) texts->append(s);
-            } else if (!text.isEmpty()) {
+
+            } else if (!text.isEmpty() && !isPureRefText(text.trimmed())) {
+                // 整条就一个引用标记（模型单发了 <seq:N>）：引用必须带正文，发了平台报错 → 干脆不发
                 texts->append(text);
             }
 
@@ -487,6 +679,7 @@ void AiWidget::runToolLoop(const QJsonArray &calls, const MessageEvent &ev,
             {
                 PluginToolItem ptItem;
                 bool isPluginTool = false;
+                bool pluginToolDenied = false;   // 认到了名字，但当前机器人没勾
                 {
                     QMutexLocker lk(&m_pluginToolsMutex);
                     const auto pit = m_pluginToolByName.constFind(tool_name);
@@ -495,8 +688,26 @@ void AiWidget::runToolLoop(const QJsonArray &calls, const MessageEvent &ev,
                         if (ti >= 0 && ti < m_pluginTools.size()) {
                             ptItem = m_pluginTools.at(ti);
                             isPluginTool = true;
+                            // 勾选是按机器人的：这台没勾就不执行（get_tools 本来也不会发给它，
+                            // 这里防模型自己编名字）。不做的话 A 号勾的工具 B 号也能调。
+                            pluginToolDenied = !pluginToolEnabledFor(ptItem, ev.appid);
                         }
                     }
+                }
+                if (isPluginTool && pluginToolDenied) {
+                    // 回一条 tool 结果把话说明白：留着这条 tool_call 没有回应，下一轮请求会被接口拒
+                    if (ctx.contains("messages") && ctx["messages"].isArray()) {
+                        QJsonArray msgs = ctx["messages"].toArray();
+                        QJsonObject toolMsg;
+                        toolMsg["role"] = "tool";
+                        toolMsg["content"] = QString("当前机器人没有启用工具 %1，本次没有执行").arg(tool_name);
+                        toolMsg["tool_call_id"] = callID;
+                        toolMsg["name"] = tool_name;
+                        msgs.append(toolMsg);
+                        ctx["messages"] = msgs;
+                    }
+                    *okFlag = true;
+                    continue;                       // 下一个 tool_call
                 }
                 if (isPluginTool && inv) {
                     // 结果回来（同步立刻 / 异步稍后）→ 追加 tool 消息 → 继续下一个 tool_call
@@ -955,40 +1166,6 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
 // ===== <del:N>（撤回，N = 日志 seq）/ <mt:短id,秒>（禁言）=====
 // 标签一律从文本里删掉；只有机器人是管理员才真执行，不是就只删标签、剩下的内容照发。
 // 回复正文和决策 AI 的输出都走这里（决策那条不发送正文，但同样能管群）。
-static QString runActTags(QString text, const MessageEvent &ev, QQBotClient *bot, BotDB *db)
-{
-    QRegularExpression reAct("<(del|mt):([^>]*)>");
-    QVector<QPair<QString, QString>> acts;
-    auto it = reAct.globalMatch(text);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        acts.append(qMakePair(m.captured(1), m.captured(2)));
-    }
-    text.remove(reAct);
-    if (!bot || !ev.bot_admin) return text;
-    for (const auto &act : std::as_const(acts)) {
-        if (act.first == "del") {           // 撤回：seq → 日志库里那条的 ch（平台消息id）
-            Message dm;
-            if (g_logdb[ev.type+1])
-                g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,
-                                            act.second.toULongLong(),dm);
-            if(!dm.ch.isEmpty())
-                bot->delete_messages(ev.type,ev.groupId,dm.ch,[](auto, auto){ return; });
-        } else {                            // 禁言：短id → 转 32 字节 openid
-            const QStringList a = act.second.split(",");
-            QString user;
-            if(db) db->getOpenIdBySeqId(a.value(0).trimmed().toInt(),user);
-            if(user.isEmpty()) continue;
-            const qint64 sec = a.value(1).trimmed().toLongLong();
-            if(ev.type==1)                  // 频道
-                bot->set_mute(ev.groupId,user,sec);
-            else                            // 群
-                bot->setGroupRestrictChatSetting(ev.groupId,user,static_cast<int>(sec),
-                                                 [](auto, auto){ return; });
-        }
-    }
-    return text;
-}
 
 // flushPendingMessages 的后半段：可能是紧跟在上面同步执行，也可能在决策请求的回调里执行
 void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info, int model_index,
@@ -1134,9 +1311,11 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
     auto ctxPtr = std::make_shared<QJsonObject>(baseContext);
     Ai_postsAsyncCore(ev, model_index, ctxPtr, timeoutMs,
         [this, openid, ev, ctxPtr, savedMsgCount, info](const QString &reply2) {
+
             QString reply = reply2;
 
             emit asyncReplyReceived(openid, reply, *ctxPtr, savedMsgCount);
+            if(reply2=="...") return; //在 信号 后返回
             if(reply.startsWith("【err】") && (ev.bitmap & BIT_Ainiren)){
                 AppendEventLog("【ai请求错误】："+reply);
                 return;
@@ -1144,12 +1323,7 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
             QQBotClient *bot = m_botClients.value(ev.appid);
             if (!bot) return;
             BotDB *db = g_botdb.value(ev.appid);
-            if(!reply.contains("![img](tmp")){
-                if(reply.contains("![img]("))
-                    reply.replace("![img](","![img](image/"+info->appid+"/");
-                if(reply.contains("![ima]("))
-                    reply.replace("![ima](","![img](image/"+info->appid+"/");
-            }
+            fixImgPath(reply, info->appid);         // 路径已带目录的不再加 image/<appid>/ 前缀
 
             QStringList atlist = takeAllTextMiddle(reply,"<@",">",false);//将短id转 unid
             if(atlist.size()!=0 && db)
@@ -1166,18 +1340,12 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                 }
             }
 
-            if(reply.contains("<seq:")){
-                uint64_t seqid = extractBetween(reply,"<seq:",">").toDouble();
-                int index =ev.type+1;
-                Message msg;
-                g_logdb[index]->readLog(QString::number(ev.appid),ev.groupId,seqid,msg);
-                reply.replace(QString("<seq:%1>").arg(seqid),msg.hf);
-            }
+            applySeqTag(reply, ev);
 
             // 撤回 <del:N> / 禁言 <mt:短id,秒>（标签删掉；不是管理员就只删标签不执行）
             reply = runActTags(reply, ev, bot, db);
 
-            QStringList text = reply.split("|#|#|");
+            QStringList text = splitReplySegments(reply);   // 太短的段已经并到下一条了
 
             // 串行发送：上一条的回调回来了再发下一条（原来是一次性全发出去，长回复会乱序）。
             // 失败降级顺序和同步版一致：
@@ -1197,6 +1365,7 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                 if (i >= texts->size()) return;             // 全部发完
 
                 QString t     = texts->at(i).trimmed();
+
                 QString msgid = (attempt == 0) ? ev.msgId : QString();
                 bool    wake  = (attempt == 2);
                 QString pname = "[Ai系统]";

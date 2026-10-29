@@ -602,8 +602,8 @@ void SharedMemoryBridge::deliverCommandResult(const RequestData &req)
     // ⚠ 空串是**合法返回值**（很多命令就是没有输出，比如心跳/加载成功），不是错误 ——
     //   照样唤醒等待者，让它立刻拿到空串返回，而不是白等满 5 秒。
     const QString text = QString::fromUtf8(body.c_str(), static_cast<int>(body.size()));
-    if (!text.isEmpty())
-        qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "内容 =" << text;
+    //if (!text.isEmpty())
+    //    qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "内容 =" << text;
 
     QMutexLocker lk(&m_cmdMutex);
 
@@ -613,7 +613,7 @@ void SharedMemoryBridge::deliverCommandResult(const RequestData &req)
         if (it == m_cmdWaiters.end()) {
             // 正常来源：只发不等的命令（reqid = NO_WAIT_REQ_ID）回吐了值，或上层已超时注销。
             // 不暂存（防串包），也不值得刷 warning。
-            qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "没人在等（只发不等 / 已超时），丢弃";
+            //qDebug() << "共享内存: 命令返回值 reqid =" << reqId << "没人在等（只发不等 / 已超时），丢弃";
             return;
         }
         slot = &it.value();
@@ -621,17 +621,17 @@ void SharedMemoryBridge::deliverCommandResult(const RequestData &req)
         // 老易语言没把 id 带回来（_post4 第 3 参还是 ""）：
         // 只有「唯一一个等待者」时才能确定这条值是谁的；多个在等就直接丢弃 —— 宁可失败也不串包。
         if (m_cmdWaiters.isEmpty()) {
-            qDebug() << "共享内存: 收到命令返回值但没人在等（只发不等 / 上层已超时），丢弃";
+            //qDebug() << "共享内存: 收到命令返回值但没人在等（只发不等 / 上层已超时），丢弃";
             return;
         }
         if (m_cmdWaiters.size() > 1) {
-            qWarning() << "共享内存: 同时有" << m_cmdWaiters.size()
-                       << "条命令在等，但回执没带请求 id（易语言 _post4 第 3 个参数仍是空），无法路由，丢弃";
+            //qWarning() << "共享内存: 同时有" << m_cmdWaiters.size()
+            //           << "条命令在等，但回执没带请求 id（易语言 _post4 第 3 个参数仍是空），无法路由，丢弃";
             return;
         }
         slot = &m_cmdWaiters.begin().value();
-        qDebug() << "共享内存: 回执未带请求 id，退化按「唯一等待者」交付（id ="
-                 << m_cmdWaiters.begin().key() << "）";
+        //qDebug() << "共享内存: 回执未带请求 id，退化按「唯一等待者」交付（id ="
+        //         << m_cmdWaiters.begin().key() << "）";
     }
 
     slot->result  = text;

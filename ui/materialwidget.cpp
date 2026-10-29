@@ -361,6 +361,7 @@ void MaterialWidget::loadPage(const QString &cursor)
     const int seq = m_seq;
     bot->listMediaImages(cursor, [this, seq, cursor](const QString &resp, QNetworkReply::NetworkError err) {
         // 回调在线程池 → 投回主线程
+
         QMetaObject::invokeMethod(this, [this, seq, cursor, resp, err]() {
             if (seq != m_seq) return;          // 期间切了账号：这页直接丢
             m_loading = false;

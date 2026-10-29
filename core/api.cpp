@@ -1094,6 +1094,12 @@ void get_ref(QString &text,QString &message_reference)
                 message_reference.clear();
             }
             text.remove(refStart, refEnd - refStart + 1);
+            // 「引用」必须带正文，只剩引用平台直接报错。正文被这个标记吃空（AI 单发了 <seq:N>、
+            // 插件只拼了 [ref,msg_idx=N]）时就不带引用了，让上层按「内容为空」正常处理。
+            if (text.trimmed().isEmpty()) {
+                message_reference.clear();
+                text.clear();
+            }
         }
     }
 
