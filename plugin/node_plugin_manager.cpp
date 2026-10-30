@@ -35,6 +35,7 @@ extern const char* myCallback(const char* uuid, int api_id, int appid,
                               const char* p1, const char* p2, const char* p3,
                               const char* p4, const char* p5, const char* p6,
                               const char* p7, const char* p8);
+// myCallback 的返回值是框架持有的 thread_local 缓冲：只读，**立刻拷贝、绝不释放**（见 core/api.cpp 开头说明）
 
 NodePluginManager& NodePluginManager::instance() {
     static NodePluginManager mgr;
@@ -380,6 +381,7 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
                                          strParams[6].toUtf8().constData(),
                                          strParams[7].toUtf8().constData());
 
+    // 返回值由框架持有（thread_local）：拷进 QString 就完事，**不要也不该释放**
     return QString::fromUtf8(result_cstr);
 
 }

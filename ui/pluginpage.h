@@ -64,6 +64,16 @@ QString pluginPnameText(const QString &uuid);       // 裸 uuid → "[插件名|
 //   · 别的插件的同名指令不受影响
 // appid = 这条消息是**哪个机器人**发的（改名可以按机器人分开配）；<= 0 / 没配过 → 用默认档。
 QString redirectPluginCmdsMarkdown(const QString &text, const QString &uuid, int appid = 0);
+// API 回调：DLL 插件拿这个函数指针回主程序要数据（get_plugin_info 的第 2 参，加载时传入）。
+//
+// ⚠⚠ 返回值所有权（跨语言契约，动之前先想清楚）：
+//   · 返回值是**框架持有**的 thread_local 缓冲（core/api.cpp 里每线程一份的 std::string）：
+//     **只读**，调用方**不许 free / delete** —— 那是别的模块的堆，Windows 上直接崩堆。
+//   · **不需要释放，也不可能泄漏**：没有分配就没有泄漏，下一次同线程调用会把它重置复用，
+//     线程退出（goroutine 结束 / QThreadPool 回收空闲 worker）时析构。旧版插件同样安全。
+//   · 唯一约束：有效期 = **本线程的下一次调用**。要留着就自己拷（strcpy / C.GoString /
+//     Marshal.PtrToStringUTF8 / QString::fromUtf8），别跨线程传、别存进全局等下次用。
+//   · 返回空指针 = 没有内容可回（不是错误码）；出错一律是 JSON 里的 {"error": ...}。
 typedef const char* (*UniversalApiCallback)(const char* uuid,int apiId, int appid, const char* _1, const char* _2,
                                             const char* _3, const char* _4, const char* _5,
                                             const char* _6, const char* _7, const char* _8);
@@ -376,6 +386,27 @@ public:
     // 返回 true = 这条消息是商店指令、**已经自己回过消息了**（调用方别再往下派发，也别让 AI 兜底）。
     bool handleShopCommand(const QString &frame, MessageEvent &msg);
 
+    // ==================== 测试指令（检查指令会不会复读用户内容）====================
+    // 判据：测试正文按匹配方式拼成「命令词 + 探测串(测试测试测试)」，真调一次插件，
+    //      它想发出去的话在 core/api.cpp 的发送入口被扣下（pluginTestIntercept 那条），
+    //      回复里出现探测串 = 把用户输入原样复读回去了。
+    // 只有「开头是 / 结尾是 / 包含（寻找文本）」标复读；等于 / 正则 / 事件 只显示回复、不判。
+    //
+    // ⚠ 测试会**真的执行指令**（发话题 / 请求 AI / 写库都照做，只是它要说的话被扣下不发），
+    //   所以「编辑指令」窗口的表格每行有一个「测试」按钮 → 走 testPluginCommand() 只跑那一条。
+    void testPluginCommands(int index, int cfgAppid = 0, const QStringList &forceOffKeys = QStringList());
+                                                                   // 整个插件全测（「编辑指令」窗口底部的「一键测试」）
+                                                                   // ⚠ 全测会**跳过匹配方式是「等于」的指令**（那种正文只能是命令词本身，
+                                                                   //   测了等于白调一次有副作用的逻辑）；要单独验某条「等于」，点它那行的「测试」。
+                                                                   // cfgAppid = 按哪个机器人解析启用类型（0 = 默认档，即表格里那一套）。
+                                                                   // forceOffKeys = 表格里**当下**标成「禁用」的条目（"<匹配方式>\x1f<注册原名>"，
+                                                                   //   含还没点保存的改动）→ 一律不测，这就是「单独关掉某条指令测试」的开关。
+    // 只测一条：key = 插件注册的**原始**指令、matchType = 它的匹配方式（编辑指令表格里的值）。
+    // 用的是**当前已生效**的配置（表格里没点保存的改动不参与）；cfgAppid / forceOffKeys 同上。
+    // 这条指令的启用类型是「禁用」（或表格里当下标成禁用）→ 不测。
+    void testPluginCommand(int index, int matchType, const QString &key, int cfgAppid = 0,
+                           const QStringList &forceOffKeys = QStringList());
+
     // ==================== 指令编辑（启用类型 / 重命名）====================
     // 配置按「插件 id」存；id 为空时退化成插件名。给 RuleEditDialog 用的几个只读视图接口。
     QList<int> ruleConfigPluginIndexes() const;         // 有指令的插件下标（按列表顺序）
@@ -481,6 +512,13 @@ private:
 
     // 配置区视口宽度一变（首次布局 / 拉窗口），折行数就变 → 高度要跟着重算
     bool eventFilter(QObject *obj, QEvent *event) override;
+
+    // 测试指令的干活函数：onlyKey 非空 = 只跑「这一条」（注册原名 + 匹配方式），空 = 整个插件全跑。
+    // cfgAppid = 按哪个机器人解析启用类型 / 新指令名（0 = 默认档）—— 用「编辑指令」窗口里选的那一档，
+    // 保证「表格上显示禁用 = 测试真的不跑」，与真实派发时的按机器人覆盖一致。
+    // 上面 testPluginCommands / testPluginCommand 都是它的薄壳。
+    void runPluginTest(int index, const QString &onlyKey, int onlyType, int cfgAppid,
+                       const QStringList &forceOffKeys);
 
     void updateInfo(const PluginInfo &info);
     void LoadPlugin_DLL();

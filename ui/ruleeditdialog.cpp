@@ -31,14 +31,15 @@ static QString matchTypeName(int t)
 namespace {
 // 第 0 列现在是一个下拉框（QComboBox 作为 cellWidget），不再用勾选框：
 // 「启用类型」= 这条指令对谁能生效（禁用 / 全部人 / 超管 / 机器人管理 / 群主 / 群管理 / 代管）
-enum Col { ColRole = 0, ColKey, ColNewKey, ColType, ColCount };
+// 最后一列是每行一个「测试」按钮：只跑这一条（见 PluginPage::testPluginCommand）。
+enum Col { ColRole = 0, ColKey, ColNewKey, ColType, ColTest, ColCount };
 }
 
 RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *parent)
     : QDialog(parent), m_page(page)
 {
     setWindowTitle("编辑指令");
-    setMinimumSize(780, 470);
+    setMinimumSize(860, 480);   // 多了一列「测试」（66px），宽度跟着放宽一点
     setStyleSheet(
         "QDialog { background: #F5F5F5; }"
         "QLabel { background: transparent; color: #222222; }"
@@ -93,7 +94,7 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     rv->addWidget(m_tip);
 
     m_table = new QTableWidget(0, ColCount);
-    m_table->setHorizontalHeaderLabels(QStringList() << "启用类型" << "指令名" << "新指令名" << "匹配方式");
+    m_table->setHorizontalHeaderLabels(QStringList() << "启用类型" << "指令名" << "新指令名" << "匹配方式" << "测试");
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(32);   // 要给下拉框留出行高
     m_table->setSelectionBehavior(QAbstractItemView::SelectItems);
@@ -107,6 +108,8 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     m_table->horizontalHeader()->setSectionResizeMode(ColKey, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColNewKey, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColType, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(ColTest, QHeaderView::Fixed);
+    m_table->setColumnWidth(ColTest, 66);
     rv->addWidget(m_table, 1);
 
     QHBoxLayout *btnRow = new QHBoxLayout;
@@ -115,6 +118,14 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
     m_followBtn->setVisible(false);
     btnRow->addWidget(m_followBtn);
     btnRow->addStretch();
+    // 一键测试：把**当前插件**的每一条指令都假跑一遍（每行的小「测试」只跑一条）
+    QPushButton *testAllBtn = new QPushButton("一键测试");
+    testAllBtn->setToolTip("把这个插件注册的每一条指令都假跑一遍，看哪条会把用户输入原样复读回去。\n"
+                           "匹配方式是「等于」的指令会跳过（那种正文只能是命令词本身），要验它就点该行的「测试」。\n"
+                           "启用类型是「禁用」的指令不会跑 —— 想单独关掉某条的测试，就把它设成「禁用」并保存。\n"
+                           "⚠ 会真的执行每一条指令（发话题 / 请求 AI / 写库都照做），"
+                           "只是它要说的话在发送入口被扣下，一条都发不出去。");
+    btnRow->addWidget(testAllBtn);
     QPushButton *saveBtn = new QPushButton("保存修改");
     btnRow->addWidget(saveBtn);
     rv->addLayout(btnRow);
@@ -134,6 +145,14 @@ RuleEditDialog::RuleEditDialog(PluginPage *page, int preselectIndex, QWidget *pa
             this, &RuleEditDialog::onBotChanged);
     connect(m_followBtn, &QPushButton::clicked, this, &RuleEditDialog::onFollowDefault);
     connect(saveBtn, &QPushButton::clicked, this, &RuleEditDialog::onSave);
+    // 一键测试：测的是左边当前选中的那个插件（整插件全测，结果在独立窗口里滚动显示）
+    connect(testAllBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_page || m_curPlugin < 0) {
+            QMessageBox::information(this, "一键测试", "请先在左边选一个插件。");
+            return;
+        }
+        m_page->testPluginCommands(m_curPlugin, m_curAppid, disabledRuleKeys());
+    });
 
     // 机器人下拉：第 0 项「默认（全部机器人）」= appid 0
     if (m_page) {
@@ -240,6 +259,29 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
         t->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         t->setData(Qt::UserRole, r.type);   // 保存时从这里取回枚举值
         m_table->setItem(i, ColType, t);
+
+        // 4 测试：只跑这一条（不去碰别的指令，免得一堆有副作用的指令一起被打一遍）
+        //   正文 = 命令词 +「测试测试测试」，插件想发出去的话在发送入口被扣下不发，
+        //   回复里出现这串 = 它把用户输入原样复读回去了。
+        QPushButton *testBtn = new QPushButton("测试");
+        testBtn->setCursor(Qt::PointingHandCursor);
+        testBtn->setStyleSheet("QPushButton { padding: 0px 8px; font-size: 12px; }");
+        testBtn->setToolTip("只测这一条：正文 = 指令 +「测试测试测试」，插件想发出去的话会被扣下不发，"
+                            "看回复里有没有把这串原样吐回来（有 = 该指令会复读用户输入）。\n"
+                            "⚠ 会真的执行一次（发话题 / 请求 AI / 写库都会照做，只是话发不出去）。\n"
+                            "这条的启用类型是「禁用」→ 不会跑（这就是「单独关掉某条指令测试」的开关）。\n"
+                            "用的是**已生效**的配置，表格里没点「保存修改」的改动不参与。");
+        {
+            const QString ruleKey  = r.key;
+            const int     ruleType = r.type;
+            connect(testBtn, &QPushButton::clicked, this, [this, ruleKey, ruleType]() {
+                if (!m_page || m_curPlugin < 0) return;
+                // m_curAppid 就是上面下拉选的那一档；disabledRuleKeys() 是表格此刻标成「禁用」的
+                // → 这一行要是被设成「禁用」，按了也不会跑（想测就先把它改回「全部人」）
+                m_page->testPluginCommand(m_curPlugin, ruleType, ruleKey, m_curAppid, disabledRuleKeys());
+            });
+        }
+        m_table->setCellWidget(i, ColTest, testBtn);
     }
 
     // 顶部提示：明确「现在改的是谁」
@@ -249,10 +291,16 @@ void RuleEditDialog::loadRowsForListRow(int listRow)
         : QString("默认（全部机器人）：所有没有单独配置过的机器人都跟这一套。");
     if (!allowRename) {
         m_tip->setText(scope + QString("\n共 %1 条指令；该插件是旧版（原生库没有 v3 入口，或插件信息里没带 sdk），"
-                                       "只能改「启用类型」，不支持重命名。").arg(rows.size()));
+                                       "只能改「启用类型」，不支持重命名。").arg(rows.size())
+                       + QStringLiteral("\n每行右边的「测试」只跑那一条，底部「一键测试」跑整个插件"
+                                        "（「等于」的指令一键测试时跳过；启用类型为「禁用」的一律不跑）："
+                                        "都会真的执行，但插件要说的话被扣下不会发出去。"));
     } else {
         m_tip->setText(scope + QString("\n共 %1 条指令；「启用类型」决定谁能用这条指令（默认全部人），"
-                                       "新指令名留空 = 不改名。保存后立即生效，无需重载插件。").arg(rows.size()));
+                                       "新指令名留空 = 不改名。保存后立即生效，无需重载插件。").arg(rows.size())
+                       + QStringLiteral("\n每行右边的「测试」只跑那一条，底部「一键测试」跑整个插件"
+                                        "（「等于」的指令一键测试时跳过；启用类型为「禁用」的一律不跑）："
+                                        "都会真的执行，但插件要说的话被扣下不会发出去。"));
     }
 }
 
@@ -263,6 +311,21 @@ void RuleEditDialog::onFollowDefault()
     loadRowsForListRow(m_pluginList->currentRow());
     m_tip->setText(QString("已删掉机器人「%1」的独立配置，重新跟随默认。")
                        .arg(m_botCombo->currentText()));
+}
+
+QStringList RuleEditDialog::disabledRuleKeys() const
+{
+    QStringList out;
+    if (!m_table) return out;
+    for (int i = 0; i < m_table->rowCount(); ++i) {
+        QComboBox *roleBox = qobject_cast<QComboBox *>(m_table->cellWidget(i, ColRole));
+        QTableWidgetItem *c1 = m_table->item(i, ColKey);
+        QTableWidgetItem *c3 = m_table->item(i, ColType);
+        if (!roleBox || !c1 || !c3) continue;
+        if (ruleRoleFromComboIndex(roleBox->currentIndex()) > kRuleRoleOff) continue;   // 只有「禁用」才算
+        out << QString::number(c3->data(Qt::UserRole).toInt()) + QChar(0x1f) + c1->text();
+    }
+    return out;
 }
 
 void RuleEditDialog::onSave()

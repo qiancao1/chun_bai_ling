@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QList>
+#include <QStringList>
 
 class PluginPage;
 class QListWidget;
@@ -12,7 +13,7 @@ class QComboBox;
 class QPushButton;
 
 // 「编辑指令」窗口：左边插件列表（点一下把数据加载到右边），
-// 右边一行一条：[启用类型] [指令名] [新指令名] [匹配方式] + 底部 [保存修改]。
+// 右边一行一条：[启用类型] [指令名] [新指令名] [匹配方式] + 底部 [一键测试] [保存修改]。
 //
 // 顶部还有一个**机器人下拉**：
 //   · 「默认（全部机器人）」—— 改的是所有机器人共用的那一套（含指令改名）；
@@ -36,6 +37,9 @@ private slots:
 private:
     void reloadPluginList(int preselectIndex);
     void loadRowsForListRow(int listRow);
+    // 表格里**此刻**标成「禁用」的条目（"<匹配方式>\x1f<注册原名>"）—— 直接读下拉，含还没保存的改动。
+    // 交给 PluginPage 的测试接口 → 这些指令一律不跑（「单独关掉某条指令的测试」的开关）。
+    QStringList disabledRuleKeys() const;
 
     PluginPage   *m_page       = nullptr;
     QListWidget  *m_pluginList = nullptr;

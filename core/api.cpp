@@ -26,6 +26,7 @@
 #include <QRandomGenerator>
 #include <qwaitcondition.h>
 #include <string>
+#include <cstring>
 #include "global.h"
 #include <QFile>
 #include <QCryptographicHash>
@@ -475,7 +476,10 @@ static Callback pluginAsyncCb(const char *_7)
 }
 
 
-// 主回调函数
+// Python 入口（pybind11 绑的就是它）。
+//   `release` 是局部 RAII：myCallback 先跑完 → release 析构、**重新拿回 GIL** → 然后 pybind11
+//   才 decode 成 str。顺序不能变，否则就是无 GIL 调 Python C API。
+//   返回值直接透传 myCallback 的 TLS 指针：pybind 会立刻拷成 Python str，拷完就不再用。
 const char* myCallbackA(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
                        const char* _6, const char* _7, const char* _8)
@@ -483,11 +487,28 @@ const char* myCallbackA(const char* uuid, int apiId, int appid, const char* _1, 
     py::gil_scoped_release release;
     return myCallback(uuid,apiId,appid,_1,_2,_3,_4,_5,_6,_7,_8);
 }
-const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
+// 真正的实现：内部用 thread_local 缓冲拼结果，返回的是 **TLS 裸指针**（框架持有、只读）。
+// 本函数不直接对外 —— 交给插件的是下面的 myCallback，它只做两件事：透传指针、
+// 给「同步就返回」的结果补一次异步回执投递（理由见那里）。
+static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
                        const char* _3, const char* _4, const char* _5,
                        const char* _6, const char* _7, const char* _8) {
-    static std::string result="{}"; //静态
-    result="{}"; //初始化
+    // ⚠⚠ 必须是 thread_local，不能用进程级 static —— 本函数是**真并发**入口：
+    //   · JS 插件：node_plugin_manager 用 QThreadPool::globalInstance()->start() 在 worker 线程里调；
+    //   · Python：myCallbackA 先 py::gil_scoped_release，多个 Python 线程可以真并发进来；
+    //   · 上传 / 异步回执：也都在 worker 线程。
+    //   进程级 static 的后果不只是"内容被覆盖"：A 线程执行 result = 大 JSON 触发 realloc 时，
+    //   旧缓冲被释放，B 线程手里刚拿到的 c_str() 会**立刻悬空**（读到已释放内存）。
+    //   thread_local 之后每线程各一份，谁也不会覆盖谁；返回的指针就是交给调用方的那个（只读）。
+    //   契约：**框架持有，调用方只读、不释放**；有效期 = 本线程下一次调用，线程退出即销毁。
+    //   所有调用方都是"拿到就拷"（pybind / QString::fromUtf8 / std::string / 各语言 SDK），
+    //   所以这个有效期从来不是问题；也正因为不分配，旧插件不可能泄漏。
+    //   ⚠ 别被写法骗了：`static thread_local` 里的 static **不是**「全局一份」，它只表示存储期；
+    //     真正起作用的是 thread_local —— 每个线程**各自**一个独立的 std::string，互不覆盖、互不 realloc。
+    //     （这里必须带 static：下面 11 个出口都是 `return result.c_str()`，局部变量在 return 时析构，
+    //       返回的指针会立刻悬空，所以它的生命周期必须比函数调用长。）
+    static thread_local std::string result="{}";
+    result="{}"; //初始化（只清内容，capacity 保留）
      //qDebug() << "apiid:"<< apiId << " appid:"<< appid << " _1:" << _1 << "_2" <<_2 << "_3"<<_3 << "_4"<<_4 << "_5"<<_6 << "_7"<<_7 ;
     if (apiId == 10000) {
         miaomiao32 = 0;
@@ -531,9 +552,28 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
             return result.c_str();//这里
         }
     }else{
-        pname = "[关键词匹配|%1ms]";
+        pname = "[私有指令|%1ms]";
     }
     if(pname.isEmpty()) return result.c_str();
+
+    // ── 插件测试（插件页「测试插件」按钮）：正在测的那个插件发的「文本 / 卡片」一律扣下 ──
+    //   插件想说出去的话就是判断「有没有复读用户输入」的证据，这里存进测试收集表后
+    //   直接当发送成功返回 —— 不 POST、不写日志、一个字都不出这台机器。
+    //   ⚠ 必须放在下面的「bot 在线检查」**之前**：测试不该要求机器人已登录，
+    //     否则用户为了查一句复读还得先掉线重连一次。
+    //   ⚠ 归属：优先按 msgid 里的 "|T<序号>|" 认（见 pluginTestMsgId），
+    //     插件没把 msgid 回传时由收集器退化成「当前正在测的那条」。
+    if ((apiId == API_ID_SEND_MESSAGES || apiId == API_ID_SEND_MESSAGES_ARK) && pluginTestActive()) {
+        if (pluginTestIntercept(toQString(uuid), toQString(_4), toQString(_3))) {
+            // Python SDK 的 *_async 在等回执：给一个和真发送成功一样的 "{}"，别让协程挂到超时。
+            const QString testReqId = toQString(_7);
+            if (!testReqId.isEmpty())
+                deliverPluginAsyncResult(testReqId, QStringLiteral("{}"));
+            result = "{}";
+            return result.c_str();
+        }
+    }
+
     QQBotClient *client=nullptr;
     if(apiId!=OUTLOG && apiId!=API_ID_BOT_LIST && apiId!=API_ID_PYTHON_HTTP && apiId!=API_ID_HTMLIMG1 && apiId!=API_ID_HTMLIMG2 && apiId!=API_ID_AI)
     {
@@ -959,6 +999,22 @@ const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, c
 
     return result.c_str();
 }
+
+// 对外入口（get_plugin_info 交给插件的那个函数指针就是它）。
+//   直接透传 impl 的指针：**框架持有、调用方只读、不释放**（契约见文件开头的说明）。
+const char* myCallback(const char* uuid, int apiId, int appid, const char* _1, const char* _2,
+                       const char* _3, const char* _4, const char* _5,
+                       const char* _6, const char* _7, const char* _8) {
+    const char* r = myCallbackImpl(uuid, apiId, appid, _1, _2, _3, _4, _5, _6, _7, _8);
+    // Python SDK 的 *_async 把 req_id 塞在 _7 等回执。**凡是「同步就返回」的结果必须当场投递一次**，
+    // 否则协程会一直等到 60 秒超时才拿到一个假的 timeout —— 而真正的错误（bot不在线 / client没找到 /
+    // 发送类型错误 / pname 为空 …）全都在这条早退路径上，永远不会回调。
+    // 真异步路径返回的是 "{}"（sendMessagesAsyncCore 末尾），回执稍后由发送完成回调投递 → 跳过，不重复。
+    if (_7 != nullptr && _7[0] != '\0' && r != nullptr && std::strcmp(r, "{}") != 0)
+        deliverPluginAsyncResult(toQString(_7), toQString(r));
+    return r;
+}
+
 
 
 

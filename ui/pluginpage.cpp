@@ -2153,6 +2153,563 @@ int PluginPage::invokeToolCommand(const QString &pluginId, const QString &plugin
     return -1;
 }
 
+// ==================== 测试插件：查每条指令会不会复读用户输入 ====================
+// 判据（用户定的）：测试正文 = 「指令 + 探测串」，插件回复里出现探测串 = 它把用户打的内容
+// 原样吐回来了。只对「开头是 / 结尾是 / 包含（寻找文本）」三种标复读；
+// 等于 / 正则 / 事件 照样跑、照样显示回复，但不判复读（等于的正文里根本没有探测串）。
+static QString pluginTestProbe() { return QStringLiteral("测试测试测试"); }
+
+static QString pluginTestMatchTypeName(int t)
+{
+    switch (static_cast<MatchType>(t)) {
+    case MatchType::Equals:     return QStringLiteral("等于");
+    case MatchType::StartsWith: return QStringLiteral("开头是");
+    case MatchType::EndsWith:   return QStringLiteral("结尾是");
+    case MatchType::Contains:   return QStringLiteral("包含/寻找文本");
+    case MatchType::Regex:      return QStringLiteral("正则");
+    case MatchType::event:      return QStringLiteral("事件");
+    }
+    return QStringLiteral("未知(%1)").arg(t);
+}
+
+// 这条指令的测试正文怎么造（要能被它自己的匹配方式命中，否则测了个寂寞）：
+//   等于   → 只能发命令词本身（多一个字就不匹配，正文里也就没有探测串）
+//   结尾是 → 探测串在前、命令词在后才能命中
+//   事件   → 事件规则比的是消息类型，正文塞什么都不会错
+//   其它   → 命令词 + 空格 + 探测串（开头是 / 包含 / 正则 都能命中）
+static QString pluginTestBodyFor(int matchType, const QString &cmd)
+{
+    const QString probe = pluginTestProbe();
+    switch (static_cast<MatchType>(matchType)) {
+    case MatchType::Equals:   return cmd;
+    case MatchType::EndsWith: return probe + QLatin1Char(' ') + cmd;
+    case MatchType::event:    return probe;
+    default:                  return cmd + QLatin1Char(' ') + probe;
+    }
+}
+
+// 给插件看的「消息帧」：结构照真实入站帧拼（就是用户贴的那种 GROUP_MESSAGE_CREATE），
+// id 一律用测试 msgid —— 插件若把 id 原样带回来发消息，正好在发送入口被认出是测试、扣下来。
+static QString buildPluginTestFrame(const MessageEvent &ev)
+{
+    QJsonObject d;
+    d["id"]           = ev.msgId;
+    d["content"]      = ev.msg;
+    d["group_openid"] = ev.groupId;
+    d["group_id"]     = ev.groupId;
+    d["message_type"] = 0;
+    d["timestamp"]    = QDateTime::currentDateTime().toString(Qt::ISODate);
+    d["mentions"]     = QJsonValue::Null;
+    d["msg_elements"] = QJsonValue::Null;
+    {
+        // 引用/场景信息也补一份空壳：插件爱拿 message_scene.ext 去拼引用，缺字段容易报 key 不存在
+        QJsonObject scene;
+        scene["source"] = QStringLiteral("default");
+        scene["ext"]    = QJsonArray();
+        d["message_scene"] = scene;
+    }
+    {
+        QJsonObject author;
+        author["id"]            = ev.user;
+        author["member_openid"] = ev.user;
+        author["union_openid"]  = ev.user;
+        author["username"]      = ev.nickname;
+        author["member_role"]   = QStringLiteral("owner");
+        d["author"] = author;
+    }
+
+    QJsonObject p;
+    p["t"]           = ev.msgType;
+    p["d"]           = d;
+    p["id"]          = ev.msgId;
+    p["appid"]       = ev.appid;
+    p["user_id"]     = ev.user_int;
+    p["type"]        = ev.type;
+    p["member_role"] = ev.member_role;
+    p["at_you"]      = ev.at_you;
+    p["op"]          = 0;
+    p["s"]           = 4;
+    p["username"]    = ev.nickname;
+    return QString::fromUtf8(QJsonDocument(p).toJson(QJsonDocument::Compact));
+}
+
+void PluginPage::testPluginCommands(int index, int cfgAppid, const QStringList &forceOffKeys)
+{
+    // 全测：整台插件的每条指令都跑一遍（跳过「等于」和被禁用的）
+    runPluginTest(index, QString(), -1, cfgAppid, forceOffKeys);
+}
+
+void PluginPage::testPluginCommand(int index, int matchType, const QString &key, int cfgAppid,
+                                   const QStringList &forceOffKeys)
+{
+    // 只测一条（编辑指令窗口每行的「测试」按钮）
+    runPluginTest(index, key, matchType, cfgAppid, forceOffKeys);
+}
+
+// onlyKey 非空 = 只跑「这个注册原名 + 这个匹配方式」的那一条；空 = 整个插件全跑。
+// cfgAppid     = 按哪个机器人解析「启用类型 / 新指令名」（0 = 默认档，即编辑指令表格里那一套）。
+// forceOffKeys = 表格里当下标成「禁用」的条目（"<匹配方式>\x1f<注册原名>"，含未保存改动）→ 一律不测。
+void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, int cfgAppid,
+                               const QStringList &forceOffKeys)
+{
+    const bool single = !onlyKey.isEmpty();
+    if (index < 0 || index >= m_pluginList.size()) return;
+    PluginInfo &p = m_pluginList[index];
+    const QString pname   = p.name;
+    const QString version = p.version;
+
+    if (!p.enabled) {
+        QMessageBox::information(this, "测试插件",
+                                 QStringLiteral("插件「%1」现在是停用状态，先启用再测。").arg(pname));
+        return;
+    }
+    // 上一次测试还没收工（异步回复的收集窗口没结束）→ 别叠加：
+    // begin 会把上一轮的收集表清掉，两边都乱。
+    if (pluginTestActive()) {
+        QMessageBox::information(this, "测试插件",
+                                 QStringLiteral("上一次测试还没收工（还在等异步回复），等两秒再试。"));
+        return;
+    }
+
+    // 规则表：三种插件的结构同构（type / key / newKey / role），只是成员名不同
+    const int ruleCount = (p.type == 0) ? p.python.rules.size()
+                        : (p.type == 3) ? p.js.rules.size()
+                                        : p.DLL.rules.size();
+    if (ruleCount <= 0) {
+        QMessageBox::information(this, "测试插件",
+                                 QStringLiteral("插件「%1」没有注册任何指令，没什么可测的。").arg(pname));
+        return;
+    }
+    // 单条测试：先确认这条规则还在（窗口开着的时候插件可能被重载过）
+    if (single) {
+        bool found = false;
+        if (p.type == 0) {
+            for (const Rule &r : std::as_const(p.python.rules))
+                if (r.key == onlyKey && static_cast<int>(r.type) == onlyType) { found = true; break; }
+        } else if (p.type == 3) {
+            for (const Rule_js &r : std::as_const(p.js.rules))
+                if (r.key == onlyKey && static_cast<int>(r.type) == onlyType) { found = true; break; }
+        } else {
+            for (const Rule_Dll &r : std::as_const(p.DLL.rules))
+                if (r.key == onlyKey && static_cast<int>(r.type) == onlyType) { found = true; break; }
+        }
+        if (!found) {
+            QMessageBox::information(this, "测试插件",
+                                     QStringLiteral("插件里找不到这条指令（插件可能已更新或重载过），"
+                                                    "关掉「编辑指令」窗口重新打开再看。"));
+            return;
+        }
+    }
+#ifdef _WIN32
+    if (p.type == 2 && !bridge) {
+        QMessageBox::information(this, "测试插件",
+                                 QStringLiteral("这是 32 位（易语言）插件，但 miaomiao32 没在运行，调不到它。"));
+        return;
+    }
+#else
+    if (p.type == 2) {
+        QMessageBox::information(this, "测试插件", QStringLiteral("当前平台不支持 32 位插件。"));
+        return;
+    }
+#endif
+    if (p.uuid.isEmpty()) {
+        QMessageBox::information(this, "测试插件", QStringLiteral("插件还没加载完成（uuid 为空）。"));
+        return;
+    }
+
+    // 开闸：从这一刻起，这个插件想发出去的话都会被扣在发送入口（core/api.cpp），
+    // 一条都不出这台机器。收尾在下面的定时器里，窗口被提前关掉也照样收。
+    pluginTestBegin(p.uuid);
+
+    // ---- 造一条「假消息」 ----
+    //   appid：编辑指令窗口里选了具体机器人 → 就用它（这样「按机器人」的禁用/改名跟表格一致）；
+    //          选的是「默认（全部机器人）」→ 取第一个在线机器人（只影响插件自己发消息的目标）；
+    //   member_role 用 1（超管）→ 连「只给管理员用」的指令也能测到，不会白白漏掉。
+    int appid = cfgAppid;
+    if (appid <= 0) {
+        for (const auto &acc : std::as_const(m_accounts)) {
+            if (acc && acc->online) { appid = acc->appid_int; break; }
+        }
+        if (appid == 0 && !m_accounts.isEmpty() && m_accounts.first())
+            appid = m_accounts.first()->appid_int;
+    }
+
+    const QString probe = pluginTestProbe();
+
+    MessageEvent base;
+    base.type        = 0;                                    // 群消息
+    base.msgType     = QStringLiteral("GROUP_AT_MESSAGE_CREATE");
+    base.appid       = appid;
+    base.groupId     = QStringLiteral("TEST_GROUP_OPENID");   // 显眼是假值：插件拿它查库也一眼看得出
+    base.user        = QString(32, QChar('0'));
+    base.user_int    = 1;
+    base.nickname    = QStringLiteral("插件测试");
+    base.groupname   = QStringLiteral("插件测试群");
+    base.member_role = 1;                                    // 1 = 超管（数值越小权限越高）
+    base.at_you      = true;
+
+    // ---- 结果窗口 ----
+    QDialog *dlgRaw = new QDialog(this);
+    dlgRaw->setWindowTitle(single ? QStringLiteral("测试指令 - %1").arg(pname)
+                                  : QStringLiteral("测试插件 - %1").arg(pname));
+    dlgRaw->resize(single ? 760 : 840, single ? 470 : 620);
+    dlgRaw->setAttribute(Qt::WA_DeleteOnClose);
+    dlgRaw->setModal(true);       // 模态但走 show()：代码继续跑，界面照常重绘
+    QPointer<QDialog> dlg(dlgRaw);
+
+    // 收异步回复的窗口：单条 2 秒、全测 3 秒（本工程其它等待同样是 3 秒硬上限）
+    const int waitMs = single ? 2000 : 3000;
+
+    QVBoxLayout *lay = new QVBoxLayout(dlgRaw);
+    QLabel *titleLab = new QLabel(single
+                                      ? QStringLiteral("正在测试「%1」的这一条指令…").arg(pname)
+                                      : QStringLiteral("正在测试「%1」的 %2 条指令…").arg(pname).arg(ruleCount),
+                                  dlgRaw);
+    lay->addWidget(titleLab);
+
+    QPlainTextEdit *log = new QPlainTextEdit(dlgRaw);
+    log->setReadOnly(true);
+    {
+        QFont mono("Consolas");
+        mono.setStyleHint(QFont::Monospace);
+        log->document()->setDefaultFont(mono);
+    }
+    lay->addWidget(log, 1);
+
+    QPushButton *closeBtn = new QPushButton("关闭", dlgRaw);
+    connect(closeBtn, &QPushButton::clicked, dlgRaw, &QDialog::close);
+    lay->addWidget(closeBtn);
+    dlgRaw->show();
+
+    QPointer<QPlainTextEdit> logPtr = log;
+    // 这次按哪一档配置解析「启用类型 / 新指令名」——与编辑指令窗口顶部那个机器人下拉是同一档
+    QString cfgLabel = QStringLiteral("默认（全部机器人）");
+    if (cfgAppid > 0) {
+        for (const auto &acc : std::as_const(m_accounts)) {
+            if (acc && acc->appid_int == cfgAppid) {
+                cfgLabel = acc->nickname.isEmpty() ? QString::number(cfgAppid) : acc->nickname;
+                break;
+            }
+        }
+    }
+    log->setPlainText(QStringLiteral(
+        "插件：%1  v%2  （%3）\n"
+        "配置档：%7\n"
+        "%4\n\n"
+        "测试正文 = 指令 + 「%5」，插件回复里出现「%5」就说明它把用户打的内容原样复读回去了。\n"
+        "⚠ 这条指令会被**真的执行一次**（会发话题 / 请求 AI / 写库的都会照做，只是它要说的话被扣下不发）。\n"
+        "（执行完等 %6 秒收异步回复，别关窗口）")
+        .arg(pname, version,
+             (p.type == 0 ? "Python" : p.type == 1 ? "DLL" : p.type == 2 ? "DLL32" : "JS"),
+             single ? QStringLiteral("只测你点的那一条。")
+                    : QStringLiteral("共 %1 条指令，正在逐条假跑…\n"
+                                     "（匹配方式是「等于」的指令全测时跳过，要单独跑就点它那行的「测试」；\n"
+                                     "  启用类型是「禁用」的指令一律不跑）")
+                          .arg(ruleCount))
+        .arg(probe).arg(waitMs / 1000).arg(cfgLabel));
+    QCoreApplication::processEvents();   // 先把窗口画出来再开跑，否则一口气跑完才见窗
+
+    // ---- 逐条测试 ----
+    struct Row {
+        int         type = 0;        // MatchType 整数
+        QString     cmd;             // 生效命令词（改过名就是新名）
+        QString     body;            // 送进去的测试正文
+        bool        matched = false;
+        bool        skippedEquals = false; // 全测时因为匹配方式是「等于」被跳过（不算命中、不算异常）
+        bool        checkEcho = false;   // 这条要不判复读（只有开头是/结尾是/包含要判）
+        bool        echoed = false;
+        QString     note;            // 跳过 / 未命中 / 异常的原因
+        QStringList replies;         // 同步返回值 + 被扣下的发送
+    };
+    QList<Row> rows;
+
+    const QString cfgKey = p.id.isEmpty() ? p.name : p.id;
+
+    // 「编辑指令」窗口里**当下**标成「禁用」的条目（含还没点保存的改动）→ 一律不测。
+    // 这就是「单独关掉某条指令的测试」的开关：把它的启用类型设成「禁用」，就测不到了。
+    auto isForceOff = [&forceOffKeys](int type, const QString &key) {
+        return forceOffKeys.contains(QString::number(type) + QChar(0x1f) + key);
+    };
+
+    // 统一遍历：ruleList 是三种结构之一，matchFn / invokeFn 各自适配。
+    auto walk = [&](auto &ruleList, auto matchFn, auto invokeFn) {
+        for (const auto &rule : std::as_const(ruleList)) {
+            // 单条测试：只留点的那一条（注册原名 + 匹配方式都对上），其余直接跳过 —— 不调、不拦、不记
+            if (single && (rule.key != onlyKey || static_cast<int>(rule.type) != onlyType))
+                continue;
+
+            Row row;
+            row.type = static_cast<int>(rule.type);
+
+            int role = rule.role;            // in-out：会被「按机器人」的覆盖改写
+            QString nk = rule.newKey;
+            botRuleOverrideOf(cfgAppid, cfgKey, row.type, rule.key, role, nk);
+            row.cmd = ruleMatchKey(rule.key, nk);
+            row.body = pluginTestBodyFor(row.type, row.cmd);
+            row.checkEcho = (row.type == static_cast<int>(MatchType::StartsWith)
+                          || row.type == static_cast<int>(MatchType::EndsWith)
+                          || row.type == static_cast<int>(MatchType::Contains));
+
+            // 启用类型 = 禁用 → 一律不测（这就是「单独关掉某条指令的测试」的开关：
+            // 在「启用类型」列把它设成「禁用」，一键测试和这一行的「测试」都不会跑它；
+            // 表格里改了但还没点保存也算数 —— 眼前显示禁用就不该真跑）。
+            const bool offByTable = isForceOff(row.type, rule.key);
+            if (role <= kRuleRoleOff || offByTable) {
+                row.note = single
+                    ? QStringLiteral("已停用（启用类型是「禁用」）：想测就把它改回「全部人」再点「测试」")
+                    : (offByTable && role > kRuleRoleOff
+                           ? QStringLiteral("已停用（表格里设成了「禁用」，还没保存也照样不跑）")
+                           : QStringLiteral("已停用（启用类型设成了「禁用」）"));
+                rows.append(row);
+                continue;
+            }
+            if (!ruleRoleMatched(role, base.member_role)) {
+                row.note = QStringLiteral("权限限制（启用类型：%1，测试身份是超管）").arg(ruleRoleName(role));
+                rows.append(row);
+                continue;
+            }
+
+            // 一键全测时「等于」的指令直接跳过：这种指令的正文只能是命令词本身（多一个字就不匹配），
+            // 测它等于拿真实数据白调一次有副作用的逻辑、价值最低。
+            // 要单独验某一条，点它那行的「测试」按钮（单条测试不做这个跳过）。
+            if (!single && row.type == static_cast<int>(MatchType::Equals)) {
+                row.skippedEquals = true;
+                row.note = QStringLiteral("跳过（匹配方式是「等于」，要点它那行的「测试」才单独跑）");
+                rows.append(row);
+                continue;
+            }
+
+            MessageEvent one = base;
+            one.msg   = row.body;
+            if (row.type == static_cast<int>(MatchType::event))
+                one.msgType = row.cmd;                                  // 事件规则比的是消息类型
+            one.msgId = pluginTestMsgId(rows.size(), QStringLiteral("TEST_MSG_%1").arg(rows.size()));
+
+            if (!matchFn(rule, one, role, nk)) {
+                row.note = QStringLiteral("未命中（这条指令不响应这种输入）");
+                rows.append(row);
+                continue;
+            }
+            row.matched = true;
+
+            pluginTestSetSeq(rows.size());    // 插件没回传 msgid 时，扣下的正文按这个序号归属
+            // 插件那边的异常别把整轮测试打断：一条出事只标一条，剩下的继续测
+            try {
+                invokeFn(rule, one, nk, row);
+            } catch (const std::exception &e) {
+                row.note = QStringLiteral("调用异常：%1").arg(QString::fromUtf8(e.what()));
+            } catch (...) {
+                row.note = QStringLiteral("调用异常（未知类型）");
+            }
+            rows.append(row);
+        }
+    };
+
+    // Python：直接调处理函数；同步 return 的文本就是「它想发的话」（框架平时也是代发这个）
+    auto invokePy = [&](const Rule &rule, MessageEvent &one, const QString &, Row &row) {
+        if (!rule.function) { row.note = QStringLiteral("插件函数未就绪"); return; }
+        try {
+            py::gil_scoped_acquire gil;
+            py::object ret = rule.wantsCmd ? rule.function(one, row.cmd.toStdString())
+                                           : rule.function(one);
+            if (!ret.is_none() && !m_asyncio_mod.is_none() &&
+                m_asyncio_mod.attr("iscoroutine")(ret).cast<bool>()) {
+                if (!m_run_coro_func.is_none() && !m_loop.is_none())
+                    m_run_coro_func(ret, m_loop);
+                row.note = QStringLiteral("协程已投递（回复迟到属正常）");
+                return;
+            }
+            if (!ret.is_none() && py::isinstance<py::str>(ret))
+                row.replies << QString::fromStdString(py::str(ret).cast<std::string>());
+        } catch (const py::error_already_set &e) {
+            row.note = QStringLiteral("Python 异常：%1").arg(QString::fromUtf8(e.what()));
+        } catch (const std::exception &e) {
+            row.note = QStringLiteral("异常：%1").arg(QString::fromUtf8(e.what()));
+        }
+    };
+
+    // 原生库：与 dispatch_message 同一套优先级（v3 → v2 → 旧版），v3 的返回值就是要发的话
+    auto invokeDll = [&](const Rule_Dll &rule, MessageEvent &one, const QString &, Row &row) {
+        const QByteArray frame = buildPluginTestFrame(one).toUtf8();
+        const QByteArray eff   = row.cmd.toUtf8();
+        if (p.DLL.onMessage3) {
+            const char *ret = p.DLL.onMessage3(frame.constData(), rule.fun, eff.constData());
+            if (ret && *ret) row.replies << QString::fromUtf8(ret);   // 插件持有这块内存，框架只读
+        } else if (p.DLL.onMessage2) {
+            p.DLL.onMessage2(frame.constData(), rule.fun);
+        } else if (p.DLL.onMessage) {
+            p.DLL.onMessage(frame.data());
+        } else {
+            row.note = QStringLiteral("插件没有可调用的消息入口");
+        }
+    };
+
+    // JS：投给 node 宿主，插件自己 send_message → 在发送入口被扣下
+    auto invokeJs = [&](const Rule_js &rule, MessageEvent &one, const QString &, Row &row) {
+        QJsonObject item;
+        item["uuid"] = p.uuid;
+        QJsonArray funs, cmds;
+        funs.append(rule.fun);
+        cmds.append(row.cmd);
+        item["funs"] = funs;
+        item["cmds"] = cmds;
+        QJsonArray items;
+        items.append(item);
+        NodePluginManager::instance().postEventBatchAsync(items, "on_message",
+                                                          buildPluginTestFrame(one), QString());
+        row.note = QStringLiteral("已投递给 JS 宿主（异步）");
+    };
+
+#ifdef _WIN32
+    // 32 位（易语言）：和 dispatch_message 一样把命中项并进帧顶层 plugins[] 投过去，
+    // ⚠ 它那边是**异步**的（走共享内存 + 线程池），回复可能晚到，也可能串到下一条，仅供参考。
+    auto invoke32 = [&](const Rule_Dll &rule, MessageEvent &one, const QString &, Row &row) {
+        if (!bridge) { row.note = QStringLiteral("32 位模块没在运行"); return; }
+        QJsonObject doc = QJsonDocument::fromJson(buildPluginTestFrame(one).toUtf8()).object();
+        if (doc.isEmpty()) { row.note = QStringLiteral("构造 32 位消息帧失败"); return; }
+        QJsonObject item;
+        item["uuid"]  = p.uuid;
+        item["fun"]   = double(rule.fun);
+        item["fun_s"] = QString::number(rule.fun);
+        item["cmd"]   = row.cmd;
+        item["text"]  = row.body;
+        QJsonArray arr;
+        arr.append(item);
+        doc["plugins"] = arr;
+        bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData());
+        row.note = QStringLiteral("已投递 32 位（异步，回复可能晚到/串台）");
+    };
+#endif
+
+    if (p.type == 0) {
+        walk(p.python.rules,
+             [](const Rule &r, const MessageEvent &e, int role, const QString &nk) { return matchRule(r, e, role, nk); },
+             invokePy);
+    } else if (p.type == 3) {
+        walk(p.js.rules,
+             [](const Rule_js &r, const MessageEvent &e, int role, const QString &nk) { return matchRule3(r, e, role, nk); },
+             invokeJs);
+    } else {
+#ifdef _WIN32
+        if (p.type == 2)
+            walk(p.DLL.rules,
+                 [](const Rule_Dll &r, const MessageEvent &e, int role, const QString &nk) { return matchRule2(r, e, role, nk); },
+                 invoke32);
+        else
+#endif
+            walk(p.DLL.rules,
+                 [](const Rule_Dll &r, const MessageEvent &e, int role, const QString &nk) { return matchRule2(r, e, role, nk); },
+                 invokeDll);
+    }
+
+    // 后面到的消息不再按「当前条」归属（各条已经有自己的序号了）
+    pluginTestSetSeq(-1);
+
+    // ---- 到点汇总（异步回复的窗口；单条 2 秒、全测 3 秒）----
+    QTimer::singleShot(waitMs, this, [this, dlgPtr = dlg, logPtr, titlePtr = QPointer<QLabel>(titleLab),
+                                      rows, pname, version, probe, ptype = p.type, single, cfgLabel]() mutable {
+        // 先把异步落进来的正文并进各条（按序号取，取完清）
+        for (int i = 0; i < rows.size(); ++i)
+            rows[i].replies += pluginTestTakeTexts(i);
+        pluginTestEnd();
+        if (!logPtr) return;                 // 用户提前把窗口关了：该收的尾已经收了
+
+        int hit = 0, echoed = 0, replied = 0, skipCount = 0;
+        for (Row &r : rows) {
+            if (r.skippedEquals) { ++skipCount; continue; }
+            if (!r.matched) continue;
+            ++hit;
+            // 回复 = 同步返回值 + 被扣下的发送；判复读只看「要不要判」的那几种
+            if (!r.replies.isEmpty()) ++replied;
+            if (r.checkEcho) {
+                for (const QString &t : std::as_const(r.replies)) {
+                    if (t.contains(probe)) { r.echoed = true; break; }
+                }
+            }
+            if (r.echoed) ++echoed;
+        }
+
+        auto clip = [](const QString &s) {
+            QString t = s;
+            t.replace("\r\n", "\n"); t.replace('\n', QStringLiteral(" ⏎ "));
+            if (t.size() > 240) t = t.left(240) + QStringLiteral(" …（截断）");
+            return t;
+        };
+
+        QStringList out;
+        out << QStringLiteral("插件：%1  v%2  （%3）")
+                   .arg(pname, version,
+                        (ptype == 0 ? "Python" : ptype == 1 ? "DLL" : ptype == 2 ? "DLL32" : "JS"));
+        out << QStringLiteral("配置档：%1").arg(cfgLabel);
+        out << QStringLiteral("共 %1 条指令 · 命中 %2 · 有回复 %3 · 复读 %4%5")
+                   .arg(rows.size()).arg(hit).arg(replied).arg(echoed)
+                   .arg(skipCount > 0 ? QStringLiteral(" · 跳过(等于) %1").arg(skipCount) : QString());
+        out << QStringLiteral("测试正文 = 指令 + 「%1」；只对 开头是/结尾是/包含 判复读。").arg(probe);
+        out << QString();
+
+        // 1) 复读（重点）
+        out << QStringLiteral("========== ⚠ 复读：把用户输入原样发回来了（%1 条）==========").arg(echoed);
+        {
+            int n = 0;
+            for (const Row &r : std::as_const(rows)) {
+                if (!r.echoed) continue;
+                out << QStringLiteral("%1. [%2] %3").arg(++n).arg(pluginTestMatchTypeName(r.type), r.cmd);
+                out << QStringLiteral("   送进去：%1").arg(clip(r.body));
+                for (const QString &t : std::as_const(r.replies))
+                    out << QStringLiteral("   回  复：%1").arg(clip(t));
+            }
+            if (n == 0) out << QStringLiteral("（没有：这些指令都没有把用户内容吐回来）");
+        }
+        out << QString();
+
+        // 2) 有回复但不复读
+        out << QStringLiteral("========== 有回复（回复里不含探测串）==========");
+        {
+            int n = 0;
+            for (const Row &r : std::as_const(rows)) {
+                if (r.echoed || r.replies.isEmpty()) continue;
+                out << QStringLiteral("%1. [%2] %3").arg(++n).arg(pluginTestMatchTypeName(r.type), r.cmd);
+                out << QStringLiteral("   送进去：%1").arg(clip(r.body));
+                for (const QString &t : std::as_const(r.replies))
+                    out << QStringLiteral("   回  复：%1").arg(clip(t));
+                if (!r.note.isEmpty()) out << QStringLiteral("   备  注：%1").arg(r.note);
+            }
+            if (n == 0) out << QStringLiteral("（无）");
+        }
+        out << QString();
+
+        // 3) 其它（未命中 / 跳过 / 异常）
+        out << QStringLiteral("========== 未命中 / 跳过 / 异常 ==========");
+        {
+            int n = 0;
+            QStringList eqSkipped;                          // 「等于」被跳过的，收成一行，别刷屏
+            for (const Row &r : std::as_const(rows)) {
+                if (!r.replies.isEmpty()) continue;            // 有回复的在上面两段已经列过
+                if (r.skippedEquals) { eqSkipped << r.cmd; continue; }
+                out << QStringLiteral("%1. [%2] %3 —— %4")
+                           .arg(++n).arg(pluginTestMatchTypeName(r.type), r.cmd,
+                                r.note.isEmpty() ? QStringLiteral("命中但没回话") : r.note);
+            }
+            if (n == 0) out << QStringLiteral("（无）");
+            if (!eqSkipped.isEmpty()) {
+                out << QString();
+                out << QStringLiteral("—— 另有 %1 条「等于」指令按设置跳过（全测不跑）：%2")
+                           .arg(eqSkipped.size()).arg(eqSkipped.join(QStringLiteral("、")));
+            }
+        }
+
+        if (logPtr) logPtr->setPlainText(out.join('\n'));
+        if (titlePtr) {
+            titlePtr->setText(single
+                                  ? QStringLiteral("测试完成：「%1」这条指令 %2")
+                                        .arg(pname, echoed > 0 ? QStringLiteral("会复读用户输入 ⚠")
+                                                               : QStringLiteral("没有复读"))
+                                  : QStringLiteral("测试完成：「%1」共 %2 条指令，命中 %3，复读 %4")
+                                        .arg(pname).arg(rows.size()).arg(hit).arg(echoed));
+        }
+    });
+}
+
 //选中列表
 void PluginPage::onPluginSelected(int row)
 {

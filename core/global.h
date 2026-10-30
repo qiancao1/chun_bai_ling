@@ -242,6 +242,30 @@ QString toolGateMsgId(int token, const QString &realMsgId); // 拼 "|-token|真�
 int  toolGateTokenFromMsgId(const QString &msgid);       // 反解 token（不是本机制的 = 0）
 bool toolGateIntercept(int token, const QString &text);  // 发送入口调；命中=true（别发了）
 QStringList toolGateWait(int token, int waitMs, int quietMs); // 阻塞等被扣下的正文
+
+// ================== 插件测试（插件页「测试插件」按钮）：发送拦截 ==================
+// 目的：把某个插件的**每一条指令**都「假跑」一遍，看它会不会把用户输入原样复读回来。
+// 与上面那套 toolGate 是**互相独立**的两套（可以同时在跑，互不干扰）：
+//   1) 测试开始 pluginTestBegin(插件 uuid) —— 只拦**这个插件**发出的消息（别的插件照常发）；
+//   2) 每条指令测试前 pluginTestSetSeq(i)，交给插件的 msgid 用 pluginTestMsgId(i, 真实id)
+//      打成 "|T<i>|<真实 msgid>"：splitWrappedMsgId 解析出 index < 0 → 所有「按 index 改日志 /
+//      并进入站那条」的分支自动跳过，而真实 msgid 仍在第二个 '|' 之后（插件要用也不缺）。
+//   3) 插件调 API_ID_SEND_MESSAGES / _ARK 时，api.cpp 里调 pluginTestIntercept()：
+//      按 msgid 里的序号归属（插件没回传 msgid → 退化成「当前正在测的序号」），
+//      正文塞进收集表、**直接当发送成功返回**（不 POST、不写日志、一个字都不出这台机器）；
+//   4) UI 遍历完用 pluginTestTakeTexts(i) 取走每条拦到的正文 → 判「回复里有没有探测串」。
+//   ⚠ 只扣「文本 + 卡片」两种；撤回 / 改名 / 加群这些非发送类 API 照常执行。
+//   ⚠ 与 bot 是否在线无关：拦截放在「在线检查」之前，没登录也能测。
+bool        pluginTestActive();                                   // 是否正在测试
+void        pluginTestBegin(const QString &uuid);                 // 开始（只拦这个插件）
+void        pluginTestEnd();                                      // 收工 + 清空收集表
+void        pluginTestSetSeq(int seq);                            // 「当前正在测第几条」
+int         pluginTestCurrentSeq();
+QString     pluginTestMsgId(int seq, const QString &realMsgId);   // 拼 "|T<seq>|<真实msgid>"
+bool        pluginTestIntercept(const QString &uuid, const QString &msgid, const QString &text);
+QStringList pluginTestTakeTexts(int seq);                         // 取走该条拦到的正文（取完清空）
+int         pluginTestInterceptedCount();                         // 本次一共拦下多少条
+
 qint64 mergeToId(int appid, int type);
 void parseFromId(qint64 id, int &appid, int &type);
 void doWork(int totalDelay);//延迟 ms

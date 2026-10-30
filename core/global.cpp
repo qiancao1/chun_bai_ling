@@ -189,6 +189,104 @@ QStringList toolGateWait(int token, int waitMs, int quietMs)
     }
 }
 
+// ================== 插件测试（插件页「测试插件」按钮）：发送拦截 ==================
+// 与上面的 toolGate 完全独立：那边是「AI 调插件、一条指令一个 token」，
+// 这边是「整台插件在测、一条指令一个序号」，可以同时在跑。
+// 表很小（一次测试几十条），加锁开销可以忽略；只有 Active() 走原子变量（发送入口每次都问）。
+namespace {
+struct PluginTestCtx {
+    QString                  uuid;      // 正在测试的插件（空 = 没在测）
+    int                      seq = -1;  // 当前正在测第几条（插件没回传 msgid 时按它归属）
+    QHash<int, QStringList>  texts;     // 序号 → 被扣下的正文（按到达顺序）
+    int                      total = 0; // 累计扣下多少条
+};
+QMutex       g_pluginTestMutex;
+PluginTestCtx g_pluginTest;
+QAtomicInt   g_pluginTestOn(0);         // 快判：发送入口每次都问，别为它抢锁
+}
+
+bool pluginTestActive()
+{
+    return g_pluginTestOn.loadAcquire() != 0;
+}
+
+void pluginTestBegin(const QString &uuid)
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    g_pluginTest = PluginTestCtx();
+    g_pluginTest.uuid = uuid;
+    g_pluginTestOn.storeRelease(uuid.isEmpty() ? 0 : 1);
+}
+
+void pluginTestEnd()
+{
+    g_pluginTestOn.storeRelease(0);      // 先关闸，再清表（中间进来的那一条不管了）
+    QMutexLocker lk(&g_pluginTestMutex);
+    g_pluginTest = PluginTestCtx();
+}
+
+void pluginTestSetSeq(int seq)
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    g_pluginTest.seq = seq;
+}
+
+int pluginTestCurrentSeq()
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    return g_pluginTest.seq;
+}
+
+QString pluginTestMsgId(int seq, const QString &realMsgId)
+{
+    // "|T3|真实id"：splitWrappedMsgId 把 "T3".toInt() 解成 -1 → 下标负数 →
+    // 所有「按 index 改日志 / 并进入站那条」的分支自动跳过；真实 msgid 仍在第二个 '|' 之后。
+    return QStringLiteral("|T%1|%2").arg(seq).arg(realMsgId);
+}
+
+// "|T3|xxx" → 3；不是这个格式 → -1
+static int pluginTestSeqFromMsgId(const QString &msgid)
+{
+    if (!msgid.startsWith(QLatin1String("|T"))) return -1;
+    const int bar = msgid.indexOf(QLatin1Char('|'), 2);
+    if (bar <= 2) return -1;
+    bool ok = false;
+    const int seq = msgid.mid(2, bar - 2).toInt(&ok);
+    return ok ? seq : -1;
+}
+
+bool pluginTestIntercept(const QString &uuid, const QString &msgid, const QString &text)
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    if (g_pluginTest.uuid.isEmpty()) return false;
+    // 只拦「正在测试的那个插件」：别的插件（含框架自己的定时推送）照常发，别误吞。
+    if (uuid != g_pluginTest.uuid) return false;
+
+    // 归属：msgid 里带 |T<序号>| 就用它（最准）；插件把 msgid 换掉/丢了 → 落到当前正在测的那条。
+    int seq = pluginTestSeqFromMsgId(msgid);
+    if (seq < 0) seq = g_pluginTest.seq;
+
+    g_pluginTest.texts[seq].append(text.isEmpty() ? QStringLiteral("（空文本）") : text);
+    ++g_pluginTest.total;
+    return true;
+}
+
+QStringList pluginTestTakeTexts(int seq)
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    auto it = g_pluginTest.texts.find(seq);
+    if (it == g_pluginTest.texts.end()) return QStringList();
+    const QStringList out = it.value();
+    g_pluginTest.texts.erase(it);   // 取完就清：同一条指令只汇总一次
+    return out;
+}
+
+int pluginTestInterceptedCount()
+{
+    QMutexLocker lk(&g_pluginTestMutex);
+    return g_pluginTest.total;
+}
+
 // 被动回复（带 msgid）全局限速：所有调用线程共用一个「时间片队列」，
 // 所以 plts 的好友线程 + 群线程、schedule 的多账号任务加起来也是约 perSec 条/秒。
 // 锁只用来「预订一个发送时间片」，睡眠在锁外做，不会互相堵住。

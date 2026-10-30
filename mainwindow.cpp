@@ -77,11 +77,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.1.156"
-#define APP_BUILD_NUMBER 156
+#define APP_VERSION_STR "v1.5.2.158"
+#define APP_BUILD_NUMBER 158
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.5.2.158 (2026-10-30)
+- 增加 插件测试 一键测试注入 用于检查指令是否会复读用户指令
+- 修复 多线程共用应该静态变量问题 改为线程绑定
+
 ## v1.5.1.156 (2026-10-26)
 - 优化 ai拟人 提示词 让他不再强制性格
 - 增加 图片不存在替补图片

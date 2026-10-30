@@ -135,6 +135,8 @@ SharedMemoryBridge *bridge = nullptr;
 // 而且进程句柄还在我们手上（真崩了 WaitForSingleObject 立刻就知道）→ 顺手清零，避免误重启。
 extern int miaomiao32;
 
+// myCallback 的返回值由框架持有（thread_local）：拷进自己的字符串即可，**不要释放**。
+
 static inline void    put32(char *p, quint32 v) { memcpy(p, &v, 4); }
 static inline quint32 get32(const char *p) { quint32 v = 0; memcpy(&v, p, 4); return v; }
 
@@ -974,7 +976,8 @@ void SharedMemoryBridge::Task::run()
     for (int i = 0; i < 8; ++i)
         textPtrs[i] = m_req.texts[i].empty() ? nullptr : m_req.texts[i].c_str();
 
-    const char *result = "";
+    // callback 的返回值由框架持有（thread_local）：拷进 result 就完事，不要释放
+    std::string result;
     if (m_bridge->m_callback) {
         try {
             const char *r = m_bridge->m_callback(
@@ -993,5 +996,5 @@ void SharedMemoryBridge::Task::run()
 
     // 只有同步请求才回响应（异步的槽早就被清掉了，客户端也不在等）
     if (m_req.sync)
-        m_bridge->writeSlotResponse(m_req.slot, m_req.reqId, result);
+        m_bridge->writeSlotResponse(m_req.slot, m_req.reqId, result.c_str());
 }
