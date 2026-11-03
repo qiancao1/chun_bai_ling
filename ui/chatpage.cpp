@@ -1687,8 +1687,45 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                 return;
             }
 
+            // 本群状态开关：数据源和群里发「本群状态」完全一样 —— g_botdb 里该群的 GroupRecord2.bitmap。
+            // ⚠ 这些位不是统一的「1=开」：入群提示 / 退群提示 / AI拟人 是 **0=开**（见 global.cpp 的开关指令），
+            //    所以下面统一换成「开/关」措辞，别直接按位显示，容易看反。
+            // 在主线程读（LMDB 读很快），不放进回调线程，省得担心线程安全
+            QString stateText;
+            {
+                auto git = g_botdb.find(appid);
+                GroupRecord2 gr;
+                if (git == g_botdb.end() || !git.value() || !git.value()->getGroupInfo(id, gr)) {
+                    stateText = "群状态开关：本地没有该群记录（机器人可能刚进群、还没收到过消息）";
+                } else {
+                    const uint32_t bm = gr.bitmap;
+                    auto sw = [](bool on) {
+                        return on ? QStringLiteral("✅ 开") : QStringLiteral("❌ 关");
+                    };
+                    int tuoguan = 0;   // 代管人数：qid[20] 里非 0 的槽位
+                    for (int i = 0; i < 20; ++i)
+                        if (gr.qid[i]) ++tuoguan;
+
+                    stateText  = QStringLiteral("群状态开关（bitmap=%1）：\n")
+                                     .arg(QString::number(bm, 16).toUpper()
+                                              .rightJustified(4, QLatin1Char('0')));
+                    stateText += QStringLiteral("　　入群提示：%1\n").arg(sw(!(bm & BIT_ruqun)));
+                    stateText += QStringLiteral("　　退群提示：%1\n").arg(sw(!(bm & BIT_tuiqun)));
+                    stateText += QStringLiteral("　　刷屏检测：%1\n").arg(sw(bm & BIT_SHUA_P));
+                    stateText += QStringLiteral("　　AI 拟人：%1\n").arg(sw(!(bm & BIT_Ainiren)));
+                    stateText += QStringLiteral("　　AI 白名单：%1\n")
+                                     .arg((bm & BIT_AI_BAI) ? QStringLiteral("✅ 在白名单")
+                                                            : QStringLiteral("❌ 不在白名单"));
+                    stateText += QStringLiteral("　　入群验证：%1\n").arg(sw(bm & BIT_RUQUN_YZ));
+                    stateText += QStringLiteral("　　入群申请提示：%1\n").arg(sw(bm & BIT_AUTO_JOJN_KG));
+                    stateText += QStringLiteral("　　自动同意加群：%1（代管 %2/20）\n")
+                                     .arg(sw(bm & BIT_AUTO_JOJN)).arg(tuoguan);
+                    stateText += QStringLiteral("　　违禁词检测：%1").arg(sw(bm & BIT_PUNISH));
+                }
+            }
+
             // 回调跑在线程池线程 → 这里只做解析拼串，弹窗回主线程（qApp 永不析构，安全）
-            client->get_groups_bot_state(id, [id, appid, groupName]
+            client->get_groups_bot_state(id, [id, appid, groupName, stateText]
                                          (const QString &rsp, QNetworkReply::NetworkError) {
                 QString body = rsp;
                 int nlPos = body.indexOf("\n[Network Error");
@@ -1744,6 +1781,9 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                                         role, proactive, recv);
                     }
                 }
+
+                // 三种分支（正常 / 平台报错 / 不认识的结构）都补上本地群状态开关
+                text += "\n\n" + stateText;
 
                 QMetaObject::invokeMethod(qApp, [text]() {
                     QMessageBox box(QApplication::activeWindow());
@@ -2551,7 +2591,7 @@ void ChatPage::onSendmsg(QString &text)
         return;
     }
     chatPage->inputEdit->setText("正在发送...请勿输入内容会被清空");
-    client->send_msgAsync(msgType,currentContactId,"[聊天室]", text, m_msgid,false,true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
+    QString resp = client->send_msgAsync(msgType,currentContactId,"[聊天室]", text, m_msgid,"false",true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
         if(resp.contains("\"id\""))
         {
             QMetaObject::invokeMethod(qApp, []() {
@@ -2560,7 +2600,7 @@ void ChatPage::onSendmsg(QString &text)
             return ;
         }
         QString t2=text;
-        client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, "",false,true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
+        client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, "","false",true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
             if(resp.contains("\"id\""))
             {
                 QMetaObject::invokeMethod(qApp, []() {
@@ -2570,7 +2610,7 @@ void ChatPage::onSendmsg(QString &text)
             }
             if(msgType==2){
                 QString t2=text;
-                client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, m_msgid,true,true ,聊天发送模式,false,[](const QString &resp,auto){
+                client->send_msgAsync(msgType,currentContactId,"[聊天室]", t2, m_msgid,"true",true ,聊天发送模式,false,[](const QString &resp,auto){
                     QMetaObject::invokeMethod(qApp, []() {
                         chatPage->inputEdit->clear();   // 假设 inputEdit 是公有成员
                     });
@@ -2582,9 +2622,9 @@ void ChatPage::onSendmsg(QString &text)
             }
         });
     });
-
-
-
+    if(resp=="{}" || resp.isEmpty() ) return;
+    QMessageBox::warning(this,"发送错误",resp);
+    chatPage->inputEdit->clear();
 
 
 }

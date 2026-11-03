@@ -324,7 +324,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
     if(n >= 3)
     {
         if(!c->m_info->ychfwcl){
-            c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, false, false, 0, true);
+            c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, "false", false, 0, true);
             return;
         }
 
@@ -354,8 +354,8 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
                     timer->deleteLater();
                     return;
                 }
-                QString text = "[未被处理回应]";
-                c->send_msgAsync(type, openid, text, c->m_info->fallbackReply, msgid, false, false, 0, true);
+
+                c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, "false", false, 0, true);
 
                 timer->deleteLater();  // 任务完成，清理定时器
             });
@@ -377,7 +377,9 @@ QString python_code4(const QString &py_code,int appid,const QList<QString> user_
         py::module_ qiancao = py::module_::import("qiancao_sdk");
         py::object api = qiancao.attr("QQApi")(g_keyuuid);
 
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // 每次全新命名空间（`py::dict(模块.__dict__)` 是同一对象引用、不拷贝，等于把模块本体当 globals）
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["UserList"] = py::cast(user_list);
         exec_globals["UserNameList"] = py::cast(user_name_list);
@@ -411,7 +413,9 @@ QString python_code(const QString &py_code)
         stringio = py::module_::import("io").attr("StringIO")();
         sys.attr("stdout") = stringio;
 
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // 每次全新命名空间（`py::dict(模块.__dict__)` 是同一对象引用、不拷贝，等于把模块本体当 globals）
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
 
         // 执行用户代码
@@ -501,7 +505,9 @@ QString python_code3(const QString &py_code,const MessageEvent &msg)
         py::module_ qiancao = py::module_::import("qiancao_sdk");
         py::object api = qiancao.attr("QQApi")(g_keyuuid);
 
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // 每次全新命名空间（`py::dict(模块.__dict__)` 是同一对象引用、不拷贝，等于把模块本体当 globals）
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["msg"] = py::cast(msg);
         exec_globals["api"] = api;               // 注入 api 对象
@@ -527,9 +533,186 @@ QString python_code3(const QString &py_code,const MessageEvent &msg)
     }
     return "代码执行完成 未返回数据";
 }
+// ==================== 签到：#python 代码执行器 ====================
+// 约定见 global.h 的声明。这里只做三件事：注入变量 → 找函数并调用 → 把返回值折成铃铛数。
+// ⚠ 和 python_code3 **不一样**：签到脚本只编译、只执行顶层一次，之后一直复用同一份
+//   globals 和同一个函数对象，每次调用只把参数传进去（省掉每次 1~5ms 的重新编译）。
+//   所以 globals 里**不放任何会变的东西** —— msg / 次数 / 余额全部走函数参数，
+//   只放 __builtins__ + qq_api 的导出名 + 全进程共用的 api 实例。
+//   代价：脚本顶层代码只跑一次（插件式脚本本来就该这样），顶层也拿不到 msg。
+// ⚠ 返回值里的 bool **不当数量**（`return True` 很容易被误写成 1 铃铛，宁可当 0 + 记日志）。
+static qint64 signPyToNumber(const py::object &o, bool *okOut)
+{
+    if (okOut) *okOut = false;
+    try {
+        if (py::isinstance<py::bool_>(o)) return 0;          // True/False 不算数量
+        if (py::isinstance<py::int_>(o)) {
+            if (okOut) *okOut = true;
+            return py::cast<qint64>(o);
+        }
+        if (py::isinstance<py::float_>(o)) {
+            if (okOut) *okOut = true;
+            return static_cast<qint64>(py::cast<double>(o));
+        }
+        if (py::isinstance<py::str>(o)) {                    // "1000" 也认（有些脚本 return str(...)）
+            bool numOk = false;
+            const qint64 v = QString::fromStdString(py::cast<std::string>(o)).trimmed().toLongLong(&numOk);
+            if (okOut) *okOut = numOk;
+            return numOk ? v : 0;
+        }
+    } catch (const std::exception &) {
+        // 转不了就算了，当 0
+    }
+    return 0;
+}
+
+// 一份「已编译好」的签到脚本（一个机器人一份；脚本内容被改过就重建）
+struct SignPyUnit {
+    std::string src;                    // 源码全文：用来判断配置有没有被改过
+    PyObject   *globals     = nullptr;  // 脚本的全局命名空间（占一份引用）
+    PyObject   *fn          = nullptr;  // 签到函数（占一份引用；只写顶层式的为空）
+    PyObject   *constPoints = nullptr;  // 顶层 __sign_points__（占一份引用）
+    std::string defaultReply;           // 顶层 __result__（可空）
+    bool        hasFn = false;
+};
+// ⚠ 表里故意存裸 PyObject* 而不是 py::object：这张表是静态的，它的析构函数可能跑在
+//   解释器 finalize 之后，那时再 Py_DECREF 就是 use-after-free。
+//   所以静态析构阶段**一个 Python 对象都不碰**（进程退出由系统回收）。
+static QHash<int, SignPyUnit *> g_signUnits;
+static PyObject *g_signSharedApi = nullptr;   // QQApi(g_keyuuid)：无状态，全进程一个就够
+
+// 全进程共用的 api 实例（QQApi 只有 self.uuid 一个字段，共享完全安全）
+static PyObject *signSharedApi()
+{
+    if (g_signSharedApi) return g_signSharedApi;
+    py::module_ sdk = py::module_::import("qiancao_sdk");
+    py::object api  = sdk.attr("QQApi")(g_keyuuid);
+    g_signSharedApi = api.release().ptr();    // 接管这一份引用，永不释放
+    return g_signSharedApi;
+}
+
+// 编译 + 顶层执行一次 + 找函数。出异常就交给调用方的 catch（此时不会有半成品进表）
+static SignPyUnit *buildSignUnit(const std::string &src)
+{
+    py::dict g;
+    g.attr("update")(py::module_::import("qq_api").attr("__dict__"));
+    g["__builtins__"] = py::module_::import("builtins");
+    g["api"]          = py::reinterpret_borrow<py::object>(signSharedApi());
+
+    py::exec(src, g);                     // ← 顶层只跑这一次（语法/运行错误在这里抛）
+
+    auto *u = new SignPyUnit;
+    u->src     = src;
+    u->globals = g.release().ptr();
+
+    // 函数：认几个常见名字，任选其一
+    static const char *kFnNames[] = { "on_sign", "sign", "qiandao", "签到", "checkin", "main" };
+    for (const char *n : kFnNames) {
+        PyObject *cand = PyDict_GetItemString(u->globals, n);   // 借用引用
+        if (cand && PyFunction_Check(cand)) {
+            Py_INCREF(cand);
+            u->fn    = cand;
+            u->hasFn = true;
+            break;
+        }
+    }
+
+    // 顶层写法只在这里读一次（之后不看 globals 里的旧值了）
+    if (PyObject *sp = PyDict_GetItemString(u->globals, "__sign_points__")) {
+        Py_INCREF(sp);
+        u->constPoints = sp;
+    }
+    if (PyObject *rs = PyDict_GetItemString(u->globals, "__result__")) {
+        try { u->defaultReply = std::string(py::str(py::reinterpret_borrow<py::object>(rs))); } catch (...) {}
+        PyDict_DelItemString(u->globals, "__result__");   // 删掉，之后函数里再赋值才算「这次改的」
+    }
+    return u;
+}
+
+qint64 python_sign_code(const QString &py_code, const MessageEvent &msg,
+                        bool signedToday, int total, int streak, qint64 points,
+                        QString *replyOut, bool *ok)
+{
+    if (ok) *ok = false;
+    if (replyOut) replyOut->clear();
+
+    // 全程持 GIL：下面的静态表因此天然串行，不用再加锁
+    py::gil_scoped_acquire gil;
+    try {
+        const std::string src = py_code.toStdString();
+
+        // ---- 1) 取缓存；脚本内容变了就重建（改脚本不用重启框架）----
+        SignPyUnit *u = g_signUnits.value(msg.appid, nullptr);
+        if (!u || u->src != src) {
+            u = buildSignUnit(src);
+            g_signUnits.insert(msg.appid, u);
+            // ⚠ 被换掉的旧 unit 故意不释放：py::exec 里的 Python 代码可能让出 GIL，
+            //   另一个线程说不定还捏着旧指针在用，DECREF 掉就是 use-after-free。
+            //   代价只有「改一次脚本留几十 KB」，按次计、重启即清，不值得为它上引用计数。
+        }
+
+        // 只有顶层 __result__ 也算「有脚本」（老行为：0 铃铛 + 固定文案，不记签到）
+        if (!u->hasFn && !u->constPoints && u->defaultReply.empty()) {
+            AppendEventLog("[签到] #python 里既没有签到函数（on_sign / sign / qiandao / 签到 / "
+                           "checkin / main），也没有 __sign_points__，这次不算签到", 0xff);
+            return 0;                        // ok 仍为 false
+        }
+
+        // ---- 2) 调用：msg 和四项状态全部走参数，globals 里没有会变的东西 ----
+        py::object ret;
+        if (u->hasFn) {
+            ret = py::reinterpret_borrow<py::object>(u->fn)(
+                      py::cast(msg), py::bool_(signedToday), py::int_(total),
+                      py::int_(streak), py::int_(points));
+        } else {
+            ret = py::reinterpret_borrow<py::object>(u->constPoints);   // 顶层写法：__sign_points__ = 1000
+        }
+
+        // ---- 3) 折返回值：数字 / (数字, 文本) ----
+        qint64 amount = 0;
+        bool numOk = true;
+        if (ret && !ret.is_none()) {
+            if (py::isinstance<py::tuple>(ret) || py::isinstance<py::list>(ret)) {
+                py::sequence seq = py::reinterpret_borrow<py::sequence>(ret);
+                if (seq.size() >= 1) amount = signPyToNumber(seq[0], &numOk);
+                if (seq.size() >= 2 && replyOut) {
+                    try { *replyOut = QString::fromStdString(py::str(seq[1])); } catch (...) {}
+                }
+            } else {
+                amount = signPyToNumber(ret, &numOk);
+            }
+        }
+        if (!numOk) {
+            AppendEventLog("[签到] 脚本返回值不是数字，按 0 处理（想加铃铛请 return 数量）", 0xff);
+        }
+
+        // ---- 4) 文案：二元组文本 > 函数里 `global __result__` > 顶层 __result__ ----
+        if (replyOut && replyOut->isEmpty()) {
+            if (PyObject *rs = PyDict_GetItemString(u->globals, "__result__")) {
+                try { *replyOut = QString::fromStdString(py::str(py::reinterpret_borrow<py::object>(rs))); } catch (...) {}
+                PyDict_DelItemString(u->globals, "__result__");   // 用完就删，别串到下一次
+            }
+        }
+        if (replyOut && replyOut->isEmpty())
+            *replyOut = QString::fromStdString(u->defaultReply);
+
+        if (amount < 0) amount = 0;
+        if (ok) *ok = true;
+        return amount;
+    } catch (const py::error_already_set &e) {
+        const QString text = "[签到] Python 代码执行出错: " + QString::fromUtf8(e.what());
+        AppendEventLog(text, 0xff);
+        if (replyOut) *replyOut = text;
+    } catch (const std::exception &e) {
+        const QString text = "[签到] Python 代码执行出错: " + QString::fromUtf8(e.what());
+        AppendEventLog(text, 0xff);
+        if (replyOut) *replyOut = text;
+    }
+    return 0;
+}
+
 QString handleMessage(const MessageEvent &ev, AccountInfo *info) {
     QString p1, p2, p3;  // 最多三个参数，p3 自动收尾剩余
-
 
     if (!info->bai_sr.isEmpty() && ev.msg.startsWith(info->bai_sr)) {
         int cnt = extractParams(ev.msg, info->bai_sr, 0, p1);
@@ -1516,6 +1699,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                     "[禁言]() <艾特> <秒> \n>"
                     "[解禁]() <艾特> 解除禁言某个人\n>"
                     "[免验证]() <艾特> 删除某人的验证\n>"
+                    "[铃铛商店]() 一个全局商店\n>"
                     "[一键解禁]() 批量解除\n>"
                     "[禁言列表]() 获取禁言列表\n>"
                     "[本群状态]() 查看开启列表\n>"
@@ -1549,6 +1733,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             "[禁言]() <艾特> <秒> \n>"
             "[解禁]() <艾特> 解除禁言某个人\n>"
            "[免验证]() <艾特> 删除某人的验证\n>"
+           "[铃铛商店]() 一个全局商店\n>"
            "[一键解禁]() 批量解除\n>"
            "[禁言列表]() 获取禁言列表\n>"
            "[本群状态]() 查看开启列表\n>"
@@ -1765,19 +1950,13 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
         if (ev.type != 0 && ev.type != 1) {
             return "除群和频道外，其他类型无需手动操作";
         }
-
-
-
-        bool isEnabled = (ev.bitmap & BIT_Ainiren) == 1;  // 当前拟人状态
-
+        bool isEnabled = (ev.bitmap & BIT_Ainiren) == 0;  // 当前拟人状态
         if (ev.msg == "开启拟人") {
             if (isEnabled) {
                 return "本群已开启拟人，无需重复开启";
             }
-
             auto *db = g_botdb[ev.appid];
-            ev.bitmap |= BIT_Ainiren;   // 置位
-
+            ev.bitmap &= ~BIT_Ainiren;  // 清除位
             GroupRecord2 gr;
             db->getGroupInfo(ev.groupId, gr);
             gr.bitmap = ev.bitmap;
@@ -1787,7 +1966,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
             if (!isEnabled) {
                 return "本群未开启拟人，无需关闭";
             }
-            ev.bitmap &= ~BIT_Ainiren;  // 清除位
+             ev.bitmap |= BIT_Ainiren;   // 置位
             GroupRecord2 gr;
             auto *db = g_botdb[ev.appid];
             db->getGroupInfo(ev.groupId, gr);
@@ -1906,97 +2085,17 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
 //===========================================================================================================================================我猜你在找这个
 void Messages(AccountInfo *info,MessageEvent &ev) {
 
-    if(ev.type ==4 && ev.subType==4 || ev.type==5 && ev.subType==6)
-    {
-        if(!info->welcomeMsg.isEmpty())
-        {
-            QString ret = info->welcomeMsg;
-            if(ret.startsWith("#python")) ret = python_code(ret,ev);
-            if(m_botClients.contains(info->appid_int))
-            {
-                QQBotClient *client = m_botClients[info->appid_int];
-                QString text = "[欢迎语]";
-                client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
-                return;
-            }
-
-        }
-    }
-    if(ev.type ==18)
-    {
-
-        if(ev.bitmap & BIT_AUTO_JOJN)
-        {
-            auto *db = g_botdb[info->appid_int];
-            GroupRecord2 gid;
-            db->getGroupInfo(ev.groupId, gid);
-            QString text = gid.autoref;
-            if(text.isEmpty()){
-                QQBotClient *client = m_botClients[info->appid_int];
-
-                QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
-                if(t2=="{}") return;
-
-            }else if(text.contains(","))
-            {
-                QStringList list = text.split(",");
-                for(const auto & str : std::as_const(list))
-                {
-                    if(ev.extra.contains(str))
-                    {
-                        QQBotClient *client = m_botClients[info->appid_int];
-                        QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
-                        if(t2=="{}") return;
-                        break;
-                    }
-                }
-            }else if(ev.extra.contains(text)){
-                QQBotClient *client = m_botClients[info->appid_int];
-                QString t2 = client->approveGroupJoinRequest(ev.groupId,ev.user,true,ev.callbackId);
-                if(t2=="{}") return;
-            }
-
-        }
-        if(ev.bitmap & BIT_AUTO_JOJN_KG){
-            if(!info->apply.isEmpty())
-            {
-                QString ret = info->apply;
-                if(ret.startsWith("#python")) ret = python_code(ret,ev);
-                if(m_botClients.contains(info->appid_int))
-                {
-                    QQBotClient *client = m_botClients[info->appid_int];
-                    ret.replace("{ID}",ev.user);
-                    ret.replace("{ReqId}",ev.callbackId);
-
-                    ret.replace("{申请理由}",ev.msg);
-                    ret.replace("{昵称}",ev.nickname);
-                    ret.replace("{群昵称}",ev.groupname);
-                    if(ret.contains("{头像}"))
-                        ret.replace("{头像}",QString("![#48px #48px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user));
-                    client->send_msgAsync(ev.type,ev.groupId,"[入群申请]",ret,QString());
-                    return;
-                }
-
-            }else{
-                QQBotClient *client = m_botClients[info->appid_int];
-                QString ret = R"(有人申请加群但是未配置文案 点击下面按钮同意加群\n申请人：{ID}#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"同意加群 {ID} {ReqId}","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"同意","style":1,"visited_label":"按钮1"}}]}]}}}#b:#)";
-                ret.replace("{ID}",ev.user);
-                ret.replace("{ReqId}",ev.callbackId);
-                client->send_msgAsync(ev.type,ev.groupId,"[入群申请]",ret,QString());
-            }
-        }
-    }
 
     QString ret= 内置指令(ev);
     if(ret.isEmpty())
         ret = admin_zl(info,ev); //机器人管理
     if(ret=="*") return ;
-    QString text;
+
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
-        if(text.isEmpty()) text = "[私有指令|%1ms]";
-        client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
+
+        client->send_msgAsync(ev.type,ev.groupId,"[私有指令]",ret,ev.msgId);
         return;
     }
 
@@ -2011,12 +2110,12 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     if(!ret.isEmpty() && ret!="*")
     {
         QQBotClient *client = m_botClients[info->appid_int];
-        if(text.isEmpty()) text = "[入群提示|%1ms]";
-        client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
+
+        client->send_msgAsync(ev.type,ev.groupId,"[入群提示]",ret,ev.msgId);
         return;
     }
-
-        ret = keyword->match(info->appid_int,ev.msg);
+    QString text;
+    ret = keyword->match(info->appid_int,ev.msg);
     if(ret.isEmpty())
         ret = schedule->ppzl(ev,text,info);
     if(ret == "*") return;
@@ -2030,7 +2129,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             if(!ret.isEmpty())
             {
                 QQBotClient *client = m_botClients[info->appid_int];
-                if(text.isEmpty()) text = "[关键词匹配|%1ms]";
+                if(text.isEmpty()) text = "[关键词匹配]";
                 client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
                 return;
             }
@@ -2054,7 +2153,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     if(!ret.isEmpty())
     {
         QQBotClient *client = m_botClients[info->appid_int];
-        if(text.isEmpty()) text = "[Ai|%1ms]";
+        if(text.isEmpty()) text = "[Ai]";
         client->send_msgAsync(ev.type,ev.groupId,text,ret,ev.msgId);
         return;
     }
@@ -2422,7 +2521,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 text.append("刷屏检测\n>");
                 text.append(ev.bitmap & BIT_Ainiren ? "✅" : "❌");
                 text.append("AI拟人\n>");
-                text.append(ev.bitmap & BIT_AI_BAI ? "✅" : "❌");
+                text.append(ev.bitmap & BIT_AI_BAI ? "❌" : "✅");
                 text.append("AI白名单\n>");
                 text.append(ev.bitmap & BIT_RUQUN_YZ ? "✅" : "❌");
                 text.append("入群验证\n>");
@@ -3000,7 +3099,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             ext.gname = ev.groupname;
             ext.user.append(ev.user);
             ext.username.append( ev.nickname);
-            return  sendapp(info->appid_int,info->tqhy,ext);
+            return  sendapp(info->appid_int,info->rqhy,ext);
 
         }
         QMutexLocker locker(&info->pendingMutex);
@@ -3064,42 +3163,72 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 
 void processPendingEvents()
 {
-    qint64 now = QDateTime::currentSecsSinceEpoch();
-    for (auto &acc : m_accounts){
+    // ⚠ 防重入：sendapp() 里会跑 #python 脚本，脚本可能绕回事件循环再次进到这里
+    static bool s_running = false;
+    if (s_running) return;
+    s_running = true;
 
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+
+    // 到期条目一律「锁内先摘出并删掉，锁外才发送」。
+    // ⚠ 顺序不能反：原来是边发边删，一旦 sendapp 中途抛异常 / 提前 return / 崩溃，
+    //    这条 entry 就永久留在 map 里 —— 同一个群之后再来新成员也永远等不到提醒，
+    //    这就是「一个群只提醒了一次」最可能的那条路。先删再发，就不可能卡住。
+    struct PendingOut {
+        QString groupId;
+        PendingGroupEvent evt;
+    };
+
+    for (const auto &acc : m_accounts) {
+        if (!acc) continue;
+
+        // ⚠ 绝对不能 return：某个账号没有 client（未登录 / 已停用）会把**后面所有账号**一起卡死。
+        // 也不能用 m_botClients[]（key 存在但值是 nullptr 时会拿到空指针直接崩）。
+        QQBotClient *client = m_botClients.value(acc->appid_int, nullptr);
+        if (!client) continue;
+
+        QList<PendingOut> joinOut;
         {
             QMutexLocker locker(&acc->pendingMutex);
             for (auto it = acc->pendingJoin.begin(); it != acc->pendingJoin.end(); ) {
-                QString groupId = it.key();
-                PendingGroupEvent &evt = it.value();
-                if (now - evt.startTime < acc->rq_ychf) {
-                    ++it;
-                    continue;
+                if (it.value().startTime > now) {
+                    it.value().startTime = now;
                 }
-                if(!m_botClients.contains(acc->appid_int)) return ;
-                QString sentText= sendapp(acc->appid_int,acc->rqhy,evt);
-                QQBotClient* client = m_botClients[acc->appid_int];
-                client->send_msgAsync(0,groupId,"[入群提示]", sentText,QString());
-                it = acc->pendingJoin.erase(it);
+                if (now - it.value().startTime >= acc->rq_ychf) {
+                    joinOut.append({ it.key(), it.value() }); // 值拷贝，与 map 里的副本彻底解耦
+                    it = acc->pendingJoin.erase(it);          // 先摘出，后面无论发生什么都不会残留
+                } else {
+                    ++it;
+                }
             }
         }
-        QMutexLocker locker(&acc->pendingMutex2);
-        for (auto it =acc->pendingLeave.begin(); it != acc->pendingLeave.end(); ) {
-            QString groupId = it.key();
-            PendingGroupEvent &evt = it.value();
-            if (now - evt.startTime < acc->tq_ychf) {
-                ++it;
-                continue;
+        for (const PendingOut &p : std::as_const(joinOut)) {
+            QString sentText = sendapp(acc->appid_int, acc->rqhy, p.evt);
+            client->send_msgAsync(0, p.groupId, "[入群提示]", sentText, p.evt.msgid);
+        }
+
+        QList<PendingOut> leaveOut;
+        {
+            QMutexLocker locker(&acc->pendingMutex2);
+            for (auto it = acc->pendingLeave.begin(); it != acc->pendingLeave.end(); ) {
+                if (it.value().startTime > now) {
+                    it.value().startTime = now;
+                }
+                if (now - it.value().startTime >= acc->tq_ychf) {
+                    leaveOut.append({ it.key(), it.value() });
+                    it = acc->pendingLeave.erase(it);
+                } else {
+                    ++it;
+                }
             }
-
-            if(!m_botClients.contains(acc->appid_int)) return ;
-            QString sentText= sendapp(acc->appid_int,acc->tqhy,evt);
-
-            QQBotClient* client = m_botClients[acc->appid_int];
-            client->send_msgAsync(0,groupId,"[退群提示]", sentText,QString());
-            it = acc->pendingLeave.erase(it);
+        }
+        for (const PendingOut &p : std::as_const(leaveOut)) {
+            QString sentText = sendapp(acc->appid_int, acc->tqhy, p.evt);
+            client->send_msgAsync(0, p.groupId, "[退群提示]", sentText, QString());
         }
     }
+
+    s_running = false;
 }
 
 QString extractBetween(const QString &source, const QString &left, const QString &right) {

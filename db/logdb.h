@@ -26,7 +26,9 @@ public:
     bool abortTransaction();
     bool getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const;
     bool getLatestLog(const QString &appid, const QString &groupId, Message &msg) const;
-    MDB_txn* getCurrentTxn() const { return m_currentTxn; }
+    // 加锁读：外面拿到的只是「当时有效」的指针，之后 close() / 扩容都可能把它作废，
+    // 所以 readLogInTxn / getLatestLogInTxn 内部还会再校验一次（见 .cpp）。
+    MDB_txn* getCurrentTxn() const { QMutexLocker locker(&m_mutex); return m_currentTxn; }
     // 使用外部已有事务进行读取（不自动开启事务）
     bool readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
                       uint64_t seq, Message& msg) const;
@@ -205,7 +207,9 @@ private:
     MDB_env *m_env;
     MDB_dbi m_dbi_main;
 
-    mutable QMutex m_mutex;
+    // Recursive：reopenEnv()/expandAndReopen() 会在 flushCacheToDBUnlocked()（调用前已持锁）
+    // 里被重入调用，同线程必须能再拿一次，否则自锁。
+    mutable QMutex m_mutex{QMutex::Recursive};
 
     // 辅助函数
     std::atomic<uint64_t> m_nextId{1};

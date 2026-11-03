@@ -384,9 +384,9 @@ public:
         if(type>0) type-=1;
 
         QString pname = "[web聊天室]";
-        QString res = m_botClients[appid]->send_messages(type, groupId, pname, text, msgid, false, true, mark);
+        QString res = m_botClients[appid]->send_messages(type, groupId, pname, text, msgid, "false", true, mark);
         if (!res.contains("\"id\"")) {
-            res = m_botClients[appid]->send_messages(type, groupId, pname, text, QString(), type == 2, true, mark);
+            res = m_botClients[appid]->send_messages(type, groupId, pname, text, QString(), type == 2?"true":"false", true, mark);
         }
 
         QJsonObject response;

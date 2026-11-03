@@ -49,7 +49,9 @@ QString _tools(const QString &code,const QString &args,const MessageEvent &ev,co
     try {
         py::module_ qiancao = py::module_::import("qiancao_sdk");
         py::object api = qiancao.attr("QQApi")(g_keyuuid);
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // 每次全新命名空间（`py::dict(模块.__dict__)` 是同一对象引用、不拷贝，等于把模块本体当 globals）
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["msg"] = py::cast(ev);
         exec_globals["args"] = py::cast(aifun);
@@ -68,6 +70,71 @@ QString _tools(const QString &code,const QString &args,const MessageEvent &ev,co
     }
     return QString();
 
+}
+
+
+// 执行 AI 给出的 python 代码，**用 print 的输出当返回值**（run_python 专用）。
+// 与公共的 python_code(code, ev) 的区别：
+//   1) 每次执行都是全新命名空间：只把 qq_api 的公共名字拷一份进去，用户代码的赋值不会
+//      留在模块里，上一次执行留下的全局变量这次也读不到。
+//      公共那个写的是 `py::dict(模块.__dict__)`，看着像拷贝，其实 pybind11 判 PyDict_Check
+//      通过就 inc_ref 复用同一个对象 —— exec_globals 就是模块本体，所以全局变量永远不清。
+//   2) 返回值取 stdout（print），__result__ 只在没 print 任何东西时兜底。
+QString python_code_print(const QString &py_code, const MessageEvent &ev)
+{
+    py::gil_scoped_acquire gil;
+
+    // 先劫持 stdout，再执行；任何一条路径退出前都必须还原，否则整个进程的 print 都被吞掉
+    py::object sys, old_stdout, sio;
+    bool redirected = false;
+    try {
+        sys = py::module_::import("sys");
+        old_stdout = sys.attr("stdout");
+        sio = py::module_::import("io").attr("StringIO")();
+        sys.attr("stdout") = sio;
+        redirected = true;
+    } catch (const std::exception &e) {
+        return "[Python] 捕获输出失败：" + QString::fromUtf8(e.what());
+    }
+
+    QString errText;
+    QString fallback;   // __result__ 兜底值
+    try {
+        py::dict g;   // 全新的空 dict（默认构造 = PyDict_New），不能省
+        g.attr("update")(py::module_::import("qq_api").attr("__dict__"));
+        g["__builtins__"] = py::module_::import("builtins");
+        g["msg"] = py::cast(ev);
+        g["api"] = py::module_::import("qiancao_sdk").attr("QQApi")(g_keyuuid);
+
+        py::exec(py_code.toStdString(), g);
+
+        if (g.contains("__result__"))
+            fallback = QString::fromStdString(py::str(g["__result__"]));
+    } catch (const py::error_already_set &e) {
+        errText = QString::fromUtf8(e.what());
+    } catch (const std::exception &e) {
+        errText = QString::fromUtf8(e.what());
+    }
+
+    if (redirected) { try { sys.attr("stdout") = old_stdout; } catch (...) {} }
+
+    QString out;
+    try { out = QString::fromStdString(py::str(sio.attr("getvalue")())); } catch (...) {}
+    out = out.trimmed();
+    if (out.isEmpty()) out = fallback.trimmed();
+
+    if (!errText.isEmpty()) {
+        const QString msg = "[Python 异常] " + errText.trimmed();
+        out = out.isEmpty() ? msg : out + "\n" + msg;
+    }
+
+    // print 太多会直接把上下文撑爆：超量就截断并注明，别整段塞回模型
+    constexpr int kMaxOut = 20000;
+    if (out.size() > kMaxOut) {
+        const int dropped = out.size() - kMaxOut;
+        out = out.left(kMaxOut) + QString("\n...(输出过长，已截断 %1 字符)").arg(dropped);
+    }
+    return out;
 }
 
 
@@ -168,9 +235,9 @@ QString 内置函数处理(const MessageEvent &ev,const QString &tool_name,const
         res = ai_ui->Ai_post(model,设定+p1,ev.type);
         if(res.contains("[通过]"))
         {
-            res =python_code(p1,ev);
+            res = python_code_print(p1, ev);   // print 出来的内容即返回值
             if(res.isEmpty())
-                res = "python执行完成 无返回值";
+                res = "python执行完成 无输出（要返回值请用 print 打印）";
         }else if(res.contains("[待确认]") || res.contains("[拒绝]"))
         {}else{
             res = "[审核异常]" + res;
@@ -506,6 +573,28 @@ static void applySeqTag(QString &text, const MessageEvent &ev)
     text = segs.join(QStringLiteral("|#|#|"));
 }
 
+// 短段并到下一段时补一个逗号，不然两句直接粘成一句（「好」+「那就这样吧」→「好，那就这样吧」）。
+// ⚠ 富媒体/引用标签（[audio,path=…]、![img](…)、[ref,msg_idx=…]、<qqbot-at-user …/>）不算正文：
+//    整段只有标签 → 直接拼（`[audio,path=…]给`），逗号绝不能塞到标签和正文之间（正文会变成「，给」）；
+//    末尾带标签的（「给[audio,…]」）→ 逗号插在标签**前面**，跟着正文走。
+static QString joinShortSeg(const QString &a, const QString &b)
+{
+    static const QString punc = QStringLiteral("，。！？；：、,.!?;:…～~）)」》\"'");
+    static const QRegularExpression reTail(          // 一段文本末尾连续的标签（含中间空白）
+        QStringLiteral("(?:\\[[^\\]]*\\]|!\\[[^\\]]*\\]\\([^)]*\\)|<[^>]*>|\\s)+$"));
+
+    const QString s = a.trimmed();
+    if (s.isEmpty()) return s + b;
+
+    const QRegularExpressionMatch m = reTail.match(s);
+    const int tailStart = m.hasMatch() ? m.capturedStart() : s.size();
+    const QString body = s.left(tailStart).trimmed();     // 标签前面真正的正文
+    const QString tail = s.mid(tailStart);                // 标签原样带上（含空白）
+    if (body.isEmpty()) return s + b;                     // 整段只有标签：直接拼，不加逗号
+    if (punc.contains(body.at(body.size() - 1))) return body + tail + b;
+    return body + QStringLiteral("，") + tail + b;
+}
+
 // 按 |#|#| 切段，并把「太短的段（少于5个字）」并到下一条一起发 —— 一句话就俩字没必要单独发一条。
 // 最后一段没有下一条，就并到上一段。两条发送链（同步 beginAiStep / 异步 flushPendingMessagesTail）都走这里。
 static QStringList splitReplySegments(const QString &reply)
@@ -513,7 +602,7 @@ static QStringList splitReplySegments(const QString &reply)
     QStringList text = foldLooseRefSegments(reply.split("|#|#|"));
     for (int k = 0; k + 1 < text.size(); ) {
         if (text.at(k).trimmed().size() < 5) {
-            text[k + 1] = text.at(k).trimmed() + text.at(k + 1);
+            text[k + 1] = joinShortSeg(text.at(k), text.at(k + 1));
             text.removeAt(k);
         } else {
             ++k;
@@ -521,7 +610,7 @@ static QStringList splitReplySegments(const QString &reply)
     }
     if (text.size() > 1 && text.last().trimmed().size() < 5) {
         const int last = text.size() - 1;
-        text[last - 1] = text.at(last - 1).trimmed() + text.at(last).trimmed();
+        text[last - 1] = joinShortSeg(text.at(last - 1), text.at(last).trimmed());
         text.removeLast();
     }
     return text;
@@ -637,7 +726,7 @@ bool AiWidget::beginAiStep(const QJsonObject &obj, const MessageEvent &ev, QJson
                 if (i >= texts->size()) return;    // 全部发完
                 QString t = texts->at(i);
                 botSafe->send_msgAsync(ev.type, ev.groupId, "[AI系统]", t, ev.msgId,
-                                       false, false, 0, false,
+                                       "false", false, 0, false,
                     [self, i](const QString &, QNetworkReply::NetworkError) {
                         self->fn(self, i + 1, 0);  // 无论成败都继续下一条（与旧行为一致）
                     });
@@ -1127,9 +1216,10 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
                          "5.不能长期不回复，所以偶尔 决策 【提到】\n"
                          "6.出现<@id> 等内容 不是艾特你\n"
                          "7.群用户发送指令性内容可能是在和其他机器人玩，不需要回复\n"
-                         "8.**特别注意 你只是决策 不参与回复**\n";
+                         "8.**特别注意 你只是决策 不参与回复**\n"
+                         "9.如果发现最新内容是图片 有可能是表情包 结合上下文看看ai也没有回复 或想查看图片\n";
         if (ev.bot_admin)   // 机器人不是管理员就别给管群能力（给了也撤不掉，白浪费一次接口）
-            sysTxt += "9.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
+            sysTxt += "10.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
                       "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否 你也可以直接返回 【提到】 让另一个Ai处理 并且回复\n当你看见有这段文本时代表你有管理员权限\n";
         sysTxt += "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
                   "下面是用户给你的角色设定：\n" + setting;
@@ -1367,10 +1457,10 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                 QString t     = texts->at(i).trimmed();
 
                 QString msgid = (attempt == 0) ? ev.msgId : QString();
-                bool    wake  = (attempt == 2);
-                QString pname = "[Ai系统]";
+                QString wake  = ((attempt == 2)?"true":"false");
 
-                botSafe->send_msgAsync(ev.type, ev.groupId, pname, t, msgid, wake, false, 0, false,
+
+                botSafe->send_msgAsync(ev.type, ev.groupId, "[Ai系统]", t, msgid, wake, false, 0, false,
                     [self, i, attempt, isw](const QString &rsp, QNetworkReply::NetworkError) {
 
                         if (rsp.contains("\"id\"")) {       // 这条发成功了，发下一条

@@ -29,6 +29,7 @@
 #include <QThread>
 #include <QThreadPool>
 #include <QtConcurrent/QtConcurrent>
+#include <memory>              // callShopAsync 的「只触发一次」标记
 
 // 声明外部 myCallback 函数（根据您的实际定义）
 extern const char* myCallback(const char* uuid, int api_id, int appid,
@@ -180,6 +181,84 @@ QString NodePluginManager::callSetConfigValue(const QString& uuid, const QString
     if (!err.isEmpty()) return err;                 // 方法不存在 / 插件抛异常
     if (v.isString()) return v.toString();          // 约定：空串 = 成功，非空 = 失败原因
     return QString();
+}
+
+// 商店购买（异步）：bridge.js 收到 {id, method, params} 会展开成 plugin[method](...params) 并回包，
+// 所以不用另开协议 —— 直接借「配置面板」那条请求通道，区别只是**不阻塞等**。
+//   插件返回 true / 1 → 成交（框架保留已扣的积分）；false / 0 → 退款；超时 / 抛异常 → 也算失败。
+void NodePluginManager::callShopAsync(const QString& uuid, const QString& funcName,
+                                      const QJsonArray& params,
+                                      std::function<void(bool, const QString&)> cb,
+                                      int timeoutMs)
+{
+    if (!cb) return;
+
+    // ⚠ NodeProcess::writeMessage 是直接写 QProcess 的，只能主线程发起；
+    //   而商店购买跑在 QThreadPool 的工作线程里（dispatch_message）→ 先投递到主线程。
+    //   投递之后回包 / 超时也都在主线程，所以下面的状态不用加锁。
+    if (QThread::currentThread() != qApp->thread()) {
+        QMetaObject::invokeMethod(this, [=]() { callShopAsync(uuid, funcName, params, cb, timeoutMs); },
+                                  Qt::QueuedConnection);
+        return;
+    }
+
+    // 回包与超时只认先到的那个：超时后回包才来（或反之）都不能重复回调 ——
+    // 框架靠这个回调决定「发货 or 退款」，重复执行就是重复退款 / 重复发货。
+    auto fired = std::make_shared<bool>(false);
+    auto finish = [cb, fired](bool success, const QString& err) {
+        if (*fired) return;
+        *fired = true;
+        cb(success, err);
+    };
+
+    NodeProcess* host = m_host;
+    if (uuid.isEmpty() || !m_dirs.contains(uuid)) {
+        finish(false, QStringLiteral("插件没有加载"));
+        return;
+    }
+    // host.js 里 load_plugin / unload_plugin 是**宿主自己**处理的方法名，带 uuid 也会被它截走 ——
+    // 商品函数撞这两个名字就永远调不到插件，直接报清楚。
+    if (funcName == QLatin1String("load_plugin") || funcName == QLatin1String("unload_plugin")) {
+        finish(false, QStringLiteral("商品函数名不能叫 load_plugin / unload_plugin"));
+        return;
+    }
+    if (!host || !host->isRunning()) {
+        finish(false, QStringLiteral("node 宿主不在运行"));
+        return;
+    }
+
+    QJsonObject extra;
+    extra["uuid"] = uuid;
+    extra["params"] = params;
+    const int id = host->sendRequest(funcName, extra,
+                                    [finish](const QJsonValue& v, const QString& e) {
+        if (!e.isEmpty()) { finish(false, e); return; }    // 方法不存在 / 插件抛异常
+        bool success = false;
+        QString why;                                       // 插件没给结果时说清楚，别只回「兑换失败」
+        if (v.isBool())        success = v.toBool();
+        else if (v.isDouble()) success = (v.toDouble() != 0.0);
+        else if (v.isString()) {
+            const QString s = v.toString().trimmed();
+            success = (s.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0
+                       || s == QStringLiteral("1"));
+            if (!success && !s.isEmpty())
+                why = QStringLiteral("插件返回了 \"%1\"（应 return true / false）").arg(s);
+        }
+        else {
+            // undefined / null / 对象 / 数组：函数没写 return，或者 return 了个别的东西。
+            // 一律按失败（框架退全款），但要把原因带回去 —— 否则作者只会看到「兑换失败」。
+            why = (v.isUndefined() || v.isNull())
+                    ? QStringLiteral("插件没有返回结果（应 return true / false）")
+                    : QStringLiteral("插件返回值类型不对（应 return true / false）");
+        }
+        finish(success, why);                              // 只有 true / 1 算成交
+    });
+
+    // 超时：必须 forgetRequest 把回调摘掉（否则它以后被调用时闭包已经没人用了），按失败处理
+    QTimer::singleShot(timeoutMs, host, [host, id, finish]() {
+        host->forgetRequest(id);
+        finish(false, QStringLiteral("插件超时未响应"));
+    });
 }
 
 void NodePluginManager::setEnabled(const QString& uuid, bool enabled)

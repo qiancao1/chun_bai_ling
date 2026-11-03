@@ -559,7 +559,9 @@ void SandboxWindow::onSendClicked()
         sys.attr("stdout") = stdoutStr;
         sys.attr("stderr") = stderrStr;
 
-        py::dict global = py::globals();
+        // 独立命名空间：py::globals() 是解释器的 __main__.__dict__，反复点「运行」会让上一次
+        // 脚本留下的变量/函数残留下来（还会污染框架自己的 main 命名空间），这里每次新建。
+        py::dict global;
         global["__builtins__"] = py::module_::import("builtins");
         global["__name__"] = "__main__";
 

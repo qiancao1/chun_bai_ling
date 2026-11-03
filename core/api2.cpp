@@ -17,7 +17,7 @@ QList<CosPutPoolEntry> takeCosPutPending();
 
 
 void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid,
-                            std::shared_ptr<MsgTimeStat> tstat, bool recordErr)
+                            std::shared_ptr<MsgTimeStat> tstat, bool recordErr, int recallSec)
 {
     // ── 先把 pname 归一成「标签本体」（不含方括号）──
     //   两种传法都吃：
@@ -51,6 +51,12 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     QString deleteid = obj["id"].toString();
     QJsonObject obj2 =obj["ext_info"].toObject();
     QString ref = obj2["ref_idx"].toString();
+
+    // ── 自动撤回的唯一登记点 ──
+    //   所有发送路径收尾都要过这里，所以发送函数只把秒数带进来就行，不用各自判断。
+    //   deleteid 非空 = 平台确实收下了这条（真发出去才有 id），没发出去的失败响应不会进缓冲。
+    if (recallSec > 0 && !deleteid.isEmpty())
+        scheduleAutoRecall(type, openid, deleteid, recallSec);
 
     // ── 「发送错误」独立库（g_errlogdb）的唯一写入点 ──
     //   就是「把这条失败的 Message 原样复制一份到另一个库」：
@@ -668,7 +674,7 @@ QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
     return qMakePair(addr, realMsgId);
 }
 QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
-                                const QString &msgid,bool is_wakeup,bool noref, MessageLogContext ctx, int fileType,
+                                const QString &msgid,const QString &is_wakeup,bool noref, MessageLogContext ctx, int fileType,
                                 bool multiPart)
 {
     QJsonObject json;
@@ -707,19 +713,19 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index);
     QString url= get_url(type,openid,"messages");
     if(ctx.openid.isEmpty()){
-        QString response= PostSync(url, json,QString(), 5000);
+        QString response= PostSync(url, json,QString(), 30000);
 
-        addmsglog(response,index,pname,logInfo,now_us,type,openid);
+        addmsglog(response,index,pname,logInfo,now_us,type,openid, nullptr, true, ctx.recallSec);
 
         return response;
 
     }
     QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+    PostAsync(url, json, "", 30000,
+              [this, ctx, cosPending, type, openid](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat, true, ctx.recallSec);
                   if(ctx.cb)
                       ctx.cb(resp,err);
               });
@@ -729,7 +735,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
 
 QString QQBotClient::send_messages(int type, const QString &openid, const QString &text, const QString &info,
                                    const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid,
-                                   bool is_wakeup, int seq_index, const MessageLogContext ctx,bool noref)
+                                   const QString &is_wakeup, int seq_index, const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     if(info.isEmpty())
@@ -743,13 +749,17 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
     json["content"] = text;
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
     QString url = get_url(type, openid, "messages");
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    if(ctx.openid.isEmpty()) {
+        QString response = PostSync(url, json,QString(), 30000);
+        // 同步分支不在这里记日志（由外层 send_messages 收尾统一 addmsglog，撤回也在那里登记）
+        return response;
+    }
     QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+    PostAsync(url, json, "", 30000,
+              [this, ctx, cosPending, type, openid](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat, true, ctx.recallSec);
                   if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
@@ -758,7 +768,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
 
 QString QQBotClient::send_messages_ark(int type, const QString &openid,const QString &pname,
                                        const QJsonObject &ark, const QString &msgid,
-                                       bool is_wakeup, int seq_index,const MessageLogContext ctx)
+                                       const QString &is_wakeup, int seq_index,const MessageLogContext ctx)
 {
     QJsonArray prompt_keyboard;
     auto now = std::chrono::steady_clock::now();
@@ -780,30 +790,30 @@ QString QQBotClient::send_messages_ark(int type, const QString &openid,const QSt
         qint64 now_us_copy = now_us;
         int typeCopy = type;
         QString openidCopy = openid;
-        PostAsync(url, json, "", 5000,
+        PostAsync(url, json, "", 30000,
                   [this, pnameCopy, jsonString, indexCopy, now_us_copy,
-                   typeCopy, openidCopy,cb = ctx.cb]
+                   typeCopy, openidCopy,cb = ctx.cb, recallSec = ctx.recallSec]
                   (const QString &resp, QNetworkReply::NetworkError err) {
                       // 如果担心 this 被销毁，可以用 QPointer 检查（可选）
                       addmsglog(resp, indexCopy, pnameCopy, jsonString,
-                                now_us_copy, typeCopy, openidCopy);
+                                now_us_copy, typeCopy, openidCopy, nullptr, true, recallSec);
                       if(cb) cb(resp,err);
                   });
         return QString();   // 立即返回，结果通过回调处理
     }
     else
     {
-        QString response = PostSync(url, json, QString(), 5000);
+        QString response = PostSync(url, json, QString(), 30000);
         QJsonDocument doc(ark);
         QString jsonString = doc.toJson(QJsonDocument::Compact);
-        addmsglog(response, index, pname, jsonString, now_us, type, openid);
+        addmsglog(response, index, pname, jsonString, now_us, type, openid, nullptr, true, ctx.recallSec);
         return response;
     }
 }
 
 QString QQBotClient::send_messages_markdown(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
                                             const QJsonValue &keyboard,const QString &message_reference,
-                                            const QString &msgid,bool is_wakeup,int seq_index,const MessageLogContext ctx,bool noref)
+                                            const QString &msgid,const QString &is_wakeup,int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     json["msg_type"] = 2;
@@ -811,12 +821,15 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     json["noref"] = noref;
     if (keyboard.isArray()) {
         QJsonArray arr = keyboard.toArray();
-        // 根据你的完整示例，标准格式是 {"content":{"rows": arr}}
-        json["keyboard"] = QJsonObject{
-            {"content", QJsonObject{{"rows", arr}}}
-        };
+        if(arr.size()!=0){
+            json["keyboard"] = QJsonObject{
+                {"content", QJsonObject{{"rows", arr}}}
+
+            };
+
+        }
     }
-    // 如果传入的是对象，保留你原来的判断逻辑
+
     else if (keyboard.isObject()) {
         QJsonObject obj = keyboard.toObject();
         if (obj.contains("keyboard")) {
@@ -826,25 +839,32 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
         } else if (obj.contains("rows")) {
             json["keyboard"] = QJsonObject{{"content", obj}};
         } else if (obj.contains("buttons")) {
+
+
             json["keyboard"] = QJsonObject{
                 {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
             };
         } else {
-            // 兜底：默认忽略或按原样赋值
+
             json["keyboard"] = obj;
         }
+
     }
-
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
-    QString url= get_url(type,openid,"messages");
+    QString url = get_url(type,openid, "messages");
 
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+
+    if(ctx.openid.isEmpty()) {
+        QString response = PostSync(url, json,QString(), 30000);
+        // 同步分支不在这里记日志（外层 send_messages 收尾统一 addmsglog，撤回也在那里登记）
+        return response;
+    }
     QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+    PostAsync(url, json, "", 30000,
+              [this, ctx, cosPending, type, openid](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat, true, ctx.recallSec);
                   if(ctx.cb) ctx.cb(resp,err);
               });
     return QString();
@@ -920,17 +940,19 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
     }
 
     if (ctx.openid.isEmpty()) {
-        return PostSync(url, postData, headers, 10000);
+        QString response = PostSync(url, postData, headers, 30000);
+        // 同步分支不在这里记日志（外层 send_messages 收尾统一 addmsglog，撤回也在那里登记）
+        return response;
     } else {
         QHash<QString, QString> headers2;
         headers2.insert("X-Union-Appid", m_info->appid);
         headers2.insert("Authorization", "QQBot " + m_accessToken);
         headers2.insert("Content-Type", headers);
 
-        postRawAsync(url, postData, headers2, 20000,
+        postRawAsync(url, postData, headers2, 30000,
                      [this, ctx](const QString &resp, QNetworkReply::NetworkError err) {
                          addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                                   ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
+                                   ctx.now_us, ctx.type, ctx.openid, ctx.tstat, true, ctx.recallSec);
                      });
         return QString();
     }
@@ -938,7 +960,7 @@ QString QQBotClient::send_messages_pd(const QString &url,const QString &msgId, c
 
 QString QQBotClient::send_messages_mb(int type, const QString &openid,const QString &markdown,const QJsonArray &prompt_keyboard,
                                       const QJsonValue  &keyboard,const QString &message_reference,
-                                      const QString &msgid,bool is_wakeup, int seq_index,const MessageLogContext ctx,bool noref)
+                                      const QString &msgid, const QString &is_wakeup, int seq_index,const MessageLogContext ctx,bool noref)
 {
     QJsonObject json;
     json["msg_type"] = 2;
@@ -976,16 +998,19 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
             json["keyboard"] = obj;
         }
     }
-
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
-    QString url= get_url(type,openid,"messages");
-    if(ctx.openid.isEmpty()) return PostSync(url, json,QString(), 5000);
+    QString url = get_url(type,openid,"messages");
+    if(ctx.openid.isEmpty()) {
+        QString response = PostSync(url, json,QString(), 30000);
+        // 同步分支不在这里记日志（外层 send_messages 收尾统一 addmsglog，撤回也在那里登记）
+        return response;
+    }
     QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
-    PostAsync(url, json, "", 5000,
-              [this, ctx, cosPending](const QString &resp, QNetworkReply::NetworkError err) {
+    PostAsync(url, json, "", 30000,
+              [this, ctx, cosPending, type, openid](const QString &resp, QNetworkReply::NetworkError err) {
                   flushCosPutList(cosPending);   // 响应已回 = 服务器已收下消息，此时覆盖 COS 才安全
                   addmsglog(resp, ctx.index, ctx.pname, ctx.jsonString,
-                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat);
+                            ctx.now_us, ctx.type, ctx.openid, ctx.tstat, true, ctx.recallSec);
                   if(ctx.cb) ctx.cb(resp,err);
 
               });
@@ -1012,7 +1037,7 @@ QString QQBotClient::generate_share_link(const QString& callback_data,Callback c
     }else{
         json["callback_data"] = m_info->appid;
     }
-    return Post("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 5000,callbacks);
+    return Post("https://api.bot.qq.com/v2/generate_url_link", json,QString(), 30000,callbacks);
 }
 
 //获取 群成员列表 频道成员列表
@@ -1052,9 +1077,9 @@ QString QQBotClient::respond_interaction(const QString &interaction_id, int code
     QByteArray body = QJsonDocument(json).toJson(QJsonDocument::Compact);
     // 传了回调 → 走 putAsync（回调式，不阻塞调用线程）；没传 → 保持原样同步 + try/catch
     if (callbacks)
-        return put2(url, body, QString(), 5000, callbacks);
+        return put2(url, body, QString(), 30000, callbacks);
     try {
-        return put(url,body,QString(),5000);
+        return put(url,body,QString(),30000);
     } catch (const std::exception &e) {
         return e.what();  // 失败返回空字符串
     }
@@ -1336,7 +1361,7 @@ QString QQBotClient::mediaImagePrepare(const QString &fileName, const QString &c
     obj["content_type"] = contentType;
     obj["md5"]          = md5;
     obj["sha1"]         = sha1;
-    return Post("https://api.bot.qq.com/v2/media-images/prepare", obj, QString(), 15000, callbacks);
+    return Post("https://api.bot.qq.com/v2/media-images/prepare", obj, QString(), 30000, callbacks);
 }
 
 // 2. 用 presigned_url 直传二进制。
@@ -1364,7 +1389,7 @@ QString QQBotClient::listMediaImages(const QString &cursor, Callback callbacks)
     QString url = QStringLiteral("https://api.bot.qq.com/v2/media-images");
     if (!cursor.isEmpty())
         url += QStringLiteral("?cursor=") + QString::fromUtf8(QUrl::toPercentEncoding(cursor));
-    return Get(url, QString(), 15000, callbacks);
+    return Get(url, QString(), 30000, callbacks);
 }
 
 // 5. 删除图片（释放配额）。删完引用链接立即失效，但**已发出的消息不受影响**
@@ -1374,7 +1399,7 @@ QString QQBotClient::deleteMediaImage(const QString &imageId, Callback callbacks
     const QString url = QStringLiteral("https://api.bot.qq.com/v2/media-images/")
                         + QString::fromUtf8(QUrl::toPercentEncoding(imageId))
                         + QStringLiteral("/delete");
-    return Delete(url, QJsonObject(), QString(), 15000, callbacks);
+    return Delete(url, QJsonObject(), QString(), 30000, callbacks);
 }
 
 // ---- 一条龙上传：本地文件 → prepare → PUT → complete ----

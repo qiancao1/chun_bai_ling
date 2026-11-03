@@ -411,6 +411,7 @@ static QString cachedValueIfFresh(const QString &key)
 {
     if (!cache_db || key.isEmpty()) return {};
     const QString v = cache_db->get(key);      // ← 整个读缓存链路就这一次库访问
+
     if (v.isEmpty()) return {};
 
     const qint64 now = QDateTime::currentSecsSinceEpoch();
@@ -420,6 +421,8 @@ static QString cachedValueIfFresh(const QString &key)
     if (sep > 0) {
         bool ok = false;
         const qint64 expire = v.left(sep).trimmed().toLongLong(&ok);
+
+
         if (ok && now >= expire) return {};    // 已过期：当未命中，不删
         return v;
     }
@@ -458,7 +461,6 @@ static void deliverPluginAsyncResult(const QString &reqId, const QString &resp)
         qWarning() << "[qiancao] 异步回执投递失败 reqId=" << reqId << ":" << e.what();
     }
 }
-
 
 // 把插件 API 的第 7 参（`_7`）直接变成底层要的 Callback —— 各 case 通用。
 //   `_7` 非空 = Python SDK 的 `xxx_async()` 调用 → 底层（Get/Post/Delete/put2）见到 Callback 就走
@@ -538,10 +540,8 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
         {
             if(m_pluginList[i].uuid!=uuid) continue;
             pluginindex=i;
-            if(apiId==OUTLOG)
+            if(apiId==OUTLOG || apiId ==API_ID_SEND_MESSAGES || apiId == API_ID_SEND_MESSAGES_ARK)
                 pname = "["+m_pluginList[i].name+"]";
-            else if(apiId ==API_ID_SEND_MESSAGES || apiId == API_ID_SEND_MESSAGES_ARK)
-                pname = "["+m_pluginList[i].name+"|%1ms]";
             else
                 pname = "[]";
             break;
@@ -552,7 +552,7 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
             return result.c_str();//这里
         }
     }else{
-        pname = "[私有指令|%1ms]";
+        pname = "[私有指令]";
     }
     if(pname.isEmpty()) return result.c_str();
 
@@ -619,21 +619,25 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
         m_pluginList[pluginindex].SendQuantity++;
         int type = toInt(_1);
         QString openid = toQString(_2);
-        QString text =toQString(_3);
-
-        QString msgid = toQString(_4);
-        bool is_wakeup = toBool(_5);
         QString ret;
-        // _7 = 异步回执标识，只有 Python SDK 的 *_async 会传。
-        // 传了它 → 走 PostAsync 回调路径，发送完成后把响应送回插件协程；
-        // 不传（JS / DLL / 老的同步调用）→ 行为与以前完全一致。
+        if(openid.isEmpty())
+        {
+            ret = "对象id为空";
+            result = ret.toStdString();
+            break;
+        }
+        QString text =toQString(_3);
+        QString msgid = toQString(_4);
+        QString is_wakeup = toQString(_5);
+        if(logPage->wanzjson){
+            logPage->onNewLogAdded(QString("appid:%1 群id:%2 消息：%3 msgid:%4").arg(appid).arg(openid,text,msgid));
+        }
         const QString reqId = (_7 == nullptr) ? QString() : toQString(_7);
-        // 插件按**注册原名**输出按钮（如 [ping]()），用户改名成 pong 后点它发出去的还是 ping →
-        // 按钮失效。这里把**发起方 uuid** 直接当 pname 传进去，由发送管线按该插件**自己的**规则表
-        // 把 [原指令]() 重定向成生效指令；addmsglog 再按 uuid 还原成 "[插件名|%1ms]" 显示。
-        // 关键词匹配没有插件（uuid 不在插件表），照旧传展示标签，正文一字不动。
         const QString pn = (strcmp(uuid, g_keyuuid2) != 0) ? toQString(uuid) : pname;
-
+        // ── _8 = 发送后自动撤回秒数 ──
+        //   0 / 空 / 负数 = 不撤回；超过上限（110）一律按上限算。
+        //   真正落地在 QQBotClient 的 120 槽环形缓冲里（见 qqbotclient.cpp 的 scheduleAutoRecall）。
+        const int recallSec = qBound(0, toInt(_8), QQBotClient::kRecallMaxSec);
         // ── AI 插件工具调用：插件要「说」的话在这里被扣下，交给 AI 决定发不发 ──
         // 调插件前框架把 msgid 打成了 "|-<token>|<真实msgid>"（见 core/global.h）；
         // 这里认出 token 就直接当发送成功返回 —— 不 POST、不写日志，一个字都不出这台机器。
@@ -650,19 +654,22 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
             }
         }
 
+
         if(toBool(_6))
         {
             if(reqId.isEmpty())
-                ret = client->send_msgAsync(type, openid, pn, text, msgid, is_wakeup);
+                ret = client->send_msgAsync(type, openid, pn, text, msgid, is_wakeup,
+                                            false, 0, false, Callback(), recallSec);
             else
                 ret = client->send_msgAsync(type, openid, pn, text, msgid, is_wakeup,
                                             false, 0, false,
                                             [reqId](const QString &resp, QNetworkReply::NetworkError) {
                                                 deliverPluginAsyncResult(reqId, resp);
-                                            });
+                                            }, recallSec);
         }
         else
-            ret = client->send_messages(type, openid, pn, text, msgid, is_wakeup);
+            ret = client->send_messages(type, openid, pn, text, msgid, is_wakeup,
+                                        false, 0, false, recallSec);
         result = ret.toStdString();
         break;
     }
@@ -672,10 +679,12 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
         QString openid = toQString(_2);
         QJsonObject ark = toJsonObject(_3);
         QString msgid = toQString(_4);
-        bool is_wakeup = toBool(_5);
+        QString is_wakeup = toQString(_5);
         // _7 = 异步回执标识（Python SDK 的 send_ark_async 才传）。
         // 非空 → 传一个带 cb 且 openid 非空的 ctx，send_messages_ark 便走 PostAsync 分支。
+        // _8 = 自动撤回秒数，跟着 ctx 沉下去，由 addmsglog 统一登记。
         MessageLogContext ctx;
+        ctx.recallSec = qBound(0, toInt(_8), QQBotClient::kRecallMaxSec);
         if (Callback cb = pluginAsyncCb(_7)) { ctx.cb = cb; ctx.openid = openid; }
         QString ret = client->send_messages_ark(type, openid,pname, ark, msgid, is_wakeup, 0, ctx);
         result = ret.toStdString();
@@ -2363,7 +2372,7 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
             phFin["part_index"] = entry.partIndex;
             phFin["block_size"] = placeholder.size();
             phFin["md5"]        = phMd5;
-            qDebug() << PostSync(get_url(targetType, openid, "upload_part_finish"), phFin, QString(), 30000);
+            PostSync(get_url(targetType, openid, "upload_part_finish"), phFin, QString(), 30000);
 
             // files 注册出 file_info / raw_url
             QJsonObject phFiles;
@@ -2423,7 +2432,7 @@ QString QQBotClient::uploadRichMediaPool(int targetType, const QString& openid,i
         finishJson["block_size"] = fileSize;
         finishJson["md5"]        = md5;
         QString finishUrl = get_url(targetType, openid, "upload_part_finish");
-        qDebug() << PostSync(finishUrl, finishJson, QString(), 30000);
+        PostSync(finishUrl, finishJson, QString(), 30000);
     }
 
     // ---- 5. 执行 /files 拿 file_info ----
@@ -3424,6 +3433,19 @@ static QString audioM4aPathFor(const QString &srcFilePath)
                                      + QStringLiteral(".m4a"));
 }
 
+// 切段产物（_seg000.m4a …）的目录 —— 与转换产物同一套 tmp/ 规矩（2026-10-31 补）
+//   · m4a 本来就在 tmp/ 里（正常情况 = audioM4aPathFor 的转换产物）→ 原地切，段也留在同一个 tmp/
+//   · m4a 不在 tmp/ 里（用户直接把一个 **.m4a 当成源** 发过来，压根没有「转换」这一步）→
+//     段放 <它所在目录>/tmp/，否则 _seg000.m4a 就堆在用户的音乐目录里（截图那批就是这么来的）
+// ⚠ 只认「目录名就是 tmp」这一条：源文件碰巧放在别人的 tmp 目录里也照样原地切，不叠成 tmp/tmp。
+static QString audioSegDirFor(const QString &m4aPath)
+{
+    const QDir dir = QFileInfo(m4aPath).absoluteDir();
+    if (dir.dirName().compare(QStringLiteral("tmp"), Qt::CaseInsensitive) == 0)
+        return dir.absolutePath();
+    return dir.filePath(QStringLiteral("tmp"));
+}
+
 QString convertAudioToSilk(const QString &srcFilePath)
 {
     if (!QFile::exists(srcFilePath)) {
@@ -3654,7 +3676,12 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
     const QString base = m4aPath.left(m4aPath.size() - 4);
     const QString filter = QFileInfo(base).fileName() + "_seg*.m4a";
 
-    QDir dir = QFileInfo(m4aPath).absoluteDir();
+    // 段目录 = <m4a 所在目录>/tmp（m4a 自己就在 tmp/ 里时原地切）—— 见 audioSegDirFor
+    QDir dir(audioSegDirFor(m4aPath));
+    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
+        AppendEventLog(QStringLiteral("切段目录创建失败:") + dir.absolutePath());
+        return {};
+    }
     QStringList out;
     const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
     if (!exist.isEmpty()) {              // 之前切过 → 直接复用产物，不起进程
@@ -3686,7 +3713,9 @@ static QStringList splitM4aSegments(const QString &m4aPath, int segSec)
         "-f", "segment",
         "-segment_time", QString::number(segSec),
         "-reset_timestamps", "1",
-        base + "_seg%03d.m4a"
+        // ⚠ 输出必须写进段目录（dir），不能再用 base 全路径：base 是源 m4a 的路径，
+        //   源在用户目录时会把 _seg000.m4a 直接堆到人家音乐文件夹里
+        dir.filePath(QFileInfo(base).fileName() + QStringLiteral("_seg%03d.m4a"))
     });
     if (!p.waitForStarted())
         return {};
@@ -3875,8 +3904,16 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
     const QString base = m4aPath.left(m4aPath.size() - 4);
     const QString filter = QFileInfo(base).fileName() + "_seg*.m4a";
 
+    // 段目录 = <m4a 所在目录>/tmp（m4a 自己就在 tmp/ 里时原地切）—— 见 audioSegDirFor
+    const QString segDir = audioSegDirFor(m4aPath);
+    if (!QDir(segDir).exists() && !QDir().mkpath(segDir)) {
+        AppendEventLog(QStringLiteral("切段目录创建失败:") + segDir);
+        onDone(QStringList());
+        return;
+    }
+
     {
-        QDir dir = QFileInfo(m4aPath).absoluteDir();
+        QDir dir(segDir);
         const QStringList exist = dir.entryList(QStringList{filter}, QDir::Files, QDir::Name);
         if (!exist.isEmpty()) {                    // 之前切过 → 直接复用产物（tmp/ 就是放这个的）
             QStringList out;
@@ -3887,18 +3924,19 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
     }
 
     // 退路：外部 ffmpeg.exe（DLL 缺失且补包失败时才走）
-    auto viaExe = [m4aPath, base, filter, segSec, onDone]() {
+    auto viaExe = [m4aPath, base, filter, segDir, segSec, onDone]() {
         runProcessAsync(findFfmpegPath(),
             { "-y", "-i", m4aPath,
               "-c", "copy",                            // AAC 直接流复制，秒级完成
               "-f", "segment",
               "-segment_time", QString::number(segSec),
               "-reset_timestamps", "1",
-              base + "_seg%03d.m4a" },
+              // ⚠ 必须写进段目录：base 是源 m4a 的全路径，源在用户目录时会堆到人家音乐文件夹里
+              QDir(segDir).filePath(QFileInfo(base).fileName() + QStringLiteral("_seg%03d.m4a")) },
             60000,
-            [m4aPath, filter, onDone](int code, const QByteArray &, bool timedOut) {
+            [segDir, filter, onDone](int code, const QByteArray &, bool timedOut) {
                 if (timedOut || code != 0) { onDone(QStringList()); return; }
-                QDir d = QFileInfo(m4aPath).absoluteDir();
+                QDir d(segDir);
                 const QStringList files = d.entryList(QStringList{filter}, QDir::Files, QDir::Name);
                 if (files.isEmpty()) { onDone(QStringList()); return; }   // 一段都没切出来 → 按整文件发
                 QStringList out;
@@ -3911,9 +3949,9 @@ static void splitM4aSegmentsAsync(const QString &m4aPath, int segSec, std::funct
     auto errText = std::make_shared<QString>();
 
     runOnFfmpegDll(
-        [m4aPath, segSec, segs, errText]() {
+        [m4aPath, segDir, segSec, segs, errText]() {
             QString e;
-            *segs = QcFfmpeg::split(m4aPath, QFileInfo(m4aPath).absolutePath(), segSec,
+            *segs = QcFfmpeg::split(m4aPath, segDir, segSec,
                                     QStringLiteral("m4a"), &e);
             *errText = e;
         },
@@ -4116,15 +4154,17 @@ struct QQBotClient::MediaSendChain {
     int                  type = 0;
     QString              openid, pname, msgid;
     qint64               now_us = 0;
-    bool                 is_wakeup = false, mode = false, noref = false;
+    QString              is_wakeup;
+    bool mode = false, noref = false;
     int                  sendType = 0;
     MessageLogContext    ctx;
     bool                 finished = false;
     // 摘掉全部媒体标签后**还有正文**吗（入口处一次性算好）。
     // 它决定「调用方回调 (ctx.cb) 归谁」：
-    //   true  —— 正文+媒体混发（违反设计约定，但真出现就都发）：媒体一律不带回调，
+    //   true  —— 正文+媒体混发（2026-10-31 起是**正常路径**，正文与媒体并行发出）：媒体一律不带回调，
     //            cb 归**正文**那次 send_messages*，即「回调只报正文是否成功，文件的成败不影响」(2026-10-20 拍板)
     //   false —— 纯媒体：cb 仍挂在最后一段媒体的 send_Media 上（与原来一致，时序 = 真发出去才回）
+    // 另：true 时 send_Media 一律带 multiPart —— 正文可能抢先占了「250 = 已处理」，不绕过就会被 noref 吞掉。
     bool                 hasText = false;
 };
 
@@ -4158,9 +4198,9 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
         st->finished = true;
         auto cb = st->onDone;
         st->onDone = nullptr;
-        // 只有「摘完标签还剩正文」才往回调 —— 让调用方接着发正文（见 send_messagesAsync 的 sendTextPart）。
-        // ⚠ 纯媒体（st->hasText=false）**不能**调：那条路径的 cb 已经由 send_Media 的 PostAsync
-        //   触发过了（api2.cpp），这里再调一次 = 同一个回调触发两次（插件/Python 会当成两轮 → 循环重发）。
+        // 收尾回调：只有「摘完标签还剩正文」才调（纯媒体由 send_Media 的回包触发 cb，这里不能重复调）。
+        // 2026-10-31 起正文已经**并行**发掉了（sendMessagesAsyncCore 末尾），调用方传进来的 onDone
+        // 是个空壳 —— 这里纯属兜底/兼容：谁传了真回调，照样按老语义把「剩余正文 + 最后一次响应」给它。
         if (cb && st->hasText) cb(st->text, st->response);
         return;
     }
@@ -4215,10 +4255,10 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
         const QString cacheKey = QString::number(st->appid) + QLatin1Char(':') + mediaType + QLatin1Char('_') + tc->fileMd5;
         // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
         tc->cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
+
         if (!tc->cachedInfos.isEmpty())
             tc->needUpload = false;
     }
-
     // ── 本地音频：探测 →（必要时）转码 →（超长）切段 → 上传 ──
     // 对应同步版的 sendAsIs 判断 + 「先试切段、否则转码、再判超长」三连
     if (tc->needUpload && tc->fileType == 3 && !tc->srcPath.startsWith("http")) {
@@ -4304,10 +4344,12 @@ void QQBotClient::mediaChainUploadAndSend(std::shared_ptr<MediaSendChain> st, st
             // ⚠ multiPart：这一批是「同一轮的多段媒体」。send_Media 里 setBuffer_250 只对**第一条**
             //   返回 ok=true（它把该消息从「未处理」翻成 250），第 2 条起一律 ok=false；noref 时原本
             //   会直接 return "{}" 把 2..N 段吞掉。多段必须传 true 绕过该去重（见 send_Media）。
+            //   st->hasText 时同样要给 true：正文是**并行**发的，它很可能比媒体先一步占掉那个 250，
+            //   不绕过的话整条媒体的第一条就被 noref 吞了（正文发出去了、语音没了）。
             st->response = send_Media(st->type, st->openid, st->pname, infos[i],
                                       st->now_us, st->msgid, st->is_wakeup, st->noref,
                                       (!st->hasText && last) ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
-                                      /*multiPart=*/infos.size() > 1);
+                                      /*multiPart=*/infos.size() > 1 || st->hasText);
         }
         mediaChainFinishTag(st, tc);
         return;
@@ -4428,7 +4470,7 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                 st->response = send_Media(st->type, st->openid, st->pname, fileInfo,
                                           st->now_us, st->msgid, st->is_wakeup, st->noref,
                                           (!st->hasText && lastSeg) ? st->ctx : ctxNoCb(st->ctx), tc->fileType,
-                                          /*multiPart=*/job->paths.size() > 1);
+                                          /*multiPart=*/job->paths.size() > 1 || st->hasText);
             }
             mediaChainSegLoop(st, tc, job);
         });
@@ -4508,10 +4550,11 @@ void QQBotClient::mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, s
 //   没有媒体标签 → 直接同步回调（零线程零等待，绝大多数发送走这条）
 //   有媒体标签 → 交给媒体线程上的异步链（调用方线程立刻返回）
 void QQBotClient::sendOneMediaAsync(int type, const QString &openid, const QString &pname, QString text,
-                                    qint64 now_us, const QString &msgid, bool is_wakeup, bool mode,
+                                    qint64 now_us, const QString &msgid, const QString &is_wakeup, bool mode,
                                     int sendType, bool noref, const MessageLogContext &ctx,
                                     std::function<void(const QString &, const QString &)> onDone)
 {
+
     if (!onDone) return;
 
     // 与 sendOneMedia 内部**同一份**正则（改一处必须改另一处）
@@ -4565,7 +4608,7 @@ void QQBotClient::sendOneMediaAsync(int type, const QString &openid, const QStri
 }
 
 QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString &pname,QString &text,qint64 now_us,
-                                  const QString &msgid,bool is_wakeup,bool mode,int 发送类型,bool noref,const MessageLogContext &ctx)
+                                  const QString &msgid,const QString &is_wakeup,bool mode,int 发送类型,bool noref,const MessageLogContext &ctx)
 {
     // 匹配短标签或全名标签：f/file, a/audio, v/video, flie(笔误)
     static QRegularExpression re(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
@@ -4846,7 +4889,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
 
 
 
-void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, bool is_wakeup,int logindex)
+void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, const QString &is_wakeup,int logindex)
 {
     if (!message_reference.isEmpty()) {
         QJsonObject refObj;
@@ -4857,15 +4900,13 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
     if(logindex!=1)
          json["msg_seq"] = m_info->message_sent;
 
+    if(is_wakeup=="true") //至于为什么是 文本 因为这个变量可能传用户id 为什么传用户id 只能说 为未来设计的
+        json["is_wakeup"] = true;
+    else if (msgid.contains("ROBOT")|| !msgid.contains(":"))
+        json["msg_id"] = msgid;
+    else
+        json["event_id"] = msgid;
 
-    if (!is_wakeup) {
-        if (msgid.contains("INTERACTION") || msgid.contains("FRIEND_ADD") || msgid.contains("GROUP_MEMBER") || msgid.startsWith("GROUP_JOIN_REQUEST")) //GROUP_MEMBER_ADD
-            json["event_id"] = msgid;
-        else
-            json["msg_id"] = msgid;
-    } else {
-        json["is_wakeup"] = is_wakeup;
-    }
     if (!prompt_keyboard.isEmpty()) {
         json["prompt_keyboard"] = QJsonObject{
             {"keyboard", QJsonObject{
@@ -5060,7 +5101,8 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
         }
         else
         {
-            keyboard = parseLabelsToKeyboard(keyboard_data);
+            if(!keyboard_data.isEmpty())
+                keyboard = parseLabelsToKeyboard(keyboard_data);
         }
     }
     //小尾巴
@@ -5209,23 +5251,28 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
 QString processText(const QString &text, int timeoutMs = 30000);
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
-                              const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
+                              const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,Callback cb,int recallSec)
 {
     CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     if(type==18) type =0;
-
+    if(recallSec==1) recallSec=2;
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
 
     // 插件侧的 pname 传的是**发起方裸 uuid**（展示标签一律以 '[' 开头）→ 按该插件**自己的**规则表
     // 把正文里的 [注册原名](...) 改写成改名后的指令（插件只认注册名，改不了这个）。
     // 框架 / AI / WebUI / 关键词匹配传的 "[某某|%1ms]" → uuid 空 → 正文一字不动，零副作用。
+    // 人话 替换[]() 重定向指令 也就是框架有用户会修改指令 插件内的[]()没变 我们这里修改一下
     text = redirectPluginCmdsMarkdown(text, senderUuidFromPname(pname), m_info->appid_int);
 
     QString newtext;
     if(m_info->xxwb.isEmpty())
         newtext = text;
-    else
+    else if(!text.startsWith("[audio,path=") && !text.startsWith("[video,path=") && !text.startsWith("[file,path=")) {
+
         newtext = text + m_info->xxwb;
+    }else{
+        newtext = text;
+    }
     if(text.contains("#python"))
     {
         MessageEvent ev;
@@ -5242,9 +5289,9 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
         QString mb;
         QString textB = normalizeNewlinesToCR(newtext); //处理换行
         bianl(type,index,textB,keyboard,prompt_keyboard,openid,mb);//挂载按钮解析 小尾巴
-        auto *processor = new AsyncApiProcessor(textB, [this,type,openid,pname,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb](const QString &result) {
+        auto *processor = new AsyncApiProcessor(textB, [this,type,openid,pname,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb,recallSec](const QString &result) {
             QString text = result;
-            return send_messagesAsync2(type,openid,pname,text,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb);
+            return send_messagesAsync2(type,openid,pname,text,msgid,is_wakeup,mode,sendType,noref,mb,prompt_keyboard,keyboard,cb,recallSec);
         });
         processor->start();
         return "{}";
@@ -5253,7 +5300,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     // cb 必须透传下去，否则调用方等不到回调（send_messagesAsync 里才会 ctx.cb = cb）
     //QElapsedTimer t;
     //t.start();
-    QString r = send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref,cb);
+    QString r = send_messagesAsync(type,openid,pname,newtext,msgid,is_wakeup,mode,sendType,noref,cb,recallSec);
     //qDebug () << t.elapsed();
     return r;
 }
@@ -5263,7 +5310,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
 // 这里只负责在关键节点 mark() / addMedia() / addSend()，再把账本交给 addmsglog。
 
 QString QQBotClient::send_messages(int type, const QString &openid,const QString &pname, QString &text,
-                                    const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref)
+                                    const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,int recallSec)
 {
     CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     auto st = std::make_shared<MsgTimeStat>();   // 耗时统计账本（开关关掉时全程空转）
@@ -5278,8 +5325,17 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     QString newtext;
     if(m_info->xxwb.isEmpty())
         newtext = text;
-    else
-        newtext = text+m_info->xxwb;
+    else if(!text.startsWith("[audio,path=") && !text.startsWith("[video,path=") && !text.startsWith("[file,path=")) {
+
+        newtext = text + m_info->xxwb;
+    }else{
+            newtext = text;
+        }
+    // 自动撤回秒数随 ctx 往下沉，最终由 addmsglog（唯一登记点）在拿到平台回执后登记。
+    // ctx.openid 保持为空 = 仍走同步分支，语义不变。
+    if(recallSec==1) recallSec=2;
+    MessageLogContext mctx;
+    mctx.recallSec = recallSec;
 
     if(text.contains("#python"))
     {
@@ -5306,14 +5362,14 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     //   关掉统计只能停掉「新增的图片/返回耗时」，不能让它们全变成 0ms。
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,MessageLogContext());//检查也没有要发送 的语言视频 文件 原位修改text
+    QString newtext2 = sendOneMedia(type,openid,pname,newtext,now_us,msgid,is_wakeup,mode,sendType,noref,mctx);//检查也没有要发送 的语言视频 文件 原位修改text
     if (newtext.isEmpty()) return newtext2;
 
     bool mbise= mb.isEmpty();
     if(newtext.isEmpty() && mbise)
     {
         QString response = R"({"message":"发送内容不能为空"})";
-        addmsglog(response,index,pname,text,now_us,type,openid,st);
+        addmsglog(response,index,pname,text,now_us,type,openid,st,true,recallSec);
         return response;
     }
     int seq_index=0;
@@ -5336,9 +5392,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
             newtext = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);
-            response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+            response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
             st->addSend();
-            addmsglog(response,index,pname,text,now_us,type,openid,st);
+            addmsglog(response,index,pname,text,now_us,type,openid,st,true,recallSec);
             return response;
         }
         if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
@@ -5355,7 +5411,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
             newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
-            response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+            response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
             st->addSend();
         }else {
             st->mark();
@@ -5363,10 +5419,10 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
             st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
             QString url = get_url(type, openid, "messages");
-            response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,MessageLogContext(),noref);
+            response = send_messages_pd(url,realMsgId,textA,fileinfo,message_reference,seq_index,mctx,noref);
             st->addSend();
         }
-        addmsglog(response,index,pname,newtext,now_us,type,openid,st);
+        addmsglog(response,index,pname,newtext,now_us,type,openid,st,true,recallSec);
         return response;
     }
     if(!mbise)
@@ -5375,7 +5431,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
-        response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
         st->addSend();
     }
     if(!mode && m_info->markdown || mode && sendType==1)
@@ -5384,7 +5440,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
-        response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
         st->addSend();
     }else{
 
@@ -5392,7 +5448,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         newtext = processImageTags(newtext,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
-        response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,MessageLogContext(),noref);
+        response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
         st->addSend();
     }
     addmsglog(response,index,pname,newtext,now_us,type,openid,st);
@@ -5410,11 +5466,15 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
 // ⚠ 回调契约：**每条路径都必须把 ctx.cb 触发恰好一次** —— send_messages* 是唯一会触发它的地方，
 //   所以凡是不派发 send_messages* 就返回的路径（纯媒体 / noref / 模板不支持），都在下面手工补一次。
 QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, const QString &pname, QString text,
-                                          const QString &msgid, bool is_wakeup, bool mode, int sendType,
+                                          const QString &msgid, const QString &is_wakeup, bool mode, int sendType,
                                           bool noref, Callback cb, bool preParsed,
                                           const QString &mbIn, const QJsonArray &promptKbIn,
-                                          const QJsonValue &kbIn)
+                                          const QJsonValue &kbIn, int recallSec)
 {
+
+    if(openid.isEmpty()) return "欲发送的对象为空(群id 或 私聊id为空) openid";
+    if(text.isEmpty()) return "发送内容为空";
+
     CosPutPendingGuard _cosPutPoolGuard;   // 发送完成后（含异常路径）把本次用过的 put 链接立即回池
     // 耗时统计账本（开关关掉时全程空转）：挂到 ctx 上（见下面的 ctxT），由 addmsglog 收尾结算。
     auto st = std::make_shared<MsgTimeStat>();
@@ -5441,6 +5501,9 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
     ctx.type = type;
     ctx.openid = openid;
     ctx.cb =cb;
+    // 自动撤回秒数跟着 ctx 走：所有 ctx 拷贝（含媒体链 ctxNoCb / ctxT）都带着它，
+    // 最终由 addmsglog 统一登记。多段媒体 = 多条独立消息 → 每段各登记各的，不会只撤正文。
+    ctx.recallSec = recallSec;
     auto [index, realMsgId] = splitWrappedMsgId(msgid);
     ctx.index = index;
     QJsonValue keyboard = kbIn;
@@ -5458,15 +5521,23 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
 
 
 
-    // ── 媒体标签：异步（回调版）；正文发送挪进回调，等媒体处理完再走 ──
+    // ── 媒体标签：异步（回调版）；正文与媒体**并行**，谁也不等谁 ──
     // 原先是同步 sendOneMedia —— 带媒体的异步发送会把**调用线程**（Python 那条共享 asyncio 线程、
     // 插件页线程、以及 Async2 走的主线程）堵在 ffmpeg 转码 / 上传网络等待里。改成回调版后立刻返回 "{}"。
+    // 2026-10-31 再改一层：以前正文是挂在媒体链的完成回调上的（链走完才发正文），音频要转码/切段/逐段
+    //   上传，正文就被拖到最后一秒。现在媒体链丢进异步链自己跑，正文**当场**用「静态摘掉全部媒体标签」
+    //   的纯文本发出去，两边都只是派发 POST，回包各自进日志 —— 函数立刻返回 "{}"。（见本函数末尾）
     const QString msgIdCopy = realMsgId;   // structured binding 不能被 lambda 捕获（C++17），先拷贝
     const int indexCopy = index;
     const QString mbCopy = mb;
 
+    // batchPart：这次正文是「同一条消息拆成的多部分之一」（同一轮还并行发了媒体）。
+    //   ⚠ 影响只有一处：媒体那边可能先把消息标成 250，导致这里 setBuffer_250 拿到 ok=false ——
+    //   带 noref 时以前会**直接不发并回调 "{}"**（正文悄悄丢掉）。既然是同一条消息的另一半，
+    //   必须照发（与 send_Media 的 multiPart 同一套语义）。
     auto sendTextPart = [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, indexCopy, mbCopy,
-                         is_wakeup, mode, sendType, noref, ctx, st](const QString &textB, const QString &mediaResp) {
+                         is_wakeup, mode, sendType, noref, ctx, st](const QString &textB, const QString &mediaResp,
+                                                                     bool batchPart) {
         // 账本跟着 ctx 往下走：send_messages* 收尾（addmsglog）时把「图/返/总」拼进 pname 方括号。
         // 开关关掉时 ctxT 就是 ctx 的副本，cb 原样，零额外开销。
         MessageLogContext ctxT = ctx;
@@ -5490,7 +5561,7 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
         }
         if(ok)
             seq_index = 1;
-        else if(noref) {
+        else if(noref && !batchPart) {
             // 与上面纯媒体同理：这条路径不派发 send_messages*，ctx.cb 不会被触发 → 调用方干等超时
             if (ctxT.cb) ctxT.cb(QStringLiteral("{}"), QNetworkReply::NoError);
             return;
@@ -5578,24 +5649,56 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
         }
     };
 
-    sendOneMediaAsync(type, openid, pname, textB, now_us, msgid, is_wakeup, mode, sendType, noref, ctx,
-                      [sendTextPart](const QString &textOut, const QString &mediaResp) {
-                          sendTextPart(textOut, mediaResp);
-                      });
+    // ── 媒体与正文并行派发：谁都不等谁，函数立刻返回 "{}" ──
+    //   有媒体时先做一件纯本地的事：把**全部**媒体标签静态摘掉，得到「这条消息真正的正文」。
+    //   （链内是逐条异步摘的，等不到；这里必须一次算好才能立刻发正文。）
+    //   正则与 sendOneMediaAsync / sendOneMedia 内部**同一份**（改一处必须改三处）。
+    QString textOnly = textB;
+    bool hasMedia = false;
+    {
+        static QRegularExpression mediaRe(R"(\[(f(?:ile)?|a(?:udio)?|v(?:ideo)?|flie)\s*,\s*([^\]]+)\])",
+                                          QRegularExpression::CaseInsensitiveOption);
+        QList<QPair<int, int>> rgs;
+        QRegularExpressionMatchIterator it = mediaRe.globalMatch(textOnly);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch mm = it.next();
+            rgs.append(qMakePair(static_cast<int>(mm.capturedStart()), static_cast<int>(mm.capturedLength())));
+        }
+        for (int i = rgs.size() - 1; i >= 0; --i)      // 从后往前摘，前面的下标不会被挪动
+            textOnly.remove(rgs[i].first, rgs[i].second);
+        hasMedia = !rgs.isEmpty();
+    }
+    const bool textAlive = !textOnly.trimmed().isEmpty();
+
+    if (!hasMedia) {
+
+        // 没有媒体标签：老路径（sendOneMediaAsync 也是当场回调），行为完全不变
+        sendTextPart(textB, QString(), /*batchPart=*/false);
+        return "{}";
+    }
+
+    // 有媒体 → 先把媒体链**派发**出去（只是 postToMedia，立刻返回），不等它转码/上传/发送；
+    //   有正文：链里一条媒体都不带回调（cb 归正文，见 MediaSendChain::hasText），收尾也用不上
+    //   纯媒体：ctx 原样下去，cb 仍由**最后一段** send_Media 的回包里触发（契约「恰好一次」）
+    sendOneMediaAsync(type, openid, pname, textB, now_us, msgid, is_wakeup, mode, sendType, noref,
+                      textAlive ? ctxNoCb(ctx) : ctx,
+                      [](const QString &, const QString &) {});   // 收尾不再驱动正文 → 空回调
+    if (textAlive)
+        sendTextPart(textOnly, QString(), /*batchPart=*/true);       // 正文立刻发，不等媒体
     return "{}";
 }
 // ── 两个公开入口：都只是「预处理差异」的描述，派发逻辑全在 sendMessagesAsyncCore ──
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                   const QString &msgid,bool is_wakeup,bool mode,int sendType,bool noref,Callback cb)
+                                   const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,Callback cb,int recallSec)
 {
     // preParsed=false：自己跑 #python / 换行归一化 / bianl
     return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
-                                 /*preParsed=*/false, QString(), QJsonArray(), QJsonValue());
+                                 /*preParsed=*/false, QString(), QJsonArray(), QJsonValue(), recallSec);
 }
 
 QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
-                                         const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
-                                         const QJsonArray &prompt_keyboard, const QJsonValue  &keyboard, Callback cb)
+                                         const QString &msgid, const QString &is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
+                                         const QJsonArray &prompt_keyboard, const QJsonValue  &keyboard, Callback cb, int recallSec)
 {
     // 与 send_messagesAsync 共用 sendMessagesAsyncCore，差别只在预处理：
     //   mb / 按钮 / 小尾巴 已由 send_msgAsync 在**取 api 之前**解析好（[get url] 分支：按钮必须先
@@ -5604,6 +5707,6 @@ QString QQBotClient::send_messagesAsync2(int type, const QString &openid, const 
     // 顺带修掉两个老问题：媒体改走异步链（原来同步 sendOneMedia 会把主线程堵在转码/上传里），
     // 且不会再出现「纯媒体时 send_Media 先触发一次 ctx.cb、正文再触发一次」的双回调。
     return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
-                                 /*preParsed=*/true, mb2, prompt_keyboard, keyboard);
+                                 /*preParsed=*/true, mb2, prompt_keyboard, keyboard, recallSec);
 }
 

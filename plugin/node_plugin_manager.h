@@ -27,6 +27,7 @@
 #include <QVariantMap>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <functional>       // callShopAsync 的回调（std::function）
 
 class NodeProcess;
 
@@ -65,6 +66,17 @@ public:
     //   set_config_value(id,val)   -> 文本；空串 = 成功，非空 = 失败原因
     QString callGetConfigList(const QString& uuid);
     QString callSetConfigValue(const QString& uuid, const QString& id, const QString& value);
+
+    // ---- 铃铛商店：把商品处理函数当一次「方法调用」发给插件 Worker（异步）----
+    // bridge.js 收到 {id, method, params} 会执行 `plugin[method](...params)` 并把返回值回包，
+    // 所以 funcName 就是插件 main.js 里注册的函数名，params 是实参数组。
+    // ⚠ **不阻塞**：结果只通过 cb 回来，且 cb **一定在主线程、只执行一次**（回包与超时先到为准）。
+    //    success = 插件返回 true / 1（约定：true = 成交，框架保留已扣的积分）；
+    //    err 非空  = 超时 / 方法不存在 / 插件抛异常（框架应当退款）。
+    // 跨线程调用是安全的（内部会投递到主线程再写 QProcess）。
+    void callShopAsync(const QString& uuid, const QString& funcName, const QJsonArray& params,
+                       std::function<void(bool success, const QString& err)> cb,
+                       int timeoutMs = 60000);   // 1 分钟：插件可能要发 HTTP 等结果，别卡太死
 
     // 框架退出时关掉常驻宿主（否则会留一个孤儿 node 进程）
     void shutdown();

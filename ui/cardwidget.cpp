@@ -192,7 +192,7 @@ void CardWidget::refreshDisplay() {
     m_nicknameLabel->setToolTip(showNick == fullNick ? QString() : fullNick);
 
     if(m_info->type == 0 && m_info->sandbox){
-         m_typeLabel->setText("ws (沙箱模式)");
+         m_typeLabel->setText("沙箱模式");
     }else
     {
          m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");

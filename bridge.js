@@ -5,7 +5,15 @@ const pending = new Map();
 let nextId = 1;
 
 function sendResponse(id, result, error) {
-    const response = { id, result, error };
+    /* ⚠ 三个字段必须**始终存在**：JSON.stringify 会把 undefined 的字段整个丢掉，
+       而框架侧是靠「有没有 result 字段」来判断这是不是一次回包的。
+       插件函数写成没有 return（返回 undefined）时，result 字段会消失，
+       框架那边就判不出回包、白白等到超时 —— 所以统一归一化成 null / 空串。 */
+    const response = {
+        id: id,
+        result: result === undefined ? null : result,
+        error: (error === undefined || error === null) ? '' : error
+    };
     const json = JSON.stringify(response);
     const len = Buffer.byteLength(json, 'utf8');
     const header = Buffer.alloc(4);

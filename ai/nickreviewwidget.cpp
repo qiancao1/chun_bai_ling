@@ -708,8 +708,9 @@ void NickReviewWidget::onAiApprove()
     // 4. 构造 AI 指令：只输出不通过的ID（逗号分隔）
     QString aiInput = inputLines.join("\n");
     QString aiPrompt = "请审核以下昵称申请，只输出不通过的ID（用逗号分隔）。如果全部通过，输出 '全部通过' 防止api返回空。\n"
-                       "注意禁止包含 现代政治家人名 包括其他国家 禁止放行 特朗普，斯大林等国家人物名，以及国名，以及可能同音字，如草泥马，曹尼玛等同音字,将不通过的id输出以下格式\n1,50,24,68\n通过的 就不输出\n下面是需要审核的 昵称\n" + aiInput;
-
+                       "注意禁止包含 现代政治家人名 包括其他国家 禁止放行 特朗普，斯大林等国家人物名，以及国名，以及可能同音字，如草泥马，曹尼玛等同音字\n"
+                       "技师 男娘等不雅文本 包含腾讯文本 不要同意,将不通过的id输出以下格式\n1,50,24,68\n通过的 就不输出\n下面是需要审核的 昵称\n" + aiInput;
+    //qDebug() << aiPrompt;
     // 5. 在线程中执行 AI 请求
     QFutureWatcher<QString> *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this, [=]() {
@@ -719,9 +720,6 @@ void NickReviewWidget::onAiApprove()
         if(aiResult.isEmpty()) {
             QMessageBox::information(this, "AI 建议", "ai似乎返回报错 或接口为空");
             return ;
-        }else if(aiResult.contains("全部通过"))
-        {
-            aiResult.clear();
         }
 
 
@@ -756,7 +754,7 @@ void NickReviewWidget::onAiApprove()
     });
 
     QFuture<QString> future = QtConcurrent::run([=]() -> QString {
-        return ai_ui->Ai_post(m_aimode->currentText(), aiPrompt, 180000);
+        return ai_ui->Ai_post(m_aimode->currentText(), aiPrompt, 5*60*1000);
     });
     watcher->setFuture(future);
 

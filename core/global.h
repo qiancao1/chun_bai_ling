@@ -277,6 +277,27 @@ void processPendingEvents();
 QString python_code(const QString &py_code);
 QString python_code(const QString &py_code,const MessageEvent &msg);
 
+// ================== 签到：跑 #python 代码并取「这次该加多少铃铛」 ==================
+// 约定（写进「群管 → 签到」输入框的提示里）：
+//   代码里定义一个函数，认这些名字（任选其一）：on_sign / sign / qiandao / 签到 / checkin / main
+//   签名：def on_sign(msg, signed_today, total, streak, points)
+//       msg           MessageEvent（和插件里那条 msg 一样，有 user / groupId / nickname …）
+//       signed_today  今天是否已经签到（bool）
+//       total         总签到次数（还没算这一次）
+//       streak        连续签到次数（还没算这一次）
+//       points        当前铃铛数（还没加这一次）
+//       返回值        = 本次加多少铃铛（int / float / 纯数字字符串都认；<=0 = 不加、不算签到）
+//   允许返回 (数量, 回复文本) 二元组来自定义文案；顶层代码也支持 `__sign_points__ = 1000`
+//   与 `__result__ = "文案"`（函数里要写 `global __result__` 才能改，用完会清掉）。
+// ⚠ 脚本只编译、只执行顶层一次，之后一直复用同一个函数对象（省掉每次重新编译）。
+//   所以：① msg / 次数 / 余额只从**参数**拿，顶层没有这些名字；
+//        ② 脚本顶层的代码只跑一次，里面定义的全局变量会跨调用保留（想每次重置就写在函数里）。
+//   配置改了（源码不同）会自动重建，不用重启框架。
+// 返回：本次要加的铃铛数（>=0；脚本出错 / 没定义函数 → *ok=false）
+qint64 python_sign_code(const QString &py_code, const MessageEvent &msg,
+                        bool signedToday, int total, int streak, qint64 points,
+                        QString *replyOut, bool *ok);
+
 
 
 

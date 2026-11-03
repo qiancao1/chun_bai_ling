@@ -15,7 +15,7 @@
 #include <qtablewidget.h>
 
 #include "placeholderlineedit.h"
-#include "placeholdertextedit.h"
+#include "placeholdertextedit.h"   // QTextEdit 替身：占位符自绘 + 强制纯文本粘贴
 
 #define QLineEdit PlaceholderLineEdit
 #define QTextEdit PlaceholderTextEdit

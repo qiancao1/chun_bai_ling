@@ -87,7 +87,7 @@ struct AccountInfo {
     QString unid;
     QString secret;
     QString botqq;  //可空 用于配置全量
-    QString botsettext; //QQ有个回调设置 打开后会显示这个文本
+
     QString nickname;  //不需要用户添加
     QString avatarPath; //不需要用户添加
 
@@ -144,7 +144,9 @@ struct AccountInfo {
     qint64 startup_time = 0;
     QHash<int,UserStat> stat; //刷屏检测 绑定机器人的
     QString admin;
-    QString welcomeMsg;         // 被添加时的欢迎词
+    QString welcomeMsg;         // 机器人入群 被添加时的欢迎词
+    QString welcomeMsg2;         // 被添加好友
+
     QString fallbackReply;      // 指令未处理时的回应
     QString rqhy; //群成员加群提示文本
     QString bai_sr,bai_sc,bai_qy;
@@ -154,6 +156,9 @@ struct AccountInfo {
     QString apply;// 有人申请加群时
     QString jojnhf;//入群验证
     QString xxwb;
+    QString ldsd;//看完广告提示词
+    QString gxrz;//更新日志
+    QString qiandao;//签到（普通文本 = 回复模板，+1000/天；#python 开头 = 脚本，返回值决定加多少铃铛）
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;
@@ -191,6 +196,10 @@ struct AccountInfo {
     static void fromJson(const QJsonObject &obj,AccountInfo &info);
 
 };
+
+// 签到配置的默认内容（新机器人 / 配置为空时填这段 py 示例；群管「签到」的 placeholder 也用它）
+QString defaultQiandaoTemplate();
+
 struct RoleSetting {
     QString name;
     QString content;

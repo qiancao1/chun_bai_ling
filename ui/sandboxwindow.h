@@ -13,7 +13,7 @@
 #include <QTextEdit>
 
 #include "placeholderlineedit.h"
-#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
+#include "placeholdertextedit.h"   // QTextEdit 替身：占位符自绘 + 强制纯文本粘贴
 
 // 全局替换宏
 #define QLineEdit PlaceholderLineEdit

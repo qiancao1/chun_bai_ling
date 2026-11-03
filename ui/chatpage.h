@@ -13,7 +13,7 @@
 #include <QListWidget>
 #include <qlabel.h>
 #include "qqbotclient.h"
-#include "placeholdertextedit.h"   // 如果你也有 QTextEdit 的替换
+#include "placeholdertextedit.h"   // QTextEdit 替身：占位符自绘 + 强制纯文本粘贴
 #include <QCache>
 #include <QMutex>
 #include <qstandarditemmodel.h>

@@ -125,17 +125,24 @@ class QQApi:
     def outlog(self, text: str, color_rgb: Optional[int] = None) -> Dict:
         return self._callback(self.API_OUTLOG,0, text, str(color_rgb) if color_rgb is not None else None)
         
-    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False, wait: bool = False) -> Dict:
+    def send_messageEx(self,msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False, wait: bool = False,
+                       recall_sec: int = 0) -> Dict:
         """发送消息（传入 MessageEvent）。
         默认**异步**：调用立刻返回 {}，不堵塞当前线程，框架自己在后台发。
-        wait=True 才同步堵塞、返回真实响应。"""
+        wait=True 才同步堵塞、返回真实响应。
+
+        :param recall_sec: 发送后多少秒**自动撤回**（0 = 不撤）。框架上限 110 秒，给更大的值按 110 算。
+                           走的是框架的环形缓冲（1 秒 1 槽），到点自动 delete_messages，不看结果。
+        """
         return self._callback(self.API_SEND_MESSAGES,msg.appid,
                               msg.type, msg.groupid, text,msg.msgid,
                               "true" if is_wakeup else "false",
                               "false" if wait else "true",   # _6：异步开关，默认 true
-                              None)
-                              
-    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False, wait: bool = False) -> Dict:
+                              None,
+                              str(recall_sec) if recall_sec else "")   # _8：自动撤回秒数
+
+    def send_message(self,appid: int, type_: int, openid: str, text: str,msgid: str = "", is_wakeup: bool = False, wait: bool = False,
+                     recall_sec: int = 0) -> Dict:
         """
         发送普通消息。
         :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
@@ -146,29 +153,34 @@ class QQApi:
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
         :param wait: 默认 False = **异步**：调用立刻返回 {}，框架在后台发送，插件线程不堵塞；
                      True = 同步堵塞，等发送完成并返回真实响应（需要判断发送成败时才用）。
+        :param recall_sec: 发送后多少秒**自动撤回**（0 = 不撤，上限 110）。带媒体标签时
+                           图片/语音/视频的多段也是各撤各的，不只是正文。
         """
-        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _6=异步开关
+        # API_SEND_MESSAGES: _1=type, _2=openid, _3=text,  _4=msgid, _5=is_wakeup, _6=异步开关, _8=撤回秒数
         return self._callback(self.API_SEND_MESSAGES,appid,
                               type_, openid, text, msgid,
                               "true" if is_wakeup else "false",
                               "false" if wait else "true",   # _6：默认异步
-                              None)
+                              None,
+                              str(recall_sec) if recall_sec else "")   # _8：自动撤回秒数
 
     # ---------- 旧名字：兼容老插件（台风查询 / 舒尔特方格训练 等都在调） ----------
     # 语义与 send_messageEx / send_message 完全一致（默认异步、调完立刻返回 {}），
     # 只是少了 wait 参数。新插件请直接用 send_messageEx。
     def send_msgEx(self, msg: qq_api.MessageEvent, text: str,
-                   is_wakeup: bool = False, wait: bool = False) -> Dict:
+                   is_wakeup: bool = False, wait: bool = False, recall_sec: int = 0) -> Dict:
         """发送消息（传入 MessageEvent）。等同 send_messageEx。"""
-        return self.send_messageEx(msg, text, is_wakeup, wait)
+        return self.send_messageEx(msg, text, is_wakeup, wait, recall_sec)
 
     def send_msg(self, appid: int, type_: int, openid: str, text: str,
-                 msgid: str = "", is_wakeup: bool = False, wait: bool = False) -> Dict:
+                 msgid: str = "", is_wakeup: bool = False, wait: bool = False,
+                 recall_sec: int = 0) -> Dict:
         """发送普通消息。等同 send_message。"""
-        return self.send_message(appid, type_, openid, text, msgid, is_wakeup, wait)
+        return self.send_message(appid, type_, openid, text, msgid, is_wakeup, wait, recall_sec)
 
     async def send_message_async(self, appid: int, type_: int, openid: str, text: str,
-                                 msgid: str = "", is_wakeup: bool = False) -> Dict:
+                                 msgid: str = "", is_wakeup: bool = False,
+                                 recall_sec: int = 0) -> Dict:
         """**真异步**发送：等框架的回调回来，再继续执行后面的 py 代码。
 
         底层走的是框架的 **PostAsync（回调式）**：最后那次 HTTP 发送投出去就返回，
@@ -199,11 +211,13 @@ class QQApi:
         _PENDING[req_id] = fut
         try:
             # _6="true" → 走异步（PostAsync 回调）；_7=req_id → 框架凭它把回执送回来
+            # _8=recall_sec → 发送后 N 秒自动撤回（0 = 不撤）
             self._callback(self.API_SEND_MESSAGES, appid,
                            type_, openid, text, msgid,
                            "true" if is_wakeup else "false",
                            "true",
-                           req_id)
+                           req_id,
+                           str(recall_sec) if recall_sec else "")
             raw = await asyncio.wait_for(fut, _ASYNC_TIMEOUT)
         except asyncio.TimeoutError:
             return {"error": "timeout", "req_id": req_id}
@@ -211,17 +225,18 @@ class QQApi:
             _PENDING.pop(req_id, None)
         return _parse_resp(raw)
 
-    async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False) -> Dict:
+    async def send_messageEx_async(self, msg: qq_api.MessageEvent, text: str, is_wakeup: bool = False,
+                                   recall_sec: int = 0) -> Dict:
         """**真异步**发送（传入 MessageEvent），等框架回调回来再继续。用法同 send_message_async。
 
         :return: 已解析的 dict（同上）。
         """
         return await self.send_message_async(msg.appid, msg.type, msg.groupid,
-                                             text, msg.msgid, is_wakeup)
+                                             text, msg.msgid, is_wakeup, recall_sec)
         
                               
     def send_ark(self, appid: int,type_: int, openid: str, ark: Union[Dict, str],
-                 msgid: str = "", is_wakeup: bool = False) -> Dict:
+                 msgid: str = "", is_wakeup: bool = False, recall_sec: int = 0) -> Dict:
         """
         发送 ARK 卡片消息。
         :param type_: 消息类型，0=群聊，1=频道，2=私聊，3=频道私聊
@@ -229,11 +244,15 @@ class QQApi:
         :param ark: ARK 数据（字典或 JSON 字符串）
         :param msgid: 消息ID，空字符串表示主动模式
         :param is_wakeup: 是否为私聊的唤醒消息（与 msgid 互斥，仅私聊有效）
+        :param recall_sec: 发送后多少秒**自动撤回**（0 = 不撤，上限 110）。
         """
         ark_str = ark if isinstance(ark, str) else json.dumps(ark, ensure_ascii=False)
-        # API_SEND_MESSAGES_ARK: _1=type, _2=openid, _3=ark, _4=msgid, _5=is_wakeup, _6=None, _7=None, _8=None
+        # API_SEND_MESSAGES_ARK: _1=type, _2=openid, _3=ark, _4=msgid, _5=is_wakeup, _6=异步开关(未用),
+        #                        _7=回执req_id(未用), _8=自动撤回秒数
         return self._callback(self.API_SEND_MESSAGES_ARK,appid,type_, openid, ark_str, msgid,
-                              "true" if is_wakeup else "false")
+                              "true" if is_wakeup else "false",
+                              None, None,
+                              str(recall_sec) if recall_sec else "")   # _8：自动撤回秒数
 
     def delete_message(self,appid: int, type_: int, openid: str, msgid: str) -> Dict:
         """
@@ -457,7 +476,7 @@ class QQApi:
         """
         return self._callback(self.API_ID_REMOV_MEMBER, appid, group_openid,user_list,"true" if add_to_member_blacklist else "false",)    
         
-    def get_grout_blacklist(self, appid: int, group_openid: str,cursor : str) -> Dict:
+    def get_group_blacklist(self, appid: int, group_openid: str,cursor : str) -> Dict:
         """
         查询群黑名单
         :param appid: Bot appid
@@ -466,7 +485,7 @@ class QQApi:
         """
         return self._callback(self.API_ID_GET_GROUP_BLCKLIST, appid, group_openid,cursor)   
         
-    def get_grout_blacklist(self, appid: int, group_openid: str,user_list : str,op:bool) -> Dict:
+    def get_group_blacklist(self, appid: int, group_openid: str,user_list : str,op:bool) -> Dict:
         """
         设置群黑名单
         :param appid: Bot appid
@@ -556,11 +575,11 @@ class QQApi:
         return await self._call_async(self.API_ID_REMOV_MEMBER, appid, group_openid, user_list,
                                       "true" if add_to_member_blacklist else "false")
 
-    async def get_grout_blacklist_async(self, appid: int, group_openid: str, cursor: str) -> Dict:
+    async def get_group_blacklist_async(self, appid: int, group_openid: str, cursor: str) -> Dict:
         """异步查询群黑名单。"""
         return await self._call_async(self.API_ID_GET_GROUP_BLCKLIST, appid, group_openid, cursor)
 
-    async def set_grout_blacklist_async(self, appid: int, group_openid: str, user_list: str, op: bool) -> Dict:
+    async def set_group_blacklist_async(self, appid: int, group_openid: str, user_list: str, op: bool) -> Dict:
         """异步设置群黑名单（op=True 为添加）。"""
         return await self._call_async(self.API_ID_GROUP_BLCKLIST, appid, group_openid, user_list,
                                       "true" if op else "false")

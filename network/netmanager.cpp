@@ -3,6 +3,7 @@
 #include <qhash.h>
 #include <qmetaobject.h>
 #include <qnetworkreply.h>
+#include <qpointer.h>
 #include <qrunnable.h>
 #include <qsslerror.h>
 #include <qthread.h>
@@ -41,6 +42,25 @@ void NetManager::dispatchCallback(CallbackThread where,
     QThreadPool::globalInstance()->start(task);
 }
 
+
+
+void NetManager::dispatchCallbackEx(CallbackThread where,
+                                    const NetReplyInfo &info,
+                                    CallbackEx cb)
+{
+    if (!cb)
+        return;
+
+    if (where == CallbackOnNetThread) {
+        cb(info);
+        return;
+    }
+
+    QRunnable *task = QRunnable::create([cb, info]() {
+        cb(info);
+    });
+    QThreadPool::globalInstance()->start(task);
+}
 
 
 void NetManager::init() {
@@ -150,6 +170,73 @@ void NetManager::notifyFinished(const QString &url)
 
     if (p->inflight > 0)
         p->inflight -= 1;
+}
+
+// 关掉该 host 池里的所有连接。
+//
+// 为什么需要：QNetworkAccessManager 的 keep-alive / HTTP/2 连接在对端异常断开后
+// 有时不会被及时回收，后续请求继续往这条死连接上写 → 每次都拿不到响应体
+// （表现就是「获取登录Ws错误: illegal value / 网络不通」，而且重启程序立刻恢复，
+// 因为重启等于换了一套 QNAM）。clearConnectionCache() 只断空闲连接，
+// 在途请求不受影响，所以可以随时调用。
+void NetManager::clearConnectionCache(const QString &url)
+{
+    const QString host = QUrl(url).host().toLower();
+
+    QList<QNetworkAccessManager *> nams;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        HostPool *p = m_pools.value(host, nullptr);
+        if (!p)
+            return;
+        // 还有别的请求在这个 host 上跑（消息发送等）就先别动连接：
+        // 等这一批跑完、下一次失败时再来断，避免打断正常业务。
+        if (p->inflight > 0)
+            return;
+        nams = p->nams;
+    }
+
+    // NAM 亲和性在网络线程，且可能被 GC 定时器 deleteLater 掉 ——
+    // 用 QPointer 兜住：对象没了就跳过，绝不对野指针调方法。
+    for (QNetworkAccessManager *mgr : std::as_const(nams)) {
+        QPointer<QNetworkAccessManager> guard(mgr);
+        QMetaObject::invokeMethod(mgr, [guard]() {
+            if (guard)
+                guard->clearConnectionCache();
+        }, Qt::QueuedConnection);
+    }
+}
+
+// 彻底换掉该 host 的整套 QNAM。
+//
+// clearConnectionCache() 只断空闲连接，如果坏的是更下层（h2 会话状态、连接池索引等），
+// 光断连接不一定能救回来。而「重启程序就好」之所以有效，本质就是整套 QNAM 被重建了。
+// 这里直接等价做掉：池子整个丢掉，下一次请求 pickManager 会惰性建一套全新的。
+//
+// 安全前提：只在该 host 没有在途请求时执行（有就原样放回，等下次机会），
+// 这样不会把别人正在跑的请求（发消息、传文件）连根拔掉。
+void NetManager::resetHostPool(const QString &url)
+{
+    const QString host = QUrl(url).host().toLower();
+
+    QList<QNetworkAccessManager *> nams;
+    {
+        QMutexLocker locker(&m_managerMutex);
+        HostPool *p = m_pools.take(host);
+        if (!p)
+            return;
+        if (p->inflight > 0) {
+            m_pools.insert(host, p);      // 还有请求在跑，放回去
+            return;
+        }
+        nams = p->nams;
+        delete p;                          // HostPool 是纯结构体，没有线程亲和性
+    }
+
+    // NAM 的亲和性在网络线程，只能 deleteLater（在网络线程的事件循环里真正销毁）。
+    // 新池已经不在 m_pools 里了，pickManager 会建新的，互不影响。
+    for (QNetworkAccessManager *mgr : std::as_const(nams))
+        mgr->deleteLater();
 }
 
 void NetManager::postAsync(const QString& url, const QByteArray& data,
@@ -501,6 +588,52 @@ void NetManager::getAsync(const QString &url,const QHash<QString, QString> &head
     }, Qt::QueuedConnection);
 
 
+}
+
+// 带状态码的 GET（实现与 getAsync 完全一致，只是 finished 里多取两个字段）。
+// 取 attribute 必须在 deleteLater 之前、且仍在网络线程里，所以只能在这里做。
+void NetManager::getAsyncEx(const QString &url,const QHash<QString, QString> &headers, int timeoutMs,
+                            CallbackEx callback, CallbackThread where) {
+
+    NetManager *self = this;
+    QNetworkAccessManager *mgr = pickManager(url);
+    if (!mgr) {
+        NetReplyInfo info;
+        info.error = QNetworkReply::UnknownNetworkError;
+        info.errorString = QStringLiteral("连接池不可用");
+        dispatchCallbackEx(where, info, callback);
+        return;
+    }
+
+    QMetaObject::invokeMethod(mgr, [=]() {
+        QNetworkRequest request;
+        request.setUrl(QUrl(url));
+        for(auto it = headers.begin(); it != headers.end(); ++it) {
+            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        QNetworkReply *reply = mgr->get(request);
+        QTimer *timer = new QTimer(reply);
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, reply, [reply]() { reply->abort(); });
+        timer->start(timeoutMs);
+
+        QObject::connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError> &) {
+            reply->ignoreSslErrors();
+        });
+
+        QObject::connect(reply, &QNetworkReply::finished, [self, url, callback, where, reply]() {
+            self->notifyFinished(url);
+            NetReplyInfo info;
+            info.body        = QString::fromUtf8(reply->readAll());
+            info.error       = reply->error();
+            info.errorString = reply->errorString();
+            info.httpStatus  = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            reply->deleteLater();
+            dispatchCallbackEx(where, info, callback);
+        });
+    }, Qt::QueuedConnection);
 }
 
 

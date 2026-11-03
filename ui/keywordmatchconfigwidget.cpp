@@ -256,9 +256,15 @@ void KeywordMatchConfigWidget::initTable() {
         if (c == COL_MATCH_TYPE || c == 4) continue;    // 4 = 参数数量
         ruleTable->setItemDelegateForColumn(c, mlDelegate);
     }
+    // 单元格里只显示一行（delegate 折叠 + 省略号），行高不再被多行内容撑开；
+    // 完整内容看 tooltip，点一下选中、再点一下（或双击）才弹出大编辑器。
     ruleTable->setWordWrap(true);
     ruleTable->verticalHeader()->setMinimumSectionSize(30);          // 单行的行别再被压矮
     ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    ruleTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                               | QAbstractItemView::EditKeyPressed
+                               | QAbstractItemView::AnyKeyPressed
+                               | QAbstractItemView::SelectedClicked);
 }
 
 

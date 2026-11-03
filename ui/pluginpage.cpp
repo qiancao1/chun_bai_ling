@@ -28,6 +28,7 @@
 #include "pluginmarketwindow.h"
 #include "plugininstaller.h"  // PluginInstaller::pluginsRootDir()：文件对话框默认定位到 <程序目录>/plugins
 #include "ruleeditdialog.h"   // 「编辑指令」独立页面
+#include "shoppricedialog.h"  // 「商品定价」独立页面（铃铛商店按机器人改价）
 #include "global.h"
 #include "node_plugin_manager.h"
 #include "scrolltextdialog.h"   // 可滚动的只读文本弹窗（内容多的提示用它替代 QMessageBox）
@@ -43,6 +44,7 @@
 #include <QColor>
 #include <QFont>
 #include <memory>            // std::shared_ptr：pip/npm 每次安装各持一份独立状态
+#include <QScopeGuard>       // 铃铛商店：在途锁的自动释放（任何提前 return 都不会漏放）
 #include <functional>
 #include <algorithm>         // std::stable_sort：配置区里把 input 项排到前面，聚成一整块
 #include <limits>            // 商店总价溢出保护（numeric_limits<qint64>::max）
@@ -220,11 +222,24 @@ PluginPage::PluginPage(QWidget *parent) : QWidget(parent)
     m_ruleCfg = migrateRuleCfg(g_config.value("plugin_rules").toObject());
     rebuildBotRuleRoles();
 
+    // 商品定价（框架里改的价，按机器人分开存）。没配过就是空表 = 全用插件注册的价。
+    m_shopPriceCfg = g_config.value("shop_prices").toObject();
+
     setupUi();
     initPython();
 
+    // 铃铛商店：异步订单的兜底定时器（1 秒一次）。绝大多数时候表是空的，开销就是一次 isEmpty。
+    // 它的意义是「回执永远不来也有救」：node 宿主崩了 / 回包丢了 / 插件卡死时，
+    // 由它把过期的单子按失败结算（补积分 + 回一条「超时已退款」），不会把用户的钱挂死在账上。
+    m_shopOrderTimer = new QTimer(this);
+    m_shopOrderTimer->setInterval(1000);
+    connect(m_shopOrderTimer, &QTimer::timeout, this, &PluginPage::sweepShopOrders);
+    m_shopOrderTimer->start();
+
     QTimer::singleShot(0, this, &PluginPage::loadPlugins);
     connect(qApp, &QCoreApplication::aboutToQuit, this, &PluginPage::stopAsyncioThread);
+    // 退出前把还没回执的商店订单丢掉（见 discardShopOrdersOnExit：压根没扣过钱，不用退）
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &PluginPage::discardShopOrdersOnExit);
 
 }
 // 初始化异步引擎（严格按你的要求：后台线程必须持锁跑 run_forever）
@@ -455,15 +470,21 @@ void PluginPage::setupUi()
     // ---- 编辑 / AI 生成（操作按钮的上一行）----
     QHBoxLayout *editBtnLayout = new QHBoxLayout;
     editBtnLayout->setSpacing(6);
-    ai_b_j = new QPushButton("编辑当前插件");
+    ai_b_j = new QPushButton("编辑");
 
-    ai_c_j = new QPushButton("AI生成插件");
+    ai_c_j = new QPushButton("生成插件");
 
-    bj_zl = new QPushButton("编辑指令");   // 勾选启用 / 重命名插件注册的指令
+    bj_zl = new QPushButton("指令");   // 勾选启用 / 重命名插件注册的指令
+
+    // 铃铛商店的商品价：插件注册的 price 当默认价，这里可以按机器人各改一份
+    shopPriceBtn = new QPushButton("商品");
+    shopPriceBtn->setToolTip("改铃铛商店里每件商品的售价（插件注册的价只是默认值）。\n"
+                             "按机器人分开存：给某个号单独定价不影响别的号。");
 
     editBtnLayout->addWidget(ai_b_j);
     editBtnLayout->addWidget(ai_c_j);
     editBtnLayout->addWidget(bj_zl);
+    editBtnLayout->addWidget(shopPriceBtn);
 
     rightMainLayout->addLayout(editBtnLayout);
 
@@ -781,6 +802,18 @@ void PluginPage::setupUi()
         dlg->show();
     });
 
+    // 商品定价：同样是独立页面（左插件列表 + 机器人下拉 + 可编辑的售价表），
+    // 只列出**注册了商品**的插件 —— 没商品的插件进来也是空表，纯添乱。
+    // ⚠ 商品默认**下架**：新装插件的商品要在这个窗口里手动改成「上架」才会卖。
+    connect(shopPriceBtn, &QPushButton::clicked, this, [this]() {
+        int i = currentSelected_index;
+        if(i<0) i=0;
+        if(i>=m_pluginList.size()) i=0;
+        auto *dlg = new ShopPriceDialog(this, i, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    });
+
     connect(ai_b_j, &QPushButton::clicked,this, [this]() {
 
         if(currentSelected_index<0 || currentSelected_index>=m_pluginList.size())
@@ -1067,7 +1100,11 @@ QString python_code(const QString &py_code,const MessageEvent &msg)
         py::module_ qiancao = py::module_::import("qiancao_sdk");
         py::object api = qiancao.attr("QQApi")(g_keyuuid);
 
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // ⚠ 每次执行必须用**全新的 dict**：`py::dict(模块.__dict__)` 看着像拷贝，其实 pybind11
+        //   判 PyDict_Check 通过就 inc_ref 复用同一个对象（不拷贝），等于把 qq_api 模块本体
+        //   当 globals 用 → 上次执行留下的全局变量这次还读得到，代码里的同名赋值还会覆盖模块成员。
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["msg"] = py::cast(msg);
         exec_globals["api"] = api;               // 注入 api 对象
@@ -1362,8 +1399,9 @@ bool matchRule3(const Rule_js &rule, const MessageEvent &ev, int role, const QSt
     return false;
 }
 
-void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::optional<py::gil_scoped_acquire> &gil) {
+bool PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::optional<py::gil_scoped_acquire> &gil) {
 
+    bool hit = false;   // 有注册规则命中（返回值给 dispatch_message 用）
     try {
         // 3.14t 下必须持锁，保持原有的 acquire
         QString reply;
@@ -1396,6 +1434,7 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
             botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
                               rule.key, role, newKey);
             if (matchRule(rule, msg, role, newKey)) {
+                hit = true;
                 if (!gil) gil.emplace();   // 第一次命中才获取，循环内复用
 
                 // 正文一个字不动（用户实输就在 msg.msg 里）。这条指令的「生效命令词」
@@ -1424,7 +1463,7 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
 
             }
 
-            return;
+            return true;
         }
 
 
@@ -1434,6 +1473,7 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
         AppendEventLog("[Python] " + p.name + " 未知错误", 0xff);
     }
 
+    return hit;
 }
 
 
@@ -1441,10 +1481,20 @@ void PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
 // 分工：**框架**管「列目录 / 查余额 / 扣费 / 回话」，**插件**管「这单到底给不给、给什么」。
 // 插件在 get_plugin_info 里注册 "shop" 数组（格式见 pluginpage.h 的 ShopItem_Dll 注释），
 // 用户在群里发两条指令即可：
-//   「<货币名>商店」                      → 列出所有启用插件在售的商品（全局统一序号）
-//   「兑换物品 <序号> <数量> <其他内容…>」 → 调该商品注册的函数，成功才扣费
+//   「<货币名>商店」                      → 列出所有启用插件注册的商品（全局统一序号）
+//                                          ⚠ 商品**默认下架**（未上架），要在框架「商品定价」里
+//                                            手动改成「上架」才卖 —— 没上架的不扣钱、不调插件。
+//   「兑换物品 <序号> <数量> <其他内容…>」 → 调该商品注册的函数，**它说成交了才扣费**
 // 货币名来自全局 g_currency_name（默认「铃铛」），整套系统里只在这一处拼字符串。
 // 计价口径：**积分**。看一次广告 = g_points_per_ad 积分（默认 1000）→ 商品价按 1000 的倍数定。
+//
+// ⚠ 扣费顺序是「**先调插件 → 成交才扣钱**」（2026-10-31 用户拍板）：
+//   原来的「先扣后调」在原插件/JS 把整个框架带崩时，钱已经落盘扣掉、货毛都没给、重启也没人退。
+//   现在反过来的代价是「货给了钱没扣到」，靠下面两个保险把它压到几乎不可能：
+//     ① 调之前先**预检余额**（只读），不够直接回「余额不足」，连插件都不调；
+//     ② **一次只能一单**（m_shopInflight 在途锁）：同一用户同一时刻只允许一笔兑换在途，
+//        不存在「两笔都过了预检，第二笔结算时已经没钱」的并发白送。
+//   订单表因此可以**只放内存**：钱还没扣，单子随崩溃一起消失 = 这单不存在，用户一分不亏。
 
 // 货币名（全局可改；空值兜底成「铃铛」，免得拼出「商店」这种半截指令）
 static QString shopCurrencyName()
@@ -1454,12 +1504,522 @@ static QString shopCurrencyName()
 // 全角空格也要按分隔符处理（手机输入法常打全角）
 static inline bool isShopSpace(QChar c) { return c.isSpace() || c == QChar(0x3000); }
 
-// 插件返回值 = **只有成败**（非 0 = 成功），不返回任何文本：
-//   · 原生库：int（C ABI），0 = 失败不扣费 / 非 0 = 成功扣费
-//   · Python：True / False（None 也算失败）
-// 想给用户看什么（发了什么货、为什么买不了）由插件自己调发送 API 发；
-// 框架只补一条账单回执（兑换成功：xx × n，花费 … ，余额 …）。
-// 这样框架永远不持有插件给的指针 —— 谁分配谁释放的问题直接消失。
+// 异步端订单（JS / 以后的 32 位易语言）多久没回执就算超时 → 退款。
+// **1 分钟**：插件在商品函数里发 HTTP、等第三方结果都是常态，卡太死会「钱退了货还发」。
+// 与 node 侧 callShopAsync 的默认 timeoutMs 保持一致；扫描定时器 1 秒一次，所以最迟约 61 秒退回去。
+static constexpr qint64 kShopOrderTimeoutMs = 60000;
+
+// 「充值」指令的单次上限（只给超管 / 机器人管理用：测商店、运营补偿）。
+// 1 亿 = 10 万次广告的量，测什么都够了；不设上限时手抖打一串 9 会把余额推到溢出
+// —— addPoints 是 balance + delta，qint64 一溢就变负数，用户直接「欠债」。
+static constexpr qint64 kShopRechargeMax = 100000000;
+
+// ---- 原生库商品函数的「崩溃隔离」----
+// 64 位原生库的商品函数是**裸函数指针调用**：插件里一次空指针解引用 / 除零，整个框架当场没
+// （Python 有 pybind11 兜、JS 在别的进程，只有它是同进程裸调）。
+//   · __try/__except 接 SEH（访问冲突、除零、非法指令…）—— 必须放在**没有需要析构的局部对象**
+//     的函数里，否则 MSVC 报 C2712（C++ 对象展开不能跨 __try），所以这里单开一个纯 POD 小函数；
+//   · C++ 异常（某些 SDK 自己 throw）由调用点的 try/catch(...) 接。
+// 任一接住 → 这个商品立刻标「已停用」（见 markShopItemBroken），以后连调都不调。
+#ifdef Q_OS_WIN
+static bool callShopDllSeh(ShopFunc fn, const char *frame, qint64 fun, const char *cmd,
+                           unsigned &rv, unsigned &code)
+{
+    __try {
+        rv = static_cast<unsigned>(fn(frame, fun, cmd));
+        return true;
+    } __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+#else
+// 非 Windows 没有 SEH 也没有 DLL 插件；留个同签名实现让上层代码不用到处 #ifdef。
+static bool callShopDllSeh(ShopFunc fn, const char *frame, qint64 fun, const char *cmd,
+                           unsigned &rv, unsigned &code)
+{
+    code = 0;
+    rv = static_cast<unsigned>(fn(frame, fun, cmd));
+    return true;
+}
+#endif
+
+// SEH 码翻人话（日志 / 回话都只显示这一句，别让用户去看十六进制）
+static QString shopSehName(unsigned code)
+{
+    switch (code) {
+    case 0xC0000005u: return QStringLiteral("访问冲突 0xC0000005");
+    case 0xC0000094u: return QStringLiteral("整数除零 0xC0000094");
+    case 0xC0000095u: return QStringLiteral("整数溢出 0xC0000095");
+    case 0xC000001Du: return QStringLiteral("非法指令 0xC000001D");
+    case 0xC00000FDu: return QStringLiteral("栈溢出 0xC00000FD");
+    case 0xE0000001u: return QStringLiteral("C++ 异常");
+    default:          return QStringLiteral("异常码 0x%1").arg(code, 8, 16, QLatin1Char('0'));
+    }
+}
+
+
+bool PluginPage::handleAdRewardEvent(MessageEvent &msg)
+{
+    if (msg.msgType != QLatin1String("REWARDED_AD_COMPLETE")) return false;
+    const QString cur   = shopCurrencyName();
+    const qint64  perAd = (g_points_per_ad > 0) ? g_points_per_ad : 1000;
+    const QByteArray openidBin = QByteArray::fromHex(msg.user.toUtf8());
+    if (openidBin.size() < 8) {
+        AppendEventLog("[广告] 事件里没有合法用户 openid，积分未入账（事件 " + msg.msgId + "）", 0xff);
+        return false;
+    }
+
+    // ---- 2) 幂等：这个事件加过分就直接吞掉 ----
+    const QString seenKey = QStringLiteral("ad_evt_") + msg.msgId;
+    if (cache_db && !msg.msgId.isEmpty()) {
+        if (!cache_db->get(seenKey).isEmpty()) {
+            return false;                   // 重推的同一个事件：静默丢弃
+        }
+    }
+
+    // ---- 3) 入账 ----
+    BotDB *db = g_botdb.value(msg.appid, nullptr);
+    if (!db) {
+        AppendEventLog("[广告] 该机器人没有可用的积分库，积分未入账", 0xff);
+        return false;
+    }
+    bool ok = false;
+    const qint64 left = db->addPoints(openidBin, perAd, &ok);
+    if (!ok) {
+        AppendEventLog("[广告] 写积分失败（事件 " + msg.msgId + "）", 0xff);
+        return false;                       // 不记去重 key：真失败了，重推时还能再试一次
+    }
+    if (cache_db && !msg.msgId.isEmpty())
+        cache_db->put(seenKey, QString::number(QDateTime::currentSecsSinceEpoch()));
+    if (QQBotClient *client = m_botClients.value(msg.appid, nullptr)) {
+        if(client->m_info->ldsd.isEmpty()) return false;
+
+
+        QString tx= client->m_info->ldsd;
+        tx.replace("[余额]",QString::number(left));
+        client->send_msgAsync(msg.type, msg.groupId, "[广告奖励]", tx, msg.msgId);
+        return true;
+    }
+    return false;
+}
+
+// ==================== 铃铛商店：异步订单 ====================
+// 插件返回值 = **只有成败**（非 0 / True = 成交），不返回任何文本。
+// 扣费顺序固定为：**调插件 → 成交才扣费**（反过来「先扣后调」时，插件把框架带崩 = 钱扣了货没有；
+// 见文件上方那段说明，以及 pluginpage.h 里 ShopOrder 的注释）。
+// 同步端（Python / 原生库）当场就知道结果，就在这里扣费并发账单；
+// 异步端（JS / 32 位易语言）只能等回包 → 先开单（只记应付、不扣），回执成交才扣，超时直接丢单。
+
+qint64 PluginPage::newShopOrder(const ShopOrder &o)
+{
+    QMutexLocker lk(&m_shopOrdersMutex);
+    ShopOrder ord = o;
+    ord.id = ++m_shopOrderSeq;
+    m_shopOrders.insert(ord.id, ord);
+    return ord.id;
+}
+
+bool PluginPage::takeShopOrder(qint64 id, ShopOrder &out)
+{
+    QMutexLocker lk(&m_shopOrdersMutex);
+    auto it = m_shopOrders.find(id);
+    if (it == m_shopOrders.end()) return false;   // 已经被结算过（回执与超时撞车）
+    out = it.value();
+    m_shopOrders.erase(it);
+    return true;
+}
+
+// ==================== 铃铛商店：在途锁（一次只能一单）====================
+// 为什么要它：现在改成「插件说成交才扣钱」，如果同一用户两笔兑换同时跑，
+// 两笔都能过「预检余额」，然后都调插件、都拿到成交 —— 第二笔结算时余额可能已经不够
+// （第一笔刚扣走），就成了「货给了钱没扣到」。一把在途锁把这种情况从「概率」变成「不可能」。
+//
+// 覆盖范围：**所有端**（Python / 原生库调插件期间也占着锁；JS / 32 位从建单占到结算）。
+// 释放责任：
+//   · 同步端 —— 本函数返回前由 qScopeGuard 放（任何提前 return 都不会漏）；
+//   · 异步端 —— 建单成功后「交给订单」，由 settleShopOrder / 超时 / 退出 释放。
+// ⚠ 千万别在异步分支再放一次：结算时放是幂等的（QSet::remove），但提前放就等于没锁。
+static inline QString shopInflightKey(int appid, const QByteArray &openidBin)
+{
+    return QString::number(appid) + QLatin1Char(':') + QString::fromLatin1(openidBin.toHex());
+}
+
+bool PluginPage::tryBeginShopPurchase(int appid, const QByteArray &openidBin)
+{
+    const QString key = shopInflightKey(appid, openidBin);
+    QMutexLocker lk(&m_shopInflightMutex);
+    if (m_shopInflight.contains(key)) return false;   // 已经有一笔在途
+    m_shopInflight.insert(key);
+    return true;
+}
+
+void PluginPage::endShopPurchase(int appid, const QByteArray &openidBin)
+{
+    const QString key = shopInflightKey(appid, openidBin);
+    QMutexLocker lk(&m_shopInflightMutex);
+    m_shopInflight.remove(key);                      // 不在表里也无害（幂等）
+}
+
+// ==================== 铃铛商店：商品定价（每个机器人一份）====================
+// 表结构见 pluginpage.h 的 m_shopPriceCfg。这里只做「查 / 改 / 存」，UI 在 ShopPriceDialog。
+//
+// 为什么拿「商品备注」当 key（而不是下标或 fun）：
+//   · 下标会随插件增删商品漂移；原生库重编后函数地址也会变 —— 存哪个都会错位。
+//   · 备注是插件注册时自带的、列表里显示的就是它，作者改备注 = 视为换了件商品（合理）。
+static QString shopPriceBotKey(int appid) { return QString::number(appid); }
+
+// 取某插件注册的在售商品（备注 + 注册价）。四种类型结构不同，统一成一份。
+// ⚠ Python 那边元素含 py::object，**必须**用 const 引用遍历，别拷贝（拷贝要 GIL）。
+//   这里只读 key / price 两个 QString/qint64 成员，不碰 py::object 本身。
+static QList<QPair<QString, qint64>> shopItemsOf(const PluginInfo &p)
+{
+    QList<QPair<QString, qint64>> out;
+    if (p.type == 0) {
+        for (const ShopItem_py &g : p.python.shop) out.append(qMakePair(g.key, g.price));
+    } else if (p.type == 3) {
+        for (const ShopItem_js &g : p.js.shop) out.append(qMakePair(g.key, g.price));
+    } else {                                     // 1 = 原生库 64 位 / 2 = 32 位易语言，都是 DLL.shop
+        for (const ShopItem_Dll &g : p.DLL.shop) out.append(qMakePair(g.key, g.price));
+    }
+    return out;
+}
+
+// ⚠ 配置 key 必须**跨重启稳定**。
+//   `PluginInfo::uuid` 是每次加载时新生成的 QUuid（见 LoadPlugin_DLL / _py / _js 的
+//   `if (uuid.isEmpty()) uuid = QUuid::createUuid()`），进程一重启就换了一串 ——
+//   拿它当 shop_prices 的 key，重启后必然一条都对不上（价格回落、商品全变回下架）。
+//   所以和「编辑指令」用同一口径：插件自报的 id（加载完保证非空，见 LoadPlugin 尾部的 fallback）。
+static inline QString shopCfgKeyOf(const PluginInfo &p)
+{
+    return p.id.isEmpty() ? p.name : p.id;
+}
+
+// 某商品在某机器人下的生效价；**没配过返回 -1**（调用方回落到插件注册的 price）。
+// 查找顺序：该机器人的覆盖 → 默认档 → 没配过。
+qint64 PluginPage::shopPriceFor(const PluginInfo &p, const QString &itemKey, int appid) const
+{
+    const QString cfgKey = shopCfgKeyOf(p);
+    if (itemKey.isEmpty() || cfgKey.isEmpty()) return -1;
+    QReadLocker lk(&m_shopPriceLock);
+    const QJsonObject plug = m_shopPriceCfg.value(cfgKey).toObject();
+    if (plug.isEmpty()) return -1;
+    if (appid > 0) {
+        const QJsonObject bot = plug.value("bots").toObject().value(shopPriceBotKey(appid)).toObject();
+        if (bot.contains(itemKey)) return static_cast<qint64>(bot.value(itemKey).toDouble());
+    }
+    const QJsonObject defs = plug.value("items").toObject();
+    if (defs.contains(itemKey)) return static_cast<qint64>(defs.value(itemKey).toDouble());
+    return -1;
+}
+
+// 这件商品在这个号下允不允许卖。两层：默认档 "on"（上架**白名单**），机器人覆盖 "onbots"
+// （值可 true/false，所以「默认下架、某个号单独上架」也表达得出来）。
+// ⚠⚠ **没配过 = 下架**。插件新装上、商品新注册出来的时候一律不卖，必须管理员在
+//    「商品定价」里把那一行改成「上架」才会出现在可购买状态。
+//    这么定的原因：上架就意味着能扣真积分，宁可让管理员多点一次，也别让插件作者
+//    随手写的一个 price 未经确认就自动开卖。
+bool PluginPage::shopItemAllowed(const PluginInfo &p, const QString &itemKey, int appid) const
+{
+    const QString cfgKey = shopCfgKeyOf(p);
+    if (itemKey.isEmpty() || cfgKey.isEmpty()) return false;
+    QReadLocker lk(&m_shopPriceLock);
+    const QJsonObject plug = m_shopPriceCfg.value(cfgKey).toObject();
+    bool allowed = plug.value("on").toObject().contains(itemKey);
+    if (appid > 0) {
+        const QJsonObject botOn =
+                plug.value("onbots").toObject().value(shopPriceBotKey(appid)).toObject();
+        if (botOn.contains(itemKey)) allowed = botOn.value(itemKey).toBool();
+    }
+    return allowed;
+}
+
+QList<int> PluginPage::shopPricePluginIndexes() const
+{
+    QList<int> out;
+    for (int i = 0; i < m_pluginList.size(); ++i) {
+        if (!shopItemsOf(m_pluginList.at(i)).isEmpty()) out.append(i);   // 注册了 shop 就列（含全部下架的）
+    }
+    return out;
+}
+
+QString PluginPage::shopPricePluginLabel(int index) const
+{
+    if (index < 0 || index >= m_pluginList.size()) return QString();
+    const PluginInfo &p = m_pluginList.at(index);
+    return QStringLiteral("%1（%2 件）").arg(p.name).arg(shopItemsOf(p).size());
+}
+
+QList<ShopPriceRow> PluginPage::shopPriceRows(int index, int appid) const
+{
+    QList<ShopPriceRow> rows;
+    if (index < 0 || index >= m_pluginList.size()) return rows;
+    const PluginInfo &p = m_pluginList.at(index);
+    const QList<QPair<QString, qint64>> items = shopItemsOf(p);
+
+    QReadLocker lk(&m_shopPriceLock);
+    const QJsonObject plug = m_shopPriceCfg.value(shopCfgKeyOf(p)).toObject();
+    const QJsonObject defs = plug.value("items").toObject();
+    const QJsonObject bot  = plug.value("bots").toObject().value(shopPriceBotKey(appid)).toObject();
+    const QJsonObject on   = plug.value("on").toObject();     // 默认档上架白名单
+    const QJsonObject bOn  = plug.value("onbots").toObject().value(shopPriceBotKey(appid)).toObject();
+
+    for (const QPair<QString, qint64> &it : items) {
+        ShopPriceRow r;
+        r.item      = it.first;
+        r.basePrice = it.second;
+        // 上一级：默认档 = 插件注册价；具体机器人 = 默认档的生效价
+        qint64 parent   = it.second;
+        bool   parentOv = false;
+        if (defs.contains(r.item)) {
+            parent   = static_cast<qint64>(defs.value(r.item).toDouble());
+            parentOv = true;
+        }
+        if (appid > 0 && bot.contains(r.item)) {
+            r.price      = static_cast<qint64>(bot.value(r.item).toDouble());
+            r.overridden = true;                 // 这个号自己有价
+        } else {
+            r.price      = parent;
+            r.overridden = parentOv;             // 跟默认档不同就算改过
+        }
+
+        // 在售 / 下架：同样是「该号覆盖 > 默认档」；**默认档没配过 = 下架**（新商品要手动上架）
+        r.allowed = on.contains(r.item);
+        if (appid > 0 && bOn.contains(r.item)) r.allowed = bOn.value(r.item).toBool();
+
+        rows.append(r);
+    }
+    return rows;
+}
+
+// 存盘 + 立即生效（下一次有人发商店指令就是这个价、这个在售状态）。
+// 只写**与上一级不同**的项 → 「改回去」等于删掉，配置不会越堆越脏，也天然做到「跟随默认」。
+void PluginPage::applyShopPrices(int index, const QHash<QString, qint64> &prices,
+                                 const QHash<QString, bool> &allowed, int appid)
+{
+    if (index < 0 || index >= m_pluginList.size()) return;
+    const PluginInfo &p = m_pluginList.at(index);
+    // 配置是按插件 id 存的（跨重启稳定，见 shopCfgKeyOf）；key 空就没法定位 → 直接不动
+    const QString cfgKey = shopCfgKeyOf(p);
+    if (cfgKey.isEmpty()) return;
+    const QList<QPair<QString, qint64>> items = shopItemsOf(p);
+
+    {
+        QWriteLocker lk(&m_shopPriceLock);
+        // 老版本（今天早些时候）用 uuid 当 key：uuid 每次重启都变，那份配置永远读不回来。
+        // 这里顺手把它删掉，免得配置文件里越积越多死条目。
+        if (!p.uuid.isEmpty() && p.uuid != cfgKey) m_shopPriceCfg.remove(p.uuid);
+        QJsonObject plug = m_shopPriceCfg.value(cfgKey).toObject();
+        QJsonObject defs = plug.value("items").toObject();
+        QJsonObject bots = plug.value("bots").toObject();
+        QJsonObject bot  = bots.value(shopPriceBotKey(appid)).toObject();
+        QJsonObject on    = plug.value("on").toObject();          // 默认档上架名单：key → true（缺省 = 下架）
+        QJsonObject obots = plug.value("onbots").toObject();      // 机器人覆盖：key → true 上架 / false 下架
+        QJsonObject obot  = obots.value(shopPriceBotKey(appid)).toObject();
+
+        for (const QPair<QString, qint64> &it : items) {
+            // ---- 价格（没传 = 不动它）----
+            if (prices.contains(it.first)) {
+                qint64 v = prices.value(it.first);
+                if (v < 0) v = 0;
+                if (appid > 0) {
+                    const qint64 parent = defs.contains(it.first)
+                            ? static_cast<qint64>(defs.value(it.first).toDouble())
+                            : it.second;
+                    if (v == parent) bot.remove(it.first);              // 跟默认一样 → 不留垃圾
+                    else             bot.insert(it.first, QJsonValue(static_cast<double>(v)));
+                } else {
+                    if (v == it.second) defs.remove(it.first);          // 跟插件注册价一样 → 不留垃圾
+                    else                defs.insert(it.first, QJsonValue(static_cast<double>(v)));
+                }
+            }
+
+            // ---- 在售 / 下架（没传 = 保持不动，别把没显示出来的商品悄悄上架）----
+            //   ⚠ 缺省是**下架**：所以「下架」这一侧等于什么都不写（删项），只有「上架」才落配置。
+            if (allowed.contains(it.first)) {
+                const bool allow = allowed.value(it.first);
+                if (appid > 0) {
+                    const bool parentAllow = on.contains(it.first);
+                    if (allow == parentAllow) obot.remove(it.first);        // 跟默认一样 → 不留垃圾
+                    else                      obot.insert(it.first, QJsonValue(allow));
+                } else {
+                    if (allow) on.insert(it.first, true);                  // 上架 → 进白名单
+                    else       on.remove(it.first);                        // 下架 = 缺省，不留垃圾
+                }
+            }
+        }
+
+        if (appid > 0) {
+            if (bot.isEmpty()) bots.remove(shopPriceBotKey(appid));
+            else               bots.insert(shopPriceBotKey(appid), bot);
+            if (obot.isEmpty()) obots.remove(shopPriceBotKey(appid));
+            else                obots.insert(shopPriceBotKey(appid), obot);
+        }
+        if (bots.isEmpty())  plug.remove(QStringLiteral("bots"));  else plug[QStringLiteral("bots")]  = bots;
+        if (defs.isEmpty())  plug.remove(QStringLiteral("items")); else plug[QStringLiteral("items")] = defs;
+        if (obots.isEmpty()) plug.remove(QStringLiteral("onbots")); else plug[QStringLiteral("onbots")] = obots;
+        if (on.isEmpty())    plug.remove(QStringLiteral("on"));     else plug[QStringLiteral("on")]     = on;
+        // 老版本用的是语义相反的「下架表」off / offbots；现在只认 on / onbots，留着纯属垃圾 → 顺手清掉
+        plug.remove(QStringLiteral("off"));
+        plug.remove(QStringLiteral("offbots"));
+        if (plug.isEmpty()) m_shopPriceCfg.remove(cfgKey); else m_shopPriceCfg[cfgKey] = plug;
+    }
+    savePlugins();                                   // ⚠ 必须在锁外调（它会读整张配置并落盘）
+}
+
+void PluginPage::clearBotShopPrices(int index, int appid)
+{
+    if (appid <= 0 || index < 0 || index >= m_pluginList.size()) return;
+    const PluginInfo &p = m_pluginList.at(index);
+    const QString cfgKey = shopCfgKeyOf(p);
+    if (cfgKey.isEmpty()) return;
+    {
+        QWriteLocker lk(&m_shopPriceLock);
+        QJsonObject plug = m_shopPriceCfg.value(cfgKey).toObject();
+        QJsonObject bots = plug.value("bots").toObject();
+        QJsonObject obots = plug.value("onbots").toObject();
+        const QString bk = shopPriceBotKey(appid);
+        // 定价和「在售/下架」是两套覆盖，一起清掉才算真的「跟随默认」
+        if (!bots.contains(bk) && !obots.contains(bk)) return;
+        bots.remove(bk);
+        obots.remove(bk);
+        if (bots.isEmpty())  plug.remove(QStringLiteral("bots"));  else plug[QStringLiteral("bots")]  = bots;
+        if (obots.isEmpty()) plug.remove(QStringLiteral("onbots")); else plug[QStringLiteral("onbots")] = obots;
+        if (plug.isEmpty()) m_shopPriceCfg.remove(cfgKey); else m_shopPriceCfg[cfgKey] = plug;
+    }
+    savePlugins();
+}
+
+bool PluginPage::hasBotShopPrices(int index, int appid) const
+{
+    if (appid <= 0 || index < 0 || index >= m_pluginList.size()) return false;
+    const PluginInfo &p = m_pluginList.at(index);
+    QReadLocker lk(&m_shopPriceLock);
+    const QJsonObject plug = m_shopPriceCfg.value(shopCfgKeyOf(p)).toObject();
+    const QString bk = shopPriceBotKey(appid);
+    // 「定价」和「在售/下架」任一有覆盖，都算这个号单独配过（决定「跟随默认」按钮亮不亮）
+    return !plug.value("bots").toObject().value(bk).toObject().isEmpty()
+        || !plug.value("onbots").toObject().value(bk).toObject().isEmpty();
+}
+
+// ==================== 铃铛商店：执行崩过的商品（黑名单）====================
+// 只针对 64 位原生库（同进程裸指针调用）。32 位易语言的商品函数跑在 miaomiao32.exe 里，
+// 它崩了主框架只是收不到回执（走超时），不需要也不会走到这里。
+// key 用「插件 uuid + fun」而不是商品名：商品名是作者随手写的备注，可能重复、也可能改字。
+QString PluginPage::shopBrokenKey(const QString &pluginUuid, qint64 fun) const
+{
+    return pluginUuid + QLatin1Char('|') + QString::number(fun);
+}
+
+bool PluginPage::isShopItemBroken(const QString &key) const
+{
+    if (key.isEmpty()) return false;
+    QMutexLocker lk(&m_shopBrokenMutex);
+    return m_shopBroken.contains(key);
+}
+
+void PluginPage::markShopItemBroken(const QString &key, const QString &why)
+{
+    if (key.isEmpty()) return;
+    {
+        QMutexLocker lk(&m_shopBrokenMutex);
+        if (m_shopBroken.contains(key)) return;     // 已经记过，别再刷日志
+        m_shopBroken.insert(key);
+    }
+    AppendEventLog(QStringLiteral("[商店] 商品已停用（插件执行崩溃：%1）：%2").arg(why, key), 0xff);
+}
+
+// 结算：**只有抢到单子的那一次**会真正执行。回执先到就按成交扣费，超时先到就丢单，
+// 后到的那个 takeShopOrder 拿不到单子 → 直接返回，绝不会二次扣费（扣两次 = 用户白亏）。
+// ⚠ 钱只在这一刻动：回执是「成交」才 spendPoints。失败 / 超时一分没扣过，所以没有退款这回事。
+void PluginPage::settleShopOrder(qint64 id, bool ok, const QString &reason)
+{
+    ShopOrder o;
+    if (!takeShopOrder(id, o)) return;
+
+    // 单子结束（成交 / 失败 / 超时都算）→ 立刻放掉「一次只能一单」的锁，
+    // 否则这个用户会被一条永远不来的回执锁到程序重启。
+    endShopPurchase(o.appid, o.openidBin);
+
+    const QString cur = shopCurrencyName();
+    BotDB *db = g_botdb.value(o.appid, nullptr);
+
+    QString text;
+    if (ok) {
+        // 成交：**现在才扣钱**（货插件自己已经发完了，这里只管记账 + 回话）
+        qint64 balance = 0;
+        bool charged = true;
+        if (o.fee > 0) {
+            // spendPoints 的第 3 参是「扣后余额」出参，返回值才是成败（失败时出参 = 当前余额）
+            const bool payOk = db ? db->spendPoints(o.openidBin, o.fee, &balance) : false;
+            charged = payOk;
+            if (!payOk) {
+                // 走到这里说明「预检时够、结算时不够」。按契约不该发生（预检 + 一次只能一单），
+                // 但插件那边货已经发出去了、不能反悔 → 只记账，让管理员知道有这一笔。
+                AppendEventLog(QStringLiteral("[商店] %1 扣费失败（订单 %2，应收 %3 %4）：货已发出")
+                                   .arg(o.pluginName, QString::number(o.id),
+                                        QString::number(o.fee), cur), 0xff);
+            }
+        } else if (db) {
+            balance = db->getPoints(o.openidBin);
+        }
+
+        if (o.fee <= 0) {
+            text = QStringLiteral("兑换成功：%1 × %2（免费），余额 %3 %4")
+                       .arg(o.itemName).arg(o.qty).arg(balance).arg(cur);
+        } else if (charged) {
+            text = QStringLiteral("兑换成功：%1 × %2，花费 %3 %4，余额 %5 %4")
+                       .arg(o.itemName).arg(o.qty).arg(o.fee).arg(cur).arg(balance);
+        } else {
+            text = QStringLiteral("兑换成功：%1 × %2（扣费失败：余额 %3 %4，请联系管理员）")
+                       .arg(o.itemName).arg(o.qty).arg(balance).arg(cur);
+        }
+    } else {
+        // 失败 / 超时：**一分钱都没扣过**，什么都不用退，只回一句（带原因）
+        text = QStringLiteral("兑换失败：%1（未扣费）").arg(o.itemName);
+        if (!reason.isEmpty()) text += QStringLiteral("\n原因：") + reason;
+    }
+
+    if (QQBotClient *client = m_botClients.value(o.appid, nullptr))
+        client->send_msgAsync(o.mtype, o.groupId, o.pname, text, o.msgId);
+}
+
+// 定时器每秒调一次：把过了 deadline 还没回执的单子按「超时失败」结算。
+// 这是**兜底**：正常情况回执都会先到（callShopAsync 自己也有 1 分钟超时），
+// 走到这里说明宿主崩了 / 回包丢了 / 插件卡死。
+// ⚠ 不扣钱也不用退（压根没扣过）：丢单 + 回一句「超时未响应（未扣费）」，顺带放掉在途锁让用户能重试。
+void PluginPage::sweepShopOrders()
+{
+    QList<qint64> due;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker lk(&m_shopOrdersMutex);
+        if (m_shopOrders.isEmpty()) return;          // 绝大多数时候走这条
+        for (auto it = m_shopOrders.constBegin(); it != m_shopOrders.constEnd(); ++it) {
+            if (it.value().deadlineMs <= now) due.append(it.key());
+        }
+    }
+    for (qint64 id : std::as_const(due))
+        settleShopOrder(id, false, QStringLiteral("插件超时未响应"));
+}
+
+// 程序退出时收尾：还没等到回执的单子**直接丢掉**（这会儿网络/界面都在收摊了）。
+// 因为钱是结算时才扣的，这些单子一分没扣 → 不用退款，也就不会出现「退出后钱卡在库里」。
+// ⚠ 崩溃（TerminateProcess / abort）连这里都走不到 —— 但同样因为没扣钱，用户不吃亏。
+void PluginPage::discardShopOrdersOnExit()
+{
+    QHash<qint64, ShopOrder> left;
+    {
+        QMutexLocker lk(&m_shopOrdersMutex);
+        left.swap(m_shopOrders);
+    }
+    if (left.isEmpty()) return;
+
+    // 在途锁一并清掉（进程都要退了，只是让最后一刻的状态干净、日志可读）
+    for (const ShopOrder &o : std::as_const(left))
+        endShopPurchase(o.appid, o.openidBin);
+
+    AppendEventLog(QStringLiteral("[商店] 程序退出，%1 笔未回执订单已丢弃（均未扣费）").arg(left.size()), 0xffff);
+}
 
 bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
 {
@@ -1468,6 +2028,77 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
 
     const QString cur     = shopCurrencyName();
     const QString listCmd = cur + QStringLiteral("商店");
+
+    // 统一出口：发一条 + 记「已处理」（置 op 后 AI 不会再兜一条重复的）
+    // pname 与框架其它指令同一口径：传 uuid → 发送管线还原成 "[插件名|%1ms]"；
+    // 商店自己发的回话传 "[<货币名>商店|%1ms]"（⚠ %1ms 是留给发送管线填耗时的，不能走 arg()）。
+    // ⚠ 定义放在函数最前面：下面的「充值」比商店指令判得更早，也要用这个出口。
+    const QString shopLogTag = QStringLiteral("[") + cur + QStringLiteral("商店]");
+    auto sendReply = [&](const QString &text, const QString &pname) {
+        if (text.isEmpty()) return;
+        QQBotClient *client = m_botClients.value(msg.appid, nullptr);
+        if (!client) return;
+        QString pn = pname;      // send_msgAsync 要非 const 引用
+        QString tx = text;
+        client->send_msgAsync(msg.type, msg.groupId, pn, tx, msg.msgId);
+        msg.op = true;
+    };
+
+    // ---- 0) 充值（管理员手工发分：测商店 / 运营补偿）----
+    // 权限只有两种：**超管 = 全局管理(1)** 和 **机器人管理(2)**。
+    //   这两个值来自 qqbotclient.cpp 尾部的全局表命中（m_info->admin → 2，g_admin → 1），
+    //   私聊里也会被置成 1/2 → 管理员私聊机器人发「充值 5000」照样能给自己充。
+    // 普通成员发「充值 …」**不拦也不回**（return false）：这个词太通用，可能是别的插件的业务指令，
+    //   框架把它吃掉就等于抢了插件的命令词。
+    // 用法：「充值」→ 报余额 + 用法；「充值 <数量>」→ 给自己加（1 ~ kShopRechargeMax）。
+    {
+        QString rWord;
+        if (body.startsWith(QStringLiteral("充值")))
+            rWord = QStringLiteral("充值");
+        else if (!cur.isEmpty() && body.startsWith(cur + QStringLiteral("充值")))
+            rWord = cur + QStringLiteral("充值");
+        // 命令词后面必须跟空白/结尾：「充值记录」「充值卡」这类一律不归这里管
+        if (!rWord.isEmpty()
+            && (body.size() == rWord.size() || isShopSpace(body.at(rWord.size())))) {
+            if (msg.member_role != 1 && msg.member_role != 2)
+                return false;                        // 不是管理员 → 当没看见，交回插件 / AI
+
+            const QByteArray openidBin = QByteArray::fromHex(msg.user.toUtf8());
+            BotDB *db = g_botdb.value(msg.appid, nullptr);
+            if (openidBin.size() < 8 || !db) {
+                sendReply(QStringLiteral("充值失败：拿不到你的账号，或这个机器人的积分库没开"),
+                          shopLogTag);
+                return true;
+            }
+            const QString arg = body.mid(rWord.size()).trimmed();
+            if (arg.isEmpty()) {                     // 只发「充值」→ 报余额 + 用法（手滑很常见）
+                sendReply(QStringLiteral("当前余额：%1 %2\n用法：%3 <数量>（1 ~ %4，仅管理员可用）")
+                              .arg(db->getPoints(openidBin)).arg(cur, rWord).arg(kShopRechargeMax),
+                          shopLogTag);
+                return true;
+            }
+            bool nOk = false;
+            const qint64 add = arg.toLongLong(&nOk);
+            if (!nOk || add <= 0 || add > kShopRechargeMax) {
+                sendReply(QStringLiteral("数量不对：%1（范围 1 ~ %2）").arg(arg).arg(kShopRechargeMax),
+                          shopLogTag);
+                return true;
+            }
+            bool addOk = false;
+            const qint64 left = db->addPoints(openidBin, add, &addOk);
+            if (!addOk) {
+                AppendEventLog(QStringLiteral("[%1充值] 写积分库失败：%2 %1").arg(cur).arg(add), 0xff);
+                sendReply(QStringLiteral("充值失败：写积分库出错"), shopLogTag);
+                return true;
+            }
+            // 手工发分要留痕：谁、加了多少、加到哪个余额（后台出问题能倒查）
+            AppendEventLog(QStringLiteral("[%1充值] +%2 → 余额 %3（操作人 %4）")
+                               .arg(cur).arg(add).arg(left).arg(msg.nickname), 0xffff);
+            sendReply(QStringLiteral("充值成功：+%1 %2，余额 %3 %2").arg(add).arg(cur).arg(left),
+                      shopLogTag);
+            return true;
+        }
+    }
 
     // ---- 1) 是商店指令吗？不是就直接放手（连商品表都不拼） ----
     QString buyWord;      // 兑换命令词（后面必须跟空白/结尾）
@@ -1485,14 +2116,35 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
         int     pluginIndex = -1;
         int     itemIndex   = -1;
         bool    isPython    = false;
-        bool    buyable     = true;   // false = 只上架展示，点了回「暂时不支持购买」（32 位易语言 / JS）
+        bool    isJs        = false;  // JS：走 node 宿主异步调用（itemIndex 指向 p.js.shop）
+        bool    is32        = false;  // 32 位易语言：走共享内存「目标槽 2」投递 + reqid 回吐
+        bool    buyable     = true;   // false = 点了回「暂时不支持购买」/「已停用」/「未上架」
+        bool    broken      = false;  // true = 这个商品执行时崩过，已被自动停用（见 m_shopBroken）
+        bool    adminOff    = false;  // true = 管理员在「商品定价」里把它关了（与 broken 共用 buyable）
         QString name;          // 商品备注
         QString pluginName;    // 插件名（列表里标来源）
         QString pluginUuid;    // 回消息的 pname（日志按它还原成 [插件名|%1ms]）
+        QString brokenKey;     // 原生库：崩溃黑名单 key（其它端为空）
         qint64  price = 0;
         qint64  fun   = 0;     // 原生库：函数地址（有 onShop 导出时只是一个 id，框架原样回传）
     };
     QList<ShopOffer> offers;
+    // 生效价：框架里**按机器人**改过的价优先，没改过就用插件注册的价（见 shopPriceFor）。
+    // 这里算一次塞进 ShopOffer，后面「列表显示 / 下单算总价 / 扣费」全读它，
+    // 免得三处各算一遍还可能算出不一样的数。
+    auto effPrice = [this, &msg](const PluginInfo &p, const QString &key, qint64 regPrice) {
+        const qint64 v = shopPriceFor(p, key, msg.appid);
+        return (v < 0) ? regPrice : v;
+    };
+    // 在售状态：管理员在「商品定价」里没上架的、以及「插件崩过被自动停用」的商品，
+    // **共用 buyable 一个变量**，只是原因分开记（adminOff / broken）——
+    // 只有分开记，回复和列表文案才能说清楚到底为什么买不了。
+    // ⚠ 默认是**下架**：插件新装的商品一律先下架，管理员手动上架才会卖。
+    // 崩溃优先：那个是硬故障，就算管理员又把它打开，也不该再调一次（再调就是再崩一次）。
+    auto applySaleState = [this, &msg](ShopOffer &o, const PluginInfo &p) {
+        if (o.broken) return;
+        if (!shopItemAllowed(p, o.name, msg.appid)) { o.buyable = false; o.adminOff = true; }
+    };
     for (int pi = 0; pi < m_pluginList.size(); ++pi) {
         const PluginInfo &p = m_pluginList.at(pi);
         if (!p.enabled) continue;
@@ -1503,7 +2155,8 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
                 ShopOffer o;
                 o.pluginIndex = pi; o.itemIndex = ii; o.isPython = true;
                 o.name = g.key; o.pluginName = p.name; o.pluginUuid = p.uuid;
-                o.price = g.price;
+                o.price = effPrice(p, g.key, g.price);
+                applySaleState(o, p);
                 offers.append(o);
             }
         } else if (p.type == 1) {                       // 原生库（有 onShop 走 id，没有就把 fun 当函数地址）
@@ -1512,46 +2165,39 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
                 ShopOffer o;
                 o.pluginIndex = pi;
                 o.name = g.key; o.pluginName = p.name; o.pluginUuid = p.uuid;
-                o.price = g.price; o.fun = g.fun;
+                o.price = effPrice(p, g.key, g.price); o.fun = g.fun;
+                o.brokenKey = shopBrokenKey(p.uuid, g.fun);
+                // 这个商品之前把框架带崩过 → 只上架不给买。崩溃通常可复现，再调一次就是再崩一次。
+                if (isShopItemBroken(o.brokenKey)) { o.broken = true; o.buyable = false; }
+                applySaleState(o, p);
                 offers.append(o);
             }
-        } else if (p.type == 2) {                       // 32 位易语言：**上架但买不了**
+        } else if (p.type == 2) {                       // 32 位易语言：上架，可购买（走共享内存投递 + reqid）
             for (const ShopItem_Dll &g : std::as_const(p.DLL.shop)) {
+                if (g.fun <= 0) continue;               // 没有函数值 → 宿主调不了，别上架
                 ShopOffer o;
                 o.pluginIndex = pi;
-                o.buyable = false;
+                o.is32 = true;
                 o.name = g.key; o.pluginName = p.name; o.pluginUuid = p.uuid;
-                o.price = g.price; o.fun = g.fun;
+                o.price = effPrice(p, g.key, g.price); o.fun = g.fun;
+                applySaleState(o, p);
                 offers.append(o);
             }
-        } else if (p.type == 3) {                       // JS：**上架但买不了**
-            for (const ShopItem_js &g : std::as_const(p.js.shop)) {
+        } else if (p.type == 3) {                       // JS：上架，可购买（异步调 Worker 里的函数）
+            for (int ii = 0; ii < p.js.shop.size(); ++ii) {
+                const ShopItem_js &g = p.js.shop.at(ii);
+                if (g.fun.isEmpty()) continue;          // 没函数名 → 调不了，别上架
                 ShopOffer o;
-                o.pluginIndex = pi;
-                o.buyable = false;
+                o.pluginIndex = pi; o.itemIndex = ii; o.isJs = true;
                 o.name = g.key; o.pluginName = p.name; o.pluginUuid = p.uuid;
-                o.price = g.price;
+                o.price = effPrice(p, g.key, g.price);
+                applySaleState(o, p);
                 offers.append(o);
             }
         }
-        // 32 位（2）/ JS（3）：**上架展示，但 buyable = false** ——
-        //   列表里能看见（也标了「暂不可购买」），真要兑换时框架直接回一句「暂时不支持购买」，
-        //   既不扣费也不调插件（这两端调用的桥接还没打通）。以后放开只删掉那些 buyable = false。
+        // 异步端（JS / 32 位易语言）都是「先扣费 → 开单 → 投出去 → 回执再销单」，
+        // 回执迟迟不来就由 sweepShopOrders 定时器兜底（见下文 5.5 / 5.6 两段，都是「不扣钱只丢单」）。
     }
-
-    // 统一出口：发一条 + 记「已处理」（置 op 后 AI 不会再兜一条重复的）
-    // pname 与框架其它指令同一口径：传 uuid → 发送管线还原成 "[插件名|%1ms]"；
-    // 商店自己发的回话传 "[<货币名>商店|%1ms]"（⚠ %1ms 是留给发送管线填耗时的，不能走 arg()）。
-    const QString shopLogTag = QStringLiteral("[") + cur + QStringLiteral("商店|%1ms]");
-    auto sendReply = [&](const QString &text, const QString &pname) {
-        if (text.isEmpty()) return;
-        QQBotClient *client = m_botClients.value(msg.appid, nullptr);
-        if (!client) return;
-        QString pn = pname;      // send_msgAsync 要非 const 引用
-        QString tx = text;
-        client->send_msgAsync(msg.type, msg.groupId, pn, tx, msg.msgId);
-        msg.op = true;
-    };
 
     // ---- 3) 列表 ----
     if (isList) {
@@ -1560,7 +2206,8 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
         QStringList lines;
         lines << QStringLiteral("【%1商店】").arg(cur);
         if (offers.isEmpty()) {
-            lines << QStringLiteral("暂时没有上架的商品");
+
+            lines << QStringLiteral("1.[没有商品买一次瞄叫一下](兑换物品 1) - 免费(内置)");
         } else {
             for (int i = 0; i < offers.size(); ++i) {
                 const ShopOffer &o = offers.at(i);
@@ -1568,21 +2215,29 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
                 if (o.price <= 0) {
                     priceText = QStringLiteral("免费");
                 } else if (o.price % perAd == 0) {
-                    priceText = QStringLiteral("%1 %2（约 %3 次广告）")
-                                    .arg(o.price).arg(cur).arg(o.price / perAd);
+                    priceText = QStringLiteral("%1")
+                                    .arg(o.price);
                 } else {
-                    priceText = QStringLiteral("%1 %2").arg(o.price).arg(cur);
+                    priceText = QStringLiteral("%1").arg(o.price);
                 }
-                // 来源插件后面标一句「暂不可购买」，免得用户点了才发现买不了
-                const QString srcText = o.buyable
-                        ? o.pluginName
-                        : o.pluginName + QStringLiteral("，暂不可购买");
-                lines << QStringLiteral("%1. %2 —— %3（%4）")
+                // 来源插件后面标一句「未上架 / 已停用 / 暂不可购买」，免得用户点了才发现买不了
+                //   ⚠ 商品**默认是下架的**，新装插件要到「商品定价」里手动改成「上架」才卖。
+                QString srcText = o.pluginName;
+                if (o.broken)            srcText += QStringLiteral("，已停用（执行出错）");
+                else if (o.adminOff)     srcText += QStringLiteral("，未上架");
+                else if (!o.buyable)     srcText += QStringLiteral("，暂不可购买");
+                lines << QStringLiteral(">%1.[%2](兑换物品 %1 1) - %3（%4）")
                          .arg(i + 1).arg(o.name, priceText, srcText);
             }
-            lines << QString();
-            lines << QStringLiteral("发送：兑换物品 序号 数量");
-            lines << QStringLiteral("例：兑换物品 1 1");
+
+            lines << QStringLiteral("\n\n---\n\n发送：[兑换物品]() 序号 数量");
+            // 一件都买不了的时候把原因点出来，否则用户只会看到满屏「未上架」不知道该找谁
+            bool anyBuyable = false;
+            for (const ShopOffer &o : std::as_const(offers)) {
+                if (o.buyable) { anyBuyable = true; break; }
+            }
+            if (!anyBuyable)
+                lines << QStringLiteral("（商品需管理员在框架插件界面「商品」里上架后才能购买）");
         }
         // 顺带把余额报一下（不然用户没法判断买不买得起；读一次库，可忽略）
         if (BotDB *db = g_botdb.value(msg.appid, nullptr)) {
@@ -1590,6 +2245,7 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
             lines << QStringLiteral("你的余额：%1 %2").arg(myPoints).arg(cur);
         }
         lines << QStringLiteral("（看 1 次广告 +%1 %2）").arg(perAd).arg(cur);
+        lines<< R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"广告积分","enter":true,"permission":{"type":2},"type":2,"unsupport_tips":"QQ版本不支持"},"id":"1","render_data":{"label":"广告积分","style":1,"visited_label":"广告积分"}}]}],"style":{"font_size":"small"}}}}#b:#)";
         sendReply(lines.join('\n'), shopLogTag);
         return true;
     }
@@ -1604,6 +2260,11 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
     bool idxOk = false;
     const int seq = idxStr.toInt(&idxOk);
     if (!idxOk || seq <= 0 || seq > offers.size()) {
+        if(seq==1)
+        {
+            sendReply(QStringLiteral("喵~"), shopLogTag);
+            return true;
+        }
         sendReply(QStringLiteral("没有这个商品，发送「%1」查看在售列表").arg(listCmd), shopLogTag);
         return true;
     }
@@ -1626,13 +2287,55 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
 
     const ShopOffer &offer = offers.at(seq - 1);
 
-    // ---- 4.5) 这一端还没打通购买（32 位易语言 / JS）：能看见、但买不了 ----
-    //   **不扣费、不调插件**，只回一句「暂时不支持购买」，别让用户白等也别让钱扣了退不回来。
+    // ---- 4.5) 「只上架不给买」的两个原因 ----
+    //   ① broken：64 位原生库上次执行时崩过（SEH / C++ 异常被接住）→ 自动停用，不再二次调用；
+    //   ② 预留口子：以后新增的端还没适配（目前没有端会走到）。
     if (!offer.buyable) {
-        sendReply(QStringLiteral("「%1」暂时不支持购买（%2 还没适配）")
-                      .arg(offer.name, offer.pluginName),
-                  shopLogTag);
+        // 共用 buyable 一个状态，原因分三种：崩过（硬故障）/ 管理员下架 / 端还没适配
+        const QString why = offer.broken
+                ? QStringLiteral("「%1」已停用：上次执行时插件崩溃（%2），重启程序可再试")
+                      .arg(offer.name, offer.pluginName)
+                : (offer.adminOff
+                   ? QStringLiteral("「%1」未上架：需要管理员在框架「商品」里把它设为「上架」才能买")
+                         .arg(offer.name)
+                   : QStringLiteral("「%1」暂时不支持购买（%2 还没适配）")
+                         .arg(offer.name, offer.pluginName));
+        sendReply(why, shopLogTag);
         return true;
+    }
+
+    // 谁的钱：openid 的 16 字节二进制（与 points 子库的 key 同口径）
+    const QByteArray openidBin = QByteArray::fromHex(msg.user.toUtf8());
+
+    // ---- 4.6) 抢「一次只能一单」的在途锁 ----
+    //   改成「插件说成交才扣钱」之后，最怕的是同一用户两笔同时跑：两笔都过预检、都调插件、
+    //   都拿到成交，第二笔结算时余额已经不够 → 货发了钱没扣到。所以**从调插件之前就占锁**，
+    //   一直到结算 / 超时 / 退出才放（异步端交给订单放，同步端由下面的 qScopeGuard 放）。
+    if (!tryBeginShopPurchase(msg.appid, openidBin)) {
+        sendReply(QStringLiteral("你上一笔兑换还在处理中，等它结束再来（一次只能买一单）"),
+                  offer.pluginUuid);
+        return true;
+    }
+    // 离开本函数时自动放锁（任何提前 return 都不会漏）；
+    // 异步端把这次兑换「交给订单」之后不再归它管 —— 由 settle / 超时 / 退出负责释放。
+    bool inflightHandedToOrder = false;
+    auto inflightGuard = qScopeGuard([this, &msg, &openidBin, &inflightHandedToOrder]() {
+        if (!inflightHandedToOrder) endShopPurchase(msg.appid, openidBin);
+    });
+    Q_UNUSED(inflightGuard)   // 只为析构，本身不用
+
+    // ---- 4.7) 32 位要先确认「帧能塞字段」----
+    //   商店购买是**往原始消息帧里加 reqid** 再投给 32 位宿主的；帧解析不出来就加不上 reqid，
+    //   宿主会当成普通消息投递、永远不会回吐结果 → 白等 1 分钟。
+    //   所以在**调插件之前**先解析，失败就当没这回事直接回错（用户一分不损失）。
+    QJsonObject frame32Doc;
+    if (offer.is32) {
+        frame32Doc = QJsonDocument::fromJson(frame.toUtf8()).object();
+        if (frame32Doc.isEmpty()) {
+            sendReply(QStringLiteral("兑换失败：%1（消息格式异常，请联系管理员）").arg(offer.name),
+                      offer.pluginUuid);
+            return true;
+        }
     }
 
     PluginInfo &plug = m_pluginList[offer.pluginIndex];
@@ -1644,15 +2347,14 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
         cost = (count > maxCost / offer.price) ? maxCost : offer.price * count;
     }
 
-    // ---- 5) 先扣费（原子），插件说失败再退回 ----
-    // ⚠ 顺序不能反：先给货再扣费的话，并发下会出现「货发了、钱没扣到」。
-    //   先扣后调，最坏是「钱扣了、插件说没有」→ 下面原路退回去，用户不吃亏。
-    //   （不用额外的「先查一次余额」预检：spendPoints 失败时会带出当前余额，省一次读库）
+    // ---- 5) 预检余额（**只读、不扣**）----
+    //   钱要等「插件说成交」那一刻才扣；这里只把「本来就不够」的人挡在门外，省得白调一次插件。
+    //   （真正扣费在同步端的第 7 步、异步端的 settleShopOrder 里。）
     BotDB *db = g_botdb.value(msg.appid, nullptr);
-    const QByteArray openidBin = QByteArray::fromHex(msg.user.toUtf8());
     qint64 left = 0;
     if (cost > 0) {
-        if (!db || !db->spendPoints(openidBin, cost, &left)) {   // 失败时 left = 当前余额
+        left = db ? db->getPoints(openidBin) : 0;
+        if (!db || left < cost) {
             sendReply(QStringLiteral("余额不足：需要 %1 %2，你当前有 %3 %2")
                           .arg(cost).arg(cur).arg(left),
                       offer.pluginUuid);
@@ -1662,12 +2364,129 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
         left = db->getPoints(openidBin);
     }
 
+    // ---- 5.5) JS：跨进程**异步**调用 —— 先开单（只记应付、不扣钱），回执成交才扣 ----
+    //   JS 插件跑在另一个 node 进程的 Worker 里，只能靠回包拿结果。这里**不能**学配置面板那样
+    //   用局部 QEventLoop 死等：本函数跑在 QThreadPool 的工作线程上，一阻塞就卡住整条插件派发。
+    //   所以：**开一张单子**（记「应付多少」）→ 投出去 → 立即返回；
+    //   回执回来（主线程）按订单号结算：成交才扣费发账单 / 失败超时一分不扣。
+    if (offer.isJs) {
+        const QString jsFun = plug.js.shop.at(offer.itemIndex).fun;
+        const QString uuid  = plug.uuid;
+
+        // 参数与 Python 那边对齐成 (事件, cmd)：事件给**原始 JSON 帧**（和 on_message 收到的 data 同一份），
+        // cmd = 「序号」之后的原文（含数量）。
+        QJsonObject frameObj = QJsonDocument::fromJson(frame.toUtf8()).object();
+        QJsonArray params;
+        if (frameObj.isEmpty()) params.append(frame);    // 帧解析不出来就原样给字符串，插件自己 JSON.parse
+        else                    params.append(QJsonObject(frameObj));
+        params.append(cmd);
+
+        // 单子里存的全部是**拷贝**：本函数一返回，msg / offer / plug 都可能被卸载掉。
+        ShopOrder ord;
+        ord.appid      = msg.appid;
+        ord.mtype      = msg.type;
+        ord.groupId    = msg.groupId;
+        ord.msgId      = msg.msgId;
+        ord.pname      = offer.pluginUuid;
+        ord.pluginName = plug.name;
+        ord.itemName   = offer.name;
+        ord.qty        = count;
+        ord.fee        = cost;                       // 应付（成交才扣，这里一分没动）
+        ord.openidBin  = openidBin;
+        ord.deadlineMs = QDateTime::currentMSecsSinceEpoch() + kShopOrderTimeoutMs;
+
+        const qint64 orderId = newShopOrder(ord);
+        // 兜底：开不出单就别投请求（回执回来无单可销 = 白送一份）。
+        // 现在没扣钱，所以退回也没什么可退的，锁由上面的 qScopeGuard 放（inflightHandedToOrder 还是 false）。
+        if (orderId <= 0) {
+            sendReply(QStringLiteral("兑换失败：%1（系统繁忙，请稍后再试）").arg(ord.itemName),
+                      offer.pluginUuid);
+            return true;
+        }
+        // 单子已经代表这次兑换了 → 在途锁交给订单，由 settle / 超时 / 退出释放
+        inflightHandedToOrder = true;
+
+        // callShopAsync 的 1 分钟超时 / node 宿主重启导致的「回调永远不来」两种情况，
+        // 都由订单表兜住：前者回调里销单，后者由每秒的 sweepShopOrders 扫出来（都不扣钱）。
+        NodePluginManager::instance().callShopAsync(uuid, jsFun, params,
+            [this, orderId](bool success, const QString &err) {
+                settleShopOrder(orderId, success, err);      // ⚠ 回调在主线程
+            });
+
+        // ⚠ 必须自己置 op：这条指令的执行结果要等 JS 回包才发，但「已受理」这件事得现在告诉框架，
+        //   否则 dispatch_message 返回后 ev.op 还是 false，AI 会把「兑换物品 1 1」当普通消息再回一遍。
+        msg.op = true;
+        return true;
+    }
+
+    // ---- 5.6) 32 位易语言：**复用消息投递通道**（任务槽目标 2 = 工作线程 on_message 那条路）----
+    //   不新增命令号：帧里多带一个 reqid，宿主看到 reqid 就知道「这条要回值」，
+    //   处理完用 _post4(1831501026, reqid, "", "1") 回吐；不带 reqid 的普通消息它照旧不回。
+    //   和 JS 一样是「开单（不扣钱）→ 投出去 → 回执成交才扣」，本函数**不能等**
+    //   （跑在 QThreadPool 工作线程上，一阻塞整条插件派发都停）。
+    if (offer.is32) {
+        ShopOrder ord;
+        ord.appid      = msg.appid;
+        ord.mtype      = msg.type;
+        ord.groupId    = msg.groupId;
+        ord.msgId      = msg.msgId;
+        ord.pname      = offer.pluginUuid;
+        ord.pluginName = plug.name;
+        ord.itemName   = offer.name;
+        ord.qty        = count;
+        ord.fee        = cost;                       // 应付（成交才扣）
+        ord.openidBin  = openidBin;
+        ord.deadlineMs = QDateTime::currentMSecsSinceEpoch() + kShopOrderTimeoutMs;
+
+        const qint64 orderId = newShopOrder(ord);
+        if (orderId <= 0) {                          // 开不出单就别投请求（回执回来无单可销 = 白送）
+            sendReply(QStringLiteral("兑换失败：%1（系统繁忙，请稍后再试）").arg(ord.itemName),
+                      offer.pluginUuid);
+            return true;
+        }
+        inflightHandedToOrder = true;                // 在途锁交给订单
+
+        // plugins[] 只放这一条：fun = **32 位进程里的函数值**（框架原样透传，绝不本地解引用）。
+        // cmd 给「序号」之后的原文（与 64 位 / Python 那份契约一致），插件按它切数量、备注；
+        // 用户原文也在帧正文里，插件想自己切也行。
+        QJsonObject one;
+        one["uuid"]  = offer.pluginUuid;
+        one["fun"]   = double(offer.fun);
+        one["fun_s"] = QString::number(offer.fun);
+        one["cmd"]   = cmd;
+        one["text"]  = msg.msg;
+        QJsonArray oneArr;
+        oneArr.append(one);
+        frame32Doc["plugins"] = oneArr;
+
+        // ⚠ 必须投到主线程再发：sendData32Async 内部 `new QTimer(this)` + start，
+        //   跨线程 start 会直接失败（QObject::startTimer: Timers cannot be started from
+        //   another thread）→ 回调永远不来，只能等订单超时。投过去之后回调也在主线程，
+        //   settleShopOrder 的扣费/发送全在主线程，和 JS 那条一致。
+        const QJsonObject req = frame32Doc;
+        QMetaObject::invokeMethod(this, [this, req, orderId]() {
+            sendData32Async(req, static_cast<int>(kShopOrderTimeoutMs),
+                            [this, orderId](const QString &ret) {
+                                // 约定：回吐 "1"（或 "true"）= 成交 → 此时才扣费；空 / "0" / 其它 = 失败
+                                const QString s = ret.trimmed();
+                                const bool ok = (s == QLatin1String("1"))
+                                        || (s.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0);
+                                settleShopOrder(orderId, ok,
+                                                ok ? QString() : QStringLiteral("插件返回失败"));
+                            }, 2);                       // 目标槽 2 = 工作线程通道
+        }, Qt::QueuedConnection);
+
+        msg.op = true;                               // 已受理，别再让 AI 兜一条
+        return true;
+    }
+
     // ---- 6) 调插件：参数与 onMessagev3 完全一致（json 帧 / fun / cmd），**只看返回值真假** ----
     //   有 onShop 导出 → 走 onShop（fun 当 id 原样回传，Go 版 SDK 靠这个）；
     //   没有 → 把 fun 当函数地址直接调（C/C++/Rust/C# 的常规写法，不用多写一个导出）。
     //   ⚠ 名字这种要在调用前先抄出来：插件回调里有可能把自己卸载掉，m_pluginList 一变 plug 就悬空了。
     const QString plugName = plug.name;
     bool ok = false;
+    QString failReason;      // 插件「没给结果 / 给错了」时的说明，失败回执里带给作者看
     if (offer.isPython) {
         py::gil_scoped_acquire gil;
         try {
@@ -1676,51 +2495,91 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
             const bool wantsCmd = goods.wantsCmd;
             py::object ret = wantsCmd ? fn(msg, cmd.toStdString()) : fn(msg);
             if (ret.is_none()) {
-                ok = false;
+                // 函数没写 return / return None：当失败处理（本来也没扣钱），但把原因说清楚 ——
+                // 否则作者只看到「兑换失败」，会以为是框架扣费出的问题。
+                failReason = QStringLiteral("插件没有返回结果（应返回 True / False）");
+                AppendEventLog("[商店] " + plugName + " 商品函数没有返回值", 0xff);
             } else if (py::isinstance<py::bool_>(ret) || py::isinstance<py::int_>(ret)) {
                 ok = (PyObject_IsTrue(ret.ptr()) == 1);
             } else {
                 // 返回值只能是 True/False —— 文本一律不认（框架不接字符串，谁释放的问题也就不存在）
-                AppendEventLog("[商店] " + plugName + " 商品函数应返回 True/False，实际返回 "
-                                   + QString::fromStdString(py::str(py::type::of(ret)).cast<std::string>()),
-                               0xff);
+                const QString tn = QString::fromStdString(py::str(py::type::of(ret)).cast<std::string>());
+                failReason = QStringLiteral("插件返回值类型不对（应返回 True / False）：%1").arg(tn);
+                AppendEventLog("[商店] " + plugName + " 商品函数应返回 True/False，实际返回 " + tn, 0xff);
             }
         } catch (const py::error_already_set &e) {
+            failReason = QStringLiteral("插件执行出错（详见事件日志）");
             AppendEventLog("[商店] " + plugName + " 商品函数异常: " + QString::fromUtf8(e.what()), 0xff);
         } catch (...) {
+            failReason = QStringLiteral("插件执行出错（详见事件日志）");
             AppendEventLog("[商店] " + plugName + " 商品函数未知异常", 0xff);
         }
     } else {
+        // ---- 原生库（64 位）：裸函数指针调用，**必须隔离崩溃** ----
+        //   两层：内层 callShopDllSeh 接 SEH（访问冲突/除零/非法指令），外层 try/catch 接 C++ 异常。
+        //   接住 = 插件带着框架一起死的风险已经发生了一次 → 立刻把这个**商品**停用（黑名单），
+        //   以后列表里标「已停用」、购买直接拒绝，不再二次调用（崩溃基本都可复现）。
         const QByteArray frameUtf8 = frame.toUtf8();      // 显式存活到调用结束
         const QByteArray cmdUtf8   = cmd.toUtf8();
         ShopFunc fn = plug.DLL.onShop;
         if (!fn) fn = reinterpret_cast<ShopFunc>(static_cast<quintptr>(offer.fun));
-        if (fn) ok = (fn(frameUtf8.constData(), offer.fun, cmdUtf8.constData()) != 0);
+        if (fn) {
+            unsigned rv = 0;
+            unsigned crashCode = 0;
+            bool survived = false;
+            try {
+                survived = callShopDllSeh(fn, frameUtf8.constData(), offer.fun,
+                                          cmdUtf8.constData(), rv, crashCode);
+            } catch (...) {
+                survived = false;
+                crashCode = 0xE0000001u;                  // 自定码：C++ 异常（不是 SEH）
+            }
+            if (!survived) {
+                ok = false;
+                markShopItemBroken(offer.brokenKey, shopSehName(crashCode));
+                failReason = QStringLiteral("插件执行崩溃，该商品已自动停用（%1）")
+                                 .arg(shopSehName(crashCode));
+                AppendEventLog(QStringLiteral("[商店] %1 的商品「%2」执行崩溃（%3），已停用")
+                                   .arg(plugName, offer.name, shopSehName(crashCode)), 0xff);
+            } else {
+                // ⚠ 只看**最低一个字节**：C/C++ 里 `bool` 返回值只写 AL，EAX 高 24 位是残留垃圾
+                //   （插件写成 bool、或函数压根没 return 时都会踩到）—— 读整个 int 会把「失败」当成
+                //   「成交」，用户就被当成交处理了。取低字节后：0 / 1、false / true 都判得对。
+                //   契约仍是「非 0 = 成交」，正常返回 0/1 的插件行为完全不变。
+                ok = ((rv & 0xFFu) != 0u);
+            }
+        } else {
+            failReason = QStringLiteral("插件没有可调用的商品函数");
+        }
     }
 
     if (!ok) {
-        // 插件不给货 → 把钱原路退回（addPoints 也是原子的；失败只可能是库挂了，记一笔）
-        if (cost > 0 && db) {
-            bool backOk = false;
-            left = db->addPoints(openidBin, cost, &backOk);
-            if (!backOk)
-                AppendEventLog("[商店] " + plugName + " 退款失败：" + offer.name, 0xff);
-        }
-        sendReply((cost > 0)
-                      ? QStringLiteral("兑换失败：%1（已退回 %2 %3）").arg(offer.name).arg(cost).arg(cur)
-                      : QStringLiteral("兑换失败：%1").arg(offer.name),
-                  offer.pluginUuid);
+        // 失败：**一分钱都没扣过**（扣费在成交之后），所以没有退款这回事，只把原因回给用户
+        QString text = QStringLiteral("兑换失败：%1（未扣费）").arg(offer.name);
+        // 插件没返回结果 / 返回了别的东西 → 把原因带上，作者一眼能看出是自己漏了 return
+        if (!failReason.isEmpty()) text += QStringLiteral("\n原因：") + failReason;
+        sendReply(text, offer.pluginUuid);
         return true;
     }
 
-    // ---- 7) 成功：只补一条账单回执（要发什么货、说什么话，插件自己发） ----
+    // ---- 7) 成交：**现在才扣钱**（货插件已经发出去了），然后补一条账单 ----
     QString replyText;
     if (cost <= 0) {
         replyText = QStringLiteral("兑换成功：%1 × %2（免费），余额 %3 %4")
                         .arg(offer.name).arg(count).arg(left).arg(cur);
     } else {
-        replyText = QStringLiteral("兑换成功：%1 × %2，花费 %3 %4，余额 %5 %4")
-                        .arg(offer.name).arg(count).arg(cost).arg(cur).arg(left);
+        // spendPoints 第 3 参是「扣后余额」出参，返回值才是成败（失败时出参 = 当前余额）
+        const bool payOk = db ? db->spendPoints(openidBin, cost, &left) : false;
+        if (payOk) {
+            replyText = QStringLiteral("兑换成功：%1 × %2，花费 %3 %4，余额 %5 %4")
+                            .arg(offer.name).arg(count).arg(cost).arg(cur).arg(left);
+        } else {
+            // 预检时够、结算时不够（别的进程/别的会话改了库）→ 货已经给了不能反悔，只记账
+            AppendEventLog(QStringLiteral("[商店] %1 扣费失败（应收 %2 %3）：货已发出")
+                               .arg(plugName, QString::number(cost), cur), 0xff);
+            replyText = QStringLiteral("兑换成功：%1 × %2（扣费失败：余额 %3 %4，请联系管理员）")
+                            .arg(offer.name).arg(count).arg(left).arg(cur);
+        }
     }
 
     sendReply(replyText, offer.pluginUuid);
@@ -1742,7 +2601,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
         return 254;
     }
 
-
+    bool ok=false;
     // 每条消息最多获取一次：命中第一个 Python 插件时 emplace，本条消息的所有 Python 插件共用。
     std::optional<py::gil_scoped_acquire> gil;
     QJsonArray jsTargets;    // 本轮命中的 JS 插件（uuid + 命中规则名），遍历结束后合成**一帧**投给 node 宿主
@@ -1758,7 +2617,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
         if(p.appid.contains(msg.appid)) continue; //这个插件禁用
 
         if (p.type == 0){
-            onMessageReceived(msg,p,gil);
+            if (onMessageReceived(msg,p,gil)) ok = true;
             continue;
         }
         else if(p.type == 2) //收集命中的 32 位插件，遍历结束后随帧一起投递
@@ -1772,6 +2631,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                                       rule.key, role, newKey);
                     if (matchRule2(rule, msg, role, newKey)) {
                         _32++;
+                        ok = true;      // 注册规则命中 = 有指令命中
                         // 命中即登记一条：插件标识 + 函数指针 + **生效命令词**（+ 一份用户实输兜底）。
                         // fun 是**32 位进程里的地址**（≤ 0x7FFFFFFF，double 能精确表示）；
                         // 再给一份 fun_s 十进制字符串，方便按字符串读的解析器。
@@ -1814,6 +2674,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                                   rule.key, role, newKey);
                 if (!matchRule3(rule, msg, role, newKey)) continue;
                 hit = true;
+                ok = true;      // 注册规则命中 = 有指令命中（空规则表的「每条都喂」不算，见上面 hit 初值）
                 funs.append(rule.fun);
                 cmds.append(ruleMatchKey(rule.key, newKey));   // 改名=新名、没改=原名
                 break;
@@ -1847,6 +2708,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                     botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
                                       rule.key, role, newKey);
                     if (!matchRule2(rule, msg, role, newKey)) continue;
+                    ok = true;      // 注册规则命中 = 有指令命中
 
                     // 缓冲区显式存活到调用结束，别写成临时对象的 constData()
                     const QByteArray effCmd = ruleMatchKey(rule.key, newKey).toUtf8(); // 生效命令词（改名=新名）
@@ -1867,6 +2729,7 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
                     botRuleOverrideOf(msg.appid, cfgKey, static_cast<int>(rule.type),
                                       rule.key, role, newKey);
                     if (!matchRule2(rule, msg, role, newKey)) continue;
+                    ok = true;      // 注册规则命中 = 有指令命中
 
                     p.DLL.onMessage2(utf8.constData(), rule.fun);
                     break;
@@ -1922,6 +2785,12 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
     }
 
 #endif
+
+    // 有任何一条注册指令命中 → 250。
+    // 250 不是随便挑的数：调用方 core/global.cpp 把它原样当 addint 传给 botnomsg，
+    // botnomsg 里 incrementBufferStatus2(msgid, addint+1) 判 n>=250 就直接 return ——
+    // 即「这条消息已被插件处理」，不再追发「未被处理回应」兜底。
+    if (ok) return 250;
 
    return (_32==0)+jsTargets.isEmpty();
 }
@@ -3283,41 +4152,54 @@ bool PluginPage::disable_Plugin(PluginInfo &info)
 
 bool PluginPage::Reload_Plugin(int index) //32ok
 {
-    if (index<=-1 || index>m_pluginList.length()) return false;
+    if (index < 0 || index >= m_pluginList.length()) return false;
     AppendEventLog("[重载插件]"+m_pluginList[index].name);
-    bool enabled = m_pluginList[index].enabled;
-    if (m_pluginList[index].enabled) disable_Plugin(m_pluginList[index]);//调禁用
 
-    uninstall_Plugin(m_pluginList[index]);//里面会重置enabled 变量
-    m_pluginList[index].enabled = enabled;
-    QString err;
-    py::gil_scoped_acquire gil;
-    if (m_pluginList[index].type==0)
-    {
-        err = LoadPlugin_py(m_pluginList[index]);
-    }else if(m_pluginList[index].type==1) {
-        err = LoadPlugin_DLL(m_pluginList[index]);
-    }else if(m_pluginList[index].type==2){
-        err = LoadPlugin_DLL32(m_pluginList[index]);
-    }else  if (m_pluginList[index].type == 3) {
+    // 重载前的启用态：uninstall_Plugin 会把它清成 false，加载完得**自己**恢复。
+    // ⚠ 恢复不能只改结构体里的那个布尔量 —— LoadPlugin_py / LoadPlugin_DLL 只是把 on_enable
+    //   取出来存着，从来不调用；只有 Enabled_Plugin() 才会真的触发 on_enable。
+    //   以前这里是硬赋值 `m_pluginList[index].enabled = enabled;`，于是变成
+    //   「界面显示启用、插件却从没收到过 on_enable」（JS 那条分支另外手调了 enablePlugin，
+    //   所以碰巧只有 JS 是对的）。
+    const bool wasEnabled = m_pluginList[index].enabled;
+    if (wasEnabled) disable_Plugin(m_pluginList[index]);
 
-
-        QString err = LoadPlugin_js(m_pluginList[index]);
-        if (err.isEmpty()) {
-            if (m_pluginList[index].enabled) {
-                NodePluginManager::instance().enablePlugin(m_pluginList[index].uuid);
-            }
-            updatePluginItemInUI(index);
-            return true;
-        }
-    }else{
+    // 旧实例卸不掉就别往下走：32 位加载器没响应 / Node 端没释放 uuid 时继续加载，
+    // 会变成同一个 uuid 在宿主里挂两份，旧的那份再也管不到（也再卸不掉）。
+    if (!uninstall_Plugin(m_pluginList[index])) {
+        AppendEventLog("[重载插件]"+m_pluginList[index].name+" 失败：旧实例卸载失败", 0xff);
+        showAutoCloseMessageBox("错误","[重载插件] "+m_pluginList[index].name
+                                        +" 失败：旧实例卸载失败，请重启程序后再试");
         return false;
     }
-    if(err.isEmpty())
+    m_pluginList[index].enabled = false;   // uninstall 里已经置过，这里明确一次（下面按「未启用」加载）
+
+    QString err;
+    py::gil_scoped_acquire gil;
+    const int type = m_pluginList[index].type;
+    if (type == 0) {
+        err = LoadPlugin_py(m_pluginList[index]);
+    } else if (type == 1) {
+        err = LoadPlugin_DLL(m_pluginList[index]);
+    } else if (type == 2) {
+        err = LoadPlugin_DLL32(m_pluginList[index]);
+    } else if (type == 3) {
+        // ⚠ 以前写的是 `QString err = LoadPlugin_js(...)`：内层变量把外层 err 遮住了，
+        //   JS 重载失败时外层 err 还是空串，下面照样报「成功」→ 假成功、插件却已经没了。
+        err = LoadPlugin_js(m_pluginList[index]);
+    } else {
+        return false;
+    }
+
+    if (err.isEmpty())
     {
         if(m_pluginList[index].id.isEmpty())
         {
             m_pluginList[index].id = m_pluginList[index].name;
+        }
+        // 恢复启用：走 Enabled_Plugin 才会触发 on_enable / sendData32(2) / Node enablePlugin
+        if (wasEnabled && !Enabled_Plugin(index)) {
+            AppendEventLog("[重载插件]"+m_pluginList[index].name+" 已重载，但恢复启用失败", 0xff);
         }
         updatePluginItemInUI(index);
         showAutoCloseMessageBox("成功","[重载插件]"+m_pluginList[index].name+" 成功 本信息只显示1秒",1000);
@@ -3426,6 +4308,16 @@ void PluginPage::foruninstall_Plugin()
     NodePluginManager::instance().shutdown();
 }
 
+// 交给 Python 侧 clean_plugin 的路径必须是**绝对路径**：那段脚本里是 os.path.abspath(plugin_path)，
+// 相对路径会按**进程 CWD** 解析（Linux 上 CWD 未必是程序目录），算错就一个模块都清不掉 ——
+// 现象是「热重载完还是旧代码」：import 直接命中 sys.modules 里的老模块，根本不读新文件。
+static QString pythonPluginAbsPath(const QString &path)
+{
+    if (path.isEmpty()) return path;
+    if (QDir::isAbsolutePath(path)) return QDir::cleanPath(path);
+    return QDir::cleanPath(QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(path));
+}
+
 bool PluginPage::uninstall_Plugin(PluginInfo &info)
 {
     if (info.enabled) {
@@ -3478,7 +4370,7 @@ def clean_plugin(plugin_path):
         // 执行清理函数并获取结果
 
             py::object clean_func = py::module_::import("__main__").attr("clean_plugin");
-            py::object result = clean_func(info.path.toStdString());
+            py::object result = clean_func(pythonPluginAbsPath(info.path).toStdString());
             qDebug() << "清理完成，删除了" << py::len(result) << "个模块";
         } catch (const py::error_already_set& e) {
             qWarning() << "清理插件模块异常:" << e.what();
@@ -3516,7 +4408,7 @@ def clean_plugin(plugin_path):
 bool PluginPage::uninstall_Plugin(int index)
 {
 
-    if (index<=-1 || index>m_pluginList.length()) return false;
+    if (index < 0 || index >= m_pluginList.length()) return false;
     if (QMessageBox::question(this, "确认卸载",QString("确定要卸载插件 '%1' 吗？此操作不可恢复。").arg(m_pluginList[index].name))!= QMessageBox::Yes)return false;
     AppendEventLog("[卸载插件]"+m_pluginList[index].name);
     if(!uninstall_Plugin(m_pluginList[index]))
@@ -3540,9 +4432,34 @@ bool PluginPage::uninstall_Plugin(int index)
 }
 
 
+// 「覆盖安装」用的路径归一化：插件市场给的是**绝对目录**（带尾分隔符），而旧记录里的
+// info.path 是**相对程序目录**的（Python 还带尾斜杠，原生库存的却是库文件路径）——
+// 统一成「绝对目录 + cleanPath」当 key，两边才对得上。
+static QString reinstallKey(const QString &path)
+{
+    QString p = QDir::fromNativeSeparators(path.trimmed());
+    if (p.isEmpty()) return QString();
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QString abs = appDir.absoluteFilePath(p);
+    if (p.endsWith('/')) return QDir::cleanPath(abs);          // 目录（Python / JS）
+    QFileInfo fi(abs);
+    return QDir::cleanPath(fi.isDir() ? abs : fi.absolutePath()); // 原生库存的是库文件
+}
+
+bool PluginPage::uninstall_PluginForReinstall(int index)
+{
+    if (index <= -1 || index >= m_pluginList.length()) return false;
+
+    // 启用 / 禁用**原样记住**：禁用态重装后也该是禁用的，不能因为"默认启用"把它打开。
+    // （市场里原生库那条传的是 enabled=true，靠这里 take 回来的 false 才能压住）
+    const QString key = reinstallKey(m_pluginList[index].path);
+    if (!key.isEmpty()) m_reinstallEnabled.insert(key, m_pluginList[index].enabled);
+    return uninstall_Plugin2(index);
+}
+
 bool PluginPage::uninstall_Plugin2(int index)
 {
-    if (index<=-1 || index>m_pluginList.length()) return false;
+    if (index < 0 || index >= m_pluginList.length()) return false;
     AppendEventLog("[卸载插件]"+m_pluginList[index].name);
     if(!uninstall_Plugin(m_pluginList[index]))
     {
@@ -3580,6 +4497,15 @@ QString PluginPage::LoadPlugin(const QString &path,int type,bool enabled,QList<i
     if (index != -1) {
         if (Reload_Plugin(index)) return QString();
         return normPath + "\n插件热重载失败（旧插件已被卸载，可再次尝试载入）";
+    }
+    // 市场「覆盖安装」：旧实例是被 uninstall_PluginForReinstall 卸掉的，记录已从 m_pluginList 删除，
+    // 所以上面按 path 找不到、只能走「新装」。这里把卸载前记下的启用态取回来（take：只用一次）。
+    // ⚠ 不还原的话，Python / JS 会被 doLoadPythonPlugin / doLoadPlugin 传进来的 enabled=false
+    //   钉成禁用 —— 这就是「市场里点更新，Python 插件装完自动变禁用」的根因。
+    {
+        const QString rk = reinstallKey(normPath);
+        if (!rk.isEmpty() && m_reinstallEnabled.contains(rk))
+            enabled = m_reinstallEnabled.take(rk);
     }
     py::gil_scoped_acquire gil;
     PluginInfo info;
@@ -4413,7 +5339,7 @@ static constexpr int kData32PollMs    = 100;    // 轮询间隔
 static constexpr int kData32TimeoutMs = 5000;   // 单条命令的总超时（沿用旧值）
 
 void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
-                                 const std::function<void(const QString &)> &cb)
+                                 const std::function<void(const QString &)> &cb, int target)
 {
 #ifdef _WIN32
     // bridge 只在 纯白铃32.exe 存在时才创建（main.cpp），没装 32 位模块时直接失败返回
@@ -4426,7 +5352,7 @@ void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
     if (timeoutMs <= 0) {
         QJsonObject r = req;
         r["reqid"] = SharedMemoryBridge::NO_WAIT_REQ_ID;
-        bridge->writeResponseToBlock(1, QJsonDocument(r).toJson(QJsonDocument::Compact).constData());
+        bridge->writeResponseToBlock(target, QJsonDocument(r).toJson(QJsonDocument::Compact).constData());
         return;
     }
 
@@ -4444,7 +5370,7 @@ void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
 
     // ⚠ 已经登记了等待者再写任务槽：万一对方回得比 100ms 的轮询还快，结果也已经记在
     //   这一路里，下一跳就能取到，不会丢
-    if (!bridge->writeResponseToBlock(1, data.constData())) {
+    if (!bridge->writeResponseToBlock(target, data.constData())) {
         bridge->endCommandWait(reqId);
         if (cb) cb(QStringLiteral("发送命令失败（共享内存繁忙）"));
         return;
@@ -4652,9 +5578,9 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
     parseRuleList("contains", MatchType::Contains);
     parseRuleList("regex", MatchType::Regex);
     parseRuleList("event", MatchType::event);
-    // ---- 铃铛商店：可选的 "shop" 数组。**32 位/易语言：上架展示，但暂不可购买** ----
-    //   照同一口径读进来（key / fun=32 位进程里的函数地址 / price），兑换时框架回「暂时不支持购买」，
-    //   不扣费也不调插件（桥接还没打通）。插件作者现在就可以先写，放开时注册格式不用改。
+    // ---- 铃铛商店：可选的 "shop" 数组。**32 位/易语言：可购买**（走共享内存投递 + reqid 回吐）----
+    //   照同一口径读进来（key / fun=32 位进程里的函数值 / price），购买时框架只把 fun **原样透传**，
+    //   由宿主在 32 位进程里调；插件侧注册格式与 64 位原生库完全一样。
     info.DLL.shop.clear();
     const QJsonArray shopList32 = obj["shop"].toArray();
     for (const auto &v : shopList32) {
@@ -4771,7 +5697,7 @@ def clean_plugin(plugin_path):
         // 执行清理函数并获取结果
         try {
             py::object clean_func = py::module_::import("__main__").attr("clean_plugin");
-            py::object result = clean_func(info.path.toStdString());
+            py::object result = clean_func(pythonPluginAbsPath(info.path).toStdString());
             qDebug() << "清理完成，删除了" << py::len(result) << "个模块";
         } catch (const py::error_already_set& e) {
             qWarning() << "清理插件模块异常:" << e.what();
@@ -5440,6 +6366,10 @@ void PluginPage::savePlugins() {
 
     g_config["plugins"] = arr;
     g_config["plugin_rules"] = m_ruleCfg;   // 指令的启用 / 重命名配置（按插件 id 存）
+    {
+        QReadLocker lk(&m_shopPriceLock);
+        g_config["shop_prices"] = m_shopPriceCfg;   // 铃铛商店的商品定价（按插件 + 按机器人）
+    }
     saveConfig();
 
 }
@@ -5473,6 +6403,37 @@ void PluginPage::loadPlugins() {
             AppendEventLog("[载入插件] 成功："+path,0x35E496);
         }
     }
+
+    // ---- 一次性清理：老版本把「每次启动都重新生成的 uuid」当 shop_prices 的 key 存过价 / 上下架。
+    //      换个进程 uuid 就变 → 那些条目永远读不回来，纯垃圾（还会让人以为"配置没保存"）。
+    //      现在合法的 key 是插件自报 id（见 shopCfgKeyOf），不会是 36 位 uuid 形态，所以不会误删；
+    //      仍然把「当前进程的 uuid」也算合法，纯粹是防御（万一某个插件的 id 真的长得像 uuid）。
+    {
+        QSet<QString> alive;
+        for (const PluginInfo &p : std::as_const(m_pluginList)) {
+            const QString k = shopCfgKeyOf(p);
+            if (!k.isEmpty()) alive.insert(k);
+            if (!p.uuid.isEmpty()) alive.insert(p.uuid);
+        }
+        QStringList dead;
+        {
+            QWriteLocker lk(&m_shopPriceLock);
+            for (auto it = m_shopPriceCfg.constBegin(); it != m_shopPriceCfg.constEnd(); ++it) {
+                const QString k = it.key();
+                if (alive.contains(k)) continue;
+                // 36 位、4 个横线、能被 QUuid 解析 → 只可能是老版本留下的 uuid key
+                if (k.size() == 36 && k.count(QLatin1Char('-')) == 4
+                    && !QUuid::fromString(k).isNull())
+                    dead << k;
+            }
+            for (const QString &k : std::as_const(dead)) m_shopPriceCfg.remove(k);
+        }
+        if (!dead.isEmpty()) {
+            AppendEventLog(QStringLiteral("[商店] 清理了 %1 条失效的定价配置（旧版按每次启动都会变的 uuid 存的）")
+                               .arg(dead.size()), 0xffff);
+            savePlugins();        // ⚠ 锁外落盘
+        }
+    }
 }
 
 QString PluginPage::LoadPlugin_js(PluginInfo& info) {
@@ -5500,7 +6461,7 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     // 新版标志：插件元数据 JSON 里带 sdk >= 2（老插件没这个字段 → isV2 = false，不可改名）
     info.js.isV2 = (metadata["sdk"].toInt() >= 2);
     info.js.rules.clear();
-    info.js.shop.clear();          // 铃铛商店：上架展示但暂不可购买（重载不叠加）
+    info.js.shop.clear();          // 铃铛商店：可购买，重载不叠加
     auto parseRuleList = [&](const QString &typeKey, MatchType matchType) {
 
         QJsonArray ruleList = metadata[typeKey].toArray();
@@ -5537,9 +6498,9 @@ QString PluginPage::LoadPlugin_js(PluginInfo& info) {
     parseRuleList("contains", MatchType::Contains);
     parseRuleList("regex", MatchType::Regex);
     parseRuleList("event", MatchType::event);
-    // ---- 铃铛商店：可选的 "shop" 数组。**JS：上架展示，但暂不可购买** ----
-    //   fun = main.js 里的函数名（字符串），与 JS 规则同一口径；兑换时框架回「暂时不支持购买」，
-    //   不扣费也不调插件（桥接还没打通）。放开时只要在 handleShopCommand 里去掉 buyable = false。
+    // ---- 铃铛商店：可选的 "shop" 数组。**JS：可购买（异步调 exports 上的函数）** ----
+    //   fun = 挂在 exports 上的函数名（字符串），与 JS 规则同一口径；兑换时框架发请求给 Worker，
+    //   回包 true/1 = 成交、false/0 或超时 = 退款。
     info.js.shop.clear();
     const QJsonArray shopListJs = metadata["shop"].toArray();
     for (const auto &v : shopListJs) {

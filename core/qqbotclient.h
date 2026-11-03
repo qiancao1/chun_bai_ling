@@ -25,6 +25,11 @@
 #include <QWebSocket>
 #include <QNetworkAccessManager>
 #include <QTimer>
+#include <QVector>
+#include <QList>
+#include <QMutex>
+#include <QSet>
+#include <atomic>
 #include "accountinfo.h"
 #include <QColor>
 #include <future>
@@ -161,6 +166,10 @@ struct MessageLogContext {
     qint64 now_us;
     int index;
     int type;
+    // 发送后自动撤回秒数（0 = 不撤）。来源 = 插件 API 的第 8 参数 `_8`，随 ctx 一路下沉到
+    // 真正发 HTTP 的那几个函数，最后交给 addmsglog（**唯一的登记点**）。
+    // ⚠ 只用拷贝传递（ctxNoCb / ctxT / lambda 捕获都是拷贝）→ 值会一路跟着走，不用额外参数。
+    int recallSec = 0;
     // 发送耗时账本（addmsglog 收尾时把统计拼进 pname 方括号）。用 shared_ptr：异步回调和账本
     // 得一起活着，ctx 被拷进 PostAsync 的 lambda 后原 lambda 早就没了。
     std::shared_ptr<MsgTimeStat> tstat;
@@ -196,38 +205,48 @@ public:
     int m_reconnectAttempts;
     QString onTextMessage(const QString &message);
     QString onTextMessage(const QByteArray &message);
+    // 签到（「群管 → 签到」那段配置）：一天一次（非 py 模式）/ #python 脚本自己决定。
+    // 返回 true = 已经处理并回过消息（调用方直接 return）。
+    bool handleSignIn(const MessageEvent &ev);
     // 发送消息接口
 
     QString send_msgAsync(int type, const QString &openid, const QString &pname, QString &text,
-                          const QString &msgid, bool is_wakeup=false, bool mode=false, int sendType=0, bool noref=false, Callback cb=Callback());
+                          const QString &msgid, const QString &is_wakeup=QString(), bool mode=false, int sendType=0, bool noref=false, Callback cb=Callback(), int recallSec=0);
 
     QString send_messages(int type, const QString &openid, const QString &pname, QString &text, const QString &msgid=QString(),
-                          bool is_wakeup=false, bool mode=false, int sendType= 0, bool noref=false);
+                          const QString &is_wakeup=QString(), bool mode=false, int sendType= 0, bool noref=false, int recallSec=0);
     QString send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
-                                            const QString &msgid,bool is_wakeup=false,bool mode=false,int sendType=0,bool noref=false,Callback cb=Callback());
+                                            const QString &msgid,const QString &is_wakeup=QString(),bool mode=false,int sendType=0,bool noref=false,Callback cb=Callback(), int recallSec=0);
 
     QString send_messagesAsync2(int type, const QString &openid, const QString &pname, QString &text,
-                                const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
-                                const QJsonArray &prompt_keyboard, const QJsonValue &keyboard,Callback cb=Callback());
+                                const QString &msgid, const QString &is_wakeup, bool mode, int sendType, bool noref, const QString &mb2,
+                                const QJsonArray &prompt_keyboard, const QJsonValue &keyboard,Callback cb=Callback(), int recallSec=0);
+
+    // ── 发送后自动撤回（插件 API 的第 8 参数 `_8`，单位秒）──
+    // msgid = 平台「发消息」回执里的 "id"（不是被回复那条的 id）。空 = 没真发出去，直接忽略。
+    // sec <= 0 不登记；sec > kRecallMaxSec 一律按 kRecallMaxSec 算。
+    // 线程安全：任意线程都能直接调，写路径全程无锁（原子游标 + 原子块指针）。
+    void scheduleAutoRecall(int type, const QString &openid, const QString &msgid, int sec);
+    static constexpr int kRecallMaxSec = 110;   // 上限 110 秒（超出按 110 算）；槽 120 个 → 留 10 个间隔，到期槽永不等于当前槽
 
     QString send_messages(int type, const QString &openid, const QString &text, const QString &info,
                           const QJsonArray &prompt_keyboard,
                           const QString &message_reference, const QString &msgid,
-                          bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
+                          const QString &is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
 
-    QString send_messages_ark(int type, const QString &openid,const QString &pname, const QJsonObject &ark,
-                              const QString &msgid, bool is_wakeup=false, int seq_index=0,const MessageLogContext ctx = MessageLogContext());
+    QString send_messages_ark(int type, const QString &openid, const QString &pname, const QJsonObject &ark,
+                              const QString &msgid, const QString &is_wakeup=QString(), int seq_index=0, const MessageLogContext ctx = MessageLogContext());
 
 
 
     QString send_messages_markdown(int type, const QString &openid, const QString &markdown, const QJsonArray &prompt_keyboard,
                                    const QJsonValue &keyboard, const QString &message_reference,
-                                   const QString &msgid, bool is_wakeup=false, int seq_index=0, const MessageLogContext ctx = MessageLogContext(), bool noref=false);
+                                   const QString &msgid, const QString &is_wakeup=QString(), int seq_index=0, const MessageLogContext ctx = MessageLogContext(), bool noref=false);
 
 
     QString send_messages_mb(int type, const QString &openid, const QString &markdown, const QJsonArray &prompt_keyboard,
                              const QJsonValue &keyboard, const QString &message_reference,
-                             const QString &msgid, bool is_wakeup, int seq_index, const MessageLogContext ctx, bool noref);
+                             const QString &msgid, const QString &is_wakeup , int seq_index, const MessageLogContext ctx, bool noref);
 
 
     QString send_messages_pd(const QString &url, const QString &msgId, const QString &content, const QString &imagePath,
@@ -325,20 +344,20 @@ private:
 
     void fetchGatewayUrl(Callback calls);
     // token 刷新已改由主线程定时任务 onRefreshReplyFinished() 统一处理
-    void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, bool is_wakeup, int logindex);
+    void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, const QString &is_wakeup , int logindex);
     // info = 平台给的**裸 file_info**（上传函数直接返回它，不再有 "[类型,path=…]" 包装）
     // fileType：1图片/2视频/3音频/4文件，**只用于日志** —— 写回日志时还原成
     //   "[<类型>,path=…,]" 形态，UI(chatpage) 靠它认媒体标签并把整段从气泡正文里剥掉；0 = 不包装
     // multiPart：本次是「同一轮回复的多段媒体」的其中一段（true 时不受 noref 去重影响，
     //   否则第 2 段起会被当成"重复发送"直接吞掉 → 4 段音频只发出 1 段）
     QString send_Media(int type, const QString &openid, const QString &pname, const QString &info, qint64 now_us,
-                       const QString &msgid, bool is_wakeup, bool noref, MessageLogContext ctx, int fileType = 0,
+                       const QString &msgid, const QString &is_wakeup , bool noref, MessageLogContext ctx, int fileType = 0,
                        bool multiPart = false);
     // ctx 只读：函数内部仅取 ctx.openid / ctx.cb，并按值转发给 send_Media。
     // 必须是 const 引用 —— 否则调用方传临时对象（如 send_messages 传 MessageLogContext()）
     // 在 GCC/Clang 下报 “cannot bind non-const lvalue reference to an rvalue”，
     // MSVC 把这个当语言扩展放过了，所以 Windows 能过、Linux 不能。
-    QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid, bool is_wakeup, bool mode, int, bool noref, const MessageLogContext &ctx);
+    QString sendOneMedia(int type, const QString &openid, const QString &pname, QString &text, qint64 now_us, const QString &msgid,const QString &is_wakeup , bool mode, int, bool noref, const MessageLogContext &ctx);
     // sendOneMedia 的**纯回调版**：整条链没有任何阻塞点，也不新建线程（给 send_messagesAsync 用）。
     //   无 [file|audio|video,...] 媒体标签 → 直接同步回调（绝大多数发送走这条）；
     //   有媒体标签 → md5/缓存 → ffmpeg 探测/转码/切段（QProcess 异步，进程退出才回调）
@@ -352,7 +371,7 @@ private:
     //   两条路径都保证 ctx.cb 触发**恰好一次**（踩过的坑：send_Media 的 PostAsync 已经触发过一次，
     //   这里再回调就是两次 → 插件/Python 当成两轮 → 循环重发）。
     void sendOneMediaAsync(int type, const QString &openid, const QString &pname, QString text, qint64 now_us,
-                           const QString &msgid, bool is_wakeup, bool mode, int sendType, bool noref,
+                           const QString &msgid, const QString &is_wakeup , bool mode, int sendType, bool noref,
                            const MessageLogContext &ctx,
                            std::function<void(const QString &, const QString &)> onDone);
 
@@ -363,10 +382,10 @@ private:
     //                    而正文要等 api 异步回来才是最终版本，没法等回来再解析）
     //   seq_index 两条路径一致：命中序号 → 1；否则随机 2..99（noref 直接回 {} 不发）。
     QString sendMessagesAsyncCore(int type, const QString &openid, const QString &pname, QString text,
-                                 const QString &msgid, bool is_wakeup, bool mode, int sendType,
-                                 bool noref, Callback cb, bool preParsed,
-                                 const QString &mbIn, const QJsonArray &promptKbIn,
-                                 const QJsonValue &kbIn);
+                                  const QString &msgid, const QString &is_wakeup , bool mode, int sendType,
+                                  bool noref, Callback cb, bool preParsed,
+                                  const QString &mbIn, const QJsonArray &promptKbIn,
+                                  const QJsonValue &kbIn, int recallSec = 0);
 
     // ── 上传的异步回调版（与同名同步函数逐段对应；把 PostSync / put 换成 PostAsync / 回调式 put）──
     // 递归一律写成「成员函数 + shared_ptr 状态」，**不用**自引用的 std::function（那会形成引用环永不释放）。
@@ -450,8 +469,11 @@ private:
     // recordErr：这次失败要不要额外写进「发送错误」独立库（g_errlogdb）。默认 true；
     //   只有「媒体上传失败时补记的那条 [image,path=…]」传 false —— 那一条本身就只是说明，真正的
     //   报错紧接着还会走一次 send_*，避免同一次失败在错误库里留两条。
+    // recallSec：发送后 N 秒自动撤回（0 = 不撤）。**自动撤回的唯一登记点就在这里** ——
+    //   所有发送路径最后都要过 addmsglog，发送函数只负责把这个秒数带进来，不用自己判断。
+    //   回执里没有 "id"（没真发出去）时自然不登记。
     void addmsglog(const QString &response, int index, QString pname, const QString &text, qint64 now_us, int type, const QString &openid,
-                   std::shared_ptr<MsgTimeStat> tstat = nullptr, bool recordErr = true);
+                   std::shared_ptr<MsgTimeStat> tstat = nullptr, bool recordErr = true, int recallSec = 0);
     void bianl(int type, int log, QString &text, QJsonValue &keyboard, QJsonArray &prompt_keyboard, const QString &openid, QString &mb);
     // WebSocket 协议
     void sendIdentify();
@@ -462,10 +484,17 @@ private:
     // 重连
     void scheduleReconnect(int delaySec = 3);
     void resetReconnectAttempts();
+    // 重连定时器到点后的入口（不是直接连 start）：先解开可能卡住的 m_isConnecting 再重试，
+    // 否则 start() 第一行 return 之后就没有人再排下一次了，自动重连会永久停摆。
+    void onReconnectTimerFired();
+    // 握手看门狗：open() 之后迟迟等不到 connected/disconnected 时兜底（见 .cpp）
+    void onHandshakeTimeout();
+    // 丢掉当前 socket，并且不触发 onDisconnected 里的重连排期（由调用方自己排）
+    void closeSocketSilently();
     void fetchSelfInfo();   // 获取机器人自身信息
     void downloadAvatar(const QString &url, const QString &savePath);
 
-
+    bool neizev(const QJsonObject &d, MessageEvent &ev);
 
 
 
@@ -514,6 +543,47 @@ private:
     QNetworkAccessManager m_nam;
     QTimer m_heartbeatTimer; //心跳
     QTimer m_reconnectTimer; //重连
+    QTimer m_handshakeTimer; //握手看门狗（单次 15 秒）
+
+    // ── 自动撤回的环形缓冲：m_recallChunk[120][16]，每块存 16 条 ──
+    //   定位：槽 = 到期时刻的秒数 % 120。扫描时只扫「上次扫到的那一秒」到「此刻-1 秒」
+    //         之间的槽 —— 正常每跳 1 个槽，不遍历全部待撤消息。
+    //   不用判到期时间：撤回上限 110 < 120 槽，而且扫描扫的是**上一秒**的槽（见 recallTickSelf），
+    //         跟添加侧（[1,110] 秒后到期）永远差至少一个槽 —— 两边绝不会碰同一个槽。
+    //   写入全程无锁：每槽一个原子游标，fetch_add 拿下标 → 按「第几块 + 块内偏移」直接写。
+    //         块指针用原子 CAS 挂上去，块**只追加、永不搬移**（所以不需要"扩容后把旧内存搬走"，
+    //         也就没有任何互斥）；每次多开一块，等价于扩容，但已有数据一个字节都不动。
+    //         每块 kRecallChunk(16) 条、每槽最多 kRecallMaxChunks(16) 块 = 256 条/秒，正常到不了。
+    //   撤回：清空元素内容、块和位置都留着，扫完游标归零 —— 稳态下零分配、零释放。
+    // ⚠ 定时器**不在每个机器人身上**：几十个机器人各挂一个 1 秒定时器纯属浪费，
+    //   改成全进程**一个**全局定时器，每秒遍历所有机器人各扫自己的槽（见 recallTickAll）。
+    struct RecallItem {
+        int     type = 0;       // 发送时的 type —— 撤回必须用同一个
+        QString openid;
+        QString msgid;          // 平台回执里的 "id"；空 = 该位空闲
+    };
+    static constexpr int kRecallSlots     = 120;
+    static constexpr int kRecallChunk     = 16;    // 每块条数
+    static constexpr int kRecallMaxChunks = 16;    // 每槽最多块数（= 一秒最多 256 条）
+    std::atomic<RecallItem *> m_recallChunk[kRecallSlots][kRecallMaxChunks]{};
+    std::atomic<int>  m_recallCursor[kRecallSlots]{};   // 各槽写入游标（添加可能在任意线程）
+    std::atomic<int>  m_recallPending{0};               // 本机器人待撤条数
+    // 上次处理到的那一秒（时间戳）。下一跳只扫 now-1 .. last+1 之间的槽 ——
+    // 跨度 1 就扫 1 个，卡了几秒就补几个，但只在安全窗内补（见 recallTickSelf）。
+    qint64 m_recallLastSec = 0;
+
+    // ── 全局撤回定时器（全进程唯一，所有 QQBotClient 共用）──
+    //   recallEnsureTimer：登记消息后拉起全局定时器；任意线程可调，内部投递到主线程。
+    //   recallTickAll    ：全局定时器每秒一跳，遍历 s_recallClients 让每个机器人各扫自己的槽；
+    //                      全部机器人都没待撤消息时停表，一个都不闲着。
+    static void recallEnsureTimer();
+    static void recallTickAll();
+    void recallTickSelf();       // 单个机器人的一次扫描（原 onRecallTick）
+    static QList<QQBotClient *> s_recallClients;   // 只在主线程增删/遍历（构造、析构、定时器都在主线程）
+    static QTimer *s_recallTimer;                  // 主线程创建，parent = qApp
+    static std::atomic<bool> s_recallStarted;      // 定时器是否已启动（避免重复投递）
+    static std::atomic<bool> s_recallPosted;       // 是否已投递过「去主线程启动」
+    void freeRecallChunks();    // 析构时统一释放所有块
 
     QString m_accessToken,m_accessToken2;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
@@ -523,6 +593,13 @@ private:
 
     int m_heartbeatIntervalSec;
     int m_invalidHeartbeatCount;
+    bool m_suppressDisconnect = false;  // true = 这次 socket 断开是我们自己 abort 的，不排重连
+    int m_gatewayFailStreak = 0;        // 连续几次拿不到 /gateway 地址（连续 3 次就作废本地 token）
+    int m_reconnectOverflow = 0;        // 退避顶到 15 分钟后，每多试一次 +1 分钟的计数
+    // 本次运行里用户是否明确要这个机器人在线（点过登录 / start 过）。
+    // 有它才能同时满足两件事：手动点登录连上的账号被踢了也要自动重连；
+    // 而用户点了「停止」之后不许再偷偷连回来（autoConnect 是持久化的设置，不能代替它）。
+    bool m_userWantsOnline = false;
 };
 
 #endif // QQBOTCLIENT_H

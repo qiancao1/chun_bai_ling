@@ -169,8 +169,26 @@ bool LogDB::abortTransaction()
 bool LogDB::readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
                          uint64_t seq, Message& msg) const
 {
-    // 不加锁，因为不修改对象状态，但需要确保 m_env 有效（外部调用者应保证）
-    if (!txn || !m_env) return false;
+    // ⚠ 整段读都在 m_mutex 里跑（不是整轮循环，只锁一次读，不会把刷库堵住）。
+    //   原因：调用方（network/websocketserver.cpp / ui/chatpage.cpp）的用法是
+    //   beginTransaction(true) → for(全量群){ readLogInTxn(getCurrentTxn(),…) } → commit，
+    //   **读的时候不持锁**；而 5 秒刷缓存撞 MAP_FULL 会走 expandAndReopen() → mdb_env_close()，
+    //   close() 也会 mdb_txn_abort(m_currentTxn)。环境/事务被拆掉之后再 mdb_get 就是踩野指针，
+    //   表现是堆破坏 → fail-fast（进程秒退、连 dump 都留不下）。
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
+
+    // 传进来的 txn 必须还是「当前那一个」；否则（已 close / 已扩容 / 传了作废指针）
+    // 就自己开一个临时读事务，读完立刻还掉 —— 绝不拿作废的指针去 mdb_get。
+    MDB_txn *useTxn = nullptr;
+    bool ownTxn = false;
+    if (txn && txn == m_currentTxn) {
+        useTxn = txn;
+    } else {
+        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &useTxn) != MDB_SUCCESS)
+            return false;
+        ownTxn = true;
+    }
 
     QString keyStr = makeKey(appid, groupId, seq);
     QByteArray keyBytes = keyStr.toUtf8();
@@ -179,14 +197,19 @@ bool LogDB::readLogInTxn(MDB_txn* txn, const QString& appid, const QString& grou
     key.mv_data = keyBytes.data();
     key.mv_size = keyBytes.size();
 
-    int rc = mdb_get(txn, m_dbi_main, &key, &value);
+    int rc = mdb_get(useTxn, m_dbi_main, &key, &value);
+    // 先把数据拷出来，再结束临时事务（读事务的 map 页在 abort 后不保证仍可引用）
+    QByteArray blob;
+    if (rc == MDB_SUCCESS)
+        blob = QByteArray((const char*)value.mv_data, value.mv_size);
+    if (ownTxn) mdb_txn_abort(useTxn);
+
     if (rc != MDB_SUCCESS) {
         if (rc != MDB_NOTFOUND)
             qWarning() << "LogDB: readLogInTxn 失败:" << mdb_strerror(rc);
         return false;
     }
 
-    QByteArray blob((const char*)value.mv_data, value.mv_size);
     return deserializeMessage(blob, msg);
 }
 
@@ -233,42 +256,54 @@ bool LogDB::deserializeMessage(const QByteArray &data, Message &msg) const
 
 bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const
 {
-    // 不加锁，因为外部事务已由调用者管理，且 m_env 只读
-    if (!txn || !m_env) return false;
+    // 与 readLogInTxn 同理：整段读持 m_mutex，并对调用方传入的 txn 做作废校验。
+    QMutexLocker locker(&m_mutex);
+    if (!m_env) return false;
 
+    MDB_txn *useTxn = nullptr;
+    bool ownTxn = false;
+    if (txn && txn == m_currentTxn) {
+        useTxn = txn;
+    } else {
+        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &useTxn) != MDB_SUCCESS)
+            return false;
+        ownTxn = true;
+    }
+
+    bool found = false;
     MDB_cursor *cursor = nullptr;
-    int rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
+    int rc = mdb_cursor_open(useTxn, m_dbi_main, &cursor);
     if (rc != MDB_SUCCESS) {
         qWarning() << "LogDB: getLatestLogInTxn 打开游标失败:" << mdb_strerror(rc);
-        return false;
-    }
+    } else {
+        MDB_val key, value;
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最大 seq 开始
+        int i=0;
+        while (rc == MDB_SUCCESS) {
+            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
+            QStringList parts = keyStr.split(':');
+            if (parts.size() == 3) {
+                QString appidFromKey = parts[1];
+                QString groupIdFromKey = parts[2];
+                if (appidFromKey == appid && groupIdFromKey == groupId) {
+                    QByteArray blob((const char*)value.mv_data, value.mv_size);
+                    deserializeMessage(blob, msg);
+                    if(!msg.Gname.isEmpty()){
+                        found = true;
+                        break;
+                    }
 
-    MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最大 seq 开始
-    int i=0;
-    while (rc == MDB_SUCCESS) {
-        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-        QStringList parts = keyStr.split(':');
-        if (parts.size() == 3) {
-            QString appidFromKey = parts[1];
-            QString groupIdFromKey = parts[2];
-            if (appidFromKey == appid && groupIdFromKey == groupId) {
-                QByteArray blob((const char*)value.mv_data, value.mv_size);
-                deserializeMessage(blob, msg);
-                if(!msg.Gname.isEmpty()){
-                    mdb_cursor_close(cursor);
-                    return true;
                 }
-
+                i++;
+                if(i>5000) break;
             }
-            i++;
-            if(i>5000) break;
+            rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
         }
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+        mdb_cursor_close(cursor);
     }
 
-    mdb_cursor_close(cursor);
-    return false;   // 未找到
+    if (ownTxn) mdb_txn_abort(useTxn);
+    return found;
 }
 
 // ---------- 公共接口 ----------
@@ -728,7 +763,8 @@ void LogDB::flushCacheToDBUnlocked() {
 
         rc = mdb_txn_commit(txn);
         if (rc == MDB_MAP_FULL) {
-            mdb_txn_abort(txn);
+            // ⚠ mdb_txn_commit 一旦返回，无论成功失败事务都已经被释放，
+            //   这里再 mdb_txn_abort(txn) 是「对已结束事务 abort」= 未定义行为（野指针）。
             if (!expandAndReopen()) {
                 qWarning() << "flushCacheToDBUnlocked: 提交时扩容失败";
                 return;
@@ -736,7 +772,6 @@ void LogDB::flushCacheToDBUnlocked() {
             continue;
         } else if (rc != MDB_SUCCESS) {
             qWarning() << "flushCacheToDBUnlocked: 提交事务失败" << mdb_strerror(rc);
-            mdb_txn_abort(txn);
             return;
         }
 
@@ -909,6 +944,17 @@ bool LogDB::cleanDatabase(int keepN)
 
 // 在 LogDB.cpp 中实现
 bool LogDB::reopenEnv(size_t minSize) {
+    // 换环境全程持锁（m_mutex 是 Recursive：expandAndReopen 进来时已经持有了）。
+    QMutexLocker locker(&m_mutex);
+
+    // ⚠ 先把活动长事务掐掉再关 env。否则 mdb_env_close() 之后 m_currentTxn 的 mt_env
+    //   就是野指针，调用方再 commit/abort/读就是踩刚释放的堆（fail-fast 最常见的来源）。
+    //   有了这把锁 + 读接口也持锁，这里不会和「正在 mdb_get 的线程」撞车。
+    if (m_currentTxn) {
+        mdb_txn_abort(m_currentTxn);
+        m_currentTxn = nullptr;
+    }
+
     // 1. 获取当前数据文件大小（data.mdb）
     QFileInfo fileInfo(m_dbPath + "/data.mdb");
     size_t fileSize = fileInfo.exists() ? (size_t)fileInfo.size() : 0;
@@ -1000,7 +1046,15 @@ bool LogDB::reopenEnv(size_t minSize) {
 
 bool LogDB::expandAndReopen()
 {
-    // 必须在持有 m_mutex 时调用
+    // 必须在持有 m_mutex 时调用（Recursive，重入也安全）
+    QMutexLocker locker(&m_mutex);
+
+    // 本函数自己会先关 env，所以长事务要在这里也掐一次（reopenEnv 里那次赶不上）
+    if (m_currentTxn) {
+        mdb_txn_abort(m_currentTxn);
+        m_currentTxn = nullptr;
+    }
+
     size_t newSize = m_mapsize * 2;
     if (newSize > MAX_MAPSIZE) newSize = MAX_MAPSIZE;
     if (newSize == m_mapsize) {

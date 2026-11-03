@@ -9,6 +9,20 @@
 #include <qthread.h>
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
 
+// 一次网络请求的完整结果（getAsyncEx 专用）。
+//
+// 为什么要这个结构：原来的 Callback 只给「响应体 + 网络错误」，HTTP 状态码和
+// errorString 全被丢掉了。腾讯网关在 401/429/5xx 时经常返回**空 body**，
+// 调用方拿到空串就只能猜（历史上就出过「所有失败都报成 illegal value」的事）。
+// 这里把状态码和错误文本一起带出来，调用方才能区分「网络不通 / 鉴权被拒 / 服务端抽风」。
+struct NetReplyInfo {
+    QString body;                                            // 响应体（UTF-8）
+    QNetworkReply::NetworkError error = QNetworkReply::NoError;
+    int httpStatus = 0;                                      // 0 = 根本没收到 HTTP 响应
+    QString errorString;                                     // Qt 的网络错误描述
+};
+using CallbackEx = std::function<void(const NetReplyInfo&)>;
+
 class NetManager : public QObject {
     Q_OBJECT
 public:
@@ -102,6 +116,24 @@ public:
                   Callback callbacks=Callback(),
                   CallbackThread where = CallbackOnPoolThread);
 
+    // 同 getAsync，但回调额外带上 HTTP 状态码 / errorString（见 NetReplyInfo）。
+    // 只给「必须知道成败原因」的调用方用（如 QQ 的 /gateway 拉取），
+    // 普通业务仍用 getAsync，别为了多一个字段把热路径全改一遍。
+    void getAsyncEx(const QString &url, const QHash<QString, QString> &headers, int timeoutMs,
+                    CallbackEx callback,
+                    CallbackThread where = CallbackOnPoolThread);
+
+    // 关掉某个 host 池里所有连接（空闲连接全断，活动请求不受影响）。
+    //
+    // 用于「连不上对端、重启程序就好」的场景：QNAM 里那条 keep-alive / h2 连接
+    // 在对端异常断开后可能已经废了，之后每个请求都复用它，于是永远失败 ——
+    // 只有重启（=丢掉整个 QNAM）才能恢复。这里给一个不用重启的复位口。
+    void clearConnectionCache(const QString &url);
+
+    // 更彻底：把这个 host 的整套 QNAM 全部丢掉重建（等价于"重启程序"那一步）。
+    // 只在没有在途请求时生效，否则原样保留、下次再试。
+    void resetHostPool(const QString &url);
+
 private:
     NetManager(int index) : m_index(index) { init(); }
     ~NetManager() { cleanup(); }
@@ -124,6 +156,11 @@ private:
                                  const QString &response,
                                  QNetworkReply::NetworkError err,
                                  Callback cb);
+
+    // 同 dispatchCallback，携带完整的 NetReplyInfo
+    static void dispatchCallbackEx(CallbackThread where,
+                                   const NetReplyInfo &info,
+                                   CallbackEx cb);
 
     // 同 dispatchCallback，只是携带的是二进制 data + tooBig（下载专用）
     static void dispatchDownloadCallback(CallbackThread where,

@@ -111,8 +111,25 @@ bool BotDB::ensureSparseFile()
 #endif
 }
 
+namespace {
+// 进入/退出「换环境」临界区（RAII，异常/提前 return 都安全）
+struct EnvChangeGuard {
+    explicit EnvChangeGuard(BotDB *db) : m_db(db) { if (m_db) m_db->beginEnvChange(); }
+    ~EnvChangeGuard() { if (m_db) m_db->endEnvChange(); }
+    EnvChangeGuard(const EnvChangeGuard &) = delete;
+    EnvChangeGuard &operator=(const EnvChangeGuard &) = delete;
+private:
+    BotDB *m_db;
+};
+} // namespace
+
 bool BotDB::open()
 {
+    QMutexLocker locker(&m_mutex);
+    // 整段「建环境 + 打开」都在换环境临界区里：mdb_env_create() 会先把 m_env 填成非空，
+    // 但 mdb_env_open() 还没跑（me_metas 为空），读线程这时插进来 mdb_txn_begin 必崩。
+    EnvChangeGuard envChange(this);
+
     if (m_env) close();
 
     QDir dir;
@@ -171,6 +188,10 @@ bool BotDB::open()
     rc = mdb_dbi_open(txn, "points", MDB_CREATE, &m_dbi_points);
     if (rc != MDB_SUCCESS) goto fail;
 
+    // 签到记录子库：老库升级上来自动建好（空库 = 谁都没签过）
+    rc = mdb_dbi_open(txn, "signs", MDB_CREATE, &m_dbi_signs);
+    if (rc != MDB_SUCCESS) goto fail;
+
 
     rc = mdb_txn_commit(txn);
     if (rc != MDB_SUCCESS) {
@@ -180,7 +201,7 @@ bool BotDB::open()
         m_env = nullptr;
         return false;
     }
-    AppendEventLog( "数据库已打开，目录:" + m_path + "初始mapsize:" + QString::number((m_currentMapSize >> 20)) + "MB");
+    //AppendEventLog( "数据库已打开，目录:" + m_path + "初始mapsize:" + QString::number((m_currentMapSize >> 20)) + "MB");
 
 
     return true;
@@ -196,9 +217,61 @@ fail:
 
 
 
+// ==================== m_env 生命周期租约 ====================
+// 背景（崩溃现场）：mdb_txn_renew+0x80 → mov rdx,[rax+80h]，rax=0。
+// 那是 mdb_env_pick_meta 里 `metas[0]->mm_txnid < metas[1]->mm_txnid`：环境已经被
+// mdb_env_close()（me_metas 置空）或者 mdb_env_create() 之后还没 mdb_env_open()（me_metas
+// 尚未填），却被别的线程拿去做 mdb_txn_begin。BotDB 的读函数（getUserBySeqId /
+// getGroupInfo / isFriend / getPoints …）原来只判 `if (!m_env)` 就直接 mdb_txn_begin，
+// 与 close() / 扩容 reopenEnvironment() 之间没有任何同步 → 这就是那个空指针。
+//
+// 解法：读操作进来先领一张「租约」把 m_env 钉住；关/换环境时先拒绝新租约，再等
+// 已有租约全部归还，之后才动 mdb_env_close()。写路径仍然只靠 m_mutex 串行（不加租约，
+// 否则扩容时自己持着租约会把自己等死）。
+
+bool BotDB::leaseEnv() const
+{
+    QMutexLocker locker(&m_envLeaseMutex);
+    if (m_envChangeDepth > 0 || !m_env) return false;   // 正在换环境 / 已经关了
+    ++m_envUsers;
+    return true;
+}
+
+void BotDB::releaseEnv() const
+{
+    QMutexLocker locker(&m_envLeaseMutex);
+    if (m_envUsers > 0) --m_envUsers;
+    if (m_envUsers == 0) m_envIdleCond.wakeAll();
+}
+
+void BotDB::beginEnvChange()
+{
+    QMutexLocker locker(&m_envLeaseMutex);
+    ++m_envChangeDepth;                                  // 可重入（close 里再 close）
+    while (m_envUsers > 0)
+        m_envIdleCond.wait(&m_envLeaseMutex);            // 等正在读的线程收工
+}
+
+void BotDB::endEnvChange()
+{
+    QMutexLocker locker(&m_envLeaseMutex);
+    if (m_envChangeDepth > 0) --m_envChangeDepth;
+    if (m_envChangeDepth == 0) m_envIdleCond.wakeAll();
+}
+
 // 关闭环境并释放所有句柄
 void BotDB::close()
 {
+  {
+    // 和写事务（retryWrite 全程持 m_mutex）互斥；扩容路径是在持锁状态下重入本函数的，
+    // 所以 m_mutex 必须是 Recursive（见 botdb.h）。
+    QMutexLocker locker(&m_mutex);
+
+    // 先「关门」再「拆房子」：拒绝新租约 + 等所有正在读的线程退出。
+    // 否则 mdb_env_close() 会把别人正踩着的 MDB_env 一起释放，下一句 mdb_txn_begin
+    // 就会崩在 mdb_env_pick_meta（metas[0] 已被置空 → 读 [+0x80] 空指针）。
+    EnvChangeGuard envChange(this);
+
     if (m_env) {
         // 关闭所有已打开的 DBI（必须在 mdb_env_close 之前，且此时 m_env 仍有效）
         if (m_dbi_users) mdb_dbi_close(m_env, m_dbi_users);
@@ -208,6 +281,7 @@ void BotDB::close()
         if (m_dbi_subscriptions) mdb_dbi_close(m_env, m_dbi_subscriptions);
         if (m_dbi_account_stats) mdb_dbi_close(m_env, m_dbi_account_stats);
         if (m_dbi_points) mdb_dbi_close(m_env, m_dbi_points);
+        if (m_dbi_signs) mdb_dbi_close(m_env, m_dbi_signs);
         mdb_env_close(m_env);
         m_env = nullptr;
     }
@@ -219,6 +293,8 @@ void BotDB::close()
     m_dbi_subscriptions = 0;
     m_dbi_account_stats = 0;
     m_dbi_points = 0;
+    m_dbi_signs = 0;
+  }   // ← m_mutex 只罩到环境拆完为止，后面拿 m_cacheMutex/m_msgMutex 时不再持它（避免锁序交叉）
 
     if (m_saveTimer) {
         m_saveTimer->stop();
@@ -236,6 +312,11 @@ void BotDB::close()
 // 重新打开环境（扩容后调用），保持原有的 m_currentMapSize
 bool BotDB::reopenEnvironment()
 {
+    QMutexLocker locker(&m_mutex);
+    // 换环境全流程（close → create → open → 重开子库）都在临界区里，
+    // 这期间任何读线程都领不到租约，只能空手返回。
+    EnvChangeGuard envChange(this);
+
     if (m_env) close();
 
     int rc = mdb_env_create(&m_env);
@@ -275,6 +356,8 @@ bool BotDB::reopenEnvironment()
     rc = mdb_dbi_open(txn, "account_stats", MDB_CREATE, &m_dbi_account_stats);
     if (rc != MDB_SUCCESS) goto reopen_fail;
     rc = mdb_dbi_open(txn, "points", MDB_CREATE, &m_dbi_points);
+    if (rc != MDB_SUCCESS) goto reopen_fail;
+    rc = mdb_dbi_open(txn, "signs", MDB_CREATE, &m_dbi_signs);
     if (rc != MDB_SUCCESS) goto reopen_fail;
 
     rc = mdb_txn_commit(txn);
@@ -736,7 +819,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                         auto *c = m_botClients[ev.appid];
                         c->setGroupRestrictChatSetting(ev.groupId,ev.user,0,[](auto,auto){});
                         QString text = QString("<@%1> 入群验证已通过").arg(ev.user);
-                        c->send_msgAsync(ev.type,ev.groupId,"入群验证",text,ev.msgId);
+                        c->send_msgAsync(ev.type,ev.groupId,"[入群验证]",text,ev.msgId);
 
                     }
                 }
@@ -758,28 +841,35 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
         int groupRc = MDB_NOTFOUND;
 
         MDB_txn *txn = nullptr;
-        try {
-            if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        {
+            // 租约作用域只包住这段只读事务：下面还要走 retryWrite（会拿 m_mutex），
+            // 持着租约去等 m_mutex 会和 close() 里的「等租约归还」互相卡死。
+            BotDBEnvLease lease(this);
+            if (!lease)
                 return 0;
-            if (isGroup && !ev.groupId.isEmpty()) {
-                QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
-                if (!groupKey.isEmpty())
-                    groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup), &groupRc);
-            }
+            try {
+                if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+                    return 0;
+                if (isGroup && !ev.groupId.isEmpty()) {
+                    QByteArray groupKey = QByteArray::fromHex(ev.groupId.toUtf8());
+                    if (!groupKey.isEmpty())
+                        groupExists = getRecord(txn, m_dbi_groups, groupKey, &oldGroup, sizeof(oldGroup), &groupRc);
+                }
 
-            if (!userKey.isEmpty()) {
-                userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser), &userRc);
-                if (userExists) oldSeqId = oldUser.seq_id;
+                if (!userKey.isEmpty()) {
+                    userExists = getRecord(txn, m_dbi_users, userKey, &oldUser, sizeof(oldUser), &userRc);
+                    if (userExists) oldSeqId = oldUser.seq_id;
+                }
+                mdb_txn_abort(txn);
+                txn = nullptr;
+            } catch (const std::exception &e) {
+                qWarning() << "BotDB: 只读事务异常" << e.what();
+                if (txn) mdb_txn_abort(txn);
+                return 0;
+            } catch (...) {
+                if (txn) mdb_txn_abort(txn);
+                return 0;
             }
-            mdb_txn_abort(txn);
-            txn = nullptr;
-        } catch (const std::exception &e) {
-            qWarning() << "BotDB: 只读事务异常" << e.what();
-            if (txn) mdb_txn_abort(txn);
-            return 0;
-        } catch (...) {
-            if (txn) mdb_txn_abort(txn);
-            return 0;
         }
 
         // 读取失败（不是「记录不存在」）时绝不能继续：
@@ -1050,7 +1140,7 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
                         auto *c = m_botClients[ev.appid];
                         c->setGroupRestrictChatSetting(ev.groupId,ev.user,0,[](auto,auto){});
                          QString text = QString("<@%1> 入群验证已通过").arg(ev.user);
-                        c->send_msgAsync(ev.type,ev.groupId,"入群验证",text,ev.msgId);
+                        c->send_msgAsync(ev.type,ev.groupId,"[入群验证]",text,ev.msgId);
 
                     }
                 }
@@ -1080,8 +1170,10 @@ uint32_t BotDB::getOrUpdateUser(QQBotClient *qqbot, MessageEvent &ev, bool hc)
 
 bool BotDB::getUserBySeqId(uint32_t seq_id, UserRecord &outRecord)
 {
-    // 只读操作无需扩容，不加锁也可以（但为了安全可以使用读事务）
-    if (!m_env) return false;
+    // 只读操作不加 m_mutex（会被写事务堵住），但必须领租约：
+    // 否则 close()/扩容换 env 时这里会拿到已经释放的 MDB_env
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
 
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
@@ -1110,7 +1202,8 @@ bool BotDB::getUsersByPage(bool onlyNameEmpty, int offset, int limit,
 {
     outUsers.clear();
     totalCount = 0;
-    if (!m_env) return false;
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
 
     MDB_txn *txn = nullptr;
     if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
@@ -1273,7 +1366,8 @@ bool BotDB::updateUserBySeqId(uint32_t seq_id, std::function<void(UserRecord&)> 
 
 
 bool BotDB::getOpenIdBySeqId(uint32_t seqId, QString &outOpenidHex) {
-    if (!m_env) return false;
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
     MDB_txn *txn = nullptr;
     if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
         return false;
@@ -1324,6 +1418,10 @@ bool BotDB::saveAccountStats(uint32_t appid, uint32_t minuteIndex, const Account
 }
 bool BotDB::getAccountStats(uint32_t appid, uint32_t minuteIndex, AccountStats &outStats)
 {
+    // 原来这里连 `if (!m_env)` 都没有，环境一关直接 mdb_txn_begin(nullptr) 崩
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
+
     QByteArray keyData;
     keyData.append((char*)&appid, sizeof(appid));
     keyData.append((char*)&minuteIndex, sizeof(minuteIndex));
@@ -1350,7 +1448,8 @@ static QByteArray pointsKey(const QByteArray &openidBin)
 
 qint64 BotDB::getPoints(const QByteArray &openidBin)
 {
-    if (!m_env || !m_dbi_points) return 0;
+    BotDBEnvLease lease(this);
+    if (!lease || !m_dbi_points) return 0;
     const QByteArray keyData = pointsKey(openidBin);
 
     MDB_txn *txn = nullptr;
@@ -1438,6 +1537,39 @@ bool BotDB::spendPoints(const QByteArray &openidBin, qint64 cost, qint64 *balanc
         return false;
     }
     return false;
+}
+
+// ==================== 签到系统 ====================
+// 子库 "signs"：key = openid 16 字节（**和 points 完全同一套 key**，直接复用 pointsKey()），
+// value = SignRecord（3 个 quint32 = 12 字节 POD，本机字节序，与工程里其它 record 一致）。
+// 没记录 = 从没签过（getSignRecord 返回 false，out 保持全 0，调用方不用额外判空）。
+bool BotDB::getSignRecord(const QByteArray &openidBin, SignRecord &out)
+{
+    out = SignRecord();
+    BotDBEnvLease lease(this);
+    if (!lease || !m_dbi_signs) return false;
+
+    const QByteArray keyData = pointsKey(openidBin);
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS)
+        return false;
+
+    SignRecord rec;
+    const bool found = getRecord(txn, m_dbi_signs, keyData, &rec, sizeof(rec));
+    mdb_txn_abort(txn);
+    if (found) out = rec;
+    return found;
+}
+
+bool BotDB::putSignRecord(const QByteArray &openidBin, const SignRecord &rec)
+{
+    if (!m_env || !m_dbi_signs) return false;
+    const QByteArray keyData = pointsKey(openidBin);
+    SignRecord v = rec;                       // 拷贝一份进 lambda（避免引用悬空）
+    return retryWrite([&](MDB_txn *txn) -> int {
+        return putRecord(txn, m_dbi_signs, keyData, &v, sizeof(v));
+    });
 }
 
 bool BotDB::getTodayDiff(uint32_t appid, const AccountStats &currentStats, AccountStats &diff)
@@ -1667,7 +1799,8 @@ bool BotDB::addGroup(const QString &groupIdHex, const GroupRecord2 &record2)
 QList<QString> BotDB::getAllGroupIds()
 {
     QList<QString> result;
-    if (!m_env) return result;
+    BotDBEnvLease lease(this);
+    if (!lease) return result;
 
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
@@ -1703,7 +1836,8 @@ void BotDB::withGroupInfo(const BinKey& key, Func&& func) {
 }
 bool BotDB::getGroupInfo(const QString &groupIdHex, GroupRecord2 &outRecord)
 {
-    if (!m_env) return false;
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
     QByteArray keyData = QByteArray::fromHex(groupIdHex.toUtf8());
     if (keyData.isEmpty()) return false;
     BinKey groupKey;
@@ -1783,7 +1917,8 @@ bool BotDB::removeFriend(uint32_t userSeqId)
 
 bool BotDB::isFriend(uint32_t userSeqId)
 {
-    if (!m_env) return false;
+    BotDBEnvLease lease(this);
+    if (!lease) return false;
     QByteArray keyData((char*)&userSeqId, sizeof(userSeqId));
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
@@ -1797,7 +1932,8 @@ bool BotDB::isFriend(uint32_t userSeqId)
 QList<int> BotDB::getFriendList()
 {
     QList<int> result;
-    if (!m_env) return result;
+    BotDBEnvLease lease(this);
+    if (!lease) return result;
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) return result;
@@ -1983,6 +2119,11 @@ QString BotDB::getSubscriptions(const QString &mark, uint8_t param, const QStrin
     if (groupId.isEmpty() || param > 3)
         return result;
 
+    // 原来这里没有 `if (!m_env)`，环境关掉后 mdb_txn_begin(nullptr) 直接崩
+    BotDBEnvLease lease(this);
+    if (!lease)
+        return result;
+
     // 使用只读事务
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
@@ -2031,7 +2172,8 @@ QString BotDB::getSubscriptions(const QString &mark, uint8_t param, const QStrin
 QStringList BotDB::listSubscriptions(const QString &mark)
 {
     QStringList result;
-    if (!m_env) return result;
+    BotDBEnvLease lease(this);
+    if (!lease) return result;
     QString ke=mark+":";
     QByteArray prefix = ke.toUtf8();
     MDB_txn *txn = nullptr;

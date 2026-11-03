@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QWidget>
 #include <QListWidgetItem>
+#include <QStringList>
 #include <QUrl>
 #include <QDesktopServices>
 #include <qnetworkaccessmanager.h>
@@ -207,6 +208,10 @@ private slots:
     void onCategoryChanged2(int index);
     void onTabChanged(int index);
     void onInstallRequested(const QString &id);
+    // 「一键更新」：把「可更新」里本平台有包的插件排成队列，一个装完再下一个
+    // （不能并发：Python 的 pip install 会同时写同一个 site-packages，
+    //   而且卸载/覆盖同一批文件也会互相踩）
+    void onUpdateAllClicked();
     void onOpenDetail(const QString &url);
     void onReplyFinished(QNetworkReply *reply);
 
@@ -216,6 +221,14 @@ private:
     void filterAndDisplay();
     void startDownload(PluginInfo2 *info, const QUrl &url, int redirectDepth);
     void finishInstall(PluginInfo2 *info, const QString &zipPath, QProgressDialog *progress);
+    // 一次安装的所有终态（成功 / 7z 失败 / 下载失败 / 取消）都汇总到这里：
+    // 刷新卡片状态；若正在批量更新，就接着装下一个。
+    void finishOneUpdateStep();
+    // 真正的安装入口（返回 false = 没进入下载流程）。onInstallRequested 只是它的 slot 外壳，
+    // 拆出来是为了让「一键更新」能知道这一步到底有没有起来（起不来就跳过、别把队列卡死）。
+    bool installPluginById(const QString &id);
+    // 批量更新的队列驱动
+    void updateNextInQueue();
     // 原生库（DLL / DLL32）自动安装：按 index 定位当前平台入口文件 → LoadPlugin。
     // 返回空串 = 已加载成功；entryOut 传出实际使用的入口文件绝对路径。
     QString installNativePlugin(const PluginInfo2 *info, const QString &targetDir,
@@ -242,10 +255,16 @@ private:
     QString m_plugin_type_str;
     QString m_currentKeyword;
     int m_currentTabIndex;      // MarketTab 之一
-    int Installed_type=0;
+    // ⚠ 不要再加「当前安装类型」这类成员：安装类型按每次自己的 info 用 marketTypeCode() 算，
+    //   共享成员在一键更新 / 并发安装时会被后一个安装覆盖 → 解压完按错入口加载。
     QNetworkAccessManager *m_networkManager;
     bool m_isLoading;
     void fetchPluginsFromGitee();
+
+    // ----- 一键更新 -----
+    QPushButton *m_updateAllBtn = nullptr;
+    QStringList  m_updateQueue;        // 待更新插件 id（顺序处理）
+    bool         m_batchUpdating = false;
 };
 
 #endif // PLUGINMARKETWINDOW_H

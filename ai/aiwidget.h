@@ -22,7 +22,7 @@
 
 #include "qqbotclient.h"
 #include "placeholderlineedit.h"
-#include "placeholdertextedit.h"
+#include "placeholdertextedit.h"   // QTextEdit 替身：占位符自绘 + 强制纯文本粘贴
 #include "vectormemory.h"
 
 //#define QLineEdit PlaceholderLineEdit

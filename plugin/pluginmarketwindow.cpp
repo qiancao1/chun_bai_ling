@@ -355,6 +355,11 @@ void PluginMarketWindow::setupUI() {
     m_refreshBtn = new QPushButton("刷新");
     m_refreshBtn->setFixedWidth(80);
 
+    // 一键更新：把「可更新」里所有本平台有包的插件依次更新（串行，见 updateNextInQueue 注释）
+    m_updateAllBtn = new QPushButton("一键更新");
+    m_updateAllBtn->setFixedWidth(100);
+    m_updateAllBtn->setToolTip("依次更新所有可更新插件（一个一个装，不会并发装依赖）");
+
     QPushButton *closeBtn = new QPushButton("关闭");
     closeBtn->setFixedWidth(80);
 
@@ -363,6 +368,7 @@ void PluginMarketWindow::setupUI() {
     toolLayout->addWidget(m_plugin_type);
     toolLayout->addWidget(m_refreshBtn);
     toolLayout->addStretch();
+    toolLayout->addWidget(m_updateAllBtn);
     toolLayout->addWidget(closeBtn);
 
     mainLayout->addWidget(toolBar);
@@ -397,6 +403,7 @@ void PluginMarketWindow::setupUI() {
             this, &PluginMarketWindow::onCategoryChanged2);
    // connect(m_tabWidget, &QTabWidget::currentChanged, this, &PluginMarketWindow::onTabChanged);
     connect(m_refreshBtn, &QPushButton::clicked, this, &PluginMarketWindow::refreshList);
+    connect(m_updateAllBtn, &QPushButton::clicked, this, &PluginMarketWindow::onUpdateAllClicked);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
 
     m_networkManager = new QNetworkAccessManager(this);
@@ -509,7 +516,25 @@ void PluginMarketWindow::filterAndDisplay() {
 }
 
 
-void PluginMarketWindow::onInstallRequested(const QString &id) {
+// 市场 JSON 的 type → 内部插件类型（0=Python / 1=x64 原生库 / 2=DLL32 / 3=JS，-1=认不出）。
+// ⚠ 安装类型必须**跟着这次安装自己的 info** 走，不能再用窗口成员 Installed_type：
+//   那个成员是「谁最后点了安装就是谁」的共享状态，一键更新 / 并发安装时，
+//   后面的 Python 安装会把前面 DLL 安装的类型覆盖掉 → 解压完按错误的入口去加载。
+static int marketTypeCode(const QString &type)
+{
+    if (type.compare(QLatin1String("DLL32"), Qt::CaseInsensitive) == 0) return 2;
+    if (PluginMarketMeta::isNativeType(type))                           return 1;
+    if (type.compare(QLatin1String("Python"), Qt::CaseInsensitive) == 0) return 0;
+    if (type.compare(QLatin1String("JS"), Qt::CaseInsensitive) == 0)     return 3;
+    return -1;
+}
+
+void PluginMarketWindow::onInstallRequested(const QString &id)
+{
+    installPluginById(id);   // 单卡按钮：失败时下面自己已经弹过框了，这里不用管返回值
+}
+
+bool PluginMarketWindow::installPluginById(const QString &id) {
     // 查找插件
     PluginInfo2 *targetInfo = nullptr;
     for (auto &info : m_allPlugins) {
@@ -520,7 +545,7 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
     }
     if (!targetInfo) {
         QMessageBox::warning(this, "错误", "未找到插件信息");
-        return;
+        return false;
     }
 
     // 检查下载链接：按当前平台挑包（原生库 = downloadUrl / downloadUrl_linux，Python / JS = 通用 downloadUrl）
@@ -533,7 +558,7 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
                                  .arg(targetInfo->name,
                                       PluginMarketMeta::platformName(),
                                       PluginMarketMeta::downloadUrlFieldName(targetInfo->type)));
-        return;
+        return false;
     }
 
     // 解压工具预检查
@@ -543,22 +568,14 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
         QString zipErr;
         if (PluginInstaller::resolveSevenZip(&zipErr).isEmpty()) {
             QMessageBox::warning(this, "错误", zipErr);
-            return;
+            return false;
         }
     }
     // 类型映射：0=Python / 1=x64 原生库 / 2=DLL32（走 32 位桥接）/ 3=JS
     // 原生库用 PluginMarketMeta::isNativeType 判定（大小写不敏感），与 index / 平台包的
     // 判断口径保持一致；认不出的类型保持 -1，走"未知类型，已解压"提示，不当原生库硬加载。
-    Installed_type = -1;
-    if (targetInfo->type.compare(QLatin1String("DLL32"), Qt::CaseInsensitive) == 0) {
-        Installed_type = 2;
-    } else if (PluginMarketMeta::isNativeType(targetInfo->type)) {
-        Installed_type = 1;
-    } else if (targetInfo->type.compare(QLatin1String("Python"), Qt::CaseInsensitive) == 0) {
-        Installed_type = 0;
-    } else if (targetInfo->type.compare(QLatin1String("JS"), Qt::CaseInsensitive) == 0) {
-        Installed_type = 3;
-    }
+    // ⚠ 这里**不再**往窗口成员里存类型：解压完成时要按「这次安装自己的 info」重新算
+    //   （marketTypeCode()），否则一键更新 / 并发安装会被后一个安装覆盖。
     // 准备临时文件路径
     QString tempZipPath = "tmp/market" + targetInfo->id + ".zip";
     QFile *tempFile = new QFile(tempZipPath, this);
@@ -568,18 +585,91 @@ void PluginMarketWindow::onInstallRequested(const QString &id) {
     if (!tempFile->open(QIODevice::WriteOnly)) {
         QMessageBox::warning(this, "错误", "无法创建临时文件");
         delete tempFile;
-        return;
+        return false;
     }
     tempFile->close(); // 先关闭，等下载完成再打开写入
     startDownload(targetInfo, QUrl(dlUrl), 0);
+    return true;       // 已进入下载流程（成败由 finishOneUpdateStep 收口）
 }
 
+
+// ---------------------------------------------------------------------------
+// 一键更新
+// ---------------------------------------------------------------------------
+// 「可更新」里所有本平台有包的插件排成队列，**一个装完再装下一个**。
+// 为什么必须串行：Python 插件的 pip install 都写同一个 site-packages，
+// 装到一半又去解压另一个包也会互相踩；而且每个安装都会弹自己的进度框，并发起来没法看。
+void PluginMarketWindow::onUpdateAllClicked()
+{
+    // 再点一次 = 停：清空队列（**当前正在装的那个不打断**，等它自己收口）
+    if (m_batchUpdating) {
+        m_updateQueue.clear();
+        m_batchUpdating = false;
+        if (m_updateAllBtn) m_updateAllBtn->setText("一键更新");
+        m_statusLabel->setText("已取消剩下的更新（当前这个装完就停）");
+        return;
+    }
+
+    QStringList ids;
+    for (const PluginInfo2 &p : std::as_const(m_allPlugins)) {
+        if (!p.isInstalled || !p.hasUpdate) continue;                 // 没装 / 已是最新
+        if (!PluginMarketMeta::availableOnThisPlatform(p)) continue;  // 本平台没包，装了也白装
+        ids << p.id;
+    }
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, "一键更新", "当前没有需要更新的插件。");
+        return;
+    }
+
+    m_updateQueue = ids;
+    m_batchUpdating = true;
+    if (m_updateAllBtn) m_updateAllBtn->setText("取消更新");
+    updateNextInQueue();
+}
+
+void PluginMarketWindow::updateNextInQueue()
+{
+    if (!m_batchUpdating) return;
+
+    while (!m_updateQueue.isEmpty()) {
+        const QString id = m_updateQueue.takeFirst();
+
+        QString name = id;
+        for (const PluginInfo2 &p : std::as_const(m_allPlugins)) {
+            if (p.id == id) { name = p.name; break; }
+        }
+        m_statusLabel->setText(QString("正在更新 %1（还剩 %2 个）…")
+                                   .arg(name).arg(m_updateQueue.size()));
+
+        // 起不来的（缺链接 / 找不到解压工具 / 找不到插件）会返回 false，
+        // 这里直接跳过接着下一个，别把整个队列卡死在这一个上。
+        if (installPluginById(id)) return;   // 已进入下载流程 → 等 finishOneUpdateStep 收口
+    }
+
+    m_batchUpdating = false;
+    if (m_updateAllBtn) m_updateAllBtn->setText("一键更新");
+    m_statusLabel->setText("一键更新结束");
+}
+
+// 一次安装的终态统一收口：成功 / 下载失败 / 解压失败 / 取消 / 重定向超限都会走到这里。
+void PluginMarketWindow::finishOneUpdateStep()
+{
+    // 刷新列表：刚装完的那个会从「未安装」/「可更新」里挪走
+    // （isInstalled / hasUpdate 是 filterAndDisplay 每次按 m_pluginList 重算的）
+    filterAndDisplay();
+
+    if (!m_batchUpdating) return;
+    // 排到事件循环里再开下一个：这里是 7z / 下载回调内部，直接递归会一直压栈、
+    // 而且当前的回调还没收尾就弹下一个进度框。
+    QTimer::singleShot(0, this, &PluginMarketWindow::updateNextInQueue);
+}
 
 void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int redirectDepth) {
     // 防止无限重定向
     const int MAX_REDIRECT = 5;
     if (redirectDepth > MAX_REDIRECT) {
         QMessageBox::warning(this, "错误", "下载重定向次数过多，请检查链接");
+        finishOneUpdateStep();     // 批量更新时这一步算失败，接着装下一个
         return;
     }
 
@@ -620,6 +710,7 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
         if (reply.isNull()) {
             progress->deleteLater();
             manager->deleteLater();
+            finishOneUpdateStep();
             return;
         }
 
@@ -641,6 +732,7 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
             reply->deleteLater();
             manager->deleteLater();
             progress->deleteLater();
+            finishOneUpdateStep();
             return;
         }
 
@@ -666,6 +758,7 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
         // 如果用户取消了下载
         if (progress->wasCanceled()) {
             progress->deleteLater();
+            finishOneUpdateStep();
             return;
         }
 
@@ -674,6 +767,7 @@ void PluginMarketWindow::startDownload(PluginInfo2 *info, const QUrl &url, int r
         if (!outFile.open(QIODevice::WriteOnly)) {
             QMessageBox::warning(this, "错误", "无法写入临时文件");
             progress->deleteLater();
+            finishOneUpdateStep();
             return;
         }
         outFile.write(data);
@@ -702,6 +796,7 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
     if (sevenZipPath.isEmpty()) {
         QMessageBox::warning(this, "错误", zipLocateErr);
         progress->deleteLater();
+        finishOneUpdateStep();
         return;
     }
     // 2. 其余逻辑与原代码完全一致
@@ -721,12 +816,15 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
     //   · Python 插件：包里的 .pyd 被 CPython import 之后不会释放。
     // 这两种情况下 7z 会报"无法打开输出文件" → 解压整体失败 → 重装永远做不成。
     // 所以覆盖之前把已载入的旧插件先卸掉。
-    // ⚠ 必须用 uninstall_Plugin2(index)：它不弹确认框；uninstall_Plugin(int) 会弹"确定要卸载吗"。
+    // ⚠ 必须用 uninstall_PluginForReinstall(index)：它不弹确认框（区别于 uninstall_Plugin(int)），
+    //   而且会先把旧插件的**启用态**记下来 —— 覆盖完重新加载时 LoadPlugin 会还原，
+    //   否则 Python / JS 走 doLoadPythonPlugin / doLoadPlugin（内部 enabled=false），
+    //   更新完插件在列表里就变成「禁用」了。
     const int oldIndex = pluginPage
                              ? pluginPage->findPluginIndexByIdentity(info->id, info->name)
                              : -1;
     const bool unloadedOld = (oldIndex >= 0);
-    if (unloadedOld) pluginPage->uninstall_Plugin2(oldIndex);
+    if (unloadedOld) pluginPage->uninstall_PluginForReinstall(oldIndex);
 
     QStringList args;
     args << "x" << zipPath << "-o" + targetDir << "-y" << "-aoa";
@@ -765,6 +863,7 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                     if (unloadedOld)
                         QMessageBox::information(this, "已取消安装",
                                                  "已取消。原插件在覆盖之前已被卸载，如需继续使用请重新点击安装。");
+                    finishOneUpdateStep();
                     return;
                 }
 
@@ -779,6 +878,7 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                     targetDirObj.removeRecursively();
                     QFile::remove(zipPath);
                     progress->deleteLater();
+                    finishOneUpdateStep();
                     return;
                 }
 
@@ -790,11 +890,42 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                 QString uiTitle, uiMsg;
                 bool uiOk = true;
 
-                if (Installed_type == 0) {
-                    pluginPage->LoadPlugin_Python_pip(targetDir);
-                } else if (Installed_type == 3) {
-                    pluginPage->npmJSpk(targetDir);
-                } else if (Installed_type == 1 || Installed_type == 2) {
+                // 类型按**这次安装自己的 info** 算（不能用窗口成员，一键更新时会被覆盖）
+                const int ptype = marketTypeCode(info->type);
+                // pip / npm 的完成是**异步**的：要等 onLog 的 isFinal 才算这一步结束，
+                // 否则会立刻接着装下一个，两个 pip 同时往同一个 site-packages 里写。
+                // 只有真的存在依赖清单时才走异步等待（没有清单那两个函数是同步加载的）。
+                bool waitDepInstall = false;
+                QPointer<PluginMarketWindow> self(this);
+                auto continueAfterLoad = [self]() {
+                    if (!self) return;
+                    // singleShot(0)：排到 doLoadPythonPlugin / doLoadPlugin 之后再走下一步
+                    QTimer::singleShot(0, self.data(), [self]() {
+                        if (self) self->finishOneUpdateStep();
+                    });
+                };
+
+                if (ptype == 0) {
+                    if (QFile::exists(targetDir + "requirements.txt")) {
+                        waitDepInstall = true;
+                        pluginPage->LoadPlugin_Python_pip(targetDir,
+                            [continueAfterLoad](const QString &, bool, bool isFinal) {
+                                if (isFinal) continueAfterLoad();
+                            });
+                    } else {
+                        pluginPage->LoadPlugin_Python_pip(targetDir);
+                    }
+                } else if (ptype == 3) {
+                    if (QFile::exists(targetDir + "package.json")) {
+                        waitDepInstall = true;
+                        pluginPage->npmJSpk(targetDir,
+                            [continueAfterLoad](const QString &, bool, bool isFinal) {
+                                if (isFinal) continueAfterLoad();
+                            });
+                    } else {
+                        pluginPage->npmJSpk(targetDir);
+                    }
+                } else if (ptype == 1 || ptype == 2) {
 
                     QString entry;
                     const QString loadErr = installNativePlugin(info, targetDir, &entry);
@@ -816,9 +947,14 @@ void PluginMarketWindow::finishInstall(PluginInfo2 *info, const QString &zipPath
                 progress->close();
                 progress->deleteLater();
                 if (!uiTitle.isEmpty()) {
-                    if (uiOk) QMessageBox::information(this, uiTitle, uiMsg);
+                    // 一键更新时**不弹每一条成功提示**（几十个弹窗没法用），失败照样报
+                    if (uiOk) { if (!m_batchUpdating) QMessageBox::information(this, uiTitle, uiMsg); }
                     else      QMessageBox::warning(this, uiTitle, uiMsg);
                 }
+
+                // 同步路径（原生库 / 无依赖清单的 Py、JS）在这里就收口；
+                // 有依赖的那两条等 onLog(isFinal) → continueAfterLoad()
+                if (!waitDepInstall) finishOneUpdateStep();
             });
 
     // 取消响应（不变）
@@ -882,7 +1018,8 @@ QString PluginMarketWindow::installNativePlugin(const PluginInfo2 *info, const Q
         return QString("解压后没找到入口文件 %1（目录里也没有本平台的原生库）").arg(entryName);
     }
 
-    const int type = (Installed_type == 2) ? 2 : 1;   // 2=DLL32（走 32 位桥接），1=x64 原生库
+    const int code = marketTypeCode(info->type);
+    const int type = (code == 2) ? 2 : 1;   // 2=DLL32（走 32 位桥接），1=x64 原生库
     QList<int> noDisabledAccounts;                    // 新装的插件默认对所有账号启用
     const QString err = pluginPage->LoadPlugin(entryAbs, type, true, noDisabledAccounts);
     if (!err.isEmpty()) return err;

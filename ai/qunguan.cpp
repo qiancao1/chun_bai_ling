@@ -23,9 +23,13 @@ QString getFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& f
     if (fieldName == "tqhy") return info->tqhy;
     if (fieldName == "fallbackReply") return info->fallbackReply;
     if (fieldName == "welcomeMsg") return info->welcomeMsg;
+    if (fieldName == "welcomeMsg2") return info->welcomeMsg2;
     if (fieldName == "apply") return info->apply;
     if (fieldName == "jojnyz") return info->jojnhf;
     if (fieldName == "xxwb") return info->xxwb;
+    if (fieldName == "ldsd") return info->ldsd;
+    if (fieldName == "gxrz") return info->gxrz;
+    if (fieldName == "qiandao") return info->qiandao;   // 空 = 静默签到，示例只放在 placeholder
     return QString();
 }
 void qunguan::refreshList() {
@@ -49,9 +53,14 @@ void qunguan::refreshList() {
         {"用户退群", "tqhy"},
         {"加群验证", "jojnyz"},
         {"信息尾巴", "xxwb"},
+        {"广告完成", "ldsd"},
+        {"签到", "qiandao"},
+        {"更新日志", "gxrz"},
         {"未命中指令", "fallbackReply"},
         {"机器人入群", "welcomeMsg"},
+        {"被添加好友", "welcomeMsg2"},
         {"有人申请加群", "apply"}
+
 
 
     };
@@ -66,10 +75,19 @@ void qunguan::refreshList() {
         item->setData(Qt::UserRole + 1, fieldName);
 
         ui->listWidget->addItem(item);
-        if(m_currentField == fieldName)
-        {
+        if (m_currentField == fieldName)
             ui->listWidget->setCurrentItem(item);
-            ui->textEdit->setText(content); // 或者 item->data(Qt::UserRole).toString()
+    }
+
+    // 让文本框和「当前字段」保持一致：内容 + 灰色提示
+    // （提示是 setPlaceholderText 设的，只有文本框为空时才会画出来）
+    if (!m_currentField.isEmpty()) {
+        for (int i = 0; i < ui->listWidget->count(); ++i) {
+            QListWidgetItem *it = ui->listWidget->item(i);
+            if (it->data(Qt::UserRole + 1).toString() == m_currentField) {
+                onItemClicked(it);
+                break;
+            }
         }
     }
 }
@@ -82,9 +100,13 @@ void setFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fiel
     else if (fieldName == "tqhy") info->tqhy = value;
     else if (fieldName == "fallbackReply") info->fallbackReply = value;
     else if (fieldName == "welcomeMsg") info->welcomeMsg = value;
+    else if (fieldName == "welcomeMsg2") info->welcomeMsg2 = value;
     else if (fieldName == "apply") info->apply = value;
     else if (fieldName == "jojnyz") info->jojnhf = value;
     else if (fieldName == "xxwb") info->xxwb = value;
+    else if (fieldName == "ldsd") info->ldsd = value;
+    else if (fieldName == "gxrz") info->gxrz = value;
+    else if (fieldName == "qiandao") info->qiandao = value;
 }
 
 
@@ -97,8 +119,10 @@ void qunguan::onItemClicked(QListWidgetItem *item) {
 
     // 显示内容
     QString content = item->data(Qt::UserRole).toString();
-    ui->textEdit->setText(content);
     QString fieldName = item->data(Qt::UserRole+1).toString();
+    // 签到是 py 代码：必须走 setPlainText，否则源码里的 `<` 会被 setText 当 HTML 标签吃掉
+    if (fieldName == "qiandao") ui->textEdit->setPlainText(content);
+    else                        ui->textEdit->setText(content);
     if(fieldName=="rqhy")
     {
         ui->textEdit->setPlaceholderText(R"(用户加群时#python开头为 py代码
@@ -183,6 +207,15 @@ __result__ = "返回的内容"
 )");
     }
 
+    else if(fieldName=="qiandao")
+    {
+        // 和「默认值」共用同一份内容（core/accountinfo.cpp: defaultQiandaoTemplate）
+        ui->textEdit->setPlaceholderText(defaultQiandaoTemplate());
+    }
+    else if(fieldName=="welcomeMsg2")
+    {
+        ui->textEdit->setPlaceholderText(R"(被添加好友时#python开头为 python 代码 有 msg 事件)");
+    }
     else if(fieldName=="welcomeMsg")
     {
         ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为python代码 有msg事件)");
@@ -190,6 +223,13 @@ __result__ = "返回的内容"
     {
         ui->textEdit->setPlaceholderText("无明显提示呢...");
     }
+    // 占位符只在「文本框为空」时才会画：内容为空时先 clear + 强制重绘
+    // （只写空格 / 空行的文档 Qt 也算非空，会把提示挡住）
+    if (content.trimmed().isEmpty()) {
+        ui->textEdit->clear();
+        ui->textEdit->viewport()->update();
+    }
+
     m_currentField = item->data(Qt::UserRole + 1).toString();
 }
 
@@ -254,7 +294,6 @@ void qunguan::列表行被单击()
         ui->checkBox->setChecked(info->cbl);
         ui->checkBox_2->setChecked(info->pbbot);
         ui->checkBox_3->setChecked(info->ychfwcl);
-        ui->textEdit->setText(info->admin);
         ui->zdht->setChecked(info->autoht);
 
 
@@ -265,6 +304,10 @@ void qunguan::列表行被单击()
 
         refreshList();
 
+        // 首次打开 / 还没选字段：默认选中第一项，
+        // 否则文本框会空着、连灰色提示都没有
+        if (m_currentField.isEmpty() && ui->listWidget->count() > 0)
+            onItemClicked(ui->listWidget->item(0));
     }
 }
 

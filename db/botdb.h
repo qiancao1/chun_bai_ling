@@ -25,6 +25,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QMutex>
+#include <QWaitCondition>
 #include <QList>
 #include <lmdb.h>
 
@@ -99,6 +100,16 @@ inline QDataStream &operator>>(QDataStream &in, BinKey &key) {
 
 
 
+// 签到记录（子库 "signs" 的值，12 字节 POD × 3 个 quint32）
+//   day    = 上次签到的**本地日期**（QDate::toJulianDay()），跨天判定只看它
+//   total  = 总签到次数
+//   streak = 当前连续签到次数（昨天签过 → +1，否则从 1 重新算）
+struct SignRecord {
+    quint32 day    = 0;
+    quint32 total  = 0;
+    quint32 streak = 0;
+};
+
 class BotDB : public QObject {
     Q_OBJECT
 public:
@@ -108,6 +119,16 @@ public:
 
     bool open();
     void close();
+
+    // ---- m_env 生命周期租约（内部用）----
+    // 读线程进来先 `BotDBEnvLease lease(this); if (!lease) 直接返回;`
+    // close() / open() / 扩容换 env 时先把「新租约」关掉，再等已存在的租约全部退出，
+    // 避免把已经 mdb_env_close() 或者还没 mdb_env_open() 的 MDB_env 交给 mdb_txn_begin
+    // —— 那样会崩在 mdb_env_pick_meta 读 metas[0]->mm_txnid（就是 winDbg 里的 [+0x80] 空指针）。
+    bool leaseEnv() const;
+    void releaseEnv() const;
+    void beginEnvChange();          // 进入「换环境」临界区（可重入）
+    void endEnvChange();            // 退出「换环境」临界区
     void updateUserCache(const QByteArray &openidBin, const UserRecord &record);
     void updateGroupCache(const QByteArray &groupIdBin, const GroupRecord2 &record);
     // 订阅（添加）：标记 + 群ID
@@ -161,6 +182,12 @@ public:
     //   成功     → true，*balanceAfter = 扣完后的余额。
     bool   spendPoints(const QByteArray &openidBin, qint64 cost, qint64 *balanceAfter = nullptr);
 
+    // ==================== 签到系统 ====================
+    // 子库 "signs"：key = openid 16 字节（与 points 同一套 key），value = SignRecord（12 字节）。
+    // ⚠ 没有记录 = 从来没签过（day=0/total=0/streak=0，不预写）。
+    bool getSignRecord(const QByteArray &openidBin, SignRecord &out);
+    bool putSignRecord(const QByteArray &openidBin, const SignRecord &rec);
+
     quint64 getUserTodayMsgCount(const QByteArray &openidBin);
     quint64 getGroupTodayMsgCount(const QByteArray &groupIdBin);
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
@@ -204,13 +231,24 @@ private:
     MDB_dbi  m_dbi_friends = 0;
     MDB_dbi m_dbi_subscriptions = 0;  // 订阅数据库
 
-    QMutex   m_mutex;
+    QMutex   m_mutex{QMutex::Recursive};   // Recursive：retryWrite 持锁时遇 MAP_FULL 会重入 close()/reopenEnvironment()
     QMutex m_cacheMutex;  // 如果多线程调用，需要加锁
+
+    // ---- m_env 租约状态 ----
+    // m_envUsers        = 正在使用 m_env 的读操作数（配额内不加 m_mutex，性能敏感）
+    // m_envChangeDepth  > 0 表示正在关/换环境，此时一律拒绝新租约
+    mutable QMutex         m_envLeaseMutex;
+    mutable QWaitCondition m_envIdleCond;
+    mutable int            m_envUsers = 0;
+    int                    m_envChangeDepth = 0;
 
     MDB_dbi m_dbi_account_stats = 0;
 
     // 积分（商店货币）子库：key = openid 16 字节，value = qint64 余额
     MDB_dbi m_dbi_points = 0;
+
+    // 签到记录子库：key = openid 16 字节，value = SignRecord（12 字节）
+    MDB_dbi m_dbi_signs = 0;
 
     QString m_todayDate;                     // 当前日期字符串，用于判断日期切换
     QTimer *m_saveTimer;                     // 定时保存（例如每60秒）
@@ -230,6 +268,23 @@ private:
     void cleanGroupCache();
 
     void checkCleanup();
+};
+
+// 环境租约（RAII）：构造 = 锁定当前 m_env 不被换掉，析构 = 归还。
+// 用法：函数开头 `BotDBEnvLease lease(this); if (!lease) return ...;` 之后就可以随便用 m_env。
+class BotDBEnvLease {
+public:
+    explicit BotDBEnvLease(const BotDB *db) : m_db(db) { m_ok = db && db->leaseEnv(); }
+    ~BotDBEnvLease() { if (m_ok) m_db->releaseEnv(); }
+
+    BotDBEnvLease(const BotDBEnvLease &) = delete;
+    BotDBEnvLease &operator=(const BotDBEnvLease &) = delete;
+
+    operator bool() const { return m_ok; }
+
+private:
+    const BotDB *m_db = nullptr;
+    bool m_ok = false;
 };
 
 #endif // BOTDB_H

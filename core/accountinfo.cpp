@@ -36,7 +36,7 @@ QString AccountInfo::toJson() const {
     obj["markdown_pd"]= markdown_pd;
     obj["markdown_pd"]= markdown_pd_mb;
     obj["botqq"] = botqq;
-    obj["botsettext"] = botsettext;
+
     obj["nickname"] = nickname;
     obj["avatarPath"] = avatarPath;
 
@@ -48,6 +48,7 @@ QString AccountInfo::toJson() const {
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
+    obj["welcomeMsg2"] = welcomeMsg2;
     obj["xxwb"] = xxwb;
     obj["autoht"] = autoht;
     obj["g_add"]=今日加群数量;
@@ -92,7 +93,9 @@ QString AccountInfo::toJson() const {
     obj["bai_sc"]=bai_sc;
     obj["bai_qy"]=bai_qy;
     obj["times"] = times;
-
+    obj["ldsd"]=ldsd;
+    obj["gxrz"]=gxrz;
+    obj["qiandao"]=qiandao;
     obj["tiaoshu"]=tiaoshu;
     obj["pbbot"]=pbbot;
     obj["admin"]=admin;
@@ -108,6 +111,34 @@ QString AccountInfo::toJson() const {
     obj["tq_ychf"]=tq_ychf;
     obj["tqhy"]=tqhy;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
+}
+
+// 签到配置的默认内容：一份能直接跑的 py 示例（群管「签到」框点开就能看到、改几个数字就能用）
+QString defaultQiandaoTemplate()
+{
+    return QString::fromUtf8(R"(#python
+# ↑ 第一行必须是 #python 框架才当代码跑；删掉这行或改成普通文本 = 回复模板模式（一天一次 +1000）
+
+def on_sign(msg, signed_today, total, streak, points):
+    #   msg           事件：msg.user / msg.groupId / msg.nickname / msg.appid / msg.msg ...
+    #   signed_today  今天是否已经签到（True / False）
+    #   total         总签到次数（不含这一次）
+    #   streak        连续签到次数（不含这一次）
+    #   points        当前铃铛数（不含这一次）
+    #   返回值 > 0 = 本次加多少铃铛（同时记一次签到）；返回 0 = 不加、不记
+    if signed_today:
+        return 0, "今天已经签到过啦，总铃铛数：[余额]"
+
+    gain = 1500 if streak >= 6 else 1000      # 连续 7 天以上每天多给 500
+    return gain, "签到成功：+[获得余额]   总铃铛数：[余额]"
+
+# ---- 说明 ----
+# 函数名认这些，任选其一：on_sign / sign / qiandao / 签到 / checkin / main
+# 文案变量：[获得余额] 本次获得   [余额] 当前铃铛总数
+# 不想用函数、只写顶层常量也行：__sign_points__ = 1000  /  __result__ = "固定文案"
+# 脚本只编译、只执行顶层一次，之后每次只调用函数（所以很快）：
+#   → msg / 次数 / 余额只能从参数拿，顶层没有这些名字；顶层定义的全局变量会跨调用保留
+)");
 }
 
 void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
@@ -127,7 +158,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.markdown_pd = obj["markdown_pd"].toBool();
     info.markdown_pd_mb = obj["markdown_pd"].toBool();
     info.botqq = obj["botqq"].toString();
-    info.botsettext = obj["botsettext"].toString();
+
     info.nickname = obj["nickname"].toString();
     info.avatarPath = obj["avatarPath"].toString();
 
@@ -155,7 +186,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.sent_day = obj["sent_day"].toInt();
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
-
+    info.welcomeMsg2 = obj["welcomeMsg2"].toString();
     info.Embed_model = obj["Embed_model"].toString();
 
 
@@ -183,7 +214,11 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.bai_sr = obj["bai_sr"].toString();
     info.bai_sc = obj["bai_sc"].toString();
     info.bai_qy = obj["bai_qy"].toString();
-
+    info.ldsd = obj["ldsd"].toString("广告看完啦，+1000 铃铛，当前余额 [余额] 铃铛");
+    info.gxrz = obj["gxrz"].toString();
+    // 签到配置：空就是空（= 静默签到：一天一次 +1000，不回复任何消息）。
+    // 示例不写进配置，只作为「群管 → 签到」输入框的灰色 placeholder 展示。
+    info.qiandao = obj["qiandao"].toString();
     qint64 now = QDateTime::currentSecsSinceEpoch(); // 你已经有这个了
     QDateTime dt = QDateTime::fromSecsSinceEpoch(now);
     int day = dt.date().day();

@@ -14,7 +14,10 @@
 #include <QPushButton>
 #include <QMap>
 #include <QHash>
+#include <QSet>              // 铃铛商店：在途锁（一次只能一单）
 #include <QReadWriteLock>
+#include <QMutex>            // 铃铛商店：待结算订单表（工作线程建单 / 主线程结算）
+#include <QTimer>            // 铃铛商店：1 秒扫一次过期订单
 #include <QStringList>
 #include <QTextBrowser>
 #include <QJsonObject>
@@ -178,6 +181,18 @@ struct RuleConfigRow {
     int     role    = kRuleRoleAll;   // 启用类型（-1 停用 / 0 全部人 / 1..5 限定权限）
 };
 
+// 商品定价页用的一行（只读视图，同样不把插件内部结构暴露给 UI 层）
+struct ShopPriceRow {
+    QString item;               // 商品备注（插件注册时给的 key，同一插件内唯一 → 改价就按它认）
+    qint64  basePrice = 0;      // 插件注册的价（只读展示，让你知道改的是什么）
+    qint64  price     = 0;      // 当前这一档实际生效的价
+    bool    overridden = false; // 当前这一档有没有单独改过（false = 跟上一级）
+    // false = 下架（不卖）。⚠ **默认 false**：没配过就是下架，商品要手动上架才会卖。
+    // 和「原生库崩过被自动停用」是**同一个状态**（ShopOffer::buyable），
+    // 只是原因不同：那边是执行出错，这边是管理员没开 / 主动关。
+    bool    allowed = false;
+};
+
 // ================= 「启用类型」下拉的取值表（UI / 匹配 共用一份，别各写各的） =================
 // 下拉第 i 项 ↔ role = i - 1（第 0 项是「禁用」，所以 role = -1）。默认选中「全部人」（role 0）。
 QString     ruleRoleName(int role);        // role → 界面文字（未知值兜底成「全部人」）
@@ -216,9 +231,10 @@ struct BotRuleOverride {
 //        · 先算总价 = 单价 × 数量，余额不够直接回「余额不足」，**根本不调插件函数**
 //        · 够 → 调该商品的 fun，参数与 onMessagev3 完全一致：fun(json帧, fun, cmd)
 //          cmd = 「序号」这个参数**之后的原文**（含数量与其后的内容，可能为空串）
-//        · 返回值决定成败：**非 0 = 成功才扣费**，0 = 失败不扣费（见 ShopFunc 注释）
-//        · 例外：32 位易语言 / JS 注册的商品**只上架展示**，兑换时直接回「暂时不支持购买」
-//          （不扣费、不调插件；框架侧 `ShopOffer::buyable = false`，以后打通桥接就删掉这一行）
+//        · 扣费顺序：**先原子扣费 → 再调插件 → 插件说失败就原路补回**（见 ShopFunc 注释）
+//        · 异步端（JS / 32 位易语言）：扣费后**开一张单子**（ShopOrder）再投请求 → 回执到了销单结算，
+//          超时没回执由定时器扫出来退款（详见下面 ShopOrder 的说明）
+//        · 异步端一笔最多等 1 分钟；这期间同一用户对同一商品再发兑换会被拦回「上一笔还在处理中」
 //
 // 原生库有两种调法（框架自动选）：
 //   ① 导出了 **onShop**：调 onShop(json, fun, cmd)，fun 原样回传（Go 这种拿不了函数地址的用这个）
@@ -234,14 +250,53 @@ struct ShopItem_py {
     bool       wantsCmd = false;  // 形参 >= 2 就传 (消息, cmd)，只写 1 个就不传（与规则同一套探测）
     qint64     price = 0;   // 单价
 };
-// JS（type 3）/ 32 位易语言（type 2）：**加载时解析、且上架展示，但暂不可购买**。
-// （这两端的调用桥接还没打通，兑换时框架直接回「暂时不支持购买」、不扣费也不调插件。
-//   以后要放开：把 handleShopCommand 收集时那两处 `o.buyable = false` 删掉，再补调用的分支即可，
-//   注册格式不用再让插件作者改一遍。）
+// JS（type 3）：**可购买**，但走异步 —— 插件跑在独立 node 进程的 Worker 里，
+//   框架「先扣费 → 开单 → 发请求 → 回包销单再发账单 / 失败退款」，不阻塞插件派发线程。
+//   最多等 1 分钟（插件里要发 HTTP 等第三方结果），超时按失败自动退款。
+// 32 位易语言（type 2）：**可购买**，走共享内存「任务槽目标 2」（= 工作线程 on_message 那条路）——
+//   不新增命令号，只是往原始消息帧里多塞一个 **reqid** 再投一次：
+//   · 宿主看到 reqid → 知道这条要回值 → 调完用 `_post4(1831501026, reqid, "", "1")` 回吐
+//   · 没有 reqid 的普通消息它照旧不回（老行为不变）
+//   · 回吐 "1"（或 "true"）= 成交（此时才扣费）；空 / "0" / 其它 = 失败 → 不扣钱、只回话
+//   `fun` = **32 位进程里的函数值**，框架只原样透传、绝不本地解引用（那是另一个进程的地址）。
+//   和 JS 一样是「先扣费 → 开单 → 投出去 → 回执销单」，最多等 1 分钟，超时由定时器退款。
 struct ShopItem_js {
     QString key;            // 商品备注
     QString fun;            // main.js 里的函数名
     qint64  price = 0;      // 单价（积分）
+};
+
+// ==================== 铃铛商店：待结算订单（异步端专用）====================
+// ⚠ 扣费顺序（2026-10-31 用户拍板改的）：**先问插件 → 插件说成交了才扣钱**。
+//   原来「先扣费再调插件」的问题是：原生库/JS 执行时把整个框架带崩，钱已经落盘扣掉了、
+//   货一行没给，重启后也没人退（订单表只在内存）。现在顺序反过来，崩溃最坏是「货给了没扣到」，
+//   而插件本来就在同一个进程里，能跑到「给货」几乎必然能跑到「扣费」；用户不吃亏是硬要求。
+//
+//   1) **预检余额**（getPoints，只读不扣）：不够直接回「余额不足」，不开单、不调插件
+//   2) **抢「一次只能一单」**（m_shopInflight）：同一用户同一时刻只允许一笔在途，
+//      所以不存在「两笔都过了预检、第二笔扣不动」的并发白送（同步端也走这把锁）
+//   3) 同步端（Python / 原生库）当场拿到成败：**成功才 spendPoints**，失败一分不扣
+//      异步端（JS / 32 位易语言）只能等回包：开单（只记「应付多少」，不扣）→ 投出去 → 立即返回
+//   4) 回执到了 → settleShopOrder(id, ok, 原因)：**先把单子从表里摘掉**，再办事 ——
+//      摘不到就是「已经结算过了」（回执和超时撞车 / 插件重复回包），直接返回，绝不二次扣费
+//   5) 定时器（1 秒一次）扫一遍：过了 deadline 还没回执的（宿主崩了 / 回包丢了 / 插件卡死）
+//      → 按失败处理：**不扣钱、直接丢单**，回一句「超时未响应（未扣费）」
+//
+// 为什么订单表可以只放内存：**钱还没扣**，单子丢了 = 这单不存在，用户没有任何损失。
+//   （这就是改成「先成功再扣款」换来的最大好处 —— 崩溃再也不用对账/退款了。）
+struct ShopOrder {
+    qint64     id = 0;              // 订单号（自增，从 1 开始）
+    int        appid = 0;           // 哪个机器人
+    int        mtype = 0;           // 消息类型（0 群 / 2 私聊）
+    QString    groupId;             // 回执发这里
+    QString    msgId;               // 走被动回复（事件/消息 id）
+    QString    pname;               // 回执的 pname（= 插件 uuid，日志按它还原成 [插件名|%1ms]）
+    QString    pluginName;          // 日志用
+    QString    itemName;            // 商品备注（回执用）
+    qint64     qty = 0;             // 数量
+    qint64     fee = 0;             // **应付**积分（0 = 免费；成交时才扣，失败/超时一分不扣）
+    QByteArray openidBin;           // 谁的钱（16 字节 openid）
+    qint64     deadlineMs = 0;      // 到期时刻（毫秒时间戳）
 };
 
 struct PythonPluginobj {
@@ -269,7 +324,7 @@ struct JsPlugin {
     bool isV2 = false;             // true = get_plugin_info 返回的 JSON 里 sdk >= 2 → 属「新版」，才允许指令重命名
     QJsonObject pendingRequest;    // 如果请求响应模式需要，可以暂存
     QList<Rule_js> rules;      // 所有规则列表（替代原来的 equals hash）
-    QList<ShopItem_js> shop;   // 铃铛商店：上架展示，但暂不可购买（等 JS 购买桥接打通）
+    QList<ShopItem_js> shop;   // 铃铛商店：可购买（异步调 Worker 里的函数，认 exports 上的函数名）
 };
 
 
@@ -341,6 +396,12 @@ public:
     QString LoadPlugin_py(PluginInfo &info);
     bool uninstall_Plugin(int index);//卸载
     bool uninstall_Plugin2(int index);
+    // 市场「覆盖安装」专用：先记下旧插件的启用态再卸（不弹确认框）。
+    // 必须走它、不能直接用 uninstall_Plugin2 —— Python / JS 重装走的是
+    // doLoadPythonPlugin / doLoadPlugin，那两条入口内部写死 LoadPlugin(..., enabled=false)，
+    // 旧记录又被 removePlugin 删掉了，结果就是「更新完插件自动变禁用」。
+    // 这里把旧的 enabled 挂在 m_reinstallEnabled 上，LoadPlugin 建新记录时按同目录取回。
+    bool uninstall_PluginForReinstall(int index);
     bool uninstall_Plugin(PluginInfo &info);
     bool Enabled_Plugin(int index);//启用
     bool Enabled_Plugin(PluginInfo &info);
@@ -378,13 +439,73 @@ public:
     QString effectiveCommandWord(const QString &pluginId, const QString &pluginName,
                                  int matchType, const QString &key, int appid) const;
 
+    // ==================== 广告奖励（积分入账，框架级）====================
+    // 腾讯激励广告看完会推一条 REWARDED_AD_COMPLETE 事件（qqbotclient 已解析成 type 0/2、subType 5，
+    // msgId = 事件 id、user = 看广告的人）。这里是**唯一**给用户加积分的地方：
+    //   · 额度 = g_points_per_ad（默认 1000，与商店定价同一基准）
+    //   · 幂等：同一个事件 id 只加一次（腾讯会重推，不去重就能刷分）
+    //   · 加不上（拿不到 openid / 库没开）只记事件日志，不打扰用户
+    // 返回 true = 已处理（调用方别再往下派发给插件 / AI）。
+    bool handleAdRewardEvent(MessageEvent &msg);
+
     // ==================== 铃铛商店（框架级指令）====================
     // 「<货币名>商店」/「兑换物品 序号 数量 其他内容」都由框架直接处理，插件只需在
     // get_plugin_info 里注册 "shop"（见上面 ShopItem_Dll / ShopItem_py 的说明）。
+    // 同一入口还管一条**管理员指令**「充值 <数量>」：只有超管(1，= 全局管理) / 机器人管理(2)
+    // 能用（与 qqbotclient 的 member_role 同口径，私聊里也会被置成 1/2）；
+    // 普通成员发「充值」直接 return false（不拦不回，命令词还给插件）。
+    // 用途：测商店购买、运营补偿；单次上限 kShopRechargeMax（1 亿），改动都记事件日志。
     //   frame = 本条消息的**原始 JSON 帧**（与 onMessagev3 第 1 个参数同一份）；
     //   msg   = 本条消息事件（用户 openid / 群 / appid / msgId 都从这里取）。
     // 返回 true = 这条消息是商店指令、**已经自己回过消息了**（调用方别再往下派发，也别让 AI 兜底）。
     bool handleShopCommand(const QString &frame, MessageEvent &msg);
+
+    // ---- 异步端（JS / 32 位易语言）的待结算订单：建单 / 销单 / 结算 / 超时丢单 ----
+    // 线程说明：建单发生在**工作线程**（dispatch_message），结算发生在**主线程**（回执回调 / 定时器）
+    //   → m_shopOrders 一律走 m_shopOrdersMutex；settle 用「摘掉才算我的」保证只结算一次。
+    qint64 newShopOrder(const ShopOrder &o);              // 建单，返回订单号（> 0）
+    bool   takeShopOrder(qint64 id, ShopOrder &out);      // 取单并从表里删掉（取不到 = 已被别人结算）
+    // ---- 「一次只能一单」：同一用户（同一机器人）同一时刻只允许一笔兑换在途 ----
+    // 为什么需要：现在改成「插件说成交才扣钱」，两笔同时过预检的话，第二笔结算时可能已经没钱 →
+    //   货发了钱扣不到。一把在途锁直接把这种情况从「概率问题」变成「不可能」。
+    // 覆盖**所有端**（同步端调插件期间也占着锁）；异步端建单后由 settle / 超时 / 退出负责释放。
+    // 抢不到锁说明同一用户还有一笔没结束 → 一句「上一笔还在处理中」，连插件都不调。
+    bool   tryBeginShopPurchase(int appid, const QByteArray &openidBin);  // 抢到返回 true
+    void   endShopPurchase(int appid, const QByteArray &openidBin);       // 释放（重复释放无害）
+
+    // ---- 「执行崩过的商品」黑名单（只针对 64 位原生库）----
+    // 原生库商品函数是裸指针调用，插件里一个空指针解引用就能把框架带走。SEH / C++ 异常接住之后
+    // 把**这个商品**记进黑名单：列表里标「已停用」，购买时直接拒绝，不再二次调用（崩溃往往可复现，
+    // 再调一次就是再崩一次）。key = "<插件 uuid>|<fun>"，**只在内存**里 —— 重启 = 重新信任一次，
+    // 修好插件后重启即可恢复，不用去改文件。
+    QString shopBrokenKey(const QString &pluginUuid, qint64 fun) const;
+    bool   isShopItemBroken(const QString &key) const;
+    void   markShopItemBroken(const QString &key, const QString &why);
+
+    void   settleShopOrder(qint64 id, bool ok, const QString &reason);  // 结算：成交才扣费并发账单 / 失败只回话
+    void   sweepShopOrders();                             // 定时器每秒调：过期单按「超时失败」丢单（不扣钱）
+    void   discardShopOrdersOnExit();                     // 程序退出：把还没回执的单子丢掉（没扣过钱，无需退款）
+
+    // ---- 商品定价（框架里改，**每个机器人一份**；插件注册的 price 当作默认价）----
+    // 生效顺序：bots[appid][商品]  >  items[商品]（默认档）  >  插件注册的 price
+    // ⚠ 读发生在**工作线程**（每条商店指令都要取一次价），写发生在 GUI 线程 →
+    //   整张表只认 m_shopPriceLock（读锁查、写锁改），别在别处直接摸 m_shopPriceCfg。
+    qint64 shopPriceFor(const PluginInfo &p, const QString &itemKey, int appid) const;   // 没配过 → -1
+    // 这件商品在这个机器人下**允许卖吗**。⚠ **默认 false（下架）**：新装插件 / 新注册的商品
+    // 一律先下架，必须管理员在「商品定价」里改成「上架」才会卖（见 shopItemAllowed）。
+    // false 时列表里标「未上架」，买它直接被拒（不调插件、不扣钱）。
+    // 与「原生库崩过自动停用」共用 ShopOffer::buyable 一个状态，只是原因分开写（offByAdmin / broken）。
+    bool   shopItemAllowed(const PluginInfo &p, const QString &itemKey, int appid) const;
+    QList<int> shopPricePluginIndexes() const;      // 注册了 shop 的插件下标（含已全部下架的）
+    QString    shopPricePluginLabel(int index) const;
+    QList<ShopPriceRow> shopPriceRows(int index, int appid = 0) const;
+    // 存盘 + 立即生效。appid <= 0 → 写默认档（全部机器人共用的基准）；> 0 → 写该机器人的覆盖。
+    // prices / allowed 里**没传的项保持不动**（别把界面上没显示出来的商品悄悄上架 / 改价）。
+    // 与上一级**相同**的项会被删掉（= 继续跟随），所以「改回去」不会留下垃圾配置。
+    void applyShopPrices(int index, const QHash<QString, qint64> &prices,
+                         const QHash<QString, bool> &allowed, int appid = 0);
+    void clearBotShopPrices(int index, int appid);   // 删掉该机器人的定价 → 重新跟随默认
+    bool hasBotShopPrices(int index, int appid) const;
 
     // ==================== 测试指令（检查指令会不会复读用户内容）====================
     // 判据：测试正文按匹配方式拼成「命令词 + 探测串(测试测试测试)」，真调一次插件，
@@ -459,11 +580,15 @@ public:
     QString sendData32(int type, PluginInfo &info, const QString &id, const QString &value);
     // 异步内核：回调在**调用者线程**执行（GUI 线程发的就在 GUI 线程回调）。
     //   timeoutMs <= 0 → 只发不等（返回值没人要的场景，连等待者都不登记、一个定时器都不起）
+    //   target = 任务槽的「目标」字段：
+    //     1（默认）= 主线程通道（易语言在窗口线程里按 type 分派：1 加载 / 10 同步插件 …）
+    //     2       = 工作线程通道（易语言 `_完成端口投递` → on_message 派发，**多线程**）
+    //     商店购买用 2：跟普通消息投递同一条路，只是帧里多带 reqid → 宿主处理完回吐结果。
     // 每条命令都会领一个**请求号**塞进 JSON 的 "reqid"（易语言回吐时原样带回，见
     // SharedMemoryBridge::deliverCommandResult），所以**多条命令可以同时在飞**、互不串包。
     // 只有「桥里登记失败」（请求号用尽）才会立即回调空串。
     void sendData32Async(const QJsonObject &req, int timeoutMs,
-                         const std::function<void(const QString &)> &cb);
+                         const std::function<void(const QString &)> &cb, int target = 1);
     // 只发不等：和 sendData32 一样的组帧，但甩完就走（调用点本来也不看返回值）
     void sendData32NoWait(int type, PluginInfo &info, const QString &appidlist);
     QString LoadPlugin_DLL32(PluginInfo &info);
@@ -527,7 +652,9 @@ private:
     void LoadPlugin_Script();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
-    void onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
+    // 返回 true = 该插件**有注册规则命中**这条消息（空规则表的插件不算命中）。
+    // dispatch_message 用它累加 ok：有任何一处命中就 return 250（= 已被处理，别走 AI 兜底）。
+    bool onMessageReceived(MessageEvent &msg, const PluginInfo &p, std::optional<py::gil_scoped_acquire> &gil) ;
     // ---- 插件配置（get_config_list / set_config_value，四种类型插件都可实现）----
     void rebuildConfigPanel(int index);
     void clearConfigPanel();
@@ -554,6 +681,7 @@ private:
     QPushButton *uninstallBtn;   // 卸载按钮
     QPushButton *setBtn;
     QPushButton *bj_zl = nullptr;   // 「编辑指令」按钮
+    QPushButton *shopPriceBtn = nullptr;   // 「商品定价」按钮（铃铛商店按机器人改价）
     // 指令配置。结构（2026-10-20 起支持按机器人区分）：
     //   { "<插件id或名>": {
     //         "rows": [ {"t":匹配方式,"k":注册原指令,"n":新指令,"r":启用类型} ... ],   // 默认（全部机器人）
@@ -562,6 +690,16 @@ private:
     //   · "bots" 里的 "n" 可以**不写**（= 跟随默认档的改名）；写了空串 = 这个号不改名。
     // ⚠ 老配置（值是**数组**）读进来时会被 migrateRuleCfg() 直接包成 { "rows": [...] }，行为不变。
     QJsonObject m_ruleCfg;
+    // 商品定价 / 上下架（结构见 shopPriceFor 上方的注释）：
+    //   { "<插件id>": { "items": { "<商品备注>": 1200 },              // 默认档价格
+    //                   "bots":  { "<appid>": { "<商品备注>": 500 } },
+    //                   "on":    { "<商品备注>": true },               // 上架白名单（缺省 = 下架）
+    //                   "onbots":{ "<appid>": { "<商品备注>": true } } } }
+    // ⚠ key 必须是**跨重启稳定**的插件 id（`PluginInfo::id`，空则 name），**不能用 uuid**：
+    //   uuid 是每次加载新生成的 QUuid，拿它当 key 重启后一条都对不上（价格回落、商品全变下架）。
+    // 只存**改过的**项；没配过 = 用插件注册的 price / 下架。工作线程读、GUI 线程写 → 认 m_shopPriceLock。
+    QJsonObject m_shopPriceCfg;
+    mutable QReadWriteLock m_shopPriceLock;
     // 上面 "bots" 的**热路径缓存**（匹配每条消息都要查，不能每次去翻 QJsonObject）：
     //   appid → 插件key → 注册原指令 → 覆盖
     QHash<int, QHash<QString, QHash<QString, BotRuleOverride>>> m_botRuleRole;
@@ -575,6 +713,28 @@ private:
                            const QString &key, int &role, QString &newKey) const;
     int currentSelected_index;
     std::thread m_asyncio_thread; // 改成成员变量
+
+    // ==================== 市场覆盖安装：旧启用态暂存 ====================
+    // key = 归一化后的插件**目录**绝对路径（见 pluginpage.cpp 的 reinstallKey）。
+    // 只有 market 的 uninstall_PluginForReinstall 会写，LoadPlugin 建新记录时 take 一次即删。
+    QHash<QString, bool> m_reinstallEnabled;
+
+    // ==================== 铃铛商店：待结算订单表 ====================
+    // ⚠ 工作线程建单 + 主线程结算（回执回调 / 定时器）→ 全表只认 m_shopOrdersMutex。
+    QHash<qint64, ShopOrder> m_shopOrders;
+    mutable QMutex           m_shopOrdersMutex;
+    qint64                   m_shopOrderSeq = 0;      // 自增订单号（在锁里 ++）
+    QTimer                  *m_shopOrderTimer = nullptr;   // 1 秒扫一次过期单（构造里建）
+
+    // ==================== 铃铛商店：在途锁（一次只能一单）====================
+    // key = "<appid>:<openid 的 hex>"。三个地方动它：handleShopCommand 抢、结算/超时/退出放。
+    // 用 QSet 而不是计数：抢锁本身是原子的（插不进去就是已经有一笔在途）。
+    QSet<QString>            m_shopInflight;
+    mutable QMutex           m_shopInflightMutex;
+
+    // 执行崩过的商品（key = "<uuid>|<fun>"）：见 shopBrokenKey 注释，只在内存
+    QSet<QString>            m_shopBroken;
+    mutable QMutex           m_shopBrokenMutex;
 
     py::object m_asyncio_mod;
     py::object m_run_coro_func;

@@ -865,7 +865,7 @@ void processAppidTasks(int appid) {
                 ev.msg = db->getSubscriptions(QString("t_%1_%2").arg(appid).arg(t.mark), type, openid);
                 data = python_code(data, ev);
             }
-            bool is_wakeup = false;
+
 
             // 混合发送：优先用「该群最近 5 分钟内收到的消息 msgid」走被动回复；取不到就传空走主动发送
             QString msgid;
@@ -880,7 +880,7 @@ void processAppidTasks(int appid) {
             if (!msgid.isEmpty()) paceMsgIdReply(60);
 
             if (!data.isEmpty()) {
-                client->send_messagesAsync(type, openid, text, data, msgid, is_wakeup);
+                client->send_messagesAsync(type, openid, text, data, msgid, "false");
                 if (msgid.isEmpty()) groupCount++;   // 只有主动发送才吃 50 条/分钟
             }
 
@@ -1131,7 +1131,9 @@ QString python_code2(const QString &py_code,const MessageEvent &msg,QString &dat
         py::module_ qiancao = py::module_::import("qiancao_sdk");
         py::object api = qiancao.attr("QQApi")(g_keyuuid);
 
-        py::dict exec_globals = py::dict(py::module_::import("qq_api").attr("__dict__"));
+        // 每次全新命名空间（`py::dict(模块.__dict__)` 是同一对象引用、不拷贝，等于把模块本体当 globals）
+        py::dict exec_globals;
+        exec_globals.attr("update")(py::module_::import("qq_api").attr("__dict__"));
         exec_globals["__builtins__"] = py::module_::import("builtins");
         exec_globals["msg"] = py::cast(msg);
         exec_globals["api"] = api;               // 注入 api 对象
