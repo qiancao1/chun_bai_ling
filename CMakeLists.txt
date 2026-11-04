@@ -129,6 +129,7 @@ set(PROJECT_SOURCES_ALL
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
     ui/logpage.cpp ui/logpage.h ui/pluginpage.cpp ui/pluginpage.h
     ui/ruleeditdialog.cpp ui/ruleeditdialog.h
+    ui/shoppricedialog.cpp ui/shoppricedialog.h
 
     ui/scrolltextdialog.h
     ui/multilinedelegate.h

@@ -442,15 +442,76 @@ static QString cachedValueIfFresh(const QString &key)
     return v;
 }
 
+// 「<过期秒>||||<url>」格式的缓存 → 新鲜时返回 url；缺失 / 过期 / 不是这个格式一律空。
+// 和各个调用点原来手写的 lastIndexOf("||||") 解析是同一套规则，抽出来给 plugin: 键用。
+static QString cachedUrlIfFresh(const QString &key)
+{
+    const QString v = cachedValueIfFresh(key);
+    if (v.isEmpty()) return {};
+    const int sep = v.lastIndexOf(QStringLiteral("||||"));
+    if (sep <= 0) return {};
+    bool ok = false;
+    const qint64 expire = v.left(sep).toLongLong(&ok);
+    if (!ok) return {};
+    if (QDateTime::currentSecsSinceEpoch() >= expire) return {};
+    const QString url = v.mid(sep + 4);
+    // plugin: 键可能被两种用途共用（md 图片存 URL、富媒体/媒体标签存裸 file_info）。
+    // 这里只认「真的像 URL」的值：拿到 file_info 时当未命中，交给图片上传逻辑重新传，
+    // 免得把一坨 file_info 当图片地址塞进 Markdown。
+    if (!url.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+        && !url.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+        && !url.startsWith(QLatin1String("qqbot-media://"), Qt::CaseInsensitive))
+        return {};
+    return url;
+}
 
-// 异步发送的「回执投递」：把框架完成回调里的响应，送回发起它的 Python 插件协程。
+// 前向声明：定义在文件后半部分（媒体上传缓存那一节）
+static QStringList mediaCachedInfos(const QString &cached);
+
+// plugin: 键的**统一读法**（富媒体/语音/视频/文件 用）：
+//   缓存值是 "过期秒||||info1||info2||…"，info 是**裸 file_info**（图片 1 条、切段音频 N 条）。
+//   同一份文件（同一张图/同一首歌）只要还在有效期内，就直接复用上次上传好的 file_info，
+//   不用再走一遍上传（file_info 是账号级的，跨号不通用 —— key 里带 appid）。
+//   返回空 = 没有 / 过期 / 认不出 → 调用方重新上传。
+static QStringList cachedMediaInfosIfFresh(const QString &key)
+{
+    const QStringList infos = mediaCachedInfos(cachedValueIfFresh(key));
+    // 值可能是「md 图片」（type==1）存进来的 URL —— 同一个 plugin 名字被两种用途共用时会出现。
+    // URL 不是 file_info，拿去 send_Media 必失败，所以这里当未命中，让调用方重新上传。
+    if (infos.size() == 1
+        && (infos.first().startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+            || infos.first().startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+            || infos.first().startsWith(QLatin1String("qqbot-media://"), Qt::CaseInsensitive)))
+        return {};
+    return infos;
+}
+
+
+// 异步发送的「回执投递」：把框架完成回调里的响应，送回**发起它的那个插件**。
 //
-// 调用现场是 QThreadPool 的 worker（既不是网络线程也不是主线程，**没有事件循环**），
-// 所以这里只做一件事：拿到 GIL，把结果交给 qiancao_sdk._deliver ——
-// 由它用 loop.call_soon_threadsafe 把结果排进事件循环（跨线程改 Future 的唯一安全姿势）。
+// 两种语言走两条通道（都由 reqId 的格式区分，Python 的是随机 16 位、不相撞）：
+//   · Python：拿 GIL → qiancao_sdk._deliver → loop.call_soon_threadsafe 排进事件循环
+//     （调用现场是 QThreadPool 的 worker，不是那条事件循环线程，直接改 Future 会破坏线程模型）
+//   · JS：reqId = "#js|<uuid>|<请求id>" → NodePluginManager::deliverApiResult
+//     → 主线程 QProcess 写回该 Worker，bridge 的 pending 按 id 命中
 static void deliverPluginAsyncResult(const QString &reqId, const QString &resp)
 {
     if (reqId.isEmpty()) return;
+
+    // ── JS 插件：reqId 形如 "#js|<uuid>|<请求id>"（bridge.js 的 send_message_async）──
+    //   用 NodeProcess::sendResponse 把结果写回那个 Worker，bridge 的 pending 按 id 命中，
+    //   插件那边 await 的 Promise 就拿到真实响应（含 plugin: 键不可用时的 JSON 数组）。
+    if (reqId.startsWith(QLatin1String("#js|"))) {
+        const int bar = reqId.lastIndexOf(QLatin1Char('|'));
+        if (bar > 4) {
+            const QString uuid = reqId.mid(4, bar - 4);
+            const int jsId = reqId.mid(bar + 1).toInt();
+            if (!uuid.isEmpty() && jsId > 0)
+                NodePluginManager::instance().deliverApiResult(uuid, jsId, resp);
+        }
+        return;
+    }
+
     if (!Py_IsInitialized()) return;      // 解释器已在收尾 → 直接丢，别在关停阶段崩
     py::gil_scoped_acquire gil;
     try {
@@ -1184,6 +1245,31 @@ static bool isPassThroughImageUrl(const QString &url)
         || url.startsWith(QLatin1String("qqbot-media://"), Qt::CaseInsensitive);
 }
 
+// ---------- plugin: 图片缓存键（同步版/异步版共用） ----------
+//   写法 ①  plugin:名字            → name=名字, localPath 空 → **只查缓存**（key = appid:plugin:名字）
+//   写法 ②  plugin:名字|本地路径    → name=名字, localPath=本地路径 → **总是上传覆盖**缓存
+// 名字两侧空白忽略；名字为空算「不是 plugin 键」（退回原来的本地路径逻辑，不报错）。
+static bool parsePluginImageTag(const QString &raw, QString *name, QString *localPath)
+{
+    const QString u = raw.trimmed();
+    if (!u.startsWith(QLatin1String("plugin:"), Qt::CaseInsensitive)) return false;
+    const int bar = u.indexOf(QLatin1Char('|'));
+    const QString n = (bar < 0 ? u.mid(7) : u.mid(7, bar - 7)).trimmed();
+    if (n.isEmpty()) return false;
+    if (name) *name = n;
+    if (localPath) *localPath = (bar < 0 ? QString() : u.mid(bar + 1).trimmed());
+    return true;
+}
+
+// 不可用的 plugin: 键 → JSON 数组（插件拿回去处理完再重发）：
+//   ["plugin:商城图标","plugin:地图"]
+static QString pluginKeysJson(const QStringList &keys)
+{
+    QJsonArray arr;
+    for (const QString &k : keys) arr.append(k);
+    return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+}
+
 // Markdown 图片 ![alt](url) 的匹配串。**不需要处理的地址直接在匹配阶段排掉**，
 // 免得先抠出来占一个 allTags/replacements 槽位再 continue 掉：
 //   · mdPass  = markdown 消息（type==1）用：http(s) 和 qqbot-media:// 都原样发出去，
@@ -1277,8 +1363,9 @@ static QString missingImagePlaceholderPath()
 
 QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                       int targetType, const QString &openid,
-                                      QString &message_reference)
+                                      QString &message_reference, QString *pluginErr)
 {
+    if (pluginErr) pluginErr->clear();
     get_ref(text, message_reference);
     // md 消息里放行的图（http / qqbot-media）先补齐尺寸；纯文本 / ark 不涉及 markdown，跳过
     if (type == 1) normalizePassThroughImageSizes(text);
@@ -1461,10 +1548,35 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
             QString fileMd5;
             QString originalUrl;
             QByteArray fileData; // 为了备用上传保存数据
+            QString pluginCacheKey;  // 非空 = plugin: 键，上传成功后要覆盖的缓存 key（appid:plugin:名字）
         };
 
         QList<ReplaceInfo> replacements;
         std::vector<std::pair<int, std::future<QString>>> uploadFutures;
+
+        // ---------- plugin: 键预检（同步版：整条都在调用线程上，一个请求都还没发） ----------
+        // 只有「plugin:名字（不带路径）」需要预检：查不到 / 已过期 → 收集起来，本条一个字都不发，
+        // 把不可用的 key 组 JSON 数组通过 pluginErr 交回调用方；带路径的写法永远上传覆盖，不预检。
+        if (pluginErr) {
+            QStringList missing;
+            for (const ImgTag &tag : std::as_const(allTags)) {
+                if (isPassThroughImageUrl(tag.url)) continue;
+                QString name, localPath;
+                if (!parsePluginImageTag(tag.url, &name, &localPath)) continue;
+                if (!localPath.isEmpty()) continue;                  // 有路径 → 上传覆盖
+                const QString key = QStringLiteral("plugin:") + name;
+                if (missing.contains(key)) continue;                 // 同一个 key 只报一次
+                if (!cachedUrlIfFresh(m_info->appid + ":plugin:" + name).isEmpty()) continue;
+                missing.append(key);
+            }
+            if (!missing.isEmpty()) {
+                *pluginErr = pluginKeysJson(missing);
+                return text;                                        // 调用方拿到 pluginErr 后直接返回，不发消息
+            }
+        }
+
+        // 没给 pluginErr（调用方不关心 plugin 键）→ 连写法①都不认，一律按原来的本地路径逻辑走
+        const bool allowPlugin = (pluginErr != nullptr);
 
         // ---------- 遍历所有标签 ----------
         for (int idx = 0; idx < allTags.size(); ++idx) {
@@ -1472,6 +1584,43 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
             QString newUrl = tag.url;
             // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
             const bool isPassThrough = isPassThroughImageUrl(newUrl);
+
+            // plugin: 键（同步版没有线程切换问题，一律认）
+            QString pluginCacheKey;   // 非空 = 要读/要写的缓存 key（appid:plugin:名字）
+            QString pluginLocalPath;  // 写法②才有
+            if (allowPlugin && !isPassThrough) {
+                QString name;
+                if (parsePluginImageTag(newUrl, &name, &pluginLocalPath))
+                    pluginCacheKey = m_info->appid + ":plugin:" + name;
+            }
+
+            // 写法①：只有键 → 纯查缓存（预检已确认命中），不上传、不读文件
+            if (!pluginCacheKey.isEmpty() && pluginLocalPath.isEmpty()) {
+                if (tag.isMdImg && tag.hasUserSize) {
+                    tag.width = tag.userWidth;
+                    tag.height = tag.userHeight;
+                }
+                replacements.append({
+                    tag.start,
+                    tag.length,
+                    cachedUrlIfFresh(pluginCacheKey),
+                    tag.isMdImg,
+                    tag.coreText,
+                    tag.alt,
+                    tag.width,
+                    tag.height,
+                    tag.needPadding,
+                    QString(),
+                    tag.url,
+                    QByteArray(),
+                    QString()
+                });
+                continue;
+            }
+
+            // 写法②：带路径 → 用这个本地路径上传，成功后覆盖 plugin 缓存
+            if (!pluginCacheKey.isEmpty())
+                newUrl = pluginLocalPath;
 
             if (!isPassThrough && !newUrl.isEmpty()) {
                 QString fileMd5;
@@ -1493,10 +1642,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 }
 
                 // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
+                // ⚠ plugin: 键带路径时（写法②）跳过 imageB_ 缓存：每次都上传一遍覆盖缓存。
                 QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
                 bool cacheValid = false;
                 QString cachedUrl;
-                if (cache_db && !fileMd5.isEmpty()) {
+                if (pluginCacheKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
                     QString cached = cachedValueIfFresh(cacheKey);
                     if (!cached.isEmpty()) {
                         int sepIdx = cached.lastIndexOf("||||");
@@ -1532,7 +1682,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     tag.needPadding,
                     fileMd5,
                     newUrl,
-                    fileData // 保存数据
+                    fileData, // 保存数据
+                    pluginCacheKey
                 });
 
                 if (!cacheValid) {
@@ -1555,7 +1706,8 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     tag.needPadding,
                     QString(),
                     newUrl,
-                    QByteArray()
+                    QByteArray(),
+                    QString()
                 });
             }
         }
@@ -1587,9 +1739,13 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
             if (!uploadedUrl.isEmpty()) {
                 replacements[replaceIdx].newUrl = uploadedUrl;
                 if (cache_db) {
+                    qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                    // plugin: 键优先写（上传成功后覆盖旧链接）
+                    const QString pluginKey = replacements[replaceIdx].pluginCacheKey;
+                    if (!pluginKey.isEmpty())
+                        cache_db->put(pluginKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
                     QString fileMd5 = replacements[replaceIdx].fileMd5;
                     QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
-                    qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
                     cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
                 }
             } else {
@@ -1637,15 +1793,50 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
         bool firstProcessed = false;  // 用于 type==0 只处理第一个标签
         bool neiwang=false;//测试内网是否可用
+        // 没给 pluginErr（调用方不关心 plugin 键）→ 连写法①都不认，一律按原来的本地路径逻辑走
+        const bool allowPlugin = (pluginErr != nullptr);
         for (int idx = 0; idx < allTags.size(); ++idx) {
         ImgTag &tag = allTags[idx];
         QString newUrl = tag.url;
         // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
         const bool isPassThrough = isPassThroughImageUrl(newUrl);
 
+        // ---------- plugin: 键（type 0 也认：缓存里存的是**裸 file_info**） ----------
+        //   写法① plugin:名字          → 纯读缓存（file_info 跟着上传它的账号走，key 里带 appid）
+        //   写法② plugin:名字|本地路径   → 用这个本地路径上传，成功后覆盖缓存
+        // 同一张图/同一首歌/同一个文件只要还在有效期内，直接复用上次上传好的 file_info，
+        // 不用再走一遍 upload_prepare + 分片上传。
+        QString pluginKey;      // 非空 = 要读/要写的缓存 key（appid:plugin:名字）
+        QString pluginName;     // 插件给的名字（未命中时要原样报回给它）
+        QString pluginLocal;    // 写法②才有
+        if (allowPlugin && !isPassThrough) {
+            if (parsePluginImageTag(newUrl, &pluginName, &pluginLocal))
+                pluginKey = m_info->appid + QStringLiteral(":plugin:") + pluginName;
+        }
+
+        // type==0（只处理第一条）写法①：命中直接拿 file_info；未命中整条不发、交回 JSON
+        if (type == 0 && !pluginKey.isEmpty() && pluginLocal.isEmpty()) {
+            if (!firstProcessed) {
+                firstProcessed = true;
+                const QStringList infos = cachedMediaInfosIfFresh(pluginKey);
+                if (infos.isEmpty()) {
+                    // 预检之后、到这里之前刚好过期（或换库）→ 兜底走「失败」这条路，绝不上传
+                    if (pluginErr && pluginErr->isEmpty())
+                        *pluginErr = pluginKeysJson(QStringList{ QStringLiteral("plugin:") + pluginName });
+                    return text;
+                }
+                info = infos.first();
+            }
+            text.replace(tag.start, tag.length, QString());
+            continue;                           // 不读文件、不上传
+        }
+
         // ---------- 仅对本地非 HTTP 路径执行上传 ----------
         if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
+            // 写法②：换成插件给的本地路径（后面照常走「读文件 → 上传」）
+            if (!pluginKey.isEmpty() && !pluginLocal.isEmpty())
+                newUrl = pluginLocal;
             // 本地文件不存在（或不是文件）→ 用运行目录下的默认图「图片不存在.webp」顶上，
             // 否则下面的 calculateFileMD5AndSize 会失败、这个标签就原样残留在正文里
             if (!QFileInfo(newUrl).isFile()) {
@@ -1671,21 +1862,23 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 if (!firstProcessed) {
                     firstProcessed = true;
 
-                    QString cacheKey = m_info->appid + ":imageA_" + fileMd5;
+                    // 写法②（带路径）= 插件明确要求「用这张新图覆盖」→ 跳过缓存，一定重传
+                    const bool forceUpload = (!pluginKey.isEmpty() && !pluginLocal.isEmpty());
+                    // 缓存 key：plugin 键优先（插件自己命名）；否则沿用文件指纹 imageA_
+                    const QString cacheKey = pluginKey.isEmpty()
+                                                 ? m_info->appid + ":imageA_" + fileMd5
+                                                 : pluginKey;
                     bool cacheValid = false;
                     QString cachedUrl;
 
                     // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
-                    if (cache_db && !fileMd5.isEmpty()) {
-                        QString cached = cachedValueIfFresh(cacheKey);
-                        if (!cached.isEmpty()) {
-                            int sepIdx = cached.lastIndexOf("||||");
-                            if (sepIdx != -1) {
-                                qint64 expireTime = cached.left(sepIdx).toLongLong();
-                                cachedUrl = cached.mid(sepIdx + 4);
-                                if (QDateTime::currentSecsSinceEpoch() < expireTime)
-                                    cacheValid = true;
-                            }
+                    // ⚠ type==0 的缓存值是**裸 file_info**（不是 URL），所以走 media 那套解析，
+                    //   不能用 cachedUrlIfFresh（那个只认 http/qqbot-media 开头的值）。
+                    if (!forceUpload && cache_db && !cacheKey.isEmpty()) {
+                        const QStringList infos = cachedMediaInfosIfFresh(cacheKey);
+                        if (!infos.isEmpty()) {
+                            cachedUrl = infos.first();
+                            cacheValid = true;
                         }
                     }
 
@@ -1694,9 +1887,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     } else {
                         bool ok = false;
 
-
-
-                        // type==0 用 file_info 发送（每次都要新的）→ 每次重新上传，不复用 COS 链接池
+                        // type==0 用 file_info 发送 → 不复用 COS 链接池
                         // （usePool=false → 直接走原始分片上传，不受池子那套占位/复写逻辑影响）
                         qint64 imgExpire = 0; QString imgMd5;
                         QString fileInfo = uploadRichMediaPoolA(targetType, openid, 1, newUrl, imgExpire, imgMd5, ok, /*usePool=*/false);
@@ -1706,7 +1897,11 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                             newUrl = fileInfo;
                             if (cache_db) {
                                 qint64 expire = QDateTime::currentSecsSinceEpoch() + 1440 * 60;
-                                cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                                // plugin: 键优先写（同一张图下次只给名字就能直接复用）
+                                if (!pluginKey.isEmpty())
+                                    cache_db->put(pluginKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                                QString fileCacheKey = m_info->appid + ":imageA_" + fileMd5;
+                                cache_db->put(fileCacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
                             }
                         } else {
                             newUrl = tag.url;
@@ -1871,9 +2066,22 @@ QString bustRawUrlCache(const QString &rawUrl)
 //   「发送后回池」闭环不依赖特定线程
 // 仅 type!=1（非 md 图片，低频）保留单线程包装（processImageTags 阻塞本体）
 // 全部中间状态挂 shared_ptr，this 销毁安全（每个 touchpoint 用 appid 重查 m_botClients）。
+//
+// ★ plugin: 缓存键（2026-11-03）——只在本函数的**同步阶段**做（type==1、调用线程、还没派发任何线程）：
+//   写法 ①  plugin:名字              → 只查缓存，命中就把 URL 填进去，零上传零线程
+//   写法 ②  plugin:名字|本地路径      → **总是**上传这个本地文件，成功后覆盖缓存
+//   缓存 key = "<appid>:plugin:<名字>"（与 imageB_ 一样带机器人前缀，多账号互不覆盖），
+//   值仍是统一的 "<过期秒>||||<url>"。
+//   ⚠ 只要有一个「写法①的键查不到 / 已过期」→ **整条消息一个字都不发**，把不可用的 key
+//     组个 JSON 数组（["plugin:a","plugin:b"]）从 onDone 的 errJson 交回调用方，
+//     由插件自己处理完再重发。这个「停下并交返回值」的动作必须在阶段0（还没发任何请求）
+//     完成，所以整件事只允许发生在原地同步那一路 —— 调用方传 allowPluginKey=false
+//     （媒体已经先派发出去了的那种正文）就整段不认 plugin: 键，走原来的本地路径逻辑。
 void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int targetType,
                                         const QString &openid,
-                                        std::function<void(const QString &, const QString &, const QString &)> onDone)
+                                        std::function<void(const QString &, const QString &,
+                                                           const QString &, const QString &)> onDone,
+                                        bool allowPluginKey)
 {
     if (!onDone) return;
     const int appid = m_info->appid_int;
@@ -1888,7 +2096,7 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             QString info, message_reference;
             c->processImageTags(text, type, info, targetType, openid, message_reference);
             if (m_botClients.value(appid) != c) return;   // 回调前再确认一次
-            onDone(text, info, message_reference);
+            onDone(text, info, message_reference, QString());
         }).detach();
         return;
     }
@@ -1907,6 +2115,7 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
         QString fileMd5;
         QString originalUrl;
         QByteArray fileData;
+        QString pluginCacheKey;   // 非空 = plugin: 键，上传成功后要写的缓存 key（appid:plugin:名字）
     };
     struct AsyncState {
         QMutex mutex;
@@ -1974,7 +2183,7 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
 
         if (m_botClients.value(appid) != c) return;   // onDone 前再确认一次
         text = convertMarkdownLinksToXml(text);       // 与堵塞版 type==1 收尾一致
-        onDone(text, QString(), message_reference);
+        onDone(text, QString(), message_reference, QString());
     };
 
     // ---------- 聚合：计数减一，归零且阶段1已收口才收尾 ----------
@@ -2016,8 +2225,11 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                         if (ok && !url.isEmpty()) {
                             ri.newUrl = url;
                             if (c2 && cache_db) {
-                                QString cacheKey = c2->m_info->appid + ":imageB_" + ri.fileMd5;
                                 qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                                // plugin: 键优先写（上传成功后覆盖旧链接）
+                                if (!ri.pluginCacheKey.isEmpty())
+                                    cache_db->put(ri.pluginCacheKey, QString("%1||||%2").arg(expire).arg(url));
+                                QString cacheKey = c2->m_info->appid + ":imageB_" + ri.fileMd5;
                                 cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(url));
                             }
                         } else {
@@ -2036,8 +2248,11 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             if (!uploadedUrl.isEmpty()) {
                 ri.newUrl = uploadedUrl;
                 if (c && cache_db) {
-                    QString cacheKey = c->m_info->appid + ":imageB_" + ri.fileMd5;
                     qint64 expire = QDateTime::currentSecsSinceEpoch() + 1430 * 60;
+                    // plugin: 键优先写（上传成功后覆盖旧链接）
+                    if (!ri.pluginCacheKey.isEmpty())
+                        cache_db->put(ri.pluginCacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
+                    QString cacheKey = c->m_info->appid + ":imageB_" + ri.fileMd5;
                     cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
                 }
             } else {
@@ -2172,12 +2387,35 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
     // 没有任何图片标签：只处理其他 Markdown 链接后直接完成（同步、零线程）
     if (allTags.isEmpty()) {
         text = convertMarkdownLinksToXml(text);
-        onDone(text, QString(), st->message_reference);
+        onDone(text, QString(), st->message_reference, QString());
         return;
     }
 
     std::sort(allTags.begin(), allTags.end(),
               [](const ImgTag &a, const ImgTag &b) { return a.start > b.start; });
+
+    // ---- plugin: 键解析（parsePluginImageTag，与本文件同步版共用同一套规则）----
+    // ---------- 阶段0：plugin: 键预检（就地同步，一个请求都还没发出去） ----------
+    // 只有「写法①（不带路径）」需要预检：查不到 / 已过期就收集起来，收集完**整条消息直接不发**，
+    // 每个不可用的 key 组一个 JSON 数组从 errJson 交回调用方（插件处理完再重发）。
+    // 带路径的写法不预检 —— 它永远要上传覆盖。
+    if (allowPluginKey) {
+        QStringList missing;
+        for (const ImgTag &tag : std::as_const(allTags)) {
+            if (isPassThroughImageUrl(tag.url)) continue;
+            QString name, localPath;
+            if (!parsePluginImageTag(tag.url, &name, &localPath)) continue;
+            if (!localPath.isEmpty()) continue;                      // 有路径 → 上传覆盖
+            const QString key = QStringLiteral("plugin:") + name;
+            if (missing.contains(key)) continue;                     // 同一个 key 只报一次
+            if (!cachedUrlIfFresh(m_info->appid + ":plugin:" + name).isEmpty()) continue;
+            missing.append(key);
+        }
+        if (!missing.isEmpty()) {
+            onDone(QString(), QString(), QString(), pluginKeysJson(missing));
+            return;
+        }
+    }
 
     // 遍历所有标签：缓存命中直接落位；未命中发起 uploadimgCb（纯回调，不占线程）
     for (int idx = 0; idx < allTags.size(); ++idx) {
@@ -2185,6 +2423,43 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
         QString newUrl = tag.url;
         // http(s) / qqbot-media:// 都算「外部地址」：不读文件、不上传，原样发出去
         const bool isPassThrough = isPassThroughImageUrl(newUrl);
+
+        // plugin: 键：allowPluginKey=false（正文是在媒体派发之后才进来的）→ 整段不认，走原来的本地路径逻辑
+        QString pluginCacheKey;   // 非空 = 要读/要写的缓存 key（appid:plugin:名字）
+        QString pluginLocalPath;  // 写法②才有
+        if (allowPluginKey && !isPassThrough) {
+            QString name;
+            if (parsePluginImageTag(newUrl, &name, &pluginLocalPath))
+                pluginCacheKey = m_info->appid + ":plugin:" + name;
+        }
+
+        // 写法①：只有键 → 纯查缓存（阶段0 已确认命中），不上传、不读文件
+        if (!pluginCacheKey.isEmpty() && pluginLocalPath.isEmpty()) {
+            if (tag.isMdImg && tag.hasUserSize) {
+                tag.width = tag.userWidth;
+                tag.height = tag.userHeight;
+            }
+            st->replacements.append({
+                tag.start,
+                tag.length,
+                cachedUrlIfFresh(pluginCacheKey),
+                tag.isMdImg,
+                tag.coreText,
+                tag.alt,
+                tag.width,
+                tag.height,
+                tag.needPadding,
+                QString(),
+                tag.url,
+                QByteArray(),
+                QString()
+            });
+            continue;
+        }
+
+        // 写法②：带路径 → 用这个本地路径上传，成功后覆盖 plugin 缓存
+        if (!pluginCacheKey.isEmpty())
+            newUrl = pluginLocalPath;
 
         if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
@@ -2205,10 +2480,12 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             }
 
             // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
+            // ⚠ plugin: 键带路径时（写法②）**跳过 imageB_ 缓存**：每次都上传一遍覆盖缓存，
+            //   否则「改了同名文件但指纹没变」拿到的还是旧链接（写法②的语义就是覆盖）。
             QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
             bool cacheValid = false;
             QString cachedUrl;
-            if (cache_db && !fileMd5.isEmpty()) {
+            if (pluginCacheKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
                 QString cached = cachedValueIfFresh(cacheKey);
                 if (!cached.isEmpty()) {
                     int sepIdx = cached.lastIndexOf("||||");
@@ -2244,7 +2521,8 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                 tag.needPadding,
                 fileMd5,
                 newUrl,
-                fileData
+                fileData,
+                pluginCacheKey
             });
 
             if (!cacheValid) {
@@ -2268,7 +2546,8 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                 tag.needPadding,
                 QString(),
                 newUrl,
-                QByteArray()
+                QByteArray(),
+                QString()
             });
         }
     }
@@ -4103,6 +4382,15 @@ static void putMediaUploadCache(const QString &appid, const QString &mediaType, 
     cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
 }
 
+// 按「现成的 key」写一条同样格式（"过期秒||||info1||info2||…"）的媒体缓存。
+// 给 plugin: 键用 —— 插件自己命名（appid:plugin:名字），跟文件指纹无关，所以要能指定 key。
+// 条件与 putMediaUploadCache 完全一致：有段失败 / 没 ttl / 没内容一律不写。
+static void putMediaCacheRaw(const QString &key, const QStringList &infos, qint64 expire, bool allOk)
+{
+    if (!cache_db || key.isEmpty() || !allOk || infos.isEmpty() || expire <= 0) return;
+    cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
+}
+
 // 复制一份 ctx 但**去掉回调**。
 // ⚠ 只有「本次发送的最后一条消息」才允许带回调：send_Media 每发一条（每个分段）都会在 HTTP
 //   回调里触发一次 ctx.cb，4 段音频就把调用方回调 4 次 —— 插件/Python 那边每收到一次都会当成
@@ -4135,6 +4423,7 @@ struct QQBotClient::MediaTagCtx {
     QStringList audioSegs;          // 音频超长切段列表；空 = 单文件直传
     QStringList cachedInfos;        // 缓存命中的整串列表（1 条 = 整文件/单段；N 条 = 切好的多段）
     QStringList segInfos;           // 本次各段上传成功的整串 —— 全部段处理完时一次性写缓存
+    QString     pluginCacheKey;     // 非空 = 插件命名的缓存 key（appid:plugin:名字），写完 file_info 后一起落库
     qint64      segExpire = 0;      // 多段缓存的统一过期时间（各段取最小）
     bool        segAllOk = true;    // 各段是否全部上传成功（有失败就不写缓存）
     bool        needUpload = true;
@@ -4238,6 +4527,32 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
     tc->srcPath   = pathArg;
     tc->filePath  = pathArg;
 
+    // ── plugin: 键（语音 / 视频 / 文件 与图片共用同一套「裸 file_info」缓存）──
+    //   path=plugin:名字          → 纯读缓存（1 条 = 整文件/单段，N 条 = 上次切好的多段）
+    //   path=plugin:名字|本地路径  → 用这个本地路径上传，成功后覆盖缓存
+    // 缓存值是裸 file_info，跟着上传它的账号走 → key 里必须带 appid（同 putMediaUploadCache 的注释）
+    {
+        QString pluginName, pluginLocal;
+        if (parsePluginImageTag(pathArg, &pluginName, &pluginLocal)) {
+            tc->pluginCacheKey = QString::number(st->appid) + QStringLiteral(":plugin:") + pluginName;
+            if (pluginLocal.isEmpty()) {
+                tc->cachedInfos = cachedMediaInfosIfFresh(tc->pluginCacheKey);
+                if (!tc->cachedInfos.isEmpty()) {
+                    tc->needUpload = false;
+                    mediaChainUploadAndSend(st, tc);       // 命中 → 逐条原样重发（可能多段）
+                    return;
+                }
+                // 没有缓存又没有本地文件可传 → 摘掉标签跳过（别把 "plugin:名字" 当路径去撞）
+                st->text.remove(m.start, m.length);
+                st->idx -= 1;
+                mediaChainStep(st);
+                return;
+            }
+            tc->srcPath  = pluginLocal;                    // 写法②：用插件给的本地路径
+            tc->filePath = pluginLocal;
+        }
+    }
+
     // ── 本地文件：md5 + 查上传缓存（命中就不用再传了）──
     //    外链（http）没有本地文件可算 md5，用 **URL 自身的 md5** 当缓存键 —— 同一首歌（点歌插件
     //    发的外链）再发一次就直接重放上次上传好的分段，不用再走「注册外链 → 40093013 → 下载 →
@@ -4250,7 +4565,8 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
             QCryptographicHash::hash(tc->filePath.toUtf8(), QCryptographicHash::Md5).toHex());
     }
     // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
-    if (cache_db && !tc->fileMd5.isEmpty()) {
+    // ⚠ plugin 写法②（带路径）= 插件要求「用这个新文件覆盖」→ 跳过指纹缓存，一定重传
+    if (tc->pluginCacheKey.isEmpty() && cache_db && !tc->fileMd5.isEmpty()) {
         // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效（见 putMediaUploadCache 注释）
         const QString cacheKey = QString::number(st->appid) + QLatin1Char(':') + mediaType + QLatin1Char('_') + tc->fileMd5;
         // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
@@ -4381,6 +4697,8 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
     if (job->idx >= job->paths.size()) {
         // 全部段处理完 → 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
         putMediaUploadCache(QString::number(st->appid), tc->mediaType, tc->fileMd5, tc->segInfos, tc->segExpire, tc->segAllOk);
+        // 插件命名的那份（path=plugin:名字|本地路径 上传成功后覆盖）
+        putMediaCacheRaw(tc->pluginCacheKey, tc->segInfos, tc->segExpire, tc->segAllOk);
         mediaChainFinishTag(st, tc);
         return;
     }
@@ -4665,6 +4983,30 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
         if (mediaType == "video") fileType = 2;
         else if (mediaType == "audio") fileType = 3;
         else if (mediaType == "file") fileType = 4;
+
+        // ── plugin: 键（语音 / 视频 / 文件 与图片共用同一套「裸 file_info」缓存）──
+        //   path=plugin:名字          → 纯读缓存（1 条 = 整文件/单段，N 条 = 上次切好的多段）
+        //   path=plugin:名字|本地路径  → 用这个本地路径上传，成功后覆盖缓存
+        QString pluginKey;
+        {
+            QString pluginName, pluginLocal;
+            if (parsePluginImageTag(filePath, &pluginName, &pluginLocal)) {
+                // ⚠ 带账号：file_info 跟着上传它的机器人走，跨号复用必失效（与异步链同一口径）
+                pluginKey = QString::number(m_info->appid_int) + QStringLiteral(":plugin:") + pluginName;
+                if (pluginLocal.isEmpty()) {
+                    cachedInfos = cachedMediaInfosIfFresh(pluginKey);
+                    if (!cachedInfos.isEmpty()) {
+                        needUpload = false;     // 命中 → 直接逐条重发
+                    } else {
+                        // 没缓存又没有本地文件可传 → 摘掉标签跳过（别把 "plugin:名字" 当路径去撞）
+                        text.remove(info.start, info.length);
+                        continue;
+                    }
+                } else {
+                    filePath = pluginLocal;     // 写法②：换成插件给的本地路径，照常上传
+                }
+            }
+        }
         if(!filePath.startsWith("http"))
         {
             int w=0,h=0;
@@ -4678,7 +5020,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 QCryptographicHash::hash(filePath.toUtf8(), QCryptographicHash::Md5).toHex());
         }
         // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
-        if (cache_db && !fileMd5.isEmpty()) {
+        // ⚠ plugin 键（写法①已在上面的分支里查过并 return/命中；写法②要每次覆盖）→ 这里跳过指纹缓存
+        if (pluginKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
             // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效
             //   账号标识与异步链同一口径（appid_int），否则同一文件走同步/异步两条路会各存一份、互不命中
             QString cacheKey = QString::number(m_info->appid_int) + QLatin1Char(':') + mediaType + QLatin1Char('_') + fileMd5;
@@ -4866,6 +5209,8 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
 
             // 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
             putMediaUploadCache(QString::number(m_info->appid_int), mediaType, fileMd5, segInfos, segExpire, segAllOk);
+            // 插件命名的那份（path=plugin:名字|本地路径 上传成功后覆盖）
+            putMediaCacheRaw(pluginKey, segInfos, segExpire, segAllOk);
         }else{
             // 缓存命中：1 条 = 整文件 / 单段；N 条 = 上次切好的多段 → 逐条原样重发
             QStringList infos;
@@ -4889,7 +5234,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
 
 
 
-void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, const QString &is_wakeup,int logindex)
+void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,const QString &message_reference, const QString &msgid, const QString &is_wakeup,int logindex,int index)
 {
     if (!message_reference.isEmpty()) {
         QJsonObject refObj;
@@ -4897,8 +5242,10 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
         refObj["ignore_get_message_error"] = false;
         json["message_reference"] = refObj;
     }
-    if(logindex!=1)
-         json["msg_seq"] = m_info->message_sent;
+    if(logindex!=1){
+        json["msg_seq"] = QRandomGenerator::global()->bounded(1,1000);
+
+    }
 
     if(is_wakeup=="true") //至于为什么是 文本 因为这个变量可能传用户id 为什么传用户id 只能说 为未来设计的
         json["is_wakeup"] = true;
@@ -4917,6 +5264,16 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
                                         }}
                         }}
         };
+    }
+    if(m_info->action_button){
+        QJsonObject js;
+        //js["template_id"]=0;
+        js["callback_data"]= QString::number(index);
+        js["feedback"]=true;
+        js["tts"]=true;
+        js["re_generate"]=true;
+        js["stop_generate"]=true;
+        json["action_button"]=js;
     }
     if(logPage->wanzjson) logPage->onNewLogAdded(QJsonDocument(json).toJson());
 }
@@ -5374,22 +5731,29 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     }
     int seq_index=0;
     bool ok=false;
-    if(index>=0){
+    if(index>0){
 
         g_logdb[type+1]->setBuffer_250(index,ok);
     }
     if(ok)
         seq_index = 1;
     else if(noref) return "{}";
-    else seq_index = QRandomGenerator::global()->bounded(2,100);
+    else seq_index = 2; //2是可以的 只不过里面用的 发送数量
 
     QString response,fileinfo;
+    // plugin: 键的出口（同步版）：非空 = 有不可用的 key（JSON 数组）→ 本条**一个字都不发**，
+    //   直接把 JSON 当接口返回值交给插件（插件处理完再重发）。只在 type==1 时可能非空。
+    QString pluginErr;
+    auto imgProc = [&](QString &t, int imgType) {
+        t = processImageTags(t, imgType, fileinfo, type, openid, message_reference, &pluginErr);
+        return pluginErr.isEmpty();
+    };
     if(type==1 || type ==3)
     {
         if(!mbise)
         {
             st->mark();   // 图片耗时起点
-            newtext = processImageTags(mb,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if (!imgProc(mb,1)) return pluginErr;//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);
             response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
@@ -5400,7 +5764,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
         {
             st->mark();
-            newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if (!imgProc(newtext,1)) return pluginErr;//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);
             //response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup);
@@ -5408,14 +5772,14 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         }else if(!mode && m_info->markdown_pd || mode && sendType==1) //原生
         {
             st->mark();
-            newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if (!imgProc(newtext,1)) return pluginErr;//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
             response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
             st->addSend();
         }else {
             st->mark();
-            newtext = processImageTags(newtext,2,fileinfo,type,openid,message_reference);//处理图片 + 回复
+            if (!imgProc(newtext,2)) return pluginErr;//处理图片 + 回复
             st->addMedia();
             QString textA = forbidden->filterText(newtext);//违禁词过滤
             QString url = get_url(type, openid, "messages");
@@ -5428,7 +5792,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(!mbise)
     {
         st->mark();
-        newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        if (!imgProc(newtext,1)) return pluginErr;//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
@@ -5437,7 +5801,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(!mode && m_info->markdown || mode && sendType==1)
     {
         st->mark();
-        newtext = processImageTags(newtext,1,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        if (!imgProc(newtext,1)) return pluginErr;//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
@@ -5445,7 +5809,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     }else{
 
         st->mark();
-        newtext = processImageTags(newtext,0,fileinfo,type,openid,message_reference);//处理图片 + 回复
+        if (!imgProc(newtext,0)) return pluginErr;//处理图片 + 回复
         st->addMedia();
         QString textA = forbidden->filterText(newtext);
         response = send_messages(type, openid, textA,fileinfo,prompt_keyboard, message_reference, realMsgId, is_wakeup,seq_index,mctx,noref);
@@ -5553,9 +5917,12 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
         }
 
         bool mbise= mbCopy.isEmpty();
+        // plugin: 缓存键只在「正文还压在调用线程手里」（还没把媒体派发出去、也没进别的回调）时才认：
+        //   batchPart=true = 这条正文是媒体已经先发出去之后补的，停不下来、返回值也无处可交 → 不认。
+        const bool allowPlugin = !batchPart;
         int seq_index=0;
         bool ok=false;
-        if(indexCopy>=0){
+        if(indexCopy>0){
 
               g_logdb[type+1]->setBuffer_250(indexCopy,ok);
         }
@@ -5566,7 +5933,7 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
             if (ctxT.cb) ctxT.cb(QStringLiteral("{}"), QNetworkReply::NoError);
             return;
         }
-        else seq_index = QRandomGenerator::global()->bounded(2,100);
+        else seq_index = 2;//2是可以的
 
         QString fileinfo;
         if(type==1 || type ==3)
@@ -5576,11 +5943,15 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
                 st->mark();   // 图片耗时起点（回调里 addMedia 收口）
                 processImageTagsAsync(mbCopy,1,type,openid,
                     [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
-                    (const QString &tb, const QString &, const QString &mr) {
+                    (const QString &tb, const QString &, const QString &mr, const QString &err) {
+                        if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                            if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                            return;
+                        }
                         st->addMedia();
                         QString textA = forbidden->filterText(tb);
                         send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT,noref);
-                    });
+                    }, allowPlugin);
                 return;
             }
             if(!mode && m_info->markdown_pd_mb || mode && sendType==2) //模板
@@ -5597,16 +5968,24 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
                 st->mark();
                 processImageTagsAsync(textB,1,type,openid,
                     [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
-                    (const QString &tb, const QString &, const QString &mr) {
+                    (const QString &tb, const QString &, const QString &mr, const QString &err) {
+                        if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                            if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                            return;
+                        }
                         st->addMedia();
                         QString textA = forbidden->filterText(tb);//违禁词过滤
                         send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
-                    });
+                    }, allowPlugin);
             }else {
                 st->mark();
                 processImageTagsAsync(textB,2,type,openid,
                     [this, type, openid, msgIdCopy, seq_index, ctxT, st, noref]
-                    (const QString &tb, const QString &fi, const QString &mr) {
+                    (const QString &tb, const QString &fi, const QString &mr, const QString &err) {
+                        if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                            if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                            return;
+                        }
                         st->addMedia();
                         QString textA = forbidden->filterText(tb);//违禁词过滤
                         QString url = get_url(type, openid, "messages");
@@ -5621,31 +6000,43 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
             st->mark();
             processImageTagsAsync(textB,1,type,openid,
                 [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
-                (const QString &tb, const QString &, const QString &mr) {
+                (const QString &tb, const QString &, const QString &mr, const QString &err) {
+                    if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                        if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                        return;
+                    }
                     st->addMedia();
                     QString textA = forbidden->filterText(tb);
                     send_messages_mb(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
-                });
+                }, allowPlugin);
         }
         if(!mode && m_info->markdown || mode && sendType==1)
         {
             st->mark();
             processImageTagsAsync(textB,1,type,openid,
                 [this, type, openid, prompt_keyboard, keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
-                (const QString &tb, const QString &, const QString &mr) {
+                (const QString &tb, const QString &, const QString &mr, const QString &err) {
+                    if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                        if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                        return;
+                    }
                     st->addMedia();
                     QString textA = forbidden->filterText(tb);//违禁词过滤
                     send_messages_markdown(type, openid, textA, prompt_keyboard,keyboard,mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
-                });
+                }, allowPlugin);
         }else{
             st->mark();
             processImageTagsAsync(textB,0,type,openid,
                 [this, type, openid, prompt_keyboard, msgIdCopy, is_wakeup, seq_index, ctxT, st, noref]
-                (const QString &tb, const QString &fi, const QString &mr) {
+                (const QString &tb, const QString &fi, const QString &mr, const QString &err) {
+                    if (!err.isEmpty()) {          // plugin: 键不可用 → 本条不发，JSON 当发送结果
+                        if (ctxT.cb) ctxT.cb(err, QNetworkReply::NoError);
+                        return;
+                    }
                     st->addMedia();
                     QString textA = forbidden->filterText(tb);//违禁词过滤
                     send_messages(type, openid, textA,fi,prompt_keyboard, mr, msgIdCopy, is_wakeup,seq_index,ctxT, noref);
-                });
+                }, allowPlugin);
         }
     };
 

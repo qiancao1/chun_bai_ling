@@ -313,7 +313,14 @@ public:
 
     void run() override {
         // 在线程池线程中执行耗时的 API 调用
-        QString result = m_mgr->processApiRequest(m_uuid, m_method, m_params);
+        // reqId 一定要带下去：异步 send_message（bridge 的 send_message_async）靠它把
+        // "#js|<uuid>|<id>" 交给框架，发送完成后才能用**同一个 id** 把结果写回这个 Worker。
+        QString result = m_mgr->processApiRequest(m_uuid, m_method, m_params, m_id);
+
+        // 已经派发、回包稍后由 deliverApiResult 送 → 这里绝不能先回一个 "{}"：
+        // bridge 的 pending 收到第一次回包就把这个 id 删了，真实结果到了也没人收。
+        if (result == QLatin1String(QC_JS_ASYNC_SENTINEL))
+            return;
 
         // 将响应发送回主线程（因为 QProcess::write 必须在主线程）
         // ⚠ 必须把 uuid 一起带回去：现在整个程序只有一个 node 宿主进程，

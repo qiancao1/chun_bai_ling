@@ -70,6 +70,7 @@ QString AccountInfo::toJson() const {
     obj["e_GroupChat"] = enableGroupChat;
     obj["e_GroupPersonal"] = enableGroupPersonal;
     obj["e_PrivateChat"] = enablePrivateChat;
+    obj["action_button"]= action_button;
     obj["ychfwcl"] = ychfwcl;
     obj["e_Channel"] = enableChannel;
     obj["atTrigger"] = atTrigger;
@@ -250,7 +251,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.enableGroupChat = obj["e_GroupChat"].toBool();
     info.enableGroupPersonal = obj["e_GroupPersonal"].toBool();
     info.enablePrivateChat = obj["e_PrivateChat"].toBool();
-
+    info.action_button = obj["action_button"].toBool();
     info.enableChannel = obj["e_Channel"].toBool();
     info.atTrigger = obj["atTrigger"].toBool();
     info.enableChannelPersonal = obj["e_ChannelPersonal"].toBool();

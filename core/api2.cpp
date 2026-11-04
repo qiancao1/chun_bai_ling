@@ -698,7 +698,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     ctx.index=index;
     int seq_index=0;
     bool ok=false;
-    if(index>=0){
+    if(index>0){
 
         g_logdb[type+1]->setBuffer_250(index,ok);
     }
@@ -710,7 +710,8 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
     //   多段发送时传 multiPart=true 绕过这个去重 —— 它们本来就该一条条发出去。
     else if(noref && !multiPart) return "{}";
     else seq_index = 2;
-    initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index);
+
+    initjgt(json, QJsonArray(),"",realMsgId,is_wakeup,seq_index,index);
     QString url= get_url(type,openid,"messages");
     if(ctx.openid.isEmpty()){
         QString response= PostSync(url, json,QString(), 30000);
@@ -747,7 +748,7 @@ QString QQBotClient::send_messages(int type, const QString &openid, const QStrin
     }
     json["noref"] = noref;
     json["content"] = text;
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
     QString url = get_url(type, openid, "messages");
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);
@@ -779,7 +780,7 @@ QString QQBotClient::send_messages_ark(int type, const QString &openid,const QSt
     json["msg_type"] = 3;
     json["ark"] = ark;
 
-    initjgt(json, prompt_keyboard, "", realMsgId, is_wakeup, seq_index);
+    initjgt(json, prompt_keyboard, "", realMsgId, is_wakeup, seq_index,ctx.index);
     QString url = get_url(type, openid, "messages");
 
     if (!ctx.openid.isEmpty())
@@ -850,9 +851,8 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
         }
 
     }
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
     QString url = get_url(type,openid, "messages");
-
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);
@@ -998,7 +998,7 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
             json["keyboard"] = obj;
         }
     }
-    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index);
+    initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
     QString url = get_url(type,openid,"messages");
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);

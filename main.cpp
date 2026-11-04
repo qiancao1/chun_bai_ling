@@ -461,14 +461,20 @@ static void fatalWork(EXCEPTION_POINTERS* ep, const char* tag)
     char where[600] = {0};
     if (addr) addrToModule((uintptr_t)addr, where, sizeof(where));
 
-    // ① 先落盘：dump 比什么都值钱，任何清理都不能跑在它前面
-    const bool dumped = writeMiniDump(ep, tag);
-
+    // ① 先把「已经进入崩溃处理」这件事本身落盘，再去写 dump。
+    //    ⚠ 旧顺序是「dump 成功之后才写日志」—— 可 MiniDumpWriteDump 在堆已被踩坏的进程里
+    //    很容易卡住（遍历堆结构时自己再崩一次，而 entered 已置位 → 后续 handler 全 Sleep(INFINITE)），
+    //    结果 watchdog 30 秒后强杀，crash.log 里一个字节都没有，事后看就像「根本没抓到」。
+    //    先记一行，至少能区分「没进 handler」和「进了但卡死」。
     char ts[64];
     nowStamp(ts, sizeof(ts));
-    rawLogf("%s Crash tag=%s code=0x%08lX tid=%lu at=%s dump=%s\r\n",
+    rawLogf("%s Crash detected tag=%s code=0x%08lX tid=%lu at=%s (dumping...)\r\n",
             ts, tag, (unsigned long)code, (unsigned long)GetCurrentThreadId(),
-            addr ? where : "(none)", dumped ? "ok" : "FAILED");
+            addr ? where : "(none)");
+
+    // dump 比什么都值钱，任何清理都不能跑在它前面
+    const bool dumped = writeMiniDump(ep, tag);
+    rawLogf("%s Crash done tag=%s dump=%s\r\n", ts, tag, dumped ? "ok" : "FAILED");
 
     // ② 现场清理：让 32 位加载器/插件知道我没了（每个都独立保护）
     safeCleanup();
@@ -661,6 +667,9 @@ static DWORD WINAPI crashWatchdogThread(LPVOID)
 {
     WaitForSingleObject(s_fatalEvent, INFINITE);
     Sleep(30000);
+    // 杀之前留一行：否则「handler 卡死」和「根本没进 handler」在事后完全分辨不出来
+    // （两者都是没 dump、没日志、进程没了）
+    rawLogf("---- watchdog: crash handling stuck >30s, killing process ----\r\n");
     TerminateProcess(GetCurrentProcess(), 3);
     return 0;
 }

@@ -77,16 +77,19 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.2.169"
-#define APP_BUILD_NUMBER 169
+#define APP_VERSION_STR "v1.5.2.176"
+#define APP_BUILD_NUMBER 176
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.3.170 (2026-11-02)
+## v1.5.3.176 (2026-11-02)
 - 优化 问答 按钮类 行高过高问题
 - 修复 全局样式 倒是输入框 提示灰字不可用问题
 - 增加 签到指令 每次1000积分
 - 修复 入群提醒 重复提醒无效问题
+- 增加 应该 插件缓存格式 plugin:{data}|本地路径 下次只传 plugin:{data} 就可以使用缓存 例子![img](plugin:{data}|xxx) 支持语音 视频 文件 plugin:{data} 不可用时直接返回应该json 因此易语言 等不可用 JS异步可用
+- 修复 一条消息秒回复两条时 有一条小概率失败 有概率推迟问题
+- 增加 附加按钮开关 私聊环境可用
 
 ## v1.5.2.169 (2026-11-02)
 - 增加 插件测试 一键测试注入 用于检查指令是否会复读用户指令

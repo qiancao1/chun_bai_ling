@@ -360,7 +360,8 @@ void NodePluginManager::postEventBatchAsync(const QJsonArray& items, const QStri
     }
 }
 
-QString NodePluginManager::processApiRequest(const QString& uuid, const QString& method, const QJsonArray& params) {
+QString NodePluginManager::processApiRequest(const QString& uuid, const QString& method, const QJsonArray& params,
+                                             int reqId) {
     // 映射 method 到 api_id
     int api_id = -1;
     if (method == "outlog") api_id = 1;
@@ -447,6 +448,15 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
     }
     while (strParams.size() < 8) strParams.append("");
 
+    // ── JS 异步回执：bridge.js 的 send_message_async 把第 7 位（_7）传成占位串 "js" ──
+    //   换成 "#js|<uuid>|<请求id>" —— 只有这个格式才能让 deliverPluginAsyncResult 认出
+    //   「这是 JS 插件的回执」并路由回本 Worker（Python 的 req_id 是随机 16 位，绝不会等于 "js"）。
+    bool jsAsyncPending = false;
+    if (api_id == 2 /*API_ID_SEND_MESSAGES*/ && strParams[6] == QLatin1String("js")) {
+        strParams[6] = QStringLiteral("#js|") + uuid + QLatin1Char('|') + QString::number(reqId);
+        jsAsyncPending = true;
+    }
+
     // 调用 myCallback
     const char* result_cstr = myCallback(uuid.toUtf8().constData(),
                                          api_id,
@@ -461,8 +471,30 @@ QString NodePluginManager::processApiRequest(const QString& uuid, const QString&
                                          strParams[7].toUtf8().constData());
 
     // 返回值由框架持有（thread_local）：拷进 QString 就完事，**不要也不该释放**
-    return QString::fromUtf8(result_cstr);
+    const QString retStr = QString::fromUtf8(result_cstr);
 
+    // 异步且**已派发**（sendMessagesAsyncCore 成功一律返回 "{}"）→ 不回包，等 deliverApiResult。
+    // 前面那些同步失败（bot 不在线 / client 没找到 / openid 为空 / 内容为空）返回的是别的串，
+    // 它们**不会**触发发送回调 —— 这种必须照常回包，否则插件要干等到超时。
+    if (jsAsyncPending && retStr == QLatin1String("{}"))
+        return QStringLiteral(QC_JS_ASYNC_SENTINEL);
+
+    return retStr;
+}
+
+// JS 插件的异步 API 回执：把结果写回发起请求的那个 Worker。
+// 必须是主线程（QProcess::write），所以跨线程进来时投递一次。
+void NodePluginManager::deliverApiResult(const QString& uuid, int jsId, const QString& result) {
+    if (uuid.isEmpty() || jsId <= 0) return;
+    if (QThread::currentThread() != qApp->thread()) {
+        QMetaObject::invokeMethod(this, [this, uuid, jsId, result]() {
+            deliverApiResult(uuid, jsId, result);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    if (!m_host || !m_host->isRunning()) return;
+    // uuid 非空 = 这是给某个插件的 API 回包，host.js 据此转回对应 Worker（见 NodeProcess::sendResponse）
+    m_host->sendResponse(jsId, uuid, result);
 }
 
 void NodePluginManager::onApiRequest(const QString& uuid, int id, const QString& method, const QJsonArray& params) {

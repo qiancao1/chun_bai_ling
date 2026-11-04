@@ -724,68 +724,6 @@ void QQBotClient::onError(QAbstractSocket::SocketError error)
 void Messages(AccountInfo *info, MessageEvent &ev);
 int mapTypeToTabIndex(int type);
 
-void logMessageEvent(const QString &botName, MessageEvent &ev) {
-
-
-    switch (ev.type) {
-    case 0: // 群消息
-        if(ev.subType>1 && ev.subType<5)
-            ev.msg = QString("%1").arg(ev.subType == 2 ? "群成员添加" : "群成员退群");
-        break;
-    case 1: // 频道消息
-        break;
-    case 2: // 私聊消息
-        break;
-    case 3: // 频道私聊消息
-        break;
-    case 4: // 群事件
-        ev.msg = QString("[群事件] %1 操作者:%2")
-                      .arg(ev.subType == 4 ? "被邀请进群" : "机器人被踢出群", ev.user);
-        break;
-    case 5: // 好友事件
-
-        ev.msg = QString("[好友事件] %1 用户:%2")
-                      .arg(ev.subType == 6 ? "添加好友" : "删除好友", ev.user);
-        break;
-    case 6: // 频道成员事件
-        ev.msg = QString("[频道成员事件] %1 频道:%2 用户:%3")
-                      .arg(ev.subType == 1 ? "加入" : "离开", ev.guildId, ev.user);
-        break;
-    case 7: // 回调事件
-        ev.msg = QString("[回调事件] 类型:%1 数据:%2").arg(ev.callbackType).arg(ev.msg);
-        break;
-    case 8: // 审核事件
-
-        ev.msg = QString("[审核事件] %1 消息:%2 原因:%3")
-                      .arg(ev.subType == 1 ? "通过" : "拒绝", ev.msgId, ev.msg);
-        break;
-
-    case 11: // 审核事件
-        ev.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
-                      .arg(ev.subType == 1 ? "机器人被邀请进入" : "机器人被踢出频道", ev.groupId, ev.user);
-        break;
-    case 13: // 审核事件
-        ev.msg = QString("[频道事件] %1 频道:%2 操作者:%3")
-                      .arg(ev.subType == 1 ? "成员加入" : "成员离开", ev.groupId, ev.user);
-        break;
-    case 18: // 有人申请加群
-
-
-        ev.msg = QString("[申请加群] %1 群:%2 申请人:%3(%4) \n%5")
-                     .arg(ev.subType == 0 ? "申请加群" : "邀请加群", ev.groupname, ev.nickname,ev.user,ev.extra);
-
-
-
-        break;
-    default:
-        ev.msg = QString("[未处理事件] 类型:%1").arg(ev.msgType);
-        break;
-    }
-}
-// 媒体标签形如 [image,height=…,width=…,name=文件名,type=…,text=…,size=…,url=…]
-// ——下游（ui/chatpage 清标签、日志页、插件）全靠 ',' 和 ']' 切分，文件名 / 识别文本里
-// 只要混进一个 ']'，标签就会被提前切断，后半截（size=…,url=…]）整段漏进正文。
-// 所以写进标签的字段值统一把 ']' 转成 URL 编码 %5D；要还原就 QUrl::fromPercentEncoding。
 static QString escapeTagValue(const QString &v)
 {
     if (!v.contains(QLatin1Char(']'))) return v;   // 绝大多数消息走这条，不做多余拷贝
@@ -927,14 +865,7 @@ void appendInt(QString& out, T value) {
         out.append(QString::number(value)); // fallback（实际不会发生）
     }
 }
-// ==================== 签到（「群管 → 签到」） ====================
-// 配置（m_info->qiandao）三种写法：
-//   1) 空         → 内置模板：一天一次 +1000
-//   2) 普通文本   → 当回复模板，一天一次 +1000，文本里 [获得余额] / [余额] 会被替换
-//   3) #python…   → 跑脚本（见 python_sign_code），返回值 = 本次加多少铃铛；
-//                   > 0 才算签到成功（记一次签到 + 加币），0 = 不加也不记
-// 记录存 botdb 的 signs 子库（key = openid 16 字节，与积分同一套 key），跨重启不丢：
-//   day = 上次签到的本地日期（QDate::toJulianDay）/ total = 总次数 / streak = 连续次数
+
 static constexpr qint64 kSignDefaultPoints = 1000;        // 非 py 模式：每天 +1000
 static constexpr qint64 kSignMaxPoints     = 100000;   // 脚本返回值的上限（防手抖写成天文数字）
 
@@ -1037,27 +968,25 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     ev.msgType = payload.value("t").toString();
     QJsonObject d = payload.value("d").toObject();
 
-
+    ev.groupId = d.value("group_openid").toString();
     // 默认值
     ev.type = -1;
     ev.subType = 0;
     ev.fullType = 0;
     ev.callbackType = 0;
-
+    ev.appid = m_info->appid_int;
     QJsonObject obj2 = d.value("message_scene").toObject();
     QJsonArray arr= obj2["ext"].toArray();
     if (!arr.isEmpty()) {
         ev.replyTo = arr[0].toString();
         ev.replyTo = "[ref," + ev.replyTo + "]";   // 即使是空字符串也会变成 "[ref,]"
     }
-    // {"GroupName":"","appid":1905546017,"at_you":true,"d":{"author":{"bot":false,"id":"D0FEE1BB2C4337938253AEE41CBAD5BA","union_openid":"","user_openid":"D0FEE1BB2C4337938253AEE41CBAD5BA","username":""},"content":"我修一下","id":"|2595|ROBOT1.0_ywBzYQkDL1uFWoqCZF32tTNVn0f.mTDu1jzjWD0RCVfSk1USgkiaF9q.DcuW5LZ7OK-AXTnr4eAgKiV-f3ThB0u56.I.t8nR20lTtezOE1M!","message_scene":{"ext":["msg_idx=REFIDX_+Ip3jQeJF8XuafCVXijnStvW0epW8l4WIUWHi4Eyynazf7Rnwc4XGk38ylCLBZh5JRBrgYZtQM8XVFFuI/ox48EQdru1AMJZOUWZA8UsJgzx61BPHoHyrfRUG8EmwYTF"],"source":"default"},"message_type":0,"msg_elements":null,"timestamp":"2026-10-28T22:30:14+08:00"},"id":"C2C_MESSAGE_CREATE:crp49uosqsyjfmaieepbyq5boo5ecglkrnhqoyk2xlrvnalz48ppb8ix6asuhn","member_role":3,"op":0,"s":3,"t":"C2C_MESSAGE_CREATE","type":2,"user_id":1,"username":""}
-    //-----------------------
 
     // ========== 1. 消息类事件（已有） ==========
     if (ev.msgType == "GROUP_AT_MESSAGE_CREATE" || ev.msgType == "GROUP_MESSAGE_CREATE") {
         ev.type = 0;   // 群
         ev.fullType = (ev.msgType == "GROUP_MESSAGE_CREATE");
-        ev.groupId = d.value("group_openid").toString();
+
         QJsonObject author = d.value("author").toObject();
         ev.user = author.value("union_openid").toString();
         if (ev.user.isEmpty()) ev.user = author.value("id").toString();
@@ -1157,54 +1086,41 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     // ========== 2. 群/好友管理事件 ==========
     else if (ev.msgType == "GROUP_ADD_ROBOT") {//被邀请进新群
         ev.type = 0; ev.subType = 4;
-        ev.groupId = d.value("group_openid").toString();
+
         ev.user = d.value("scene_param").toString();
         if (ev.user.isEmpty()) ev.user = d.value("op_member_openid").toString();
-        ev.msgId = payload.value("id").toString();
-        qDebug() << text;
-        ev.msg = ev.groupId;
+        ev.msg = "机器人被邀请加群";
         m_info->今日加群数量++;
     }
     else if (ev.msgType == "GROUP_DEL_ROBOT") { //被踢出群
         ev.type = 0; ev.subType = 5;
-        ev.groupId = d.value("group_openid").toString();
         ev.user = d.value("op_member_openid").toString();
-        ev.msgId = d.value("id").toString();
+        ev.msg = "机器人被移除出群聊";
         m_info->今日退群数量++;
     }
     else if (ev.msgType == "FRIEND_ADD") { //好友增加
         ev.type = 2; ev.subType = 6;
-        ev.user = d.value("openid").toString();
-
-        ev.msgId = payload.value("id").toString();
+        ev.msg = "机器人被添加好友";
         m_info->今日好友数量++;
 
     }
     else if (ev.msgType == "FRIEND_DEL") { //好友删除
         ev.type = 2; ev.subType = 7;
-        ev.user = d.value("openid").toString();
 
-        ev.msgId = d.value("id").toString();
+        ev.msg = "机器人被删除好友";
         m_info->今日删除好友数量++;
     }
     else if (ev.msgType == "C2C_MSG_REJECT") {
         ev.type = 5; ev.subType = 8;
         ev.user = d.value("openid").toString();
+        ev.msg="私聊主动消息被拒绝";
     }
     else if (ev.msgType == "C2C_MSG_RECEIVE") {
         ev.type = 5; ev.subType = 9;
         ev.user = d.value("openid").toString();
+        ev.msg="私聊主动消息被同意";
     }
-    else if (ev.msgType == "GROUP_MSG_REJECT") {
-        ev.type = 4; ev.subType = 10;
-        ev.groupId = d.value("group_openid").toString();
-        ev.user = d.value("op_member_openid").toString();
-    }
-    else if (ev.msgType == "GROUP_MSG_RECEIVE") {
-        ev.type = 4; ev.subType = 11;
-        ev.groupId = d.value("group_openid").toString();
-        ev.user = d.value("op_member_openid").toString();
-    }
+
     // ========== 3. 频道 Guild 事件 ==========
     else if (ev.msgType == "GUILD_CREATE") {
         ev.type = 11; ev.subType = 1;
@@ -1259,7 +1175,73 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.guildId = d.value("guild_id").toString();
         ev.user = d.value("op_user_id").toString();
     }
-    // ========== 6. 消息删除事件 ==========
+
+    // ========== 8. 互动回调事件 ==========
+    else if (ev.msgType == "INTERACTION_CREATE") {
+        ev.subType = 1;
+        ev.callbackId = d.value("id").toString();
+        ev.callbackType = d.value("chat_type").toInt();
+        QJsonObject resolved = d.value("data").toObject().value("resolved").toObject();
+        ev.msg = resolved.value("button_data").toString();
+        int type = d.value("type").toInt(); //13为点赞
+
+        if (ev.callbackType == 0)
+        {
+            ev.type = 1;
+            ev.guildId = d.value("guild_id").toString();
+            ev.groupId = d.value("channel_id").toString();
+            ev.user = resolved.value("user_id").toString();
+        }else if (ev.callbackType == 1) {
+            ev.type = 0;
+
+            ev.user = d.value("group_member_openid").toString();
+        } else if (ev.callbackType == 2){
+            ev.type = 2;
+            ev.groupId = d.value("union_openid").toString();
+            if(ev.groupId.isEmpty())
+                ev.groupId = d.value("user_openid").toString();
+            ev.user = ev.groupId;
+        } //频道私聊没按钮
+        if(type==13)
+        {
+            QString feedback_opt = resolved.value("feedback_opt").toString();
+            if(feedback_opt=="REGENERATE")
+            {
+                int logindex = ev.msg.toInt();
+                if(logindex >0)
+                {
+                    Message msg;
+                    g_logdb[ev.type+1]->readLog(QString::number(ev.appid),ev.groupId,logindex,msg);
+                    ev.msg = msg.msg;
+                    ev.at_you = true;
+                }
+            }
+            int checked =(resolved.value("checked").toInt()==1);
+            if(feedback_opt=="LIKE")
+            {
+                ev.msg =QString("%1:%2").arg(checked?"消息点赞👍":"取消点赞👍",ev.msg) ;
+            }
+            if(feedback_opt=="UNLIKE")
+            {
+                ev.msg =QString("%1:%2").arg(checked?"消息差评👎":"取消差评👎",ev.msg) ;
+            }
+        }
+    }
+    /*
+
+    else if (ev.msgType == "GROUP_MSG_REJECT") {
+        ev.type = 4; ev.subType = 10;
+
+        ev.user = d.value("op_member_openid").toString();
+        ev.msg="群主动消息被拒绝(已弃用)";
+    }
+    else if (ev.msgType == "GROUP_MSG_RECEIVE") {
+        ev.type = 4; ev.subType = 11;
+
+        ev.user = d.value("op_member_openid").toString();
+        ev.msg="群主动消息被同意(已弃用)";
+    }
+     // ========== 6. 消息删除事件 ==========
     else if (ev.msgType == "MESSAGE_DELETE") {
         ev.type = 14; ev.subType = 1;
         ev.guildId = d.value("guild_id").toString();
@@ -1295,30 +1277,6 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msgId = d.value("message_id").toString();
         ev.user = d.value("user_id").toString();
         ev.msg = d.value("emoji").toObject().value("name").toString();
-    }
-    // ========== 8. 互动回调事件 ==========
-    else if (ev.msgType == "INTERACTION_CREATE") {
-        ev.subType = 1;
-        ev.callbackId = d.value("id").toString();
-        ev.callbackType = d.value("chat_type").toInt();
-        ev.msgId = payload.value("id").toString();
-        QJsonObject resolved = d.value("data").toObject().value("resolved").toObject();
-        ev.msg = resolved.value("button_data").toString();
-
-        if (ev.callbackType == 0)
-        {
-            ev.type = 1;
-            ev.guildId = d.value("guild_id").toString();
-            ev.groupId = d.value("channel_id").toString();
-            ev.user = resolved.value("user_id").toString();
-        }else if (ev.callbackType == 1) {
-            ev.type = 0;
-            ev.groupId = d.value("group_openid").toString();
-            ev.user = d.value("group_member_openid").toString();
-        } else if (ev.callbackType == 2){
-            ev.type = 2;
-            ev.groupId = d.value("user_openid").toString();
-        } //频道私聊没按钮
     }
     // ========== 9. 消息审核事件 ==========
     else if (ev.msgType == "MESSAGE_AUDIT_PASS") {
@@ -1378,6 +1336,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msgId = d.value("publish_id").toString();
         ev.msg = d.value("result").toString();
     }
+
     // ========== 11. 音频事件 ==========
     else if (ev.msgType == "AUDIO_START") {
         ev.type = 17; ev.subType = 1;
@@ -1403,22 +1362,17 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.groupId = d.value("channel_id").toString();
         ev.user = d.value("user_id").toString();
     }
+    */
     else if (ev.msgType == "GROUP_MEMBER_ADD") {
         ev.type = 0; ev.subType = 2;
-        ev.msgId=payload["id"].toString();
-        ev.groupId = d.value("group_openid").toString();
-        ev.user = d.value("member_openid").toString();
+        ev.msg = "该成员加入本群...";
     }
     else if (ev.msgType == "GROUP_MEMBER_REMOVE") {
         ev.type = 0; ev.subType = 3;
-        //ev.msgId=payload["id"].toString();
-        ev.groupId = d.value("group_openid").toString();
-        ev.user = d.value("member_openid").toString();
+        ev.msg = "群成员退群...";
     }
     else if (ev.msgType == "GROUP_JOIN_REQUEST") {
         ev.type = 18; ev.subType = 0;
-        ev.msgId=payload["id"].toString();
-        ev.groupId = d.value("group_openid").toString();
         ev.user = d.value("member_openid").toString();
         ev.callbackId = d.value("join_request_id").toString();
         ev.nickname =d.value("username").toString();
@@ -1430,29 +1384,24 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(arr.size()>0)
         {
             QJsonObject o3 = arr.at(0).toObject();
-
             ev.extra ="问题："+ o3["question"].toString()+"\n答案："+o3["answer"].toString();
         }
+        ev.msg ="【有人申请加群】 群：%1(%2) 用户:%3(%4)\n%5";
     }
 
-    // ========== 12. 未识别事件 ==========
+
     else {
         ev.type = 99;
-        ev.extra = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        qDebug() << "Unhandled event type:" << ev.msgType;
+        ev.extra = text;
+        ev.msg="未解析事件:" + ev.msgType;
     }
-    if(ev.msgId.isEmpty())
-        ev.msgId = payload.value("id").toString();
-    if(ev.user.isEmpty())
-    {
-        ev.user = d.value("user_openid").toString();
-    }
-    if(ev.groupId.isEmpty())
-        ev.groupId = ev.user;
-    //2300 +-
 
+    if(ev.msgId.isEmpty()) ev.msgId = payload.value("id").toString();
+    if(ev.user.isEmpty()) ev.user = d.value("user_openid").toString();
+    if(ev.groupId.isEmpty()) ev.groupId = ev.user;
     if(neizev(d,ev)) return; //真是代表被处理 没必要传递下去
     if(m_info->pbbot && ev.bot) return;
+
     if (ev.type == 0 && ev.subType == 2 && (ev.bitmap & BIT_RUQUN_YZ))
     {
         setGroupRestrictChatSetting(ev.groupId,ev.user,30*1440*60-1,[this,ev](const QString &resp,auto){
@@ -1471,7 +1420,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
                             text.replace("{头像}", QString(">![#24px #24px](https://thirdqq.qlogo.cn/qqapp/%1/%2/100)").arg(ev.appid).arg(ev.user));
 
                 }
-                text+=R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"入群验证","permission":{"type":2},"type":1,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"点我验证","style":1,"visited_label":"按钮1"}}]},{"buttons":[{"action":{"data":"免验证 %1","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"免验证（需权限） ","style":1,"visited_label":"按钮2"}}]}]}}}#b:#)";
+                text+=R"(#b:#{"keyboard":{"content":{"rows":[{"buttons":[{"action":{"data":"入群验证","permission":{"type":2},"type":1,"unsupport_tips":"不支持"},"id":"1","render_data":{"label":"点我验证","style":1,"visited_label":"点我验证"}}]},{"buttons":[{"action":{"data":"免验证 %1","permission":{"type":2},"type":2,"unsupport_tips":"不支持"},"id":"2","render_data":{"label":"免验证（需权限） ","style":1,"visited_label":"免验证"}}]}]}}}#b:#)";
                 text=text.arg(ev.user);
                 send_msgAsync(ev.type,ev.groupId,"[入群验证]",text,ev.msgId);
             }
@@ -1479,22 +1428,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         });
 
     }
-    /*  //让定时器删吧
-    if (ev.type == 0 && ev.subType == 3 && (ev.bitmap & BIT_RUQUN_YZ))
-    {
-        auto *db = g_botdb[ev.appid];
-        GroupRecord2 record;
-        db->getGroupInfo(ev.groupId,record);
-        for(int i=0;i<record.jojnyz.size();++i)
-        {
-            if(record.jojnyz[i]==ev.user_int)
-            {
-                record.jojnyz.removeAt(i);
-                record.jojntime.removeAt(i);
-            }
-        }
-    }
-    */
+
     if(ev.msg=="广告积分")
     {
         QString text = "点击下发按钮查看广告 完成后可获得1000铃铛";
@@ -1529,57 +1463,37 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         return ;
     }
 
-    if(ev.msg=="更新日志")
+    if(ev.msg=="更新日志" && !m_info->gxrz.isEmpty())
     {
-        if(!m_info->gxrz.isEmpty())
-        {
-
-            send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->gxrz,ev.msgId);
-            return ;
-        }
+        send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->gxrz,ev.msgId);
+        return ;
     }
     // 签到：配置在「群管 → 签到」（普通文本 = 模板 +1000/天，或 #python 脚本自定义加多少）
-    if(ev.msg=="签到")
-    {
-        handleSignIn(ev);
-    }
-    if(ev.msg=="菜单")
-    {
-        if(!m_info->caidan.isEmpty())
-        {
+    if(ev.msg=="签到") handleSignIn(ev);
 
-            send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->caidan,ev.msgId);
-            return ;
-        }
+    if(ev.msg=="菜单" && !m_info->caidan.isEmpty())
+    {
+        send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->caidan,ev.msgId);
+        return ;
+
     }else if(ev.msg =="帮助" || ev.msg =="help")
     {
         if(!m_info->help.isEmpty())
         {
-
             send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->help,ev.msgId);
             return ;
         }
-    }else if(ev.msg.isEmpty() && ev.at_you)
+    }else if(ev.msg.isEmpty() && ev.at_you && !m_info->emptyAt.isEmpty())
     {
-        if(!m_info->emptyAt.isEmpty())
-        {
-
-            send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->emptyAt,ev.msgId);
-            return ;
-        }
+        send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->emptyAt,ev.msgId);
+        return ;
     }
-
-
 
     QString name=ev.nickname;
     if(强制审核昵称)
     {
         ev.nickname = ev.nickname2;
-        if(ev.nickname.isEmpty())
-        {
-            ev.nickname = QString::number(ev.user_int);
-        }
-
+        if(ev.nickname.isEmpty()) ev.nickname = QString::number(ev.user_int);
     }
     if(ev.member_role==6){
         for (int i = 0; i < 20; ++i) { //循环20次 很快 不影响
@@ -1592,7 +1506,8 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 
     d["content"] = ev.msg;
     d["id"] = ev.msgId;
-
+    d["user_openid"] = ev.user;
+    d["group_openid"]=ev.groupId;
     payload["d"] = d;
     payload["user_id"] = ev.user_int;
     payload["appid"]=ev.appid;
@@ -1609,16 +1524,9 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if(!name.isEmpty())
             ev.raw.replace(oldname,escapeJson(ev.nickname));
     }
-
-
     if(logPage->wanzjson) logPage->onNewLogAdded(ev.raw);
-
-    //qDebug() << ev.groupId <<ev.user << ev.msg;
     Messages(m_info, ev);
-    if(ev.subType== 1 && ev.type<=3)
-    {
-        if(m_info->autoht) respond_interaction(ev.callbackId,0);
-    }
+    if(m_info->autoht && ev.subType== 1 && ev.type<=3) respond_interaction(ev.callbackId,0);
 
     return ;//3736 ms
 }
@@ -1632,7 +1540,7 @@ bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)
     if(g_admin.contains(ev.user)) ev.member_role=1;
 
     tiqfuj(d,ev.msg);
-    ev.appid = m_info->appid_int;
+
     ev.user_int=-1;
 
     if (g_botdb.contains(ev.appid))
@@ -1644,9 +1552,11 @@ bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)
     if (ev.msg.startsWith("/")) {
         ev.msg.remove(0, 1); // 从索引0开始，删除1个字符
     }
-    logMessageEvent(m_info->nickname,ev);
-
-
+    // 每个事件对应的 msg（原 logMessageEvent，已内联到此处）
+    if(ev.type == 18)
+    {
+        ev.msg = ev.msg.arg(ev.groupname,ev.groupId,ev.nickname).arg(ev.user_int).arg(ev.extra);
+    }
     if(ev.type ==0)
     {
         if(ev.subType==5 || ev.subType==4){

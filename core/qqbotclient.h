@@ -344,7 +344,7 @@ private:
 
     void fetchGatewayUrl(Callback calls);
     // token 刷新已改由主线程定时任务 onRefreshReplyFinished() 统一处理
-    void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, const QString &is_wakeup , int logindex);
+    void initjgt(QJsonObject &json, const QJsonArray &prompt_keyboard, const QString &message_reference, const QString &msgid, const QString &is_wakeup , int logindex, int index);
     // info = 平台给的**裸 file_info**（上传函数直接返回它，不再有 "[类型,path=…]" 包装）
     // fileType：1图片/2视频/3音频/4文件，**只用于日志** —— 写回日志时还原成
     //   "[<类型>,path=…,]" 形态，UI(chatpage) 靠它认媒体标签并把整段从气泡正文里剥掉；0 = 不包装
@@ -512,16 +512,25 @@ private:
     QString Delete(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs, Callback callbacks);
     QString DeleteSync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000);
     void DeleteAsync(const QString &url, const QJsonObject &jsonData, const QString &contentType, int timeoutMs=30000, Callback callbacks=Callback());
-    QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference);
+    // pluginErr（只对 type==1 生效）：非空 = 「plugin: 键有不可用的」→ 调用方**一个字都别发**，
+    //   直接把它当接口返回值交回插件（JSON 数组，如 ["plugin:a","plugin:b"]）。
+    QString processImageTags(QString &text, int type, QString &info, int targetType, const QString &openid, QString &message_reference, QString *pluginErr = nullptr);
     //processImageTags 纯回调版（堵塞版不受影响）：type==1 热路径零线程——
     //阶段1（同步微秒级）解析+缓存判断+读文件 → 待上传项走 uploadimgCb 回调链（不占线程）
     //→ 原子计数聚合 → 最后回调所在线程替换文本并回调 onDone(text, info, message_reference)。
     //仅两类罕见路径临时起线程：uploadimg 全失败走阻塞备用上传；type==0/2 阻塞型上传单线程包装。
     //onDone 里可直接接着违禁词过滤+发消息（备用线程 park 的池条目会在收尾时 re-park 到
     //onDone 线程，发送走带 ctx 的 PostAsync，回池由发送回调负责）。
+    // allowPluginKey：是否支持「plugin:名字」缓存键（见 api.cpp 的说明）。
+    //   ⚠ 只在**原地同步**（阶段0/阶段1，同一个调用线程）里做：一旦媒体早已派发到别的线程
+    //   （batchPart 那一趟正文），传 false —— 那种情况停不下来，也拿不到地方交返回值。
+    // onDone 第 4 参 errJson 非空 = 「plugin: 键有不可用的」→ 本条消息**一个字都不发**，
+    //   直接把不可用 key 的 JSON 数组当发送结果交回调用方（插件自己处理后重发）。
     void processImageTagsAsync(const QString &text, int type, int targetType, const QString &openid,
                                std::function<void(const QString &text, const QString &info,
-                                                  const QString &message_reference)> onDone);
+                                                  const QString &message_reference,
+                                                  const QString &errJson)> onDone,
+                               bool allowPluginKey = false);
 
 
     QString PostSync(const QString &url, const QByteArray &jsonData, const QString &contentType, int timeoutMs);

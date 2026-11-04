@@ -31,6 +31,11 @@
 
 class NodeProcess;
 
+// processApiRequest 的返回值哨兵：表示「这条请求已经派发出去了，回包稍后由 deliverApiResult 送」。
+// JsApiTask 见到它就**不能**回包 —— bridge 的 pending 收到第一次回包就删，真实结果会被丢掉。
+// 用宏而不是 constexpr：这个头文件被 C++11 的编译单元包含也无所谓。
+#define QC_JS_ASYNC_SENTINEL "__QC_ASYNC__"
+
 // JS 插件管理器：对外接口和以前一样（按 uuid 调），但内部只有**一个** node 宿主进程，
 // 每个 JS 插件是宿主里的一个 Worker 线程（互相同名/全局/崩溃都隔离）。
 class NodePluginManager : public QObject {
@@ -56,8 +61,17 @@ public:
     void postEventBatch(const QJsonArray& items, const QString& eventType, const QString &data, const QString &fun);
     void postEventBatchAsync(const QJsonArray& items, const QString& eventType, const QString &data, const QString &fun);
 
-    QString processApiRequest(const QString& uuid, const QString& method, const QJsonArray& params);
+    QString processApiRequest(const QString& uuid, const QString& method, const QJsonArray& params,
+                              int reqId = 0);
     void onApiRequest(const QString& uuid, int id, const QString& method, const QJsonArray& params);
+
+    // ---- JS 插件的「异步 API 回执」----
+    // bridge.js 的 send_message_async() 会在 _7 放占位串 "js"，框架（processApiRequest）
+    // 把它换成 "#js|<uuid>|<请求id>" 再交给 API 层；发送完成后 API 层的
+    // deliverPluginAsyncResult 认出这个前缀 → 调这里，用**同一个请求 id** 把结果写回 Worker。
+    // bridge 的 pending 表按 id 命中 → 插件那边 `await api.send_message_async(...)` 拿到真实响应。
+    // 跨线程安全（内部投主线程再写 QProcess），uuid 找不到 / 宿主没跑 → 静默丢弃。
+    void deliverApiResult(const QString& uuid, int jsId, const QString& result);
 
     // ---- 插件配置面板（对齐 Python / x64 DLL 那两个 SDK 的 get_config_list / set_config_value）----
     // 插件的这两个函数跑在 Worker 线程里，只能跨进程请求，所以这里**阻塞等待**（internal 超时），

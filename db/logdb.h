@@ -104,10 +104,13 @@ public:
     }
     uint64_t setBuffer_250(uint64_t seq, bool &ok)
     {
+
         size_t idx = seq % m_bufferSize;
         uint64_t old = m_buffer[idx].load(std::memory_order_acquire);
+
         while (true) {
             uint8_t status = static_cast<uint8_t>(old & 0xFF);
+
             if (status >= 250) {
                 ok = false;
                 return old >> 8;   // 返回时间
