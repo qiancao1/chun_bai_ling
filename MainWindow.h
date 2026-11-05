@@ -74,10 +74,24 @@ private slots:
 private:
     void setupUi();
     void createTitleBar();
+
+    // ── 无边框窗口的边缘缩放 ──
+    // 窗口是 FramelessWindowHint，系统那套边框拖拽全没了，只能自己判边缘：
+    //   edgesAt()      全局坐标 → 落在哪几条边上（角落会同时带两条）
+    //   applyEdgeCursor() 按边上/边下切换鼠标指针（走 setOverrideCursor，因为光标形状由光标下的子控件决定）
+    //   beginResize()  记下按下时的几何，performResize() 按位移算新矩形
+    Qt::Edges edgesAt(const QPoint &globalPos) const;
+    void applyEdgeCursor(Qt::Edges edges);
+    void beginResize(Qt::Edges edges, const QPoint &globalPos);
+    void performResize(const QPoint &globalPos);
+    void setWindowShadowMargin(int m);   // 最大化/全屏时把外圈阴影带收掉
     void updateCurrentBotInfo();
     void cycleCurrentBot();
     void showBotSelectorMenu();
     void switchToBot(int index);
+    // 切「配置目标」账号（g_appid）。头部机器人下拉删除后，由标题栏选择器统一触发。
+    bool applyConfigAppId(int appid);
+    void syncConfigAppIdFromTitleBot();
     void xr();
     void checkUpdate();
 
@@ -89,7 +103,7 @@ private:
     void applyStyleSheet();
     // UI 组件
 
-    QWidget *sideBar;
+    QWidget *navBar=nullptr;      // 顶部导航条（原左侧 sideBar）
 
 
     QPushButton *btnHome, *btnAccount, *btnLog, *btnPlugin, *btnChat,*checkUpdateBtn;
@@ -104,6 +118,7 @@ private:
     QToolButton *minBtn;
     QToolButton *maxBtn;
     QToolButton *closeBtn;
+    QToolButton *restartBtn;      // 标题栏「快速重启」
 
     // 窗口缩放与移动
     bool resizing;
@@ -112,6 +127,9 @@ private:
     QSize startSize;
     QPoint startGlobalPos;
     int edgeMargin;
+    QRect resizeStartRect;       // 开始缩放时的窗口几何（performResize 在这上面加位移）
+    bool edgeCursorActive = false;   // 是否已经 push 过 override cursor（必须成对 restore）
+    QWidget *m_windowRoot = nullptr; // 包住 central 的透明根：画阴影 + 当拖边热区
     //QWidget *aiContainer;      // 用来承载 ai.ui 的容器
     //Ui::Ai aiUi;              // UI 对象
     // 其他

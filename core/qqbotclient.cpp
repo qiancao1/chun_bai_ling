@@ -1389,7 +1389,6 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msg ="【有人申请加群】 群：%1(%2) 用户:%3(%4)\n%5";
     }
 
-
     else {
         ev.type = 99;
         ev.extra = text;

@@ -80,17 +80,18 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.5.179"
-#define APP_BUILD_NUMBER 179
+#define APP_VERSION_STR "v1.5.5.182"
+#define APP_BUILD_NUMBER 182
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.5.179 (2026-11-05)
+## v1.5.5.182 (2026-11-05)
 - 更新 新的UI 移除部分界面 黑名单改为分bot执行了
 - 修复 事件用户id获取失败问题
 - 增加 #^强制普通信息 #$强制MD信息
 - 增加 拖动窗口调整大小(实际上是改了好久的)
 - 增加 快速重启按钮
+- 修复 纯白铃32.exe zyjson不支持多线程问题
 
 ## v1.5.3.176 (2026-11-02)
 - 优化 问答 按钮类 行高过高问题
@@ -709,9 +710,11 @@ void MainWindow::setupUi()
 
     addConfigPage("Ai", ai_ui);
     const int menuPanelStackIndex = configStack->addWidget(ui_MenuPanel);
-    addNavRow("菜单", menuPanelStackIndex, 1);
-    addNavRow("指令", menuPanelStackIndex, 2);
-    addNavRow("素材", menuPanelStackIndex, 3);
+    // 子 tab 下标必须跟着 m_tabWidget 实际的 addTab 顺序走（0=菜单 / 1=指令 / 2=素材），
+    // 不能从 1 起数：越界时 setCurrentIndex 静默无效，就会停在上一个 tab 上（点「指令」却显示「素材」）。
+    addNavRow("菜单", menuPanelStackIndex, 0);
+    addNavRow("指令", menuPanelStackIndex, 1);
+    addNavRow("素材", menuPanelStackIndex, 2);
     addConfigPage("基础", ui_qunguan);
     addConfigPage("问答", keyword);
     addConfigPage("按钮", RuleConfigWidget);
