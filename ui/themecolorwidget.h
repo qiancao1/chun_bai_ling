@@ -22,10 +22,12 @@ public:
 private:
     void setupUI();
     void refreshSwatches();                 // 按当前配色重画所有色块
+    void refreshPresetState();              // 标出「当前生效」的预设
     void pickColor(const QString &key);     // 弹调色板并应用
 
     QGridLayout *m_grid = nullptr;
     QHash<QString, QPushButton *> m_swatches;   // key -> 色块按钮
+    QList<QPushButton *> m_presetButtons;       // 预设按钮（用来标记「当前生效」）
 };
 
 #endif // THEMECOLORWIDGET_H

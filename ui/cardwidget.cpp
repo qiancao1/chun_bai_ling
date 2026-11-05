@@ -40,9 +40,10 @@ void CardWidget::setupUI() {
     m_avatarLabel->setStyleSheet("border-radius: 9px; background-color: #E5DED5;");
     mainLayout->addWidget(m_avatarLabel, 0, Qt::AlignVCenter);
 
-    // 中间信息区
+    // 中间信息区（同样只对自身声明，别用不带选择器的写法 —— 会传给后代控件）
     QWidget *infoWidget = new QWidget;
-    infoWidget->setStyleSheet("background: transparent;");
+    infoWidget->setObjectName("cardInfoWidget");
+    infoWidget->setStyleSheet("#cardInfoWidget { background: transparent; }");
     QVBoxLayout *infoLayout = new QVBoxLayout(infoWidget);
     infoLayout->setContentsMargins(0, 0, 0, 0);
     infoLayout->setSpacing(1);
@@ -83,28 +84,30 @@ void CardWidget::setupUI() {
     mainLayout->addWidget(infoWidget, 1, Qt::AlignVCenter);
 
     // 右侧按钮区：登录 / 删除
-    QString loginStyle =
-        "QPushButton { background-color: #FFE9D3; border: none; border-radius: 8px; font-size: 12px; color: #F26F2A; font-weight: 800; }"
-        "QPushButton:hover { background-color: #FFD9B6; }";
-    QString delStyle =
-        "QPushButton { background-color: #FDECEA; border: none; border-radius: 8px; font-size: 12px; color: #D9534F; font-weight: 800; }"
-        "QPushButton:hover { background-color: #F9D6D3; }";
+    // 外观一律走主窗口的全局 QPushButton 样式（浅橙底 + 细描边 + 深字），
+    // 这里只做两件小事：把内距收窄（66×28 装不下全局的 6px 12px，字会被切掉），
+    // 以及给「删除」留红色文字做危险语义（只覆盖 color，底/边/圆角仍继承全局规则）。
+    const QString kBtnTweak = "QPushButton { padding: 2px 6px; font-size: 12px; }";
 
     m_loginBtn = new QPushButton(m_info->online ? "登出" : "登录");
-    m_loginBtn->setStyleSheet(loginStyle);
-    m_loginBtn->setFixedSize(58, 26);
+    m_loginBtn->setStyleSheet(kBtnTweak);
+    m_loginBtn->setFixedSize(66, 28);
     m_loginBtn->setCursor(Qt::PointingHandCursor);
     m_loginBtn->setToolTip("登录 / 登出该机器人账号");
 
     m_deleteBtn = new QPushButton("删除");
-    m_deleteBtn->setStyleSheet(delStyle);
-    m_deleteBtn->setFixedSize(58, 26);
+    m_deleteBtn->setStyleSheet(kBtnTweak + "QPushButton { color: #D9534F; }");
+    m_deleteBtn->setFixedSize(66, 28);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setToolTip("从框架中删除该账号");
 
     // 右侧按钮区：登录在上、删除在下（竖向排列）
+    // ⚠ 不能写 setStyleSheet("background: transparent;")：不带选择器的声明块在 Qt 里
+    // 等价于 `* { ... }`，会向下传给两个按钮，把全局的 #FFF0DE 底色覆盖成透明
+    // —— 按钮就变成只剩一圈字。要限定到控件自身，必须带 #objectName。
     QWidget *btnColumn = new QWidget;
-    btnColumn->setStyleSheet("background: transparent;");
+    btnColumn->setObjectName("cardBtnColumn");
+    btnColumn->setStyleSheet("#cardBtnColumn { background: transparent; }");
     QVBoxLayout *btnColumnLayout = new QVBoxLayout(btnColumn);
     btnColumnLayout->setContentsMargins(0, 0, 0, 0);
     btnColumnLayout->setSpacing(4);

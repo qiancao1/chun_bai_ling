@@ -127,42 +127,36 @@ const QList<ThemeRole> &roleTable()
 }
 
 // 预设整套配色。第一个「默认」= 全部还原默认色，所以 colors 是空的。
+//
+// 原来这里还有一套 "dark"（黑色主题）。实际用下来：整屏深灰、卡片和底几乎分不开，
+// 图表/表格里还有一堆没接主题的深色文字，观感太闷 —— 已下线。
+// 老配置里如果存着 dark，setApplyHook() 会自动把整组 theme_* 清掉退回默认。
+// 想再加深色主题，先确认 roleTable() 的 seed 能覆盖到所有硬编码色，再加回来。
 const QList<ThemePreset> &presetTable()
 {
     static const QList<ThemePreset> table = {
         { "default", "默认配色", {} },
-        { "dark",    "黑色主题", {
-            // 背景层次：窗口 → 内容区 → 侧栏 → 卡片 → 输入框
-            { "window_bg",     "#1E1E1E" },
-            { "content_bg",    "#252526" },
-            { "sidebar_bg",    "#1A1A1A" },
-            { "card_bg",       "#2D2D2D" },
-            { "input_bg",      "#2E2E2E" },
-            { "combo_bg",      "#2E2E2E" },
-            { "combo_arrow_bg","#444444" },
-            // 强调色用亮一档的橙，深底上才看得清
-            { "accent",        "#FFA05C" },
-            { "accent_hover",  "#FFB87A" },
-            { "accent_soft",   "#3A2A1E" },
-            { "soft_hover",    "#2E2620" },
-            { "btn_hover",     "#4A3524" },
-            { "btn_pressed",   "#5A4129" },
-            { "hover_bg",      "#2A2A2A" },
-            { "text_main",     "#E6E6E6" },
-            { "text_sub",      "#A0A0A0" },
-            { "text_sub2",     "#8C8C8C" },
-            { "border",        "#3C3C3C" },
-            { "border_soft",   "#333333" },
-            { "focus",         "#FFA05C" },
-            { "scroll_handle", "#4A4A4A" },
-            { "table_head_bg", "#2D2D2D" },
-            { "table_grid",    "#3C3C3C" },
-            // 选择夹：未选中比卡片再亮一点区分层次，选中底是暗橙
-            { "tab_bg",        "#2A2A2A" },
-            { "tab_sel_bg",    "#3B2A1E" },
-        } },
     };
     return table;
+}
+
+// 预设被下线之后，老配置里的 theme_xxx 依旧存在（value() 优先读它们），
+// 结果就是：界面上的预设按钮没了，颜色却还是那套的。启动时清干净退回默认。
+void migrateRemovedPresets()
+{
+    const QString cur = g_config.value(kPresetKeyName).toString();
+    if (cur.isEmpty() || cur == QLatin1String("default"))
+        return;
+
+    for (const ThemePreset &p : presetTable()) {
+        if (p.key == cur)
+            return;   // 这套预设还在用，不动它
+    }
+
+    for (const ThemeRole &r : roleTable())
+        g_config.remove("theme_" + r.key);
+    g_config[kPresetKeyName] = QStringLiteral("default");
+    saveConfig();
 }
 
 std::function<void()> &applyHook()
@@ -177,6 +171,7 @@ namespace ThemeColors {
 
 void setApplyHook(std::function<void()> hook)
 {
+    migrateRemovedPresets();   // 先处理下线的预设，再交给调用方套样式表
     applyHook() = std::move(hook);
 }
 

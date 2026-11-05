@@ -9,17 +9,17 @@
 #include <QPushButton>
 #include <QColorDialog>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
+#include <QStyle>
+
+#include "global.h"
 
 namespace {
 
-const int kColumns = 6;     // 每行几个色块
-
-// 按底色亮度选黑/白文字，保证色块上的名字始终看得清
-QColor contrastText(const QColor &bg)
-{
-    const double lum = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue();
-    return lum > 150.0 ? QColor("#263241") : QColor("#FFFFFF");
-}
+// 每行 8 个色块（用户指定）。25 项 → 4 行，最后一行只有 1 个；
+// 卡片内宽约 990px，8×108 + 7×4 = 892 放得下。
+const int kColumns = 8;
 
 QString hexUpper(const QString &name)
 {
@@ -45,21 +45,26 @@ void ThemeColorWidget::setupUI()
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->setSpacing(8);
 
-    titleRow->addWidget(new QLabel("界面配色：点击色块修改（立即生效）", this));
+    // 标题用和基础页卡片一致的样式（objectName 由 ui/set.cpp 的页面样式表定义）
+    QLabel *title = new QLabel("界面配色", this);
+    title->setObjectName("setCardTitle");
+    titleRow->addWidget(title);
 
-    QLabel *hint = new QLabel("仅影响主窗口全局样式", this);
-    hint->setStyleSheet("color: #96979B; font-size: 11px;");
-    hint->setToolTip("个别自带样式表的页面（账号页、聊天页、插件市场等）不受影响");
+    QLabel *hint = new QLabel("点击色块修改，立即生效", this);
+    hint->setObjectName("setCardHint");
+    hint->setToolTip("仅影响主窗口全局样式；个别自带样式表的页面（账号页、聊天页、插件市场等）不受影响");
     titleRow->addWidget(hint);
     titleRow->addStretch();
 
     QLabel *presetLabel = new QLabel("预设：", this);
-    presetLabel->setStyleSheet("color: #96979B; font-size: 11px;");
+    presetLabel->setObjectName("setCardHint");
     titleRow->addWidget(presetLabel);
 
     // 预设按钮由 presets() 决定，加一套预设只改 ui/themecolors.cpp 那张表
     for (const ThemePreset &preset : ThemeColors::presets()) {
         QPushButton *btn = new QPushButton(preset.name, this);
+        btn->setObjectName("presetChip");          // 样式在 ui/set.cpp 的页面样式表里
+        btn->setProperty("presetKey", preset.key); // 用来对比「当前生效的是哪套」
         btn->setCursor(Qt::PointingHandCursor);
         btn->setToolTip(QString("一键套用「%1」").arg(preset.name));
 
@@ -77,6 +82,7 @@ void ThemeColorWidget::setupUI()
             refreshSwatches();
         });
 
+        m_presetButtons.append(btn);
         titleRow->addWidget(btn);
     }
     root->addLayout(titleRow);
@@ -88,6 +94,7 @@ void ThemeColorWidget::setupUI()
     m_grid->setVerticalSpacing(4);
 
     const QList<ThemeRole> &table = ThemeColors::roles();
+
     for (int i = 0; i < table.size(); ++i) {
         const ThemeRole &r = table[i];
 
@@ -116,15 +123,77 @@ void ThemeColorWidget::refreshSwatches()
 
         const QColor cur = ThemeColors::value(r.key);
 
-        // 色块自带样式（不用全局配色），这样不管用户把界面改成什么样，这里始终能看清
+        // 左边一个圆角色点，右边是角色名。
+        // 以前是「整块底色填当前色 + 按亮度选黑/白字」—— 主文字色、次要文字色这类
+        // 深色项上字色经常和底色撞成一片，标签名根本读不出来。
+        QPixmap dot(28, 28);
+        dot.fill(Qt::transparent);
+        {
+            QPainter p(&dot);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(0, 0, 0, 45), 1.2));    // 近白色也有边界
+            p.setBrush(cur);
+            p.drawRoundedRect(QRectF(2.5, 2.5, 23.0, 23.0), 7, 7);
+        }
+        btn->setIcon(QIcon(dot));
+        btn->setIconSize(QSize(14, 14));
+
+        // 色卡按钮跟着主题走：底色取「控件悬停底」、字色取主文字、描边取边框色。
+        // 以前这里硬编码白底深字 —— 浅色主题下没问题，切到黑色主题就变成一片白块，
+        // 和深色卡片撞得很突兀。现在三色都从 ThemeColors 取，任意主题都自适应。
+        const QString bg     = ThemeColors::value("hover_bg").name();
+        const QString fg     = ThemeColors::value("text_main").name();
+        const QString border = ThemeColors::value("border").name();
+        const QString hoverB = ThemeColors::value("accent_soft").name();
+        const QString accent = ThemeColors::value("accent").name();
+        const QString pressB = ThemeColors::value("btn_pressed").name();
+
         btn->setStyleSheet(QString(
-            "QPushButton { background: %1; color: %2; border: 1px solid #C9C9C9;"
-            " border-radius: 6px; font-weight: 600; }"
-            "QPushButton:hover { border: 1px solid #8A94A6; }")
-            .arg(cur.name(), contrastText(cur).name()));
+            "QPushButton {"
+            "   background: %1;"
+            "   color: %2;"
+            "   border: 1px solid %3;"
+            "   border-radius: 6px;"
+            "   font-weight: 600;"
+            "   font-size: 12px;"
+            "   text-align: left;"
+            "   padding-left: 8px;"
+            "}"
+            "QPushButton:hover {"
+            "   background: %4;"
+            "   border: 1px solid %5;"
+            "   color: %5;"
+            "}"
+            "QPushButton:pressed { background: %6; }")
+            .arg(bg, fg, border, hoverB, accent, pressB));
 
         btn->setToolTip(QString("%1\n当前：%2\n默认：%3\n\n点击选择颜色")
                             .arg(r.name, hexUpper(cur.name()), hexUpper(r.def)));
+    }
+
+    refreshPresetState();
+}
+
+// 预设按钮里把「当前生效的那套」标成实心橙底（走 ui/set.cpp 里的
+// QPushButton#presetChip[active="true"]），其余保持普通按钮样式。
+// 老配置里没有 theme_preset 这个键，一律当默认配色。
+void ThemeColorWidget::refreshPresetState()
+{
+    QString cur = g_config.value("theme_preset").toString();
+    if (cur.isEmpty())
+        cur = QStringLiteral("default");
+
+    for (QPushButton *btn : m_presetButtons) {
+        if (!btn)
+            continue;
+
+        const bool active = (btn->property("presetKey").toString() == cur);
+        if (btn->property("active").toBool() == active)
+            continue;
+
+        btn->setProperty("active", active);
+        btn->style()->unpolish(btn);   // 属性选择器要手动重新 polish 才生效
+        btn->style()->polish(btn);
     }
 }
 

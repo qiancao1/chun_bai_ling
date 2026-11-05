@@ -1457,39 +1457,7 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
         obj["appid"]  = ev.appid;
         g_config["zdcq"] = obj;
         saveConfig();   // 必须同步写入磁盘
-        QMetaObject::invokeMethod(qApp, []() {
-
-            for (auto &c : m_botClients) {
-                c->stop();   // 假设 stop 是同步的，会等待数据发送完毕
-            }
-            for (const auto &c : std::as_const(g_botdb)) {
-                c->close();   // 假设 stop 是同步的，会等待数据发送完毕
-            }
-            // 关闭后必须清空：否则重启期间残留的实例 m_env 已是 nullptr，
-            // 任何 getOrUpdateUser 都会读不到记录而返回 0（表现为用户 ID「丢了」）
-            g_botdb.clear();
-            #ifdef _WIN32
-            if (bridge) {
-                bridge->writeResponseToBlock(1, "{\"type\":6}");
-                bridge->stopServer();   // 同步停止
-            }
-            #endif
-            for(const auto &db : std::as_const(g_logdb))
-            {
-                db->close();
-            }
-            if (g_errlogdb) g_errlogdb->close();   // 发送错误库也要先关，否则重启后新进程打开同名环境失败
-            pluginPage->foruninstall_Plugin();
-            QThreadPool::globalInstance()->waitForDone();
-            QString program = QCoreApplication::applicationFilePath();
-            QStringList args = QCoreApplication::arguments();
-            QProcess::startDetached(program, args);
-
-            qApp->quit();
-        }, Qt::QueuedConnection);
-
-
-
+        restartFramework();
         return "正在重启";
     }
     if(ev.msg=="#更新框架")
@@ -1685,9 +1653,43 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
     return QString();
 }
 
-QString admin_zl(AccountInfo *info,MessageEvent &ev)
+void restartFramework()
 {
-    if(ev.member_role>2){
+    // 指令「#确认重启框架」和标题栏「快速重启」按钮共用。
+    // 顺序不能换：先停机器人 / 关库 / 卸载插件，再拉新进程 —— 反过来的话新进程会打不开同名 LMDB 环境。
+    QMetaObject::invokeMethod(qApp, []() {
+        for (auto &c : m_botClients) {
+            c->stop();   // 假设 stop 是同步的，会等待数据发送完毕
+        }
+        for (const auto &c : std::as_const(g_botdb)) {
+            c->close();   // 假设 stop 是同步的，会等待数据发送完毕
+        }
+        // 关闭后必须清空：否则重启期间残留的实例 m_env 已是 nullptr，
+        // 任何 getOrUpdateUser 都会读不到记录而返回 0（表现为用户 ID「丢了」）
+        g_botdb.clear();
+        #ifdef _WIN32
+        if (bridge) {
+            bridge->writeResponseToBlock(1, "{\"type\":6}");
+            bridge->stopServer();   // 同步停止
+        }
+        #endif
+        for(const auto &db : std::as_const(g_logdb))
+        {
+            db->close();
+        }
+        if (g_errlogdb) g_errlogdb->close();   // 发送错误库也要先关，否则重启后新进程打开同名环境失败
+        pluginPage->foruninstall_Plugin();
+        QThreadPool::globalInstance()->waitForDone();
+        QString program = QCoreApplication::applicationFilePath();
+        QStringList args = QCoreApplication::arguments();
+        QProcess::startDetached(program, args);
+
+        qApp->quit();
+    }, Qt::QueuedConnection);
+}
+
+QString admin_zl(AccountInfo *info,MessageEvent &ev)
+{    if(ev.member_role>2){
 
         if(!info->cbl) return QString();
         if(ev.msg=="#纯白铃铛" || ev.msg.startsWith("纯白铃") )
@@ -2100,7 +2102,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     }
 
 
-    if(m_blacklist.contains(ev.groupId) || m_blacklist.contains(ev.user)) { //黑名单
+    if(Blacklist::contains(info->appid_int, ev.groupId) || Blacklist::contains(info->appid_int, ev.user)) { //黑名单（按账号隔离）
         return;
     }
     ret =ruqunhy(info,ev);

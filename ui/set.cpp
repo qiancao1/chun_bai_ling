@@ -4,6 +4,8 @@
 #include <QMessageBox>
 #include <QHeaderView>
 #include <QColorDialog>
+#include <QScrollArea>
+#include <QGridLayout>
 #include <QTimer>
 #include <qclipboard.h>
 #include <qpainter.h>
@@ -11,6 +13,7 @@
 #include "websocketserver.h"
 #include "machinekey.h"
 #include "themecolorwidget.h"
+#include "themecolors.h"
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 QString uploadFileSync_cos(const QString &localPath);
@@ -78,15 +81,67 @@ bool generateUniqueTestImage() {
 }
 void set::setupUI()
 {
-    QVBoxLayout *mainVLayout = new QVBoxLayout(this);
-    mainVLayout->setContentsMargins(2, 2, 2, 2);
-    mainVLayout->setSpacing(4);
-    mainVLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    // 模式行
-    QHBoxLayout *remoteLayout1 = new QHBoxLayout;
-    remoteLayout1->setAlignment(Qt::AlignLeft);
-    remoteLayout1->setContentsMargins(0, 0, 0, 0);
-    remoteLayout1->setSpacing(4);
+    // 整页结构：可滚动的容器 → 若干张白卡（运行参数 / 网络与服务 / 图床 / 界面配色 / 超级管理员）。
+    // 控件创建和信号连接保持原样，只是不再一行行往顶层布局里硬塞。
+    QScrollArea *scroll = new QScrollArea(this);
+    scroll->setObjectName("setScroll");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->viewport()->setAutoFillBackground(false);
+
+    QVBoxLayout *pageLayout = new QVBoxLayout(this);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setSpacing(0);
+    pageLayout->addWidget(scroll);
+
+    QWidget *content = new QWidget;
+    content->setObjectName("setContent");
+    content->setAttribute(Qt::WA_StyledBackground, true);
+
+    QVBoxLayout *mainVLayout = new QVBoxLayout(content);
+    mainVLayout->setContentsMargins(8, 8, 8, 8);
+    mainVLayout->setSpacing(10);
+    scroll->setWidget(content);
+
+    // ---- 小工具：卡片 / 字段行 ----
+    auto makeLabel = [](const QString &text, const char *objectName) {
+        auto *label = new QLabel(text);
+        label->setObjectName(objectName);
+        return label;
+    };
+    // 卡片：白底圆角 + 标题行（标题 + 灰色说明），返回卡片内部的纵向布局
+    auto addCard = [&](const QString &title, const QString &hint) -> QVBoxLayout * {
+        auto *card = new QFrame;
+        card->setObjectName("setCard");
+        card->setAttribute(Qt::WA_StyledBackground, true);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(16, 14, 16, 14);
+        cardLayout->setSpacing(12);
+
+        auto *head = new QHBoxLayout;
+        head->setSpacing(8);
+        head->addWidget(makeLabel(title, "setCardTitle"));
+        if (!hint.isEmpty())
+            head->addWidget(makeLabel(hint, "setCardHint"));
+        head->addStretch();
+        cardLayout->addLayout(head);
+
+        mainVLayout->addWidget(card);
+        return cardLayout;
+    };
+    // 字段单元：输入框 + 右侧按钮（按钮跟着输入框走，不会被拉伸跑远）
+    auto fieldUnit = [](QWidget *input, const QList<QWidget *> &buttons) -> QWidget * {
+        auto *unit = new QWidget;
+        auto *h = new QHBoxLayout(unit);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(6);
+        h->addWidget(input, 1);
+        for (QWidget *button : buttons) {
+            if (button) h->addWidget(button);
+        }
+        return unit;
+    };
 
     QLabel *urlLabel1 = new QLabel(tr("ffmpeg路径"), this);
     m_ffmpegpath = new QLineEdit(this);
@@ -108,9 +163,10 @@ void set::setupUI()
 
     QLabel *urlLabel3 = new QLabel(tr("日志数"), this);
     m_日志数量 = new QLineEdit(this);
-    m_日志数量->setPlaceholderText("默认20w条 看你电脑配置来 是永久缓存 这样子可用存更多聊天信息");
+    m_日志数量->setPlaceholderText("200000");
+    m_日志数量->setToolTip("日志保留条数，默认 20 万条。看电脑配置来，是永久缓存（落数据库，不占内存）");
     m_日志数量->setText(QString::number(g_config["logs"].toInt(200000)));
-    m_日志数量->setMaximumWidth(110);
+    m_日志数量->setMaximumWidth(120);
     QPushButton *bt2 = new QPushButton(tr("确认"), this);
 
     Color_0 = g_config["log_Color0"].toInt(0);
@@ -155,20 +211,6 @@ void set::setupUI()
                                                "如果你只是用户，你可以在日志显示有延迟时(延迟个几秒) 代表你可能要提高线程数量 可能是那个插件的史山发力了");
     });
 
-    remoteLayout1->addWidget(urlLabel1);
-    remoteLayout1->addWidget(m_ffmpegpath);
-    remoteLayout1->addWidget(bt);
-    remoteLayout1->addWidget(new QLabel(tr("线程数"), this));
-    remoteLayout1->addWidget(m_xcs);
-    remoteLayout1->addWidget(btn_xc);
-    remoteLayout1->addWidget(urlLabel3);
-    remoteLayout1->addWidget(m_日志数量);
-    remoteLayout1->addWidget(bt2);
-
-    remoteLayout1->addWidget(urlLabel4);
-    remoteLayout1->addWidget(colorPreview);
-
-
     QLabel *urlLabel5 = new QLabel(tr("未处理颜色"), this);
     QPushButton *colorPreview2 = new QPushButton(this);
     colorPreview2->setFixedSize(30, 30);
@@ -187,9 +229,6 @@ void set::setupUI()
             saveConfig();
         }
     });
-
-    remoteLayout1->addWidget(urlLabel5);
-    remoteLayout1->addWidget(colorPreview2);
 
     webhook = new QLineEdit(this);
     webhook_but = new QPushButton("确认");
@@ -234,33 +273,6 @@ void set::setupUI()
     m_startStopBtn = new QPushButton("保存", this);
     lts_but = new QPushButton("复制聊天室链接", this);
 
-    QHBoxLayout *remoteLayout2 = new QHBoxLayout;
-
-    remoteLayout2->setContentsMargins(0, 0, 0, 0);
-    remoteLayout2->setSpacing(4);
-    remoteLayout2->setAlignment(Qt::AlignLeft);
-
-    remoteLayout2->addWidget(new QLabel("对外链接"));
-    remoteLayout2->addWidget(m_addrEdit);
-    remoteLayout2->addWidget(m_startStopBtn);
-
-
-    remoteLayout2->addWidget(new QLabel("webhook端口"));
-    remoteLayout2->addWidget(webhook);
-    remoteLayout2->addWidget(webhook_but);
-
-    remoteLayout2->addWidget(new QLabel("聊天室端口"));
-    remoteLayout2->addWidget(webws_port);
-    remoteLayout2->addWidget(web_qr);
-
-    remoteLayout2->addWidget(lts_but);
-
-
-    QHBoxLayout *localLayout = new QHBoxLayout;
-    localLayout->setAlignment(Qt::AlignLeft);
-    localLayout->setContentsMargins(0, 0, 0, 0);
-    localLayout->setSpacing(4);
-
     Ewebhook = new QCheckBox;
     Ews = new QCheckBox;
     ESSL = new QCheckBox;
@@ -283,19 +295,6 @@ void set::setupUI()
     m_loadport->setText(远程端口);
     m_loadbut = new QPushButton("确认", this);
     m_test_api = new QPushButton("测试接口");
-    localLayout->addWidget(Ewebhook);
-    localLayout->addWidget(Ews);
-    localLayout->addWidget(ESSL);
-    localLayout->addWidget(Eimg);
-    localLayout->addWidget(loadimg);
-    localLayout->addWidget(m_loadport);
-    localLayout->addWidget(m_loadbut);
-    localLayout->addWidget(m_test_api);
-    mainVLayout->addLayout(remoteLayout1);
-
-
-    mainVLayout->addLayout(remoteLayout2);
-    mainVLayout->addLayout(localLayout);
     connect(m_test_api, &QPushButton::clicked, [this](){
         if (!generateUniqueTestImage()) {
             QMessageBox::warning(this, "错误", "生成测试图片失败");
@@ -310,7 +309,7 @@ void set::setupUI()
 
     });
 
-    m_cnb = new QCheckBox("启用cnb图床 组织/仓库:");
+    m_cnb = new QCheckBox("启用 CNB 图床");
     m_cnb_repo = new QLineEdit;
     m_cnb_repo->setPlaceholderText("nya/image");
     m_cnb_token= new QLineEdit;
@@ -324,18 +323,6 @@ void set::setupUI()
     m_cnb_repo->setText(g_cnb.repo);
     m_cnb_token->setText(g_cnb.key);
     m_cnb->setChecked(g_cnb.e);
-    QHBoxLayout *localLayout1 = new QHBoxLayout;
-    localLayout1->setAlignment(Qt::AlignLeft);
-    localLayout1->setContentsMargins(0,0,0,0);
-    localLayout1->setSpacing(4);
-    localLayout1->addWidget(m_cnb);
-
-    localLayout1->addWidget(m_cnb_repo);
-    localLayout1->addWidget(new QLabel("访问令牌:"));
-    localLayout1->addWidget(m_cnb_token);
-    localLayout1->addWidget(m_cnb_qr);
-    localLayout1->addWidget(m_cnb_cs);
-    mainVLayout->addLayout(localLayout1);
 
     connect(m_cnb_qr, &QPushButton::clicked, [this](){
         g_cnb.repo = m_cnb_repo->text();
@@ -360,13 +347,7 @@ void set::setupUI()
 
     });
 
-    QHBoxLayout *localLayout2 = new QHBoxLayout;
-    localLayout2->setAlignment(Qt::AlignLeft);
-    localLayout2->setContentsMargins(0,0,0,0);
-    localLayout2->setSpacing(4);
-
-
-    m_cos = new QCheckBox("启用cos图床 secretID:");
+    m_cos = new QCheckBox("启用 COS 图床");
     m_cos_secretId = new QLineEdit;
     m_cos_secretKey= new QLineEdit;
     m_cos_host= new QLineEdit;
@@ -395,15 +376,6 @@ void set::setupUI()
     m_cos_secretKey->setText(g_cos.secretKey);
     m_cos_host->setText(g_cos.host);
 
-    localLayout2->addWidget(m_cos);
-
-    localLayout2->addWidget(m_cos_secretId);
-    localLayout2->addWidget(new QLabel("secretKey:"));
-    localLayout2->addWidget(m_cos_secretKey);
-    localLayout2->addWidget(new QLabel("host:"));
-    localLayout2->addWidget(m_cos_host);
-    localLayout2->addWidget(m_cos_qr);
-    localLayout2->addWidget(m_cos_cs);
     connect(m_cos_qr, &QPushButton::clicked, [this](){
         g_cos.secretId = m_cos_secretId->text();
         g_cos.secretKey = m_cos_secretKey->text();
@@ -448,19 +420,201 @@ void set::setupUI()
         QMessageBox::warning(this,"测试结果COS","测试返回url(如果是空代表失败):"+url+"\n\n耗时："+QString::number(t.elapsed())+"ms");
 
     });
-    mainVLayout->addLayout(localLayout2);
 
-    // 界面配色（点色块自定义，立即生效）
-    mainVLayout->addWidget(new ThemeColorWidget(this));
+    // ================== 卡片式布局 ==================
+    auto addDivider = [](QVBoxLayout *parent) {
+        auto *line = new QFrame;
+        line->setObjectName("setDivider");
+        line->setFixedHeight(1);
+        parent->addWidget(line);
+    };
+    auto makeGrid = []() {
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(10);
+        grid->setVerticalSpacing(8);
+        grid->setColumnStretch(1, 1);
+        grid->setColumnStretch(3, 1);
+        return grid;
+    };
 
-    m_admid_deit = new QTextEdit;
-    m_admid_deit->setPlainText("空格分割 允许触发 webui 全局禁用启用插件 启用ws");
-    m_admid_deit->setText(g_admin);
-    m_admin_qr = new QPushButton("保存全局管理");
+    // ---- 运行参数 ----
+    {
+        QVBoxLayout *card = addCard(QStringLiteral("运行参数"),
+                                    QStringLiteral("改完点右侧的确认才会生效"));
+        urlLabel1->setObjectName("setFieldLabel");
+        urlLabel3->setObjectName("setFieldLabel");
+        urlLabel4->setObjectName("setFieldLabel");
+        urlLabel5->setObjectName("setFieldLabel");
 
-    mainVLayout->addWidget(new QLabel("超级管理员：空格分割"));
-    mainVLayout->addWidget(m_admid_deit);
-    mainVLayout->addWidget(m_admin_qr);
+        auto *grid = makeGrid();
+        grid->addWidget(urlLabel1, 0, 0);
+        grid->addWidget(fieldUnit(m_ffmpegpath, {bt}), 0, 1);
+        grid->addWidget(makeLabel(tr("线程数"), "setFieldLabel"), 0, 2);
+        grid->addWidget(fieldUnit(m_xcs, {btn_xc}), 0, 3);
+
+        grid->addWidget(urlLabel3, 1, 0);
+        grid->addWidget(fieldUnit(m_日志数量, {bt2}), 1, 1);
+        grid->addWidget(urlLabel4, 1, 2);
+
+        // 两个颜色块 + 各自的说明，放在同一个格子里
+        auto *colorUnit = new QWidget;
+        auto *colorRow = new QHBoxLayout(colorUnit);
+        colorRow->setContentsMargins(0, 0, 0, 0);
+        colorRow->setSpacing(8);
+        colorRow->addWidget(colorPreview);
+        colorRow->addWidget(urlLabel5);
+        colorRow->addWidget(colorPreview2);
+        colorRow->addStretch();
+        grid->addWidget(colorUnit, 1, 3);
+
+        card->addLayout(grid);
+    }
+
+    // ---- 网络与服务 ----
+    {
+        QVBoxLayout *card = addCard(QStringLiteral("网络与服务"),
+                                    QStringLiteral("端口改完要点确认，会重启对应监听"));
+        auto *grid = makeGrid();
+        grid->addWidget(makeLabel(tr("对外链接"), "setFieldLabel"), 0, 0);
+        grid->addWidget(fieldUnit(m_addrEdit, {m_startStopBtn}), 0, 1);
+        grid->addWidget(makeLabel(tr("聊天室链接"), "setFieldLabel"), 0, 2);
+        grid->addWidget(lts_but, 0, 3, Qt::AlignLeft);
+
+        grid->addWidget(makeLabel(tr("webhook 端口"), "setFieldLabel"), 1, 0);
+        grid->addWidget(fieldUnit(webhook, {webhook_but}), 1, 1);
+        grid->addWidget(makeLabel(tr("聊天室端口"), "setFieldLabel"), 1, 2);
+        grid->addWidget(fieldUnit(webws_port, {web_qr}), 1, 3);
+
+        auto *switchRow = new QHBoxLayout;
+        switchRow->setSpacing(18);
+        switchRow->addWidget(Ewebhook);
+        switchRow->addWidget(Ews);
+        switchRow->addWidget(ESSL);
+        switchRow->addStretch();
+        grid->addLayout(switchRow, 2, 0, 1, 4);
+
+        card->addLayout(grid);
+    }
+
+    // ---- 图床 ----
+    {
+        QVBoxLayout *card = addCard(QStringLiteral("图床"),
+                                    QStringLiteral("上传优先级：CNB → COS → 本地图床"));
+
+        auto *localTop = new QHBoxLayout;
+        localTop->setSpacing(10);
+        localTop->addWidget(Eimg);
+        localTop->addWidget(loadimg);
+        localTop->addWidget(makeLabel(tr("端口"), "setFieldLabel"));
+        m_loadport->setMaximumWidth(90);
+        localTop->addWidget(m_loadport);
+        localTop->addWidget(m_loadbut);
+        localTop->addWidget(m_test_api);
+        localTop->addStretch();
+        card->addLayout(localTop);
+
+        addDivider(card);
+
+        auto *cnbHead = new QHBoxLayout;
+        cnbHead->setSpacing(8);
+        cnbHead->addWidget(m_cnb);
+        cnbHead->addStretch();
+        cnbHead->addWidget(m_cnb_qr);
+        cnbHead->addWidget(m_cnb_cs);
+        card->addLayout(cnbHead);
+
+        auto *cnbGrid = makeGrid();
+        cnbGrid->addWidget(makeLabel(tr("组织 / 仓库"), "setFieldLabel"), 0, 0);
+        cnbGrid->addWidget(m_cnb_repo, 0, 1);
+        cnbGrid->addWidget(makeLabel(tr("访问令牌"), "setFieldLabel"), 0, 2);
+        cnbGrid->addWidget(m_cnb_token, 0, 3);
+        card->addLayout(cnbGrid);
+
+        addDivider(card);
+
+        auto *cosHead = new QHBoxLayout;
+        cosHead->setSpacing(8);
+        cosHead->addWidget(m_cos);
+        cosHead->addStretch();
+        cosHead->addWidget(m_cos_qr);
+        cosHead->addWidget(m_cos_cs);
+        card->addLayout(cosHead);
+
+        auto *cosGrid = makeGrid();
+        cosGrid->addWidget(makeLabel(tr("SecretId"), "setFieldLabel"), 0, 0);
+        cosGrid->addWidget(m_cos_secretId, 0, 1);
+        cosGrid->addWidget(makeLabel(tr("SecretKey"), "setFieldLabel"), 0, 2);
+        cosGrid->addWidget(m_cos_secretKey, 0, 3);
+        cosGrid->addWidget(makeLabel(tr("Host"), "setFieldLabel"), 1, 0);
+        cosGrid->addWidget(m_cos_host, 1, 1, 1, 3);
+        card->addLayout(cosGrid);
+    }
+
+    // ---- 界面配色（控件自带标题行，卡片不再重复写标题） ----
+    {
+        auto *card = new QFrame;
+        card->setObjectName("setCard");
+        card->setAttribute(Qt::WA_StyledBackground, true);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(16, 12, 16, 14);
+        cardLayout->setSpacing(8);
+        cardLayout->addWidget(new ThemeColorWidget(card));
+        mainVLayout->addWidget(card);
+    }
+
+    // ---- 超级管理员 ----
+    {
+        QVBoxLayout *card = addCard(QStringLiteral("超级管理员"),
+                                    QStringLiteral("空格分隔；可触发 webui 全局禁用/启用插件、启用 ws"));
+        m_admid_deit = new QTextEdit;
+        m_admid_deit->setPlaceholderText(QStringLiteral("空格分割 允许触发 webui 全局禁用启用插件 启用ws"));
+        m_admid_deit->setPlainText(g_admin);
+        m_admid_deit->setFixedHeight(96);
+        card->addWidget(m_admid_deit);
+
+        m_admin_qr = new QPushButton("保存全局管理");
+        m_admin_qr->setObjectName("setPrimary");
+        auto *btnRow = new QHBoxLayout;
+        btnRow->addStretch();
+        btnRow->addWidget(m_admin_qr);
+        card->addLayout(btnRow);
+    }
+
+    mainVLayout->addStretch();
+
+    ThemeColors::applyTo(this, QString::fromUtf8(R"(
+        QScrollArea#setScroll { background: transparent; border: none; }
+        QScrollArea#setScroll > QWidget > QWidget { background: transparent; }
+        QWidget#setContent { background: #F7EFE5; }
+        QFrame#setCard {
+            background: #FFFFFF;
+            border: 1px solid #E6D4C0;
+            border-radius: 12px;
+        }
+        QFrame#setDivider { background: #F8EFE6; border: none; }
+        QLabel#setCardTitle { color: #263241; font-size: 14px; font-weight: 700; background: transparent; }
+        QLabel#setCardHint { color: #8A94A6; font-size: 12px; background: transparent; }
+        QLabel#setFieldLabel { color: #596579; font-size: 12px; background: transparent; }
+        QPushButton#setPrimary {
+            background: #FF7F32;
+            color: #FFFFFF;
+            padding: 6px 18px;
+        }
+        QPushButton#setPrimary:hover { background: #F06E22; }
+        /* 预设按钮：普通态走全局按钮样式（浅橙底 + 描边 + 深字），
+           当前生效的那套由 ThemeColorWidget 打上 active 属性变实心橙 */
+        QPushButton#presetChip { padding: 4px 12px; }
+        QPushButton#presetChip[active="true"] {
+            background: #FF7F32;
+            color: #FFFFFF;
+            border: 1px solid #FF7F32;
+        }
+        QPushButton#presetChip[active="true"]:hover {
+            background: #FF914D;
+            color: #FFFFFF;
+            border: 1px solid #FF914D;
+        }
+    )"));
 
 
 

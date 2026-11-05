@@ -148,11 +148,7 @@ public:
         file.write(data);
         file.close();
 
-        QMetaObject::invokeMethod(qApp, [this, path]() {
-            htmltoimg->imagePreview->setText(
-                QString("<img src=\"%1\" width=\"%2\" alt=\"本地图片\" />").arg(path).arg(htmltoimg->imagePreview->width())
-                );
-        }, Qt::QueuedConnection);
+
     }
 private:
     QString m_text;

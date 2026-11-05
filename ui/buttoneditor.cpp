@@ -193,31 +193,66 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     : QWidget(parent), m_currentButton(nullptr)
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(4);
+    mainLayout->setSpacing(0);
     mainLayout->setContentsMargins(0,0,0,0);
-    // 使用 QTabWidget 分组，更美观
-    QTabWidget *tabWidget = new QTabWidget(this);
 
-    // ========== 基础属性页 ==========
-    QWidget *basicPage = new QWidget;
-    QVBoxLayout *mainLay = new QVBoxLayout(basicPage);
-    mainLay->setContentsMargins(0,0,0,0);
-    // 不能传 basicPage：basicPage 已经有 mainLay 了，再 new 一个带父的布局，
-    // Qt 会拒绝并打印 "QLayout: Attempting to add QLayout ... which already has a layout"。
-    // basicLayout 是 mainLay 的子布局，下面用 mainLay->addLayout(basicLayout) 收编（同 HbasicLayout）。
-    QFormLayout *basicLayout = new QFormLayout;
-    basicLayout->setSpacing(4);
-    basicLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    basicLayout->setContentsMargins(0,0,0,0);
+    // 原来「基础 / 权限 / 模态框」是三个 Tab，点来点去还看不全；现在合并成一页纵向排，
+    // 一共 17 个字段，窄窗口下必然超高，所以外面套一个滚动区，别把控件压成一条缝。
+    QScrollArea *scrollArea = new QScrollArea(this);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    QWidget *formHost = new QWidget;
+    formHost->setObjectName("propFormHost");
+    formHost->setAttribute(Qt::WA_StyledBackground, true);
+
+    // 滚动区默认是白底，会跟米色主题打架，这里让它透出下层
+    scrollArea->viewport()->setAutoFillBackground(false);
+    scrollArea->setStyleSheet("QScrollArea { background: transparent; border: none; }"
+                              "QWidget#propFormHost { background: transparent; }");
+    QVBoxLayout *formLayout = new QVBoxLayout(formHost);
+    formLayout->setContentsMargins(8, 6, 10, 8);
+    formLayout->setSpacing(4);
+
+    // 分组标题：替掉原来的 Tab 头
+    auto addSectionTitle = [formLayout](const QString &text, bool first) {
+        if (!first) formLayout->addSpacing(10);
+        QLabel *title = new QLabel(text);
+        title->setStyleSheet(
+            "QLabel { color: #C1701A; font-size: 12px; font-weight: 700;"
+            " padding: 0 0 4px 0; border: none; border-bottom: 1px solid #F1E2D0;"
+            " background: transparent; }");
+        formLayout->addWidget(title);
+    };
+
+    // 网格单元：一行两个框，每个框 = 右对齐标签 + 输入控件（col 0/1 各占两列）
+    auto addCell = [](QGridLayout *grid, int row, int col, const QString &label,
+                      QWidget *field, const QString &tip) {
+        QLabel *lab = new QLabel(label);
+        lab->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (!tip.isEmpty()) lab->setToolTip(tip);   // 英文原字段名放 tooltip，别丢
+        grid->addWidget(lab, row, col * 2);
+        grid->addWidget(field, row, col * 2 + 1);
+    };
+
+    // ========== 基础 ==========
+    addSectionTitle("基础", true);
+    QGridLayout *basicGrid = new QGridLayout;
+    basicGrid->setContentsMargins(0,0,0,0);
+    basicGrid->setHorizontalSpacing(10);
+    basicGrid->setVerticalSpacing(6);
+    basicGrid->setColumnStretch(1, 1);
+    basicGrid->setColumnStretch(3, 1);
+
     m_buttonIdEdit = new QLineEdit;
-    basicLayout->addRow("按钮ID (id):", m_buttonIdEdit);
-
+    addCell(basicGrid, 0, 0, "按钮ID", m_buttonIdEdit, "id");
     m_labelEdit = new QLineEdit;
-    basicLayout->addRow("文字 (label):", m_labelEdit);
+    addCell(basicGrid, 0, 1, "文字", m_labelEdit, "label");
     m_dataEdit = new QLineEdit;
-    basicLayout->addRow("点击后文字:", m_dataEdit);
+    addCell(basicGrid, 1, 0, "点击后文字", m_dataEdit, "data");
     m_visitedLabelEdit = new QLineEdit;
-    basicLayout->addRow("回调后显示:", m_visitedLabelEdit);
+    addCell(basicGrid, 1, 1, "回调后显示", m_visitedLabelEdit, "visited_label");
 
     m_styleCombo = new QComboBox;
     m_styleCombo->addItem("灰色线框 (0)", 0);
@@ -227,7 +262,7 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     m_styleCombo->addItem("蓝低白文本 (4)", 4);
     m_styleCombo->addItem("保留 (5)", 5);
 
-    basicLayout->addRow("按钮样式:", m_styleCombo);
+    addCell(basicGrid, 2, 0, "按钮样式", m_styleCombo, "style");
 
     m_actionTypeCombo = new QComboBox;
     m_actionTypeCombo->addItem("跳转按钮 (0)", 0);
@@ -235,15 +270,15 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     m_actionTypeCombo->addItem("指令按钮 (2)", 2);
     m_actionTypeCombo->addItem("mqqapi (3)", 3);
     m_actionTypeCombo->addItem("订阅 (4)", 4);
-    basicLayout->addRow("操作类型:", m_actionTypeCombo);
+    addCell(basicGrid, 2, 1, "操作类型", m_actionTypeCombo, "action_type");
 
 
 
     m_unsupportTipsEdit = new QLineEdit;
     m_groups = new QLineEdit;
 
-    basicLayout->addRow("不支持提示:", m_unsupportTipsEdit);
-    basicLayout->addRow("按钮组ID:", m_groups);
+    addCell(basicGrid, 3, 0, "不支持提示", m_unsupportTipsEdit, "unsupport_tips");
+    addCell(basicGrid, 3, 1, "按钮组ID", m_groups, "group_id");
     m_replyCheck = new QCheckBox("引用回复");
     m_enterCheck = new QCheckBox("自动发送");
     m_anchorCheck = new QCheckBox("唤起选图器");
@@ -253,64 +288,61 @@ ButtonPropertyPanel::ButtonPropertyPanel(QWidget *parent)
     HbasicLayout->addWidget(m_enterCheck);
     HbasicLayout->addWidget(m_anchorCheck);
     HbasicLayout->addStretch();
-    mainLay->addLayout(basicLayout);
-    mainLay->addLayout(HbasicLayout);
-    tabWidget->addTab(basicPage, "基础");
+    formLayout->addLayout(basicGrid);
+    formLayout->addLayout(HbasicLayout);
 
-    // ========== 权限页 ==========
-    QWidget *permPage = new QWidget;
-    QFormLayout *permLayout = new QFormLayout(permPage);
-    permPage->setContentsMargins(0,0,0,0);
-    permLayout->setContentsMargins(0,0,0,0);
-    permLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // ========== 权限 / 模态框 ==========
+    addSectionTitle("权限 / 模态框", false);
+    QGridLayout *permGrid = new QGridLayout;
+    permGrid->setContentsMargins(0,0,0,0);
+    permGrid->setHorizontalSpacing(10);
+    permGrid->setVerticalSpacing(6);
+    permGrid->setColumnStretch(1, 1);
+    permGrid->setColumnStretch(3, 1);
     m_permissionTypeCombo = new QComboBox;
     m_permissionTypeCombo->addItem("指定用户 (0)", 0);
     m_permissionTypeCombo->addItem("仅管理者 (1)", 1);
     m_permissionTypeCombo->addItem("所有人 (2)", 2);
     m_permissionTypeCombo->addItem("指定身份组 (3)", 3);
-    permLayout->addRow("权限类型:", m_permissionTypeCombo);
+    addCell(permGrid, 0, 0, "权限类型", m_permissionTypeCombo, "permission_type");
 
     m_userIdListEdit = new QTextEdit;
-    m_userIdListEdit->setMaximumHeight(150);
+    m_userIdListEdit->setFixedHeight(72);       // 合并成一页后不再给 150，不然整页太长
     m_userIdListEdit->setPlaceholderText("每行一个用户ID");
-    permLayout->addRow("用户ID列表:", m_userIdListEdit);
+    addCell(permGrid, 1, 0, "用户ID列表", m_userIdListEdit, "specify_user_ids");
 
     m_roleIdListEdit = new QTextEdit;
-    m_roleIdListEdit->setMaximumHeight(150);
+    m_roleIdListEdit->setFixedHeight(72);
     m_roleIdListEdit->setPlaceholderText("每行一个身份组ID");
-    permLayout->addRow("身份组列表:", m_roleIdListEdit);
+    addCell(permGrid, 1, 1, "身份组列表", m_roleIdListEdit, "specify_role_ids");
 
-    tabWidget->addTab(permPage, "权限");
-
-    // ========== 模态框页 ==========
-    QWidget *modalPage = new QWidget;
-    QFormLayout *modalLayout = new QFormLayout(modalPage);
-    modalPage->setContentsMargins(0,0,0,0);
-    modalLayout->setContentsMargins(0,0,0,0);
-    modalLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // 模态框字段直接接在权限下面（同一张网格续行），不再单起一段
     m_modalContentEdit = new QLineEdit;
     m_modalContentEdit->setPlaceholderText("弹窗内容，最多40字符");
-    modalLayout->addRow("弹窗内容 (content):", m_modalContentEdit);
+    addCell(permGrid, 2, 0, "弹窗内容", m_modalContentEdit, "content");
 
     m_modalConfirmEdit = new QLineEdit;
     m_modalConfirmEdit->setPlaceholderText("确认按钮文本，最多4字");
-    modalLayout->addRow("确认按钮文本:", m_modalConfirmEdit);
+    addCell(permGrid, 2, 1, "确认按钮文本", m_modalConfirmEdit, "confirm_text");
 
     m_modalCancelEdit = new QLineEdit;
     m_modalCancelEdit->setPlaceholderText("取消按钮文本，最多4字");
-    modalLayout->addRow("取消按钮文本:", m_modalCancelEdit);
+    addCell(permGrid, 3, 0, "取消按钮文本", m_modalCancelEdit, "cancel_text");
 
 
     m_subscribeTemplateIdEdit = new QLineEdit;
     m_subscribeTemplateIdEdit->setPlaceholderText("模板ID");
-    modalLayout->addRow("模板ID (template_id):", m_subscribeTemplateIdEdit);
+    addCell(permGrid, 3, 1, "模板ID", m_subscribeTemplateIdEdit, "template_id");
 
     m_subscribeCustomIdEdit = new QLineEdit;
     m_subscribeCustomIdEdit->setPlaceholderText("自定义订阅ID");
-    modalLayout->addRow("自定义订阅ID:", m_subscribeCustomIdEdit);
-    tabWidget->addTab(modalPage, "模态框");
+    addCell(permGrid, 4, 0, "自定义订阅ID", m_subscribeCustomIdEdit, "custom_id");
 
-    mainLayout->addWidget(tabWidget);
+    formLayout->addLayout(permGrid);
+    formLayout->addStretch();
+
+    scrollArea->setWidget(formHost);
+    mainLayout->addWidget(scrollArea);
 
     // 连接信号（每个控件修改后都调用 emitDataChanged）
     auto connectField = [this](QObject *widget) {
@@ -510,7 +542,7 @@ void ButtonEditor::initUI() {
     // ========== 右侧属性面板 ==========
     m_propertyPanel = new ButtonPropertyPanel(this);
 
-    m_propertyPanel->setMinimumWidth(400);
+    m_propertyPanel->setMinimumWidth(460);   // 一行两个框，太窄会把输入框压成条
     // 不限制最大宽度，让它随窗口拉伸
     mainHorizontal->addWidget(m_propertyPanel, 2);   // 右侧占2份
 

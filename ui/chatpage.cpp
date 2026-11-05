@@ -41,6 +41,83 @@
 #include <QJsonParseError>
 #include <QDataStream>
 #include <QRegularExpression>
+#include <QSignalBlocker>
+
+// ---------- 会话列表左侧那排模式按钮的图标（纯代码画，不依赖图片资源） ----------
+// kind: 0 全量 / 1 群聊 / 2 私聊 / 3 频道 / 4 频道私聊 / 5 最近
+static QPixmap chatModePixmap(int kind, const QColor &color)
+{
+    QPixmap pm(40, 40);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.scale(2.0, 2.0);                 // 以 20x20 为设计坐标
+
+    QPen pen(color);
+    pen.setWidthF(1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    switch (kind) {
+    case 0:                            // 全量：四宫格
+        p.drawRoundedRect(QRectF(3.0, 3.0, 5.6, 5.6), 1.6, 1.6);
+        p.drawRoundedRect(QRectF(11.4, 3.0, 5.6, 5.6), 1.6, 1.6);
+        p.drawRoundedRect(QRectF(3.0, 11.4, 5.6, 5.6), 1.6, 1.6);
+        p.drawRoundedRect(QRectF(11.4, 11.4, 5.6, 5.6), 1.6, 1.6);
+        break;
+    case 1:                            // 群聊：三个人
+        p.drawEllipse(QPointF(10.0, 9.0), 3.4, 3.4);
+        p.drawEllipse(QPointF(4.6, 10.4), 2.1, 2.1);
+        p.drawEllipse(QPointF(15.4, 10.4), 2.1, 2.1);
+        break;
+    case 2:                            // 私聊：一个人
+        p.drawEllipse(QPointF(10.0, 7.6), 3.4, 3.4);
+        p.drawArc(QRectF(4.0, 12.4, 12.0, 11.0), 0, 180 * 16);
+        break;
+    case 3: {                          // 频道：喇叭
+        QPainterPath horn;
+        horn.moveTo(4.2, 7.6);
+        horn.lineTo(8.2, 7.6);
+        horn.lineTo(13.6, 4.4);
+        horn.lineTo(13.6, 15.6);
+        horn.lineTo(8.2, 12.4);
+        horn.lineTo(4.2, 12.4);
+        horn.closeSubpath();
+        p.drawPath(horn);
+        break;
+    }
+    case 4: {                          // 频道私聊：小喇叭 + 人
+        QPainterPath horn;
+        horn.moveTo(3.4, 6.4);
+        horn.lineTo(6.6, 6.4);
+        horn.lineTo(11.0, 3.8);
+        horn.lineTo(11.0, 12.6);
+        horn.lineTo(6.6, 10.0);
+        horn.lineTo(3.4, 10.0);
+        horn.closeSubpath();
+        p.drawPath(horn);
+        p.drawEllipse(QPointF(14.6, 12.6), 2.0, 2.0);
+        break;
+    }
+    default:                           // 最近：时钟
+        p.drawEllipse(QPointF(10.0, 10.0), 6.6, 6.6);
+        p.drawLine(QPointF(10.0, 10.0), QPointF(10.0, 6.4));
+        p.drawLine(QPointF(10.0, 10.0), QPointF(13.2, 12.0));
+        break;
+    }
+
+    p.end();
+    return pm;
+}
+
+static QIcon chatModeIcon(int kind, const QColor &color)
+{
+    return QIcon(chatModePixmap(kind, color));
+}
+
 static QCache<QString, QPixmap> avatarCache;
 static QCache<QString, QStringList> s_wrapCache; //行数缓存
 static const int WRAP_CACHE_SIZE = 500;
@@ -390,12 +467,20 @@ static QSet<QString> &downloadingSet() {
     return set;
 }
 
+// 头像缓存文件：磁盘上存的是「正方形原图」，不预裁 —— 圆形 / 圆角 / 大小全部交给绘制处。
+// 后缀 _sq（square）用来和旧缓存区分：老版本存的是裁好的圆形 PNG（avatars/<id>.png），
+// 只改裁剪方式不换文件名的话，旧图永远不会刷新。想清理可以直接删 avatars 下不带 _sq 的 png。
+static QString avatarCachePath(const QString &id)
+{
+    return QString("./avatars/%1_sq.png").arg(id);
+}
+
 // 异步下载头像（如果本地不存在）
 static void downloadAvatarIfNeeded(int appid, const QString &openid) {
     if (openid.isEmpty()) return;
-    QString avatarPath = QString("./avatars/%1.png").arg(openid);
+    const QString avatarPath = avatarCachePath(openid);
 
-    // 如果本地已经存在裁剪好的 32x32 圆形图片，直接跳过
+    // 本地已经存了正方形原图，直接用
     if (QFile::exists(avatarPath)) return;
 
     QString url = QString("https://thirdqq.qlogo.cn/qqapp/%1/%2/100")
@@ -410,33 +495,24 @@ static void downloadAvatarIfNeeded(int appid, const QString &openid) {
             QByteArray data = reply->readAll();
             QPixmap original;
             if (original.loadFromData(data)) {
-                // 1. 将原图缩放（按比例，可能超出 32x32 的框）
-                QPixmap scaled = original.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                // 存 64×64 正方形（列表画 34px、气泡画 40px，留点余量给高 DPI）
+                const int kSrc = 64;
+                QPixmap scaled = original.scaled(kSrc, kSrc, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                const int x = (scaled.width() - kSrc) / 2;
+                const int y = (scaled.height() - kSrc) / 2;
 
-                // 2. 创建 32x32 透明画布
-                QPixmap rounded(32, 32);
-                rounded.fill(Qt::transparent);
+                QPixmap square(kSrc, kSrc);
+                square.fill(Qt::transparent);
+                {
+                    QPainter p(&square);
+                    p.drawPixmap(0, 0, scaled.copy(x, y, kSrc, kSrc));
+                }
 
-                // 3. 在画布上画圆并裁剪
-                QPainter p(&rounded);
-                p.setRenderHint(QPainter::Antialiasing);
-                QPainterPath path;
-                path.addEllipse(0, 0, 32, 32);
-                p.setClipPath(path);
-
-                // 将缩放后的图片居中画进去（因为 KeepAspectRatioByExpanding 可能会拉伸）
-                int x = (scaled.width() - 32) / 2;
-                int y = (scaled.height() - 32) / 2;
-                QPixmap cropped = scaled.copy(x, y, 32, 32);
-                p.drawPixmap(0, 0, cropped);
-                p.end();
-
-                // 4. 直接保存 32x32 的最终图片
                 QFile file(avatarPath);
                 if (file.open(QIODevice::WriteOnly)) {
-                    rounded.save(&file, "PNG");
+                    square.save(&file, "PNG");
                     file.close();
-                    qDebug() << "Avatar saved and cropped (32x32):" << avatarPath;
+                    qDebug() << "Avatar saved (square 64):" << avatarPath;
                 }
             }
         }
@@ -701,12 +777,14 @@ QString replaceFileTag();
 void BubbleDelegate::drawDefaultAvatar(QPainter* painter, const QRect& rect, const QString& text, bool isSelf) const
 {
     QColor color = isSelf ? QColor(255,190,104) : QColor(228,238,214);
+    painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(Qt::NoPen);
     painter->setBrush(color);
-    painter->drawEllipse(rect);
+    painter->drawRoundedRect(rect, 11, 11);       // 圆角方块，与真实头像保持一致
     painter->setPen(Qt::white);
     //painter->setFont(QFont("Microsoft YaHei", 14, QFont::Bold));
     painter->drawText(rect, Qt::AlignCenter, text);
+    painter->setRenderHint(QPainter::Antialiasing, false);
 }
 
 // 相邻消息之间的垂直间距（px）——sizeHint 用它撑开，paint 不画它
@@ -958,7 +1036,10 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     const QRect bubbleRect = bubbleRectFor(rect, isSelf, bubbleWidth, bubbleHeight);
 
     // ---------- 绘制头像（使用缓存） ----------
-    QString avatarPath = isSelf ? QString("./avatars/%1.png").arg(chatPage->m_appid) : QString("./avatars/%1.png").arg(sender);
+    // 磁盘上存的是正方形原图，这里裁成圆角方块（老版本存的是圆形，见 avatarCachePath 注释）
+    const int avatarRadius = 11;             // 40px 头像 → 圆角 11，约 28%
+    // m_appid 是 int，sender 是 QString —— 三元里先统一成 QString 再拼路径
+    const QString avatarPath = avatarCachePath(isSelf ? QString::number(chatPage->m_appid) : sender);
     QPixmap avatarPixmap;
     if (m_avatarCache.contains(avatarPath)) {
         avatarPixmap = *m_avatarCache[avatarPath];
@@ -972,8 +1053,9 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
             QPixmap rounded(avatarSize, avatarSize);
             rounded.fill(Qt::transparent);
             QPainter p(&rounded);
+            p.setRenderHint(QPainter::Antialiasing, true);
             QPainterPath path;
-            path.addEllipse(0, 0, avatarSize, avatarSize);
+            path.addRoundedRect(QRectF(0, 0, avatarSize, avatarSize), avatarRadius, avatarRadius);
             p.setClipPath(path);
             p.drawPixmap(0, 0, cropped);
             p.end();
@@ -983,26 +1065,33 @@ void BubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option
     }
 
     if (!avatarPixmap.isNull()) {
+        painter->setRenderHint(QPainter::Antialiasing, true);
         painter->drawPixmap(avatarRect, avatarPixmap);
         painter->setPen(QPen(QColor(200,200,200), 1));
         painter->setBrush(Qt::NoBrush);
-        painter->drawEllipse(avatarRect);
+        painter->drawRoundedRect(avatarRect, avatarRadius, avatarRadius);
+        painter->setRenderHint(QPainter::Antialiasing, false);
     } else {
         // 默认头像
+        painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setPen(Qt::NoPen);
         QColor avatarColor = isSelf ? QColor(255,190,104) : QColor(228,238,214);
         painter->setBrush(avatarColor);
-        painter->drawEllipse(avatarRect);
+        painter->drawRoundedRect(avatarRect, avatarRadius, avatarRadius);
         painter->setPen(Qt::white);
         //painter->setFont(QFont("Microsoft YaHei", 14, QFont::Bold));
         painter->drawText(avatarRect, Qt::AlignCenter, isSelf ? "我" : name.left(1));
+        painter->setRenderHint(QPainter::Antialiasing, false);
     }
 
     // ---------- 绘制气泡背景 ----------
 
+    // 圆角气泡（半径 10）。抗锯齿只在这几行开 —— 整个 paint 里为了性能是关着的
+    painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(Qt::NoPen);
     painter->setBrush(isSelf ? QColor(210,244,184) : QColor(238,232,226));
-    painter->drawRect(bubbleRect); // 快速画直角
+    painter->drawRoundedRect(bubbleRect, 10, 10);
+    painter->setRenderHint(QPainter::Antialiasing, false);
     // ---------- 绘制内容 ----------
     painter->save();
     painter->translate(bubbleRect.topLeft() + QPoint(12, 6));
@@ -1097,11 +1186,11 @@ class ContactListDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
-    // 每个列表项的高度（加上间距，头像32px + 两行文字，建议给 60px）
+    // 一项两行：名字 + 最新消息。40px 塞两行太挤，给到 54px。
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         Q_UNUSED(option)
         Q_UNUSED(index)
-        return QSize(-1, 40);
+        return QSize(-1, 54);
     }
 
     void paint (QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
@@ -1118,69 +1207,79 @@ public:
         QColor avatarColor = index.data(Qt::UserRole + 6).value<QColor>();
         QString avatarText = index.data(Qt::UserRole + 7).toString();
 
-        // 2. 绘制背景
         painter->save();
-        if (option.state & QStyle::State_Selected) {
-            painter->fillRect(option.rect, QColor(230, 230, 230)); // 选中态颜色
-        } else {
-            painter->fillRect(option.rect, Qt::white); // 默认白底
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+
+        const bool selected = (option.state & QStyle::State_Selected) != 0;
+        const bool hovered  = (option.state & QStyle::State_MouseOver) != 0;
+
+        // 2. 背景：面板本身就是白的，这里只画选中/悬停的圆角块
+        QRect itemRect = option.rect.adjusted(3, 1, -3, -1);
+        if (selected || hovered) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(selected ? QColor(255, 240, 222) : QColor(255, 248, 239));
+            painter->drawRoundedRect(itemRect, 9, 9);
         }
 
-        // 3. 计算坐标（模仿原来的 layout 边距）
-        int margin = 6;
-        int iconSize = 32;
-        int iconX = option.rect.x() + margin;
-        int iconY = option.rect.y() + (option.rect.height() - iconSize) / 2;
-        QRect iconRect(iconX, iconY, iconSize, iconSize);
+        // 3. 坐标
+        const int margin   = 8;
+        const int iconSize = 34;
+        QRect iconRect(option.rect.x() + margin,
+                       option.rect.y() + (option.rect.height() - iconSize) / 2,
+                       iconSize, iconSize);
 
-        int textX = iconX + iconSize + margin;
-        int textWidth = option.rect.width() - textX - margin;
+        const int textX     = iconRect.right() + 1 + 9;
+        const int textWidth = option.rect.right() - margin - textX;
 
-        // 4. 绘制头像
-        painter->setRenderHint(QPainter::Antialiasing);
-        QPainterPath path;
-        path.addEllipse(iconRect);
-        painter->setClipPath(path);
-
+        // 4. 头像
+        //    有真实头像 → 圆角方块（源图在 addContactItem 里已裁成 40px 圆角，这里按 34px 显示尺寸再 clip 一次）
+        //    没有头像     → 圆角色块 + 首字（原来画正圆 + 16pt 大字，又花又挤，换成柔和的圆角块）
         if (!avatarPix.isNull()) {
+            QPainterPath clip;
+            clip.addRoundedRect(QRectF(iconRect), 9, 9);
+            painter->save();
+            painter->setClipPath(clip);
             painter->drawPixmap(iconRect, avatarPix);
+            painter->restore();
         } else {
-            // 回退：绘制圆形色块 + 文字
-            painter->fillRect(iconRect, avatarColor);
-            painter->setClipping(false); // 绘制文字时取消裁剪，以免字被切掉
-            painter->setPen(Qt::white);
-            QFont Font = QFont();
-            Font.setBold(true);
-            Font.setPointSize(16); // 约等于 14px
-            painter->setPen(QFont::Bold); // 灰色
-            painter->setFont(Font);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(avatarColor.isValid() ? avatarColor : QColor("#C3B7A8"));
+            painter->drawRoundedRect(iconRect, 9, 9);
 
-            painter->drawText(iconRect, Qt::AlignCenter, avatarText);
+            QFont badgeFont = painter->font();
+            badgeFont.setPixelSize(15);
+            badgeFont.setBold(true);
+            painter->setFont(badgeFont);
+            painter->setPen(QColor(255, 255, 255));
+            painter->drawText(iconRect, Qt::AlignCenter, avatarText.left(1));
         }
-        painter->setClipping(false);
 
-        // 5. 绘制名字 (加粗 14px)
-        painter->setPen(Qt::black);
+        if (textWidth < 12) { painter->restore(); return; }
+
+        // 5. 名字
         QFont nameFont = painter->font();
+        nameFont.setPixelSize(13);
         nameFont.setBold(true);
-        nameFont.setPointSize(10); // 约等于 14px
         painter->setFont(nameFont);
-        QRect nameRect(textX, option.rect.y() + 2, textWidth, 20);
-        //painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, "绘制最新消息绘制最新消息");
-        painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, name.left(20));
+        painter->setPen(selected ? QColor("#E2681F") : QColor("#26313F"));
+        QRect nameRect(textX, option.rect.y() + 9, textWidth, 18);
+        QFontMetrics nameFm(nameFont);
+        painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          nameFm.elidedText(name, Qt::ElideRight, textWidth));
 
-        // 6. 绘制最新消息 (灰色 11px)
-        painter->setPen(QColor(150, 150, 150)); // 灰色
-
-        nameFont.setBold(false);
-        nameFont.setPointSize(8); // 约等于 11px
-        painter->setFont(nameFont);
-        QRect msgRect(textX, option.rect.y() + 22, textWidth, 20);
-        //painter->drawText(msgRect, Qt::AlignLeft | Qt::AlignVCenter, "绘制最新消息绘制最新消息");
-        painter->drawText(msgRect, Qt::AlignLeft | Qt::AlignVCenter, lastMsg.left(20));
+        // 6. 最新消息
+        QFont msgFont = painter->font();
+        msgFont.setPixelSize(11);
+        msgFont.setBold(false);
+        painter->setFont(msgFont);
+        painter->setPen(QColor("#98A1AF"));
+        QRect msgRect(textX, option.rect.y() + 27, textWidth, 16);
+        QFontMetrics msgFm(msgFont);
+        painter->drawText(msgRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          msgFm.elidedText(lastMsg, Qt::ElideRight, textWidth));
 
         painter->restore();
-
     }
 };
 
@@ -1244,6 +1343,21 @@ void ChatPage::initUI()
             background: #F4F8EA;
             border-radius: 10px;
             font-size: 20px;
+        }
+        QWidget#modeColumn {
+            background: #FBF6EF;
+            border-radius: 10px;
+        }
+        QPushButton#modeIconButton {
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+        }
+        QPushButton#modeIconButton:hover {
+            background: #FFF0DE;
+        }
+        QPushButton#modeIconButton:checked {
+            background: #FFE7CB;
         }
         QPushButton#modeButton {
             background: transparent;
@@ -1331,66 +1445,73 @@ void ChatPage::initUI()
     // ========== 左侧会话面板 ==========
     QWidget *leftPanel = new QWidget;
     leftPanel->setObjectName("sessionPanel");
-    leftPanel->setFixedWidth(224);
+    leftPanel->setFixedWidth(252);   // 让出 40px 给左侧模式按钮列，会话列表宽度基本没变
     leftPanel->setAttribute(Qt::WA_StyledBackground, true);
     auto leftShadow = new QGraphicsDropShadowEffect(leftPanel);
     leftShadow->setOffset(0, 2);
     leftShadow->setColor(QColor(0, 0, 0, 15));
     leftShadow->setBlurRadius(10);
     leftPanel->setGraphicsEffect(leftShadow);
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(2, 2,2, 2);
+    QHBoxLayout *leftLayout = new QHBoxLayout(leftPanel);   // 左：模式按钮列；右：会话列表
+    leftLayout->setContentsMargins(2, 2, 2, 2);
     leftLayout->setSpacing(4);
 
-    // ========== 模式按钮栏（两行，每行三个） ==========
-    QVBoxLayout *btnVerticalLayout = new QVBoxLayout;
-    btnVerticalLayout->setSpacing(2);
-    btnVerticalLayout->setContentsMargins(2,2,2,2);
-    // 第一行：全量、群聊、私聊
-    QHBoxLayout *row1 = new QHBoxLayout;
-    row1->setContentsMargins(2,2,2,2);
-    row1->setSpacing(3);
-    btnChat = new QPushButton("全量");
-    btnGroupChat = new QPushButton("群聊");
-    btnPrivateChat = new QPushButton("私聊");
+    // ========== 模式按钮：左侧竖排一列，只显示图标，名字放 tooltip ==========
+    QWidget *modeColumn = new QWidget;
+    modeColumn->setObjectName("modeColumn");
+    modeColumn->setAttribute(Qt::WA_StyledBackground, true);
+    modeColumn->setFixedWidth(40);              // 一列 34px 图标
+    QVBoxLayout *modeColLayout = new QVBoxLayout(modeColumn);
+    modeColLayout->setContentsMargins(3, 4, 3, 4);
+    modeColLayout->setSpacing(4);
+    modeColLayout->setAlignment(Qt::AlignTop);
 
+    auto createModeButton = [](const QString &tip) {
+        QPushButton *b = new QPushButton;
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(34, 34);
+        b->setIconSize(QSize(18, 18));
+        b->setObjectName("modeIconButton");
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setToolTip(tip);
+        return b;
+    };
+    // 选中换橙色图标：QPushButton 的 On/Off 图标状态在部分风格下不刷新，直接挂 toggled 最稳
+    auto bindModeIcon = [this](QPushButton *b, int kind) {
+        const QIcon off = chatModeIcon(kind, QColor("#8A94A6"));
+        const QIcon on  = chatModeIcon(kind, QColor("#FF7F32"));
+        b->setIcon(off);
+        QObject::connect(b, &QPushButton::toggled, b, [b, off, on](bool checked) {
+            b->setIcon(checked ? on : off);
+        });
+    };
 
+    // 顺序与图标编号一一对应：全量 / 群聊 / 私聊 / 频道 / 频道私聊 / 最近
+    btnChat           = createModeButton("全量：所有会话");
+    btnGroupChat      = createModeButton("群聊");
+    btnPrivateChat    = createModeButton("私聊");
+    btnChannelChat    = createModeButton("频道");
+    btnChannelPrivate = createModeButton("频道私聊");
+    btnRecentChat     = createModeButton("最近");
 
-    btnChat->setCheckable(true);
-    btnGroupChat->setCheckable(true);
-    btnPrivateChat->setCheckable(true);
+    bindModeIcon(btnChat,           0);
+    bindModeIcon(btnGroupChat,      1);
+    bindModeIcon(btnPrivateChat,    2);
+    bindModeIcon(btnChannelChat,    3);
+    bindModeIcon(btnChannelPrivate, 4);
+    bindModeIcon(btnRecentChat,     5);
 
-    btnChat->setFixedHeight(28);
-    btnGroupChat->setFixedHeight(28);
-    btnPrivateChat->setFixedHeight(28);
+    // 一列竖排：全量 / 群聊 / 私聊 / 频道 / 频道私聊 / 最近
+    modeColLayout->addWidget(btnChat);
+    modeColLayout->addWidget(btnGroupChat);
+    modeColLayout->addWidget(btnPrivateChat);
+    modeColLayout->addWidget(btnChannelChat);
+    modeColLayout->addWidget(btnChannelPrivate);
+    modeColLayout->addWidget(btnRecentChat);
+    modeColLayout->addStretch();                // 底部留白，图标贴着顶部
 
-
-    row1->addWidget(btnChat);
-    row1->addWidget(btnGroupChat);
-    row1->addWidget(btnPrivateChat);
-
-    // 第二行：频道、频道私聊、最近
-    QHBoxLayout *row2 = new QHBoxLayout;
-    row2->setSpacing(8);
-    btnChannelChat = new QPushButton("频道");
-    btnChannelPrivate = new QPushButton("频道私聊");
-    btnRecentChat = new QPushButton("最近");
-
-    btnChannelChat->setCheckable(true);
-    btnChannelPrivate->setCheckable(true);
-    btnRecentChat->setCheckable(true);
-
-    btnChannelChat->setFixedHeight(28);
-    btnChannelPrivate->setFixedHeight(28);
-    btnRecentChat->setFixedHeight(28);
-
-    row2->addWidget(btnChannelChat);
-    row2->addWidget(btnChannelPrivate);
-    row2->addWidget(btnRecentChat);
-
-    btnVerticalLayout->addLayout(row1);
-    btnVerticalLayout->addLayout(row2);
-    leftLayout->addLayout(btnVerticalLayout);  // 替换原来的 leftLayout->addLayout(btnLayout)
+    leftLayout->addWidget(modeColumn);
 
 
     m_model  = new QStandardItemModel(this);
@@ -1401,6 +1522,12 @@ void ChatPage::initUI()
     contactList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel); // 滚动丝滑
     contactList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); // 隐藏横向滚动条
     contactList->setContextMenuPolicy(Qt::CustomContextMenu);
+    // 悬停高亮由 ContactListDelegate 自绘，这里要保证 view 真的发 MouseOver 状态
+    contactList->setMouseTracking(true);
+    contactList->viewport()->setAttribute(Qt::WA_Hover, true);
+    contactList->setSpacing(2);              // 项与项之间留口气
+    contactList->setUniformItemSizes(true);  // 高度固定 54，省掉逐项测量
+    contactList->setStyleSheet("QListView#contactList { border: none; background: transparent; outline: none; }");
 
 
     leftLayout->addWidget(contactList, 1);
@@ -1854,7 +1981,7 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                 }
             }
 
-            QString avatarPath = QString("avatars/%1.png").arg(id);
+            const QString avatarPath = avatarCachePath(id);
             if (!scaled.save(avatarPath, "PNG")) {
                 QMessageBox::warning(this, "错误", "保存头像失败，请检查目录权限");
                 return;
@@ -1946,6 +2073,7 @@ void ChatPage::updateAllContactLists(int index)
 
         }
 
+        sortModelByAppid();          // 全部机器人时按 appid 分组，别混着排
         contactList->setUpdatesEnabled(true);
         if(sw) g_logdb[1]->commitTransaction();
         return;
@@ -1993,6 +2121,7 @@ void ChatPage::updateAllContactLists(int index)
             addDataToModel(appid, c,type);
 
         }
+        sortModelByAppid();          // 最近会话同样按 appid 分组
         contactList->setUpdatesEnabled(true);
 
         return;
@@ -2067,6 +2196,7 @@ void ChatPage::updateAllContactLists(int index)
 
 
 
+    sortModelByAppid();              // 普通群/私聊/频道：按 appid 分组
     contactList->setUpdatesEnabled(true);
     if(sw) g_logdb[bufferIdx]->commitTransaction();
 
@@ -2106,29 +2236,40 @@ void ChatPage::addDataToModel(int appid, const Contact& c, int type)
 
     // --- 预先生成并缓存头像（把原来 Widget 里的逻辑挪过来！） ---
     QPixmap avatarPix;
-    QString avatarPath = QString("./avatars/%1.png").arg(c.id);
+    const QString avatarPath = avatarCachePath(c.id);
     if (QFile::exists(avatarPath)) {
         QPixmap original(avatarPath);
         if (!original.isNull()) {
-            QPixmap rounded(32, 32);
+            // 40px 源（列表里画到 34px），高 DPI 下比原来 32px 干净
+            const int kAvatarPx = 40;
+            const int kAvatarRadius = 11;        // 圆角方块，不再是正圆
+            QPixmap rounded(kAvatarPx, kAvatarPx);
             rounded.fill(Qt::transparent);
             QPainter p(&rounded);
             p.setRenderHint(QPainter::Antialiasing);
             QPainterPath path;
-            path.addEllipse(0, 0, 32, 32);
+            path.addRoundedRect(QRectF(0, 0, kAvatarPx, kAvatarPx), kAvatarRadius, kAvatarRadius);
             p.setClipPath(path);
-            QPixmap scaled = original.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-            int x = (scaled.width() - 32) / 2;
-            int y = (scaled.height() - 32) / 2;
-            QPixmap cropped = scaled.copy(x, y, 32, 32);
+            QPixmap scaled = original.scaled(kAvatarPx, kAvatarPx, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            int x = (scaled.width() - kAvatarPx) / 2;
+            int y = (scaled.height() - kAvatarPx) / 2;
+            QPixmap cropped = scaled.copy(x, y, kAvatarPx, kAvatarPx);
             p.drawPixmap(0, 0, cropped);
             p.end();
             avatarPix = rounded;
         }
     }
 
-    // 回退备用信息（如果头像图片不存在，在委托里直接画色块和首字母）
-    QColor fallbackColor = QColor::fromHsl(qHash(c.name) % 360, 200, 150);
+    // 回退备用信息（没有头像图时，委托里画圆角色块 + 首字）
+    // 原来用 fromHsl(hash%360, 200, 150)：饱和度拉满，红黄绿紫一片刺眼。
+    // 换成一组低饱和的莫兰迪色，跟米色主题合得来。
+    static const QColor kFallbackPalette[] = {
+        QColor("#E0A276"), QColor("#C99AA6"), QColor("#8FB4A6"),
+        QColor("#9AA9CB"), QColor("#7FA6BE"), QColor("#C3B183"),
+        QColor("#AE93B6"), QColor("#8CA787"),
+    };
+    const int paletteCount = int(sizeof(kFallbackPalette) / sizeof(kFallbackPalette[0]));
+    QColor fallbackColor = kFallbackPalette[int(qHash(c.name) % uint(paletteCount))];
     QString fallbackText = c.name.isEmpty() ? "?" : c.name.left(1);
 
     // 保存图片、颜色和备用文字到 Model
@@ -2138,6 +2279,22 @@ void ChatPage::addDataToModel(int appid, const Contact& c, int type)
 
 
     m_model->appendRow(item);
+}
+
+// 列表加载完统一按机器人 appid 分组：同一机器人的会话聚在一起，
+// 组内保持日志原本的先后顺序。
+// ⚠ 绝对不要手动 takeItem(0) + appendRow 重排：那样会逐行发出 rowsRemoved / rowsInserted，
+//   视图在模型改动的过程中会重入 currentChanged 槽（切会话 → 读库 → 清消息模型），
+//   很容易把正在使用的行/item 弄成悬空，直接崩在底层（连 VCH 都抓不到，因为已经踩坏堆）。
+//   用 QStandardItemModel 自带的 sort()：它内部走 layoutAboutToBeChanged/layoutChanged，
+//   视图只需要重排索引、不会触发选中项变化。
+void ChatPage::sortModelByAppid()
+{
+    if (m_model->rowCount() < 2) return;
+
+    m_model->setSortRole(Qt::UserRole);     // 按 appid（存的就是 Qt::UserRole）
+    const QSignalBlocker blocker(contactList);
+    m_model->sort(0, Qt::AscendingOrder);   // Qt 内部是稳定排序，同 appid 相对次序不变
 }
 
 void ChatPage::addContact(int type, const MessageEvent &ev,const QString &name)

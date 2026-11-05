@@ -12,6 +12,8 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include <QGraphicsDropShadowEffect>
+#include <QTextDocument>
+#include <QFontMetrics>
 #include <QSysInfo>
 #include <QStringList>
 #include <QList>
@@ -47,6 +49,29 @@ QString formatBytes(long long bytes, const QString& prefix) {
         unitIdx++;
     }
     return QString("%1: %2 %3").arg(prefix).arg(val, 0, 'f', 1).arg(units[unitIdx]);
+}
+
+// 统计数字加千分位（首页小卡片宽度有限，五位数以上不分开根本读不出量级）
+static QString formatCount(qint64 n)
+{
+    if (n < 0) return QString::number(n);
+    const QString s = QString::number(n);
+    QString out;
+    out.reserve(s.size() + s.size() / 3 + 1);
+    int cnt = 0;
+    for (int i = s.size() - 1; i >= 0; --i) {
+        out.prepend(s.at(i));
+        if (++cnt % 3 == 0 && i > 0) out.prepend(',');
+    }
+    return out;
+}
+
+// 小卡片右上角的副值用短格式（万/亿），否则「累计 12,345,678」会把标题行挤爆
+static QString formatCountShort(qint64 n)
+{
+    if (n >= 100000000LL) return QStringLiteral("%1亿").arg(n / 100000000.0, 0, 'f', 1);
+    if (n >= 10000LL)     return QStringLiteral("%1万").arg(n / 10000.0, 0, 'f', 1);
+    return formatCount(n);
 }
 
 QString formatRate(double bytesPerSec, const QString& prefix) {
@@ -102,10 +127,14 @@ void HomePage::setStyleSheetA()
         QWidget#homePage {
             background: #FFF8EF;
         }
-        QFrame#dashboardPanel, QFrame#statCard, QFrame#heroPanel, QFrame#chartPanel, QFrame#recentPanel, QFrame#statusPanel, QFrame#quickPanel {
+        QFrame#dashboardPanel, QFrame#statCard, QFrame#heroPanel, QFrame#chartPanel, QFrame#recentPanel, QFrame#statusPanel, QFrame#quickPanel, QFrame#changelogPanel {
             background: #FFFFFF;
             border: 1px solid #F3E7DA;
             border-radius: 18px;
+        }
+        /* 统计卡改成紧凑小卡：单独把圆角收小（不要动上面那条共用规则） */
+        QFrame#statCard {
+            border-radius: 12px;
         }
         QLabel#pageTitle {
             font-size: 28px;
@@ -125,23 +154,28 @@ void HomePage::setStyleSheetA()
             background: transparent;
         }
         QLabel#statIcon {
-            min-width: 24px;
-            min-height: 24px;
-            max-width: 24px;
-            max-height: 24px;
-            border-radius: 14px;
+            min-width: 28px;
+            min-height: 28px;
+            max-width: 28px;
+            max-height: 28px;
+            border-radius: 9px;
             background: #FFF0DE;
             color: #FF914D;
-            font-size: 22px;
+            font-size: 15px;
         }
         QLabel#statTitle {
-            color: #687589;
-            font-size: 12px;
+            color: #7A8496;
+            font-size: 11px;
+            background: transparent;
+        }
+        QLabel#statSub {
+            color: #AEB6C2;
+            font-size: 10px;
             background: transparent;
         }
         QLabel#statValue, QLabel#pluginCountValue {
             color: #17202A;
-            font-size: 24px;
+            font-size: 19px;
             font-weight: 800;
             background: transparent;
         }
@@ -171,6 +205,52 @@ void HomePage::setStyleSheetA()
             border-radius: 10px;
             padding: 2px 7px;
             font-size: 11px;
+        }
+        /* ---- 插件消息榜单 ---- */
+        QLabel#rankBadge {
+            background: #FFF1E2;
+            color: #D9822B;
+            border-radius: 7px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QLabel#rankBadgeTop {
+            background: #FF914D;
+            color: #FFFFFF;
+            border-radius: 7px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QLabel#rankBadgeMuted {
+            background: #F5F1EC;
+            color: #C7BFB5;
+            border-radius: 7px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QLabel#rankCount {
+            color: #FF7F32;
+            font-size: 12px;
+            font-weight: 800;
+            background: transparent;
+        }
+        QLabel#rankCountMuted {
+            color: #D8D2C9;
+            font-size: 12px;
+            background: transparent;
+        }
+        QLabel#rankEmpty {
+            color: #B7AFA6;
+            font-size: 12px;
+            background: transparent;
+        }
+        /* 更新日志里的 QTextBrowser 直接铺在卡片上，不要再套一层灰底描边 */
+        QTextEdit#changelogTextEdit {
+            background: transparent;
+            border: none;
+            padding: 0px;
+            color: #4B5563;
+            font-size: 12px;
         }
 
         QProgressBar {
@@ -225,43 +305,82 @@ static QLabel* createStatusLabel(const QString& title, const QString& value) {
 
 
 void HomePage::createStatCards(QGridLayout* statsLayout) {
+    // 紧凑卡：左图标、右边「标题 + 副值 / 大数值」两行。整卡高约 52px（原来 4 个大卡约 96px），
+    // 省下来的横向空间就用来多摆两张卡。
     auto createStatCard = [&](int col, const QString &icon, const QString &title,
-                              const QString &value, const QString &trend, const QString &iconBg) {
+                              const QString &value, const QString &sub, const QString &iconBg,
+                              const QString &tip) {
         auto card = createPanel("statCard");
+        card->setToolTip(tip);
+
         auto layout = new QHBoxLayout(card);
-        layout->setContentsMargins(18, 16, 18, 16);
-        layout->setSpacing(14);
+        layout->setContentsMargins(10, 6, 10, 6);
+        layout->setSpacing(8);
+
         auto iconLabel = createLabel(icon, "statIcon");
         iconLabel->setAlignment(Qt::AlignCenter);
-        iconLabel->setStyleSheet(QString("QLabel#statIcon { background: %1; font-size: 16px; }").arg(iconBg));
+        iconLabel->setStyleSheet(QString("QLabel#statIcon { background: %1; font-size: 15px; }").arg(iconBg));
+
         auto textLayout = new QVBoxLayout;
-        textLayout->setSpacing(3);
-        textLayout->addWidget(createLabel(title, "statTitle"));
+        textLayout->setSpacing(0);
+        textLayout->setContentsMargins(0, 0, 0, 0);
+
+        // 第一行：标题 +（右对齐的）副值
+        auto titleRow = new QHBoxLayout;
+        titleRow->setSpacing(4);
+        titleRow->setContentsMargins(0, 0, 0, 0);
+        titleRow->addWidget(createLabel(title, "statTitle"));
+        titleRow->addStretch();
+        if (!sub.isEmpty()) {
+            QLabel *subLabel = createLabel(sub, "statSub");
+            subLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            titleRow->addWidget(subLabel);
+            if (title == "今日消息")   m_totalMessageValue = subLabel;
+            if (title == "今日加群")   m_todayQuitValue   = subLabel;
+            if (title == "今日发送")   m_todaySentSub     = subLabel;
+            if (title == "今日接收")   m_todayReceivedSub = subLabel;
+        }
+        textLayout->addLayout(titleRow);
+
         auto valueLabel = createLabel(value, "statValue");
-        if (title == "今日消息数") m_todayMessageValue = valueLabel;
-        if (title == "在线账号数") m_onlineAccountValue = valueLabel;
-        if (title == "加群数量") m_logCountValue = valueLabel;
+        if (title == "今日消息")   m_todayMessageValue  = valueLabel;
+        if (title == "今日发送")   m_todaySentValue     = valueLabel;
+        if (title == "今日接收")   m_todayReceivedValue = valueLabel;
+        if (title == "在线账号")   m_onlineAccountValue = valueLabel;
+        if (title == "今日加群")   m_logCountValue      = valueLabel;
         if (title == "插件数量") {
             valueLabel->setObjectName("pluginCountValue");
             m_pluginCountValue = valueLabel;
         }
         textLayout->addWidget(valueLabel);
-        textLayout->addWidget(createLabel(trend, "trendUp"));
+
         layout->addWidget(iconLabel);
         layout->addLayout(textLayout, 1);
+
         statsLayout->addWidget(card, 0, col);
+        statsLayout->setColumnStretch(col, 1);
     };
-    createStatCard(0, "💬", "今日消息数", "0", "等待真实消息", "#E8F4FD");
-    createStatCard(1, "👤", "在线账号数", "0", "等待账号登录", "#E8F8EE");
-    createStatCard(2, "🧩", "插件数量", QString::number(m_pluginList.size()), "来自已加载配置", "#FFF3E0");
-    createStatCard(3, "📋", "加群数量", "0", "等待运行日志", "#F3E5F5");
+
+    // 三个口径：主数值 = 当天（跨天清零）、右下副值 = 累计 / 本次运行
+    createStatCard(0, "💬", "今日消息", "0", "累计 0", "#E8F4FD",
+                   "今日收发消息合计（右下为程序里的历史累计量 message_received+sent）");
+    createStatCard(1, "📤", "今日发送", "0", "本次 0", "#FFF3E0",
+                   "今日由机器人发送的消息数（右下为本次运行以来的发送量 sent）");
+    createStatCard(2, "📥", "今日接收", "0", "本次 0", "#E8F8EE",
+                   "今日机器人收到的消息数（右下为本次运行以来的接收量 received）");
+    createStatCard(3, "🤖", "在线账号", "0 / 0", "", "#F3E5F5",
+                   "已登录 / 已配置 的账号数");
+    createStatCard(4, "🧩", "插件数量", QString::number(m_pluginList.size()), "", "#FDF1E3",
+                   "已加载的插件数量");
+    createStatCard(5, "🏠", "今日加群", "0", "退 0", "#EDF3FB",
+                   "今日加群数（副值为今日退群数）");
 }
 
 QFrame* HomePage::createChartPanel() {
     auto chartPanel = createPanel("chartPanel");
     auto chartLayout = new QVBoxLayout(chartPanel);
-    chartLayout->setContentsMargins(4, 4, 4, 4);
-    chartLayout->setSpacing(1);
+    chartLayout->setContentsMargins(14, 10, 14, 8);   // 圆角 18px，标题别贴着边框
+    chartLayout->setSpacing(4);
 
     // 标题行（保持不变）
     auto chartTop = new QHBoxLayout;
@@ -272,7 +391,7 @@ QFrame* HomePage::createChartPanel() {
 
     // 图表容器
     auto chartAreaLayout = new QVBoxLayout();
-    chartAreaLayout->setContentsMargins(2, 2, 2, 2);
+    chartAreaLayout->setContentsMargins(0, 0, 0, 0);   // 留白由 StatusChartWidget 自己算
     // 注意：原代码写成了 chartLayout->setSpacing(4)，应该是 chartAreaLayout->setSpacing(4)
     chartAreaLayout->setSpacing(4);
 
@@ -336,38 +455,50 @@ void HomePage::updateChartData() {
 
 QFrame* HomePage::createRecentPanel() {
     auto recentPanel = createPanel("recentPanel");
-    //recentPanel->setMaximumWidth(400);               // 限制右侧宽度，让图表区域更宽
+    recentPanel->setMinimumWidth(238);
+
     auto recentLayout = new QVBoxLayout(recentPanel);
-    recentLayout->setContentsMargins(5, 5, 5, 5);
-    recentLayout->setSpacing(5);
+    recentLayout->setContentsMargins(14, 12, 14, 12);
+    recentLayout->setSpacing(10);
 
     auto recentTop = new QHBoxLayout;
+    recentTop->setSpacing(6);
     recentTop->addWidget(createLabel("插件消息 TOP 6", "sectionTitle"));
+    recentTop->addStretch();
+    m_pluginRankSummary = createLabel("", "mutedText");
+    recentTop->addWidget(m_pluginRankSummary);
     recentLayout->addLayout(recentTop);
 
+    // 标题和榜单之间加一条极淡的分割线，卡里不至于一片空白
+    auto divider = new QFrame;
+    divider->setObjectName("panelDivider");
+    divider->setFixedHeight(1);
+    ThemeColors::applyTo(divider, "QFrame#panelDivider { background: #F5EDE3; border: none; }");
+    recentLayout->addWidget(divider);
+
     m_pluginMessageLayout = new QVBoxLayout;
-    m_pluginMessageLayout->setSpacing(5);
+    m_pluginMessageLayout->setSpacing(2);
+    m_pluginMessageLayout->setContentsMargins(0, 0, 0, 0);
     m_pluginMessageLayout->addStretch();
-    recentLayout->addLayout(m_pluginMessageLayout);
+    recentLayout->addLayout(m_pluginMessageLayout, 1);
     return recentPanel;
 }
 
 QFrame* HomePage::createStatusPanel() {
-    QFrame* container = createPanel("statusContainer");
-    container->setObjectName("statusMainContainer");
-    ThemeColors::applyTo(container, QString(
-        "QFrame#statusMainContainer {"
-        "    background: #F7EFE5;"
-        "    border-radius: 18px;"
-        "    border: 1px solid #F3E7DA;"
-        "}"
-        ));
+    // 底部三卡并排：系统状态 / 更新日志 / 插件消息 TOP6
+    QFrame* container = new QFrame;
+    container->setObjectName("statusContainer");
+    container->setAttribute(Qt::WA_StyledBackground, true);
+    ThemeColors::applyTo(container,
+        "QFrame#statusContainer { background: transparent; border: none; }");
+
     QHBoxLayout* mainLayout = new QHBoxLayout(container);
     mainLayout->setContentsMargins(0, 0, 0, 0);
-    mainLayout->setSpacing(10);
+    mainLayout->setSpacing(8);
 
     // ========== 左侧：系统状态面板 ==========
     QFrame* leftPanel = createPanel("statusPanel");
+    leftPanel->setMinimumWidth(292);
     QVBoxLayout* statusLayout = new QVBoxLayout(leftPanel);
     statusLayout->setContentsMargins(15, 12, 15, 12);
     statusLayout->setSpacing(12);
@@ -457,24 +588,57 @@ QFrame* HomePage::createStatusPanel() {
 
     statusLayout->addStretch();
 
-    QTextBrowser* changelogEdit = new QTextBrowser(this);
-    changelogEdit->setReadOnly(true);
-    changelogEdit->setObjectName("changelogTextEdit");
-    ThemeColors::applyTo(changelogEdit,
-        "QTextEdit { background-color: #f8f8f8; border: 1px solid #ddd; "
-        "border-radius: 4px; padding: 8px; font-family: monospace; }"
-        );
-    QString changelogMarkdown = Homev;
+    // ========== 中间：更新日志（独立白卡，不再嵌在灰底容器里） ==========
+    QFrame* logPanel = createPanel("changelogPanel");
+    auto logLayout = new QVBoxLayout(logPanel);
+    logLayout->setContentsMargins(14, 12, 12, 10);
+    logLayout->setSpacing(8);
 
+    // 正文第一行「# 更新日志🌸」由卡片标题代替，最新一版号提到标题右侧
+    QString versionTag;
+    QString changelogMarkdown = Homev;
+    {
+        QStringList lines = changelogMarkdown.split('\n');
+        for (int i = 0; i < lines.size(); ++i) {
+            if (lines.at(i).startsWith("## ")) {
+                versionTag = lines.at(i).mid(3).trimmed();
+                lines.removeAt(i);
+                break;
+            }
+        }
+        for (int i = 0; i < lines.size(); ++i) {
+            if (lines.at(i).startsWith("# ")) {
+                lines.removeAt(i);
+                break;
+            }
+        }
+        changelogMarkdown = lines.join('\n').trimmed();
+    }
+
+    auto logTop = new QHBoxLayout;
+    logTop->setSpacing(6);
+    logTop->addWidget(createLabel("更新日志", "sectionTitle"));
+    logTop->addStretch();
+    if (!versionTag.isEmpty()) logTop->addWidget(createLabel(versionTag, "mutedText"));
+    logLayout->addLayout(logTop);
+
+    QTextBrowser* changelogEdit = new QTextBrowser(logPanel);
+    changelogEdit->setObjectName("changelogTextEdit");
+    changelogEdit->setReadOnly(true);
+    changelogEdit->setFrameShape(QFrame::NoFrame);
+    changelogEdit->viewport()->setAutoFillBackground(false);
+    changelogEdit->document()->setDocumentMargin(0);
     changelogEdit->setOpenExternalLinks(true);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     changelogEdit->setMarkdown(changelogMarkdown);
 #else
     changelogEdit->setHtml("<pre>" + changelogMarkdown.toHtmlEscaped() + "</pre>");
 #endif
+    logLayout->addWidget(changelogEdit, 1);
 
-    mainLayout->addWidget(leftPanel, 1);
-    mainLayout->addWidget(changelogEdit, 2);
+    mainLayout->addWidget(leftPanel, 0);
+    mainLayout->addWidget(logPanel, 1);
+    mainLayout->addWidget(createRecentPanel(), 0);
 
     return container;
 }
@@ -493,20 +657,16 @@ void HomePage::setupUI()
 
     auto mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(4, 4, 4, 4);
-    mainLayout->setSpacing(4);
+    mainLayout->setSpacing(8);
 
     auto statsLayout = new QGridLayout;
-    statsLayout->setSpacing(12);
+    statsLayout->setSpacing(8);          // 6 张紧凑卡，间距收一点才排得开
     createStatCards(statsLayout);
     mainLayout->addLayout(statsLayout);
 
-    auto middleLayout = new QHBoxLayout;
-    middleLayout->setSpacing(4);
-    // 调整拉伸因子：左侧 3，右侧 2，右侧不会太窄
-    middleLayout->addWidget(createChartPanel(), 12);
-    middleLayout->addWidget(createRecentPanel(), 5);
-    mainLayout->addLayout(middleLayout, 2);
-
+    // 消息趋势独占一整行：24 小时横轴铺开才看得清；
+    // 「插件消息 TOP6」挪到底部三栏的右列（原来挤在图表右边，上下都留一大片空白）
+    mainLayout->addWidget(createChartPanel(), 3);
     mainLayout->addWidget(createStatusPanel(), 2);
 
     pluginGridLayout = nullptr;
@@ -820,21 +980,37 @@ void HomePage::updateProcessStats()
 void HomePage::refreshRuntimeStats()
 {
     int onlineCount = 0;
-    int messageCount = 0;
-    int jiaq=0,tq=0;
+    qint64 todayRecv = 0, todaySent = 0, totalMsg = 0;
+    qint64 runRecv = 0, runSent = 0;
+    int jiaq = 0, tq = 0;
     for (const auto &account : std::as_const(m_accounts)) {
+        if (!account) continue;
         if (account->online) onlineCount++;
-        messageCount += account->received + account->sent;
+        // 三个口径（AccountInfo 里是三组独立变量）：
+        //   received_day / sent_day      → 当天，跨天清零（AccountInfo::checkDailyReset）
+        //   received / sent              → 本次运行以来（进程内，不落盘）
+        //   message_received / _sent     → 历史累计（落盘）
+        todayRecv += account->received_day;
+        todaySent += account->sent_day;
+        runRecv   += account->received;
+        runSent   += account->sent;
+        totalMsg  += account->message_received + account->message_sent;   // 累计
         jiaq += account->今日加群数量;
-        tq+=account->今日退群数量;
+        tq   += account->今日退群数量;
     }
 
     const int pluginCount = m_pluginList.size();
-    int logCount=0;
-    if (m_todayMessageValue) m_todayMessageValue->setText(QString::number(messageCount));
+
+    if (m_todayMessageValue)  m_todayMessageValue->setText(formatCount(todayRecv + todaySent));
+    if (m_totalMessageValue)  m_totalMessageValue->setText(QString("累计 %1").arg(formatCountShort(totalMsg)));
+    if (m_todaySentValue)     m_todaySentValue->setText(formatCount(todaySent));
+    if (m_todayReceivedValue) m_todayReceivedValue->setText(formatCount(todayRecv));
+    if (m_todaySentSub)       m_todaySentSub->setText(QString("本次 %1").arg(formatCountShort(runSent)));
+    if (m_todayReceivedSub)   m_todayReceivedSub->setText(QString("本次 %1").arg(formatCountShort(runRecv)));
     if (m_onlineAccountValue) m_onlineAccountValue->setText(QString("%1 / %2").arg(onlineCount).arg(m_accounts.size()));
-    if (m_logCountValue) m_logCountValue->setText(QString::number(jiaq));
-    if (m_pluginCountValue) m_pluginCountValue->setText(QString::number(pluginCount));
+    if (m_logCountValue)      m_logCountValue->setText(formatCount(jiaq));
+    if (m_todayQuitValue)     m_todayQuitValue->setText(QString("退 %1").arg(formatCount(tq)));
+    if (m_pluginCountValue)   m_pluginCountValue->setText(QString::number(pluginCount));
 
 
     // 插件发送量 TOP 6 榜单（见 refreshPluginMessageRanking）
@@ -870,29 +1046,43 @@ void HomePage::updatePluginMessageCount(const QString &pluginName, int count)
 
     if (m_pluginMessageCounts.contains(pluginName)) {
         m_pluginMessageCounts[pluginName]->setText(QString::number(count));
-    } else {
-        // 创建新的插件消息统计项
-        auto row = new QHBoxLayout;
-        row->setSpacing(4);
-        auto iconLabel = createLabel("🔌", "statIcon"); // 可以根据需要用插件图片替代
-        iconLabel->setAlignment(Qt::AlignCenter);
-        iconLabel->setFixedSize(16, 16);
-        ThemeColors::applyTo(iconLabel, "QLabel#statIcon { background: #EEF9E9; font-size: 16px; border-radius: 3px; }");
-
-        
-        auto right = new QVBoxLayout;
-        auto countLabel = createLabel(QString::number(count), "badge");
-        countLabel->setAlignment(Qt::AlignCenter);
-        m_pluginMessageCounts[pluginName] = countLabel;
-        right->addWidget(countLabel);
-        
-        row->addWidget(iconLabel);
-        row->addWidget(createLabel(pluginName, "conversationName"), 1);
-        row->addLayout(right);
-        
-        // 追加到末尾（重建时布局里还没有 stretch，收尾由 refreshPluginMessageRanking 统一 addStretch）
-        m_pluginMessageLayout->addLayout(row);
+        return;
     }
+
+    // 名次 = 已建好的条目数 + 1（重建时按榜单顺序逐条调用，天然有序）
+    const int rank = m_pluginMessageCounts.size() + 1;
+
+    auto row = new QWidget;
+    row->setFixedHeight(28);
+    auto rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(8);
+
+    auto rankLabel = createLabel(QString::number(rank), rank == 1 ? "rankBadgeTop" : "rankBadge");
+    rankLabel->setAlignment(Qt::AlignCenter);
+    rankLabel->setFixedSize(18, 18);
+    rowLayout->addWidget(rankLabel);
+
+    // 插件名过长时中间省略（卡片窄，硬截断很难看），完整名放 tooltip
+    // 字号/字重要和 QSS 里 #conversationName 一致，量字宽才准（QSS 字体要 polish 后才生效，
+    // 建的时候拿不到，所以这里按同样参数手工构造一份用于测量）
+    auto nameLabel = new QLabel;
+    nameLabel->setObjectName("conversationName");
+    QFont nameFont = nameLabel->font();
+    nameFont.setPixelSize(13);
+    nameFont.setBold(true);
+    nameLabel->setText(QFontMetrics(nameFont).elidedText(pluginName, Qt::ElideMiddle, 126));
+    nameLabel->setToolTip(pluginName);
+    nameLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    rowLayout->addWidget(nameLabel, 1);
+
+    auto countLabel = createLabel(QString::number(count), "rankCount");
+    countLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    countLabel->setMinimumWidth(22);
+    m_pluginMessageCounts[pluginName] = countLabel;
+    rowLayout->addWidget(countLabel);
+
+    m_pluginMessageLayout->addWidget(row);
 }
 
 void HomePage::refreshPluginMessageRanking()
@@ -918,7 +1108,18 @@ void HomePage::refreshPluginMessageRanking()
 
     QStringList order;
     order.reserve(ranked.size());
-    for (const auto &item : ranked) order << item.second;
+    int totalSent = 0;
+    for (const auto &item : ranked) {
+        order << item.second;
+        totalSent += item.first;
+    }
+
+    // 标题右侧的小计
+    if (m_pluginRankSummary) {
+        m_pluginRankSummary->setText(ranked.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral("%1 条").arg(formatCount(totalSent)));
+    }
 
     // 2. 榜单成员和顺序都没变：只刷新数字（首页定时器每秒会调到这里，重建会闪）
     if (m_pluginRankReady && order == m_pluginRankOrder) {
@@ -936,10 +1137,37 @@ void HomePage::refreshPluginMessageRanking()
     m_pluginMessageCounts.clear();
 
     if (ranked.isEmpty()) {
-        m_pluginMessageLayout->addWidget(createLabel("暂无插件发送记录", "mutedText"));
-    } else {
-        for (const auto &item : ranked)
-            updatePluginMessageCount(item.second, item.first);
+        m_pluginMessageLayout->addStretch(1);
+        auto hint = createLabel(QStringLiteral("暂无插件发送记录"), "rankEmpty");
+        hint->setAlignment(Qt::AlignCenter);
+        m_pluginMessageLayout->addWidget(hint);
+        m_pluginMessageLayout->addStretch(1);
+        return;
+    }
+
+    for (const auto &item : ranked)
+        updatePluginMessageCount(item.second, item.first);
+
+    // 空位补满 6 格：榜单只有一两行时，右下角不至于空出一大块白
+    for (int i = ranked.size() + 1; i <= kTopPluginCount; ++i) {
+        auto row = new QWidget;
+        row->setFixedHeight(28);
+        auto rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+
+        auto rankLabel = createLabel(QString::number(i), "rankBadgeMuted");
+        rankLabel->setAlignment(Qt::AlignCenter);
+        rankLabel->setFixedSize(18, 18);
+        rowLayout->addWidget(rankLabel);
+
+        rowLayout->addWidget(createLabel(QStringLiteral("—"), "rankEmpty"), 1);
+
+        auto countLabel = createLabel(QString(), "rankCountMuted");
+        countLabel->setMinimumWidth(22);
+        rowLayout->addWidget(countLabel);
+
+        m_pluginMessageLayout->addWidget(row);
     }
     m_pluginMessageLayout->addStretch();
 }

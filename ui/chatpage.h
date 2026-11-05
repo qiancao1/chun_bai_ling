@@ -214,6 +214,7 @@ private:
     void initUI();
     void loadChatHistory(int appid, const QString &contactId, int type);
     void addDataToModel(int appid, const Contact& c, int type);
+    void sortModelByAppid();          // 加载完成后按机器人 appid 分组（同组内保持原顺序）
 
     // ===== 往上滚动加载更早记录（游标是「当前列表里最早一条的 seq」）=====
     void loadOlderHistory();

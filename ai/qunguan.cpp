@@ -2,7 +2,168 @@
 #include "global.h"
 #include "ui_qunguan.h"
 #include <QMessageBox>
+#include <QDialog>
+#include <QListWidget>
+#include <QLabel>
+#include <QPushButton>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QSignalBlocker>
+#include <utility>
+
 int accinfo(int appid);
+
+namespace {
+
+// 「全部机器人」模式下点「保存页面」弹出的批量应用窗口：勾选目标机器人。
+//
+// 故意不写 Q_OBJECT —— 它只用到 QDialog 自带的 accept()/reject() 和 lambda，
+// 不需要新增信号槽，放在 .cpp 里就不用额外的 moc 产物（也不用动工程文件）。
+class BatchTargetDialog : public QDialog
+{
+public:
+    explicit BatchTargetDialog(const QString &pageName, QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle(QString("批量保存 · %1").arg(pageName));
+        setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+        resize(460, 520);
+        setMinimumSize(400, 380);
+
+        // 只用带选择器的规则：不带选择器的声明块在 Qt 里等价于 * {...}，会传播给所有后代控件
+        // （账号卡片按钮变透明的那个坑）。
+        setStyleSheet(
+            "#batchTitle { font-size: 14px; font-weight: 700; color: #26313F; background: transparent; }"
+            "#batchHint  { font-size: 12px; color: #8A94A6; background: transparent; }"
+            "#batchCount { font-size: 12px; color: #8A94A6; background: transparent; }"
+            "#batchList  { background: #FFFFFF; border: 1px solid #F0E3D3; border-radius: 8px; }"
+            "#batchList::item { padding: 5px 2px; }"
+            "#batchList::item:selected { background: #FFF0DE; color: #26313F; }"
+            "QPushButton#batchTool { padding: 3px 12px; font-size: 12px; }"
+            );
+
+        auto *root = new QVBoxLayout(this);
+        root->setContentsMargins(14, 12, 14, 12);
+        root->setSpacing(8);
+
+        auto *title = new QLabel(QString("把当前「%1」的文本批量保存到：").arg(pageName), this);
+        title->setObjectName("batchTitle");
+        root->addWidget(title);
+
+        auto *hint = new QLabel("只写左侧当前页面的文本内容。上方输入框和勾选项属于单个账号的设置，"
+                                "批量保存不会改动它们。", this);
+        hint->setObjectName("batchHint");
+        hint->setWordWrap(true);
+        root->addWidget(hint);
+
+        auto *tools = new QHBoxLayout;
+        tools->setSpacing(6);
+        auto *btnAll  = new QPushButton("全选", this);
+        auto *btnNone = new QPushButton("全不选", this);
+        auto *btnInv  = new QPushButton("反选", this);
+        for (QPushButton *b : { btnAll, btnNone, btnInv }) {
+            b->setObjectName("batchTool");
+            b->setCursor(Qt::PointingHandCursor);
+            b->setMinimumHeight(26);
+            tools->addWidget(b);
+        }
+        tools->addStretch();
+        m_countLabel = new QLabel(this);
+        m_countLabel->setObjectName("batchCount");
+        tools->addWidget(m_countLabel);
+        root->addLayout(tools);
+
+        m_list = new QListWidget(this);
+        m_list->setObjectName("batchList");
+        m_list->setSpacing(1);
+        m_list->setSelectionMode(QAbstractItemView::NoSelection);
+        root->addWidget(m_list, 1);
+
+        auto *bottom = new QHBoxLayout;
+        bottom->addStretch();
+        auto *cancelBtn = new QPushButton("取消", this);
+        m_okBtn = new QPushButton("保存", this);
+        cancelBtn->setCursor(Qt::PointingHandCursor);
+        m_okBtn->setCursor(Qt::PointingHandCursor);
+        bottom->addWidget(cancelBtn);
+        bottom->addWidget(m_okBtn);
+        root->addLayout(bottom);
+
+        connect(btnAll,  &QPushButton::clicked, this, [this]() { setAllState(Qt::Checked); });
+        connect(btnNone, &QPushButton::clicked, this, [this]() { setAllState(Qt::Unchecked); });
+        connect(btnInv,  &QPushButton::clicked, this, [this]() { invertAll(); });
+        connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+        connect(m_okBtn,   &QPushButton::clicked, this, [this]() { accept(); });
+        connect(m_list, &QListWidget::itemChanged, this, [this](QListWidgetItem *) { updateCount(); });
+
+        updateCount();
+    }
+
+    // 默认全部勾选
+    void addTarget(int appid, const QString &text)
+    {
+        auto *item = new QListWidgetItem(text, m_list);
+        item->setData(Qt::UserRole, appid);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+    }
+
+    QList<int> selectedAppids() const
+    {
+        QList<int> out;
+        for (int i = 0; i < m_list->count(); ++i) {
+            const QListWidgetItem *item = m_list->item(i);
+            if (item && item->checkState() == Qt::Checked)
+                out << item->data(Qt::UserRole).toInt();
+        }
+        return out;
+    }
+
+protected:
+    void accept() override
+    {
+        if (selectedAppids().isEmpty()) {
+            QMessageBox::warning(this, "批量保存", "请至少勾选一个机器人");
+            return;
+        }
+        QDialog::accept();
+    }
+
+private:
+    void setAllState(Qt::CheckState state)
+    {
+        const QSignalBlocker blocker(m_list);   // 批量改状态时不逐条刷新计数
+        for (int i = 0; i < m_list->count(); ++i)
+            m_list->item(i)->setCheckState(state);
+        updateCount();
+    }
+
+    void invertAll()
+    {
+        const QSignalBlocker blocker(m_list);
+        for (int i = 0; i < m_list->count(); ++i) {
+            QListWidgetItem *item = m_list->item(i);
+            item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+        }
+        updateCount();
+    }
+
+    void updateCount()
+    {
+        const int picked = selectedAppids().size();
+        const int total  = m_list->count();
+        if (m_countLabel)
+            m_countLabel->setText(QString("已选 %1 / %2").arg(picked).arg(total));
+        if (m_okBtn)
+            m_okBtn->setText(QString("保存到 %1 个机器人").arg(picked));
+    }
+
+    QListWidget *m_list = nullptr;
+    QLabel *m_countLabel = nullptr;
+    QPushButton *m_okBtn = nullptr;
+};
+
+} // namespace
 qunguan::qunguan(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::qunguan)
@@ -239,6 +400,12 @@ qunguan::~qunguan()
 }
 
 void qunguan::on_pushButton_clicked() {
+    // 标题栏选的是「全部机器人」时没有具体账号可写 → 转成批量保存（勾选目标机器人）
+    if (m_currentBotIndex < 0) {
+        batchSaveCurrentField();
+        return;
+    }
+
     if (g_appid == 0) {
         QMessageBox::warning(this, "提示", "请先选择有效的机器人");
         return;
@@ -282,6 +449,62 @@ void qunguan::on_pushButton_clicked() {
     accountPage->saveAccounts(info.get());
 
     QMessageBox::information(this, "成功", "保存成功");
+}
+
+QString qunguan::currentPageName() const
+{
+    if (QListWidgetItem *item = ui->listWidget->currentItem())
+        return item->text();
+    return m_currentField;
+}
+
+// 「全部机器人」模式下的保存：弹窗勾选目标机器人，把当前页面的文本批量写过去。
+// 只动文本字段（m_currentField）—— 上方的 times / tiaoshu / 各复选框是每个账号各自的设置，
+// 批量覆盖会把别的机器人调好的数值抹掉，所以这里一个字都不碰。
+void qunguan::batchSaveCurrentField()
+{
+    if (m_accounts.isEmpty()) {
+        QMessageBox::warning(this, "批量保存", "还没有任何机器人账号，无法批量保存");
+        return;
+    }
+    if (m_currentField.isEmpty()) {
+        QMessageBox::warning(this, "批量保存", "请先在左侧选中一个页面（比如「签到」），再点保存");
+        return;
+    }
+
+    const QString pageName = currentPageName();
+    const QString content  = ui->textEdit->toPlainText();
+
+    BatchTargetDialog dlg(pageName, this);
+    for (const auto &info : std::as_const(m_accounts)) {
+        if (!info) continue;
+        const QString name   = info->nickname.isEmpty() ? "未命名机器人" : info->nickname;
+        const QString botId  = info->appid.isEmpty() ? "未配置 AppID" : info->appid;
+        const QString status = info->online ? "● 在线" : "○ 离线";
+        dlg.addTarget(info->appid_int, QString("%1   %2   %3").arg(name, botId, status));
+    }
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QList<int> targets = dlg.selectedAppids();
+    int saved = 0;
+    for (int appid : targets) {
+        const int index = accinfo(appid);
+        if (index == -1) continue;
+        auto &info = m_accounts[index];
+        if (!info) continue;
+
+        setFieldValue(info, m_currentField, content);
+        accountPage->saveAccounts(info.get());
+        ++saved;
+    }
+
+    // 列表项里缓存的那份也同步一下，切回该页面时看到的是刚保存的内容
+    if (QListWidgetItem *item = ui->listWidget->currentItem())
+        item->setData(Qt::UserRole, content);
+
+    QMessageBox::information(this, "批量保存",
+                             QString("已把「%1」的文本保存到 %2 个机器人").arg(pageName).arg(saved));
 }
 
 void qunguan::列表行被单击()

@@ -38,6 +38,7 @@
 
 #include <QRunnable>
 #include <QMessageBox>
+#include <QComboBox>
 #include "cardwidget.h"
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
@@ -111,9 +112,7 @@ extern NickReviewWidget *m_nickReviewWidget;
 extern MaterialWidget *material_ui;
 extern QString g_admin;
 extern QString g_ip;
-extern QListWidget *robotListWidget;
 extern AiWidget *ai_ui;
-extern HtmlToImageWidget *htmltoimg;
 extern ScreenshotSyncClient *ScreenA;
 extern HomePage *homePage;
 extern AccountPage *accountPage;
@@ -176,7 +175,7 @@ extern std::array<std::unique_ptr<LogDB>, 5> g_logdb;
 //   日志页第 6 个 tab「发送错误」读它。库没打开时为 nullptr，所有写入点都要判空。
 extern std::unique_ptr<LogDB> g_errlogdb;
 extern WebSocketServer *ws_server;
-extern QHash<QString, QString> m_blacklist; // 黑名单哈希表
+// 黑名单已改成按账号隔离，入口见 blacklistpage.h 的 Blacklist:: 命名空间
 #ifdef _WIN32
 extern SharedMemoryBridge *bridge;
 #endif
@@ -209,6 +208,9 @@ QString upload(const QByteArray &data);
 int mapTypeToTabIndex(int type);
 void loadconfig();
 void saveConfig();
+// 重启整个框架：停机器人 → 关各个库 → 卸载插件 → 拉起新进程 → 退出当前进程。
+// 指令「#确认重启框架」和标题栏的「快速重启」按钮共用这一份，别各写一套（顺序错了会让新进程打不开同名 LMDB 环境）。
+void restartFramework();
 QString extractBetween(const QString &source, const QString &left, const QString &right);//文本取中间
 QStringList takeAllTextMiddle(const QString &original, const QString &leftMarker,const QString &rightMarker,bool includeSides);//文本取中间 批量
 QString replaceBetweenAll(const QString &original,const QString &left,const QString &right,const QString &replacement,int maxReplacements = -1);

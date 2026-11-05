@@ -76,8 +76,15 @@ private:
     QVBoxLayout *m_pluginMessageLayout = nullptr;
     QMap<QString, QLabel*> m_pluginMessageCounts; // 映射插件名称到其显示的计数标签
     QStringList m_pluginRankOrder;                // 当前榜单顺序（变了才重建，避免定时刷新闪烁）
+    QLabel *m_pluginRankSummary = nullptr;        // 标题右侧「共 N 条」小计
     bool m_pluginRankReady = false;               // 榜单是否已经建过一次（空榜也要建一次显示提示）
     QLabel *m_todayMessageValue = nullptr;
+    QLabel *m_totalMessageValue = nullptr;      // 「今日消息」卡右上角的累计副值
+    QLabel *m_todaySentValue = nullptr;
+    QLabel *m_todayReceivedValue = nullptr;
+    QLabel *m_todaySentSub = nullptr;        // 「今日发送」卡右下角：本次运行以来（sent）
+    QLabel *m_todayReceivedSub = nullptr;    // 「今日接收」卡右下角：本次运行以来（received）
+    QLabel *m_todayQuitValue = nullptr;         // 「今日加群」卡右上角的退群副值
     QLabel *m_onlineAccountValue = nullptr;
     QLabel *m_logCountValue = nullptr;
     QLabel *m_systemStatusValue = nullptr;

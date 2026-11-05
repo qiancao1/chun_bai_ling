@@ -233,8 +233,6 @@ QString convertMarkdownLinksToXml(const QString &input)
 QString botlist()
 {
     qint64 now = QDateTime::currentSecsSinceEpoch();
-    QDateTime dt = QDateTime::fromSecsSinceEpoch(now);
-    int day = dt.date().day();
 
     QJsonArray array;
     for(auto &info : m_accounts)
@@ -250,6 +248,8 @@ QString botlist()
         obj["total_sent"]=info->message_sent;
         obj["received"] = info->received;//当前运行
         obj["sent"]=info->sent;
+        obj["today_received"] = info->received_day;//今日（跨天自动清零）
+        obj["today_sent"] = info->sent_day;
         obj["online"] = info->online;
         obj["id"] = info->pduid; //频道id
         obj["union_openid"]=info->unid;   //QQid
@@ -268,16 +268,11 @@ QString botlist()
             obj["group_dau"] = 0;
         }
 
-        if(info->日计时变量!=day)
-        {
-            info->今日加群数量 = 0;
-            info->今日退群数量 = 0;
-            info->今日好友数量 = 0;
-            info->今日删除好友数量 = 0;
-            info->日计时变量 = day;
-            info->今日频道数量=0;
-            info->今日退出频道数量=0;
-        }
+        // 跨天清零统一走 AccountInfo::checkDailyReset()（以前这里只清今日加群/好友/频道，
+        // 还把日计时变量改成当天 —— 等下次启动走到 fromJson 时日期"相等"就跳过，
+        // received_day/sent_day 再也不清零，首页「今日收发」会一直累加）。
+        // 落盘交给 AccountPage::onStatTick（每分钟一次），这里只改内存。
+        info->checkDailyReset();
         obj["today_join_count"] = info->今日加群数量;       // 今日加群
         obj["today_leave_count"] = info->今日退群数量;       // 今日退群
         obj["today_friend_count"] = info->今日好友数量;      // 今日新增好友
@@ -5607,6 +5602,32 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
 
 QString processText(const QString &text, int timeoutMs = 30000);
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
+
+// ── 正文开头的「发送方式」标签 ──
+//   #^  → 这条强制走普通文本（不看账号的 md 设置）
+//   #$  → 这条强制走 markdown
+// 两个标签都只认**最开头**的一处，命中后先摘掉再发（不能让 #^ 混进正文）。
+// 不出现这两个标签时 mode/sendType 一个字都不动，该怎么发就怎么发。
+// 实现上就是把 mode 置 true（=「手动指定发送方式」那条分支）+ 指定 sendType：
+//   mode=true & sendType=0 → 普通文本；mode=true & sendType=1 → 原生 markdown。
+// （sendType=2 是 markdown 模板，框架不支持，别用。）
+static bool stripSendPrefix(QString &text, bool &mode, int &sendType)
+{
+    if (text.startsWith("#^")) {
+        text.remove(0, 2);
+        mode = true;
+        sendType = 0;
+        return true;
+    }
+    if (text.startsWith("#$")) {
+        text.remove(0, 2);
+        mode = true;
+        sendType = 1;
+        return true;
+    }
+    return false;
+}
+
 QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString &pname, QString &text,
                               const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,Callback cb,int recallSec)
 {
@@ -5614,6 +5635,9 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     if(type==18) type =0;
     if(recallSec==1) recallSec=2;
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
+
+    // #^ / #$ 前缀（摘掉标签 + 强制本次的发送方式）；没写前缀的话 mode/sendType 原样
+    stripSendPrefix(text, mode, sendType);
 
     // 插件侧的 pname 传的是**发起方裸 uuid**（展示标签一律以 '[' 开头）→ 按该插件**自己的**规则表
     // 把正文里的 [注册原名](...) 改写成改名后的指令（插件只认注册名，改不了这个）。
@@ -5674,6 +5698,9 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
     if(type!=18){
         if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
     }
+
+    // 同 send_msgAsync：#^ 强制普通文本 / #$ 强制 markdown（标签在发送前摘掉）
+    stripSendPrefix(text, mode, sendType);
 
     // 同 send_msgAsync：pname 是插件侧传的裸 uuid 时，按该插件把 [注册原名]() 改成改名后的指令
     // （改名可以按机器人分开配 → 传本客户端的 appid，取这个号实际生效的名字）
@@ -6082,6 +6109,9 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                    const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,Callback cb,int recallSec)
 {
+    // 定时消息（ui/scheduleconfigwidget.cpp）等直接调这个入口的，也认 #^ / #$ 前缀。
+    // 走 send_msgAsync 的那条链在更前面就摘过标签了，这里再判一次是空操作。
+    stripSendPrefix(text, mode, sendType);
     // preParsed=false：自己跑 #python / 换行归一化 / bianl
     return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
                                  /*preParsed=*/false, QString(), QJsonArray(), QJsonValue(), recallSec);

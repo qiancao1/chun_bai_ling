@@ -117,7 +117,7 @@ struct AccountInfo {
     int 今日频道数量=0;
     int 今日退出频道数量=0;
 
-    int 日计时变量=0;
+    int 日计时变量=0;          // 上次清零那天的「儒略日」(QDate::toJulianDay)，不是几号
     int fasjg=0;
 
     int times =5;//检测时间
@@ -194,6 +194,12 @@ struct AccountInfo {
 
     QString toJson() const;
     static void fromJson(const QJsonObject &obj,AccountInfo &info);
+
+    // 跨天清零：「今日」相关计数器（今日收发 / 今日加群退群 / 今日好友 / 今日频道）
+    // 到新的一天就归零。用儒略日比较（完整日期，不是几号），跨月、跨年都准。
+    // 三处都会调：读取配置时、定时任务每分钟、首页刷新时 —— 程序连跑几天也能自己清零。
+    // 返回 true 表示这次真的清零了。
+    bool checkDailyReset();
 
 };
 

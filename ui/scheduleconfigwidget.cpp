@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QFrame>
 #include <QLabel>
 #include <QHeaderView>
 #include <QMessageBox>
@@ -59,9 +60,13 @@ void ScheduleConfigWidget::setupUI()
     QVBoxLayout *detailLayout = new QVBoxLayout(detailPanel);
     detailLayout->setContentsMargins(0, 0, 0, 0);
 
-    QGroupBox *detailGroup = new QGroupBox("定时详细信息");
-    detailGroup->setContentsMargins(0, 0, 0, 0);
+    // 右侧面板不再套 QGroupBox（标题「定时详细信息」已按用户要求去掉）：
+    // QGroupBox 自带 margin-top:14 + padding-top:18 + 标题行，凭空吃掉三十多像素，
+    // 面板顶部就是一大片空白。换成 QFrame —— 全局样式表里 `QFrame` 本来就是
+    // 白底 + 圆角 5，视觉上和原来的分组框一致，只是没有标题、没有那块留白。
+    QFrame *detailGroup = new QFrame;
     QVBoxLayout *groupLayout = new QVBoxLayout(detailGroup);
+    groupLayout->setContentsMargins(12, 10, 12, 10);
     groupLayout->setSpacing(6);
 
     // ---------- 1. 创建所有控件 ----------
@@ -176,9 +181,9 @@ __data__="要从数据库删除的内容" #使用|||分割删除多个
     replyWrapLayout->addWidget(replyContentEdit);
     groupLayout->addLayout(replyWrapLayout);
 
-    // 第七行：更新按钮
-    groupLayout->addWidget(updateTaskBtn);
-
+    // 「更新当前任务」只放在底部按钮行（下面 bottomLayout）。
+    // 原来这里也 addWidget 过一次，同一个控件被塞进两个布局：会被 reparent 到底部，
+    // 但这个槽位仍然占着高度，面板底部就多出一块空白。
     detailLayout->addWidget(detailGroup);
 
     // ---------- 3. 添加到分割器和底部按钮 ----------

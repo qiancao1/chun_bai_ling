@@ -264,6 +264,14 @@ void AccountPage::onStatTick()
     uint32_t nowMinute = QDateTime::currentSecsSinceEpoch() / 60;
 
     for (auto &acc : m_accounts) {
+        if (!acc) continue;
+
+        // 跨天清零：这里每分钟跑一次，不受「当前停在哪一页」影响。
+        // 以前只在读取配置时清零，程序连跑几天「今日收发」就一直累加，
+        // 首页那几张「今日」卡片看着跟累计一样。清完把新的日期标记落盘。
+        if (acc->checkDailyReset())
+            saveAccounts(acc.get());
+
         if (!acc->online) continue;
 
         auto *db = g_botdb[acc->appid_int];
@@ -467,11 +475,6 @@ void AccountPage::refreshCards2(AccountInfo *info) {
         card->refreshDisplay();
     } else {
         addCardFor(info);
-
-        QListWidgetItem *item = new QListWidgetItem;
-        item->setText(info->nickname.isEmpty() ? info->appid : info->nickname);
-        item->setData(Qt::UserRole, info->appid_int);
-        robotListWidget->addItem(item);
     }
 
     // 新增/外部变更的账号直接选中，右侧立即显示它的配置
@@ -488,15 +491,9 @@ void AccountPage::refreshCards() {
         delete child;
     }
     g_CW.clear();
-    robotListWidget->clear();
 
     for (const auto& infoPtr : std::as_const(m_accounts)) {
         addCardFor(infoPtr.get());
-
-        QListWidgetItem *item = new QListWidgetItem;
-        item->setText(infoPtr->nickname.isEmpty() ? infoPtr->appid : infoPtr->nickname);
-        item->setData(Qt::UserRole, infoPtr->appid_int);
-        robotListWidget->addItem(item);
     }
 
     m_cardLayout->addWidget(m_addBtn);
@@ -646,14 +643,6 @@ void AccountPage::onSaveSelected() {
         g_CW[ai->appid_int]->refreshDisplay();
     }
 
-    for (int i = 0; i < robotListWidget->count(); ++i) {
-        auto *item = robotListWidget->item(i);
-        if (item->data(Qt::UserRole).toInt() == ai->appid_int) {
-            item->setText(ai->nickname.isEmpty() ? ai->appid : ai->nickname);
-            break;
-        }
-    }
-
     // 让表单回显落库后的真实值（例如 AppID 被拒绝修改的情况）
     m_editor->setAccountInfo(*ai);
 
@@ -712,17 +701,6 @@ void AccountPage::removeAccountNow(int appid) {
         const QString appidStr = m_accounts[i]->appid;
         accdb->remove(appidStr);
         m_accounts.removeAt(i);
-
-        for(int j = 0; j < robotListWidget->count(); ++j)
-        {
-            auto *item = robotListWidget->item(j);
-            if(item->data(Qt::UserRole).toInt() == appid)
-            {
-                robotListWidget->takeItem(j);
-                delete item;
-                break;
-            }
-        }
 
         // 删掉的正好是选中项：自动切到第一个剩余账号
         if (m_selectedAppid == appid) {

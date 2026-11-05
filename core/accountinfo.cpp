@@ -20,6 +20,7 @@
 
 #include "accountinfo.h"
 #include <QJsonArray>
+#include <QDate>
 #include <qjsondocument.h>
 #include "machinekey.h"
 // ============================================================
@@ -220,21 +221,8 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     // 签到配置：空就是空（= 静默签到：一天一次 +1000，不回复任何消息）。
     // 示例不写进配置，只作为「群管 → 签到」输入框的灰色 placeholder 展示。
     info.qiandao = obj["qiandao"].toString();
-    qint64 now = QDateTime::currentSecsSinceEpoch(); // 你已经有这个了
-    QDateTime dt = QDateTime::fromSecsSinceEpoch(now);
-    int day = dt.date().day();
-    if(info.日计时变量!=day)
-    {
-        info.今日加群数量 = 0;
-        info.今日退群数量 = 0;
-        info.今日好友数量 = 0;
-        info.今日删除好友数量 = 0;
-        info.今日频道数量=0;
-        info.今日退出频道数量=0;
-        info.日计时变量=day;
-        info.received_day=0;
-        info.sent_day=0;
-    }
+    // 「今日」计数器跨天清零（今日收发 / 今日加群退群 / 今日好友 / 今日频道）
+    info.checkDailyReset();
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();
     info.dyindex = obj["dyindex"].toInt();
@@ -270,4 +258,29 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     }
 
 
+}
+
+// 跨天清零。
+// ⚠ 日计时变量 存的是 **儒略日**（完整日期），不是「几号」：
+//    以前存 day()（1~31），上月 5 号跑到本月 5 号会被判成"同一天"而不清零；
+//    而且两处清零逻辑（这里 + api.cpp 的 botlist）各清各的字段 ——
+//    api.cpp 那边只清今日加群/好友/频道、还把日计时变量改成当天，
+//    结果下次启动走到这里时日期"相等"直接跳过，received_day/sent_day 就再也不清零，
+//    首页的「今日收发」越跑越大，看着跟累计一样。现在统一走这个函数。
+bool AccountInfo::checkDailyReset()
+{
+    const int today = QDate::currentDate().toJulianDay();
+    if (日计时变量 == today)
+        return false;
+
+    日计时变量 = today;
+    今日加群数量 = 0;
+    今日退群数量 = 0;
+    今日好友数量 = 0;
+    今日删除好友数量 = 0;
+    今日频道数量 = 0;
+    今日退出频道数量 = 0;
+    received_day = 0;      // 今日接收
+    sent_day = 0;          // 今日发送
+    return true;
 }

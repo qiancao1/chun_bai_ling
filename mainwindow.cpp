@@ -42,6 +42,8 @@
 #include "global.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+#include <QComboBox>
+#include <QTabBar>
 #include <QMouseEvent>
 #include <QCursor>
 #include <QEvent>
@@ -56,10 +58,10 @@
 #include <QJsonObject>
 #include <QPixmap>
 #include <QPainter>
+#include <QPainterPath>
 #include <QFile>
 #include <QtCore>
 #include <qgroupbox.h>
-#include "htmltoimagewidget.h"
 #include "menupanelwidget.h"
 #include "plts.h"
 #include "qunguan.h"
@@ -72,16 +74,24 @@
 #include <qmessagebox.h>
 #include <QDialog>
 #include <QGuiApplication>
+#include <QApplication>     // qApp->installEventFilter / setOverrideCursor
 #include <QPushButton>
 #include <QTextBrowser>     // ⚠ 不能用 QTextEdit：本 TU 里被 #define 成 PlaceholderTextEdit
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.2.176"
-#define APP_BUILD_NUMBER 176
+#define APP_VERSION_STR "v1.5.5.179"
+#define APP_BUILD_NUMBER 179
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.5.5.179 (2026-11-05)
+- 更新 新的UI 移除部分界面 黑名单改为分bot执行了
+- 修复 事件用户id获取失败问题
+- 增加 #^强制普通信息 #$强制MD信息
+- 增加 拖动窗口调整大小(实际上是改了好久的)
+- 增加 快速重启按钮
+
 ## v1.5.3.176 (2026-11-02)
 - 优化 问答 按钮类 行高过高问题
 - 修复 全局样式 倒是输入框 提示灰字不可用问题
@@ -132,14 +142,14 @@ KeywordPunishConfigWidget *keyword_Punish=nullptr;
 BlacklistPage *Black=nullptr;
 ForbiddenWordPage *forbidden=nullptr;
 ScheduleConfigWidget *schedule=nullptr;
-HtmlToImageWidget *htmltoimg =nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
 AiWidget *ai_ui = nullptr;
 qunguan *ui_qunguan=nullptr;
 MenuPanelWidget *ui_MenuPanel=nullptr;
 
-QListWidget *robotListWidget=nullptr;
-QTabWidget *configTabWidget2=nullptr;
+// 账号（配置目标）现在统一由标题栏的机器人选择器决定，顶部那条「机器人 [下拉]」已删除
+QListWidget *configNav=nullptr;          // 高级配置页：二级竖排导航
+QStackedWidget *configStack=nullptr;     // 高级配置页：二级内容区
 NickReviewWidget *m_nickReviewWidget=nullptr;
 MaterialWidget *material_ui=nullptr;
 
@@ -171,19 +181,80 @@ void cleanInactiveUsers(QHash<int,UserStat> *hash, quint32 now, quint32 expireMs
         }
     }
 }
-MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(5)
+
+namespace {
+
+// ── 窗口外圈的「阴影带」──
+// 系统窗口的拖边热区其实不在内容里：它在窗口自带的不可见边框 / DWM 阴影上
+// （那圈东西位于窗口矩形内部、可见内容之外）。FramelessWindowHint 窗口默认没有这圈，
+// 热区只能往内容里挤，手感就是「得进到窗口里面才拖得动」。
+// 所以给 central 外面套一层透明根、内缩 kShadowMargin：这一圈既画柔和阴影，也正好拿来当热区。
+constexpr int kShadowMargin = 8;
+
+class WindowShadowRoot : public QWidget
+{
+public:
+    explicit WindowShadowRoot(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        // 阴影自己画，底必须透明（主窗口已设 WA_TranslucentBackground）
+        setAttribute(Qt::WA_TranslucentBackground, true);
+    }
+
+    // 最大化 / 全屏时把这一圈收掉，否则四边会漏出桌面和阴影
+    void setShadowMargin(int m)
+    {
+        if (m == m_margin) return;
+        m_margin = m;
+        if (QLayout *l = layout()) l->setContentsMargins(m, m, m, m);
+        update();
+    }
+
+    int shadowMargin() const { return m_margin; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (m_margin <= 0) return;
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+
+        // 从外到内叠几层半透明圆角矩形，近似 box-shadow：越靠内容层数越多、越浓。
+        // 注意这些层是叠加的：最内侧会被全部 m_margin 层覆盖，所以单层 alpha 必须很小，
+        // 峰值实际是各层之和（这里约 30/255 ≈ 12%），否则会糊成一圈死黑。
+        const QRectF inner = QRectF(rect()).adjusted(m_margin, m_margin, -m_margin, -m_margin);
+        for (int i = m_margin; i >= 1; --i) {
+            const qreal t = 1.0 - qreal(i - 1) / qreal(m_margin);      // 0（最外）→ 1（最内）
+            p.setBrush(QColor(0, 0, 0, int(1 + 7 * t * t)));           // 平方衰减：外圈几乎透明
+            p.drawRoundedRect(inner.adjusted(-i, -i, i, i), 10 + i, 10 + i);
+        }
+    }
+
+private:
+    int m_margin = 0;
+};
+
+} // namespace
+
+MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), edgeMargin(kShadowMargin)
 {
     // 无边框窗口
     setWindowFlags(Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
 
-    resize(1040, 660);
-    setMinimumSize(900, 560);
+    // 内容区外圈额外留出 kShadowMargin*2：可见内容仍和以前一样大
+    resize(1040 + kShadowMargin * 2, 660 + kShadowMargin * 2);
+    setMinimumSize(900 + kShadowMargin * 2, 560 + kShadowMargin * 2);
     setWindowTitle("纯白铃铛");
 
     setupUi();
     xr();
     applyStyleSheet();
+
+    // 无边框窗口的边框缩放：装到 qApp 上，才能拿到被各级子控件吃掉的鼠标移动/按下事件。
+    // 过滤器内部第一件事就是判 w->window() == this，别的窗口/对话框一律不管。
+    qApp->installEventFilter(this);
 
     // 界面配色（高级设置 → 基础设置）改一个色就重新套一遍样式表
     ThemeColors::setApplyHook([this]() { applyStyleSheet(); });
@@ -452,9 +523,6 @@ MainWindow::~MainWindow()
     delete Black;
     Black = nullptr;
 
-    delete htmltoimg;
-    htmltoimg = nullptr;
-
     delete buttonEditorPage;
     buttonEditorPage = nullptr;
 
@@ -465,10 +533,10 @@ MainWindow::~MainWindow()
 
 
     // 这些可能是成员指针，由父窗口管理，但为了安全也清理
-    delete robotListWidget;
-    robotListWidget = nullptr;
-    delete configTabWidget2;
-    configTabWidget2 = nullptr;
+    delete configNav;
+    configNav = nullptr;
+    delete configStack;
+    configStack = nullptr;
 
     // 核心页面（最后清理）
     delete homePage;
@@ -504,7 +572,6 @@ void MainWindow::gotoChatPage()
 void MainWindow::setupUi()
 {
 
-    robotListWidget = new QListWidget;
     ScreenA= new ScreenshotSyncClient;
     networkManager = new QNetworkAccessManager(this);
     homePage = new HomePage;
@@ -522,7 +589,8 @@ void MainWindow::setupUi()
     Black = new BlacklistPage;
     forbidden = new ForbiddenWordPage;
     schedule =new ScheduleConfigWidget;
-    htmltoimg = new HtmlToImageWidget(this);
+    // HTML制图页已下线，不再创建 HtmlToImageWidget
+
 
     m_nickReviewWidget = new NickReviewWidget(this);
     // 素材页：每个机器人各自一套（配额/链接/有效期都按 appid 隔离），切号时靠 setAppId 换数据
@@ -593,125 +661,152 @@ void MainWindow::setupUi()
 
 
 
-    QGroupBox *configGroupBox = new QGroupBox();   // 分组框，标题可自定义
-
-    configGroupBox->setStyleSheet("QGroupBox { padding-top: 5px; margin-top: 0px; border: 0px; }");
     QWidget *nwid = new QWidget;
-    QHBoxLayout *hxzsy = new QHBoxLayout(nwid);           // 选择夹
-    hxzsy->setContentsMargins(0,0,0,0);
+    QVBoxLayout *nwLayout = new QVBoxLayout(nwid);        // 竖导航 + 内容（账号选择器已在顶部导航条）
+    nwLayout->setContentsMargins(10, 10, 10, 10);
+    nwLayout->setSpacing(8);
+
+    // ===== 主体：左侧二级竖排导航 + 右侧内容（替代原横向 10 个 Tab） =====
+    QHBoxLayout *bodyLayout = new QHBoxLayout;
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(10);
+
+    configNav = new QListWidget;
+    configNav->setObjectName("configNav");
+    configNav->setFixedWidth(112);
+    configNav->setFrameShape(QFrame::NoFrame);
+    configNav->setCursor(Qt::PointingHandCursor);
+    configNav->setSpacing(2);
+    configNav->setUniformItemSizes(true);
+    configNav->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    configStack = new QStackedWidget;
+    configStack->setObjectName("configStack");
+
+    // 「菜单 / 指令 / 素材」原本挤在 MenuPanelWidget 内部的 QTabWidget 里（当时位置不够），
+    // 现在拆成左侧导航三项：三个 nav 行都指向同一个 stack 页，只切内层 tab。
+    if (ui_MenuPanel->m_tabWidget && ui_MenuPanel->m_tabWidget->tabBar())
+        ui_MenuPanel->m_tabWidget->tabBar()->hide();
+    // 内层选择夹已经由左侧导航接管，这里去掉它自己的边框，避免和内容卡片双层描边
+    if (ui_MenuPanel->m_tabWidget) {
+        ui_MenuPanel->m_tabWidget->setStyleSheet(
+            "QTabWidget::pane { border: none; background: transparent; top: 0px; }");
+    }
 
 
-    robotListWidget->setMinimumWidth(100);
-    robotListWidget->setMaximumWidth(220);
-    hxzsy->addWidget(robotListWidget);
-    configTabWidget2 = new QTabWidget;           // 选择夹
 
-    configTabWidget2->addTab(ui_MenuPanel,"面板");
-    configTabWidget2->addTab(ui_qunguan,"基础");
-    configTabWidget2->addTab(m_nickReviewWidget,"昵称审核");
-    configTabWidget2->addTab(myPlts, "批量推送");
-    configTabWidget2->addTab(RuleConfigWidget, "按钮");
-    configTabWidget2->addTab(TextReplace, "文本替换");
-    configTabWidget2->addTab(keyword, "问答");
-    configTabWidget2->addTab(keyword_Punish, "关键词撤回");
-    configTabWidget2->addTab(schedule, "订阅|定时");
-    configTabWidget2->addTab(ai_ui, "Ai");
+    // UserRole = stack 页下标；UserRole+1 = 页内子 tab 下标（-1 表示普通页）
+    auto addNavRow = [](const QString &title, int stackIndex, int subTab) {
+        QListWidgetItem *navItem = new QListWidgetItem(title, configNav);
+        navItem->setSizeHint(QSize(0, 36));
+        navItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        navItem->setData(Qt::UserRole, stackIndex);
+        navItem->setData(Qt::UserRole + 1, subTab);
+    };
+    auto addConfigPage = [&addNavRow](const QString &title, QWidget *page) {
+        addNavRow(title, configStack->addWidget(page), -1);
+    };
+
+    addConfigPage("Ai", ai_ui);
+    const int menuPanelStackIndex = configStack->addWidget(ui_MenuPanel);
+    addNavRow("菜单", menuPanelStackIndex, 1);
+    addNavRow("指令", menuPanelStackIndex, 2);
+    addNavRow("素材", menuPanelStackIndex, 3);
+    addConfigPage("基础", ui_qunguan);
+    addConfigPage("问答", keyword);
+    addConfigPage("按钮", RuleConfigWidget);
+    addConfigPage("黑名单", Black);     // 原顶部导航的「黑名单」，移到这里（数据本来就按账号隔离）
+    addConfigPage("昵称审核", m_nickReviewWidget);
+    addConfigPage("批量推送", myPlts);
+    addConfigPage("文本替换", TextReplace);
+    addConfigPage("订阅|定时", schedule);
+    addConfigPage("关键词撤回", keyword_Punish);
 
 
+    connect(configNav, &QListWidget::currentRowChanged, this,
+            [this](int row){
+                if (row < 0 || !configStack) return;
+                QListWidgetItem *navItem = configNav->item(row);
+                if (!navItem) return;
+                const int stackIndex = navItem->data(Qt::UserRole).toInt();
+                const int subTab = navItem->data(Qt::UserRole + 1).toInt();
+                configStack->setCurrentIndex(stackIndex);
+                if (subTab >= 0 && ui_MenuPanel->m_tabWidget)
+                    ui_MenuPanel->m_tabWidget->setCurrentIndex(subTab);
 
-    connect(configTabWidget2, &QTabWidget::currentChanged,
-            [this](){
+                // 只有「菜单」页需要在切账号时重新拉取面板数据
+                if (subTab != 0) {
+                    _g_qieh = true;
+                    return;
+                }
                 if(!ui_MenuPanel->m_botClient)
                 {
                     _g_qieh=true;
                 }
-                if(configTabWidget2->currentIndex()==0 && _g_qieh && ui_MenuPanel->m_tabWidget->currentIndex()!=2){
+                if(_g_qieh){
                     _g_qieh=false;
                     ui_MenuPanel->switchBot();
 
                 }
     });
-    hxzsy->addWidget(configTabWidget2);
+
+    // 初始选中「菜单」，但不触发切换逻辑（与原来第一个 tab 的情形一致）
+    {
+        QSignalBlocker navBlocker(configNav);
+        configNav->setCurrentRow(0);
+    }
+    configStack->setCurrentIndex(0);
+    if (ui_MenuPanel->m_tabWidget)
+        ui_MenuPanel->m_tabWidget->setCurrentIndex(0);
+
+    bodyLayout->addWidget(configNav);
+    bodyLayout->addWidget(configStack, 1);
+    nwLayout->addLayout(bodyLayout, 1);
 
 
-    //LmdbBrowserWidget *dbBrowser = new LmdbBrowserWidget(this);
-
-    QTabWidget *configTabWidget = new QTabWidget;           // 选择夹
-    configTabWidget->addTab(setA, "基础设置");
-    configTabWidget->addTab(buttonEditorPage, "按钮生成");
-    configTabWidget->addTab(nwid, "内置功能");
-    configTabWidget->addTab(Black, "黑名单管理");
-    configTabWidget->addTab(forbidden, "违禁词过滤");
-    configTabWidget->addTab(htmltoimg, "HTML制图");
-    //configTabWidget->addTab(dbBrowser, "数据库浏览");
-    connect(configTabWidget, &QTabWidget::currentChanged,
-            [configTabWidget](){
-                if(框架退出) return ;
-                if(configTabWidget->currentIndex()==0 ){
-
-                    if(setA->m_cnb->isChecked()!=g_cnb.e){
-                        setA->m_cnb->setChecked(g_cnb.e);
-                        QMessageBox::warning(nullptr,"临时关闭","cnb 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
-                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
-                    }
-                    if(setA->m_cos->isChecked()!=g_cos.e){
-
-                        setA->m_cos->setChecked(g_cos.e);
-                        QMessageBox::warning(nullptr,"临时关闭","cos 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
-                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
-                    }
-                }
-            });
-    // 将选择夹放入分组框
-    QVBoxLayout *groupLayout = new QVBoxLayout(configGroupBox);
-    groupLayout->setContentsMargins(0, 0, 0, 0);
-
-    groupLayout->addWidget(configTabWidget);
+    // 原「高级配置」这一层（configGroupBox + 6 个 tab）已经取消：
+    // 基础设置 / 按钮生成 / 内置功能 / 黑名单管理 / 违禁词过滤 直接变成顶部导航项，
+    // HTML制图页按需求下线。原来挂在 configTabWidget::currentChanged 上的
+    // 「cnb / cos 临时停用」提示逻辑，已挪到 btnGroup 的 idClicked（id==5）。
 
 
 
     // ========== 堆叠窗口 ==========
     stackedWidget = new QStackedWidget;
-    stackedWidget->addWidget(homePage);          // index 0
-    stackedWidget->addWidget(accountPage);       // index 1
-    stackedWidget->addWidget(logPage);           // index 2
-    stackedWidget->addWidget(pluginPage);        // index 3
-    stackedWidget->addWidget(chatPage);          // index 4
-
-    stackedWidget->addWidget(configGroupBox); // index 6
+    stackedWidget->addWidget(homePage);          // 0 首页
+    stackedWidget->addWidget(accountPage);       // 1 账号
+    stackedWidget->addWidget(logPage);           // 2 日志
+    stackedWidget->addWidget(pluginPage);        // 3 插件
+    stackedWidget->addWidget(chatPage);          // 4 聊天
+    stackedWidget->addWidget(setA);              // 5 基础
+    stackedWidget->addWidget(buttonEditorPage);  // 6 按钮
+    stackedWidget->addWidget(nwid);              // 7 内置（黑名单已并入其中的左侧导航）
+    stackedWidget->addWidget(forbidden);         // 8 违禁词
 
     stackedWidget->setObjectName("contentStack");
 
 
-    sideBar = new QWidget;
-    sideBar->setFixedWidth(148);
-    sideBar->setObjectName("sideBar");
-    sideBar->setAttribute(Qt::WA_StyledBackground, true);
+    // ========== 顶部导航条（原左侧 sideBar 整体挪到标题栏下面） ==========
+    navBar = new QWidget;
+    navBar->setObjectName("navBar");
+    navBar->setAttribute(Qt::WA_StyledBackground, true);
+    navBar->setFixedHeight(32);          // 按钮 30 + 上下各 1px，选中态的底部橙线才贴住导航条下缘
 
-    QVBoxLayout *sideLayout = new QVBoxLayout(sideBar);
-    sideLayout->setContentsMargins(16, 0, 16, 18);
-    sideLayout->setSpacing(8);
-    sideLayout->setAlignment(Qt::AlignTop);
-
-
-    QWidget *brandWidget = new QWidget;
-    brandWidget->setObjectName("brandWidget");
-    QHBoxLayout *brandLayout = new QHBoxLayout(brandWidget);
-    brandLayout->setContentsMargins(0, 16, 0, 10);
-    brandLayout->setSpacing(8);
-
-    sideLayout->addWidget(brandWidget);
+    QHBoxLayout *navLayout = new QHBoxLayout(navBar);
+    navLayout->setContentsMargins(10, 0, 12, 0);
+    navLayout->setSpacing(2);
 
 
     auto createNavButton = [](const QString &text, const QIcon &icon) {
         QPushButton *btn = new QPushButton(text);
         btn->setIcon(icon);
-        btn->setIconSize(QSize(20, 20));
+        btn->setIconSize(QSize(16, 16));
         btn->setCheckable(true);
         btn->setCursor(Qt::PointingHandCursor);
         btn->setObjectName("navBtn");
-        btn->setMinimumHeight(40);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setFixedHeight(30);          // 导航条里的按钮固定 30px（原来最小 44，整条太厚）
+        btn->setMinimumWidth(icon.isNull() ? 0 : 74);
+        btn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         return btn;
     };
 
@@ -722,9 +817,12 @@ void MainWindow::setupUi()
     btnPlugin = createNavButton("插件", QIcon(":/icons/plugin.png"));
     btnChat = createNavButton("聊天", QIcon(":/icons/chat.png"));
 
+    // ===== 原来的「高级配置」6 个 tab，拍平到这一行（HTML制图已下线，黑名单挪进「内置」的左侧导航） =====
+    QPushButton *btnCfgBasic   = createNavButton("基础",   QIcon());
+    QPushButton *btnCfgButton  = createNavButton("按钮",   QIcon());
+    QPushButton *btnCfgBuiltin = createNavButton("内置",   QIcon());
+    QPushButton *btnCfgForbid  = createNavButton("违禁词", QIcon());
 
-    QPushButton *btnAdvancedConfig = createNavButton("高级配置", QIcon(":/icons/advanced.png"));
-    // *btn_newui = createNavButton("扩展页面", QIcon(":/icons/advanced.png"));
     btnGroup = new QButtonGroup(this);
     btnGroup->setExclusive(true);
     btnGroup->addButton(btnHome, 0);
@@ -732,9 +830,10 @@ void MainWindow::setupUi()
     btnGroup->addButton(btnLog, 2);
     btnGroup->addButton(btnPlugin, 3);
     btnGroup->addButton(btnChat, 4);
-
-    btnGroup->addButton(btnAdvancedConfig, 5);
-    //btnGroup->addButton(btn_newui, 7);
+    btnGroup->addButton(btnCfgBasic, 5);
+    btnGroup->addButton(btnCfgButton, 6);
+    btnGroup->addButton(btnCfgBuiltin, 7);
+    btnGroup->addButton(btnCfgForbid, 8);
 
     connect(btnGroup, QOverload<int>::of(&QButtonGroup::idClicked),
             [this](int id) {
@@ -745,83 +844,60 @@ void MainWindow::setupUi()
                     logPage->setActive(id == 2);
                 }
                 chatPage->存在 = (id==4);
+
+                // 原来挂在「高级配置 → 基础设置」tab 上的图床停用提示，跟到这里
+                if (id == 5 && !框架退出) {
+                    if(setA->m_cnb->isChecked()!=g_cnb.e){
+                        setA->m_cnb->setChecked(g_cnb.e);
+                        QMessageBox::warning(nullptr,"临时关闭","cnb 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
+                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
+                    }
+                    if(setA->m_cos->isChecked()!=g_cos.e){
+                        setA->m_cos->setChecked(g_cos.e);
+                        QMessageBox::warning(nullptr,"临时关闭","cos 图床因连续16次上传失败 已临时停用，如果需要开启请打勾开个点击保存按钮,"
+                                                                  "\n\n注意 重启后仍然自动启用，你需要点击一次保存 才会关闭");
+                    }
+                }
             });
-    connect(robotListWidget, &QListWidget::currentRowChanged, [this](){
-        QListWidgetItem *item = robotListWidget->currentItem();
-        if(ts_m_stopPush)
-        {
-            QMessageBox::warning(this,"批量推送中","批量推送信息中展示不能切换 账号");
-            return ;
-        }
-        g_appid = item->data(Qt::UserRole).toInt();
-        RuleConfigWidget->列表行被单击();
-        TextReplace->列表行被单击();
-        keyword->列表行被单击();
-        schedule->列表行被单击();
-        ai_ui->list_c();
+    // 原来这里是顶部「机器人 [下拉]」的切号回调。
+    // 该下拉已删除，切号统一走标题栏的机器人选择器 → switchToBot() → applyConfigAppId()。
+    navLayout->addWidget(btnHome);
+    navLayout->addWidget(btnAccount);
+    navLayout->addWidget(btnLog);
+    navLayout->addWidget(btnPlugin);
+    navLayout->addWidget(btnChat);
 
-        ui_qunguan->列表行被单击();
-        m_nickReviewWidget->setAppId(g_appid);
-        material_ui->setAppId(g_appid);
+    // 主功能 / 配置项之间的竖分隔
+    QFrame *navSep = new QFrame;
+    navSep->setObjectName("navSep");
+    navSep->setFixedWidth(1);
+    navSep->setFixedHeight(16);          // 导航条压到 32 之后，分隔线也别再顶满
+    navLayout->addSpacing(6);
+    navLayout->addWidget(navSep);
+    navLayout->addSpacing(6);
 
-        if(configTabWidget2->currentIndex()==0){
-                ui_MenuPanel->switchBot();
-                _g_qieh=false;
-                return;
-        }
-        _g_qieh=true;
-    });
-    sideLayout->addWidget(btnHome);
-    sideLayout->addWidget(btnAccount);
-    sideLayout->addWidget(btnLog);
-    sideLayout->addWidget(btnPlugin);
-    sideLayout->addWidget(btnChat);
+    navLayout->addWidget(btnCfgBasic);
+    navLayout->addWidget(btnCfgButton);
+    navLayout->addWidget(btnCfgBuiltin);
+    navLayout->addWidget(btnCfgForbid);
+    navLayout->addStretch();
 
-    sideLayout->addWidget(btnAdvancedConfig);   // 新按钮
-    //QLabel *kzui = new QLabel("———————");
-    //kzui->setAlignment(Qt::AlignCenter);
-    //sideLayout->addWidget(kzui);   // 新按钮
-    //sideLayout->addWidget(btn_newui);   // 新按钮
-    sideLayout->addStretch();
+    // 顶部这条「机器人 [下拉]」已删除：标题栏左侧那个机器人选择器就是唯一的切号入口
 
-
-    checkUpdateBtn = new QPushButton("检查更新");
-    checkUpdateBtn->setFlat(true);
-    checkUpdateBtn->setObjectName("aaaaaaaa");
-    checkUpdateBtn->setStyleSheet("QPushButton:hover { color: blue; }");
-    connect(checkUpdateBtn, &QPushButton::clicked, [this](){
-
-        checkUpdate();
-    });
-    sideLayout->addWidget(checkUpdateBtn);
-    QPushButton *btnLicense = new QPushButton("关于");
-    btnLicense->setObjectName("aaaaaaaa");
-    btnLicense->setCursor(Qt::PointingHandCursor);
-    btnLicense->setMinimumHeight(24);
-
-    btnLicense->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    sideLayout->addWidget(btnLicense);
-
-    // 点击按钮时弹出 Qt 许可证声明
-    connect(btnLicense, &QPushButton::clicked, this, [](){
-        showClickableLicenseInfo();
-    });
     createTitleBar();
-
-    QHBoxLayout *mainContentLayout = new QHBoxLayout;
-    mainContentLayout->setContentsMargins(0, 0, 0, 0);
-    mainContentLayout->setSpacing(0);
-    mainContentLayout->addWidget(sideBar);
-    mainContentLayout->addWidget(stackedWidget, 1);
 
     QWidget *contentWidget = new QWidget;
     contentWidget->setObjectName("contentWidget");
-    contentWidget->setLayout(mainContentLayout);
+    QVBoxLayout *mainContentLayout = new QVBoxLayout(contentWidget);
+    mainContentLayout->setContentsMargins(0, 0, 0, 0);
+    mainContentLayout->setSpacing(0);
+    mainContentLayout->addWidget(stackedWidget);
 
     QVBoxLayout *totalLayout = new QVBoxLayout;
     totalLayout->setContentsMargins(4, 4, 4, 4);
-    totalLayout->setSpacing(4);
+    totalLayout->setSpacing(0);
     totalLayout->addWidget(titleBar);
+    totalLayout->addWidget(navBar);
     totalLayout->addWidget(contentWidget, 1);
 
     QWidget *central = new QWidget;
@@ -835,10 +911,19 @@ void MainWindow::setupUi()
         "   border: 1px solid #A176C2;"      // 您可以根据喜好调整
         "}"
         );
-    setCentralWidget(central);
-    robotListWidget->setCurrentRow(0);
 
+    // 外面再套一层透明根：central 内缩 kShadowMargin，
+    // 空出来的那一圈就是阴影带，同时也是拖边缩放的热区（热区在内容之外，和系统窗口一致）
+    m_windowRoot = new WindowShadowRoot;
+    m_windowRoot->setObjectName("windowRoot");
+    QVBoxLayout *rootLayout = new QVBoxLayout(m_windowRoot);
+    rootLayout->setSpacing(0);
+    rootLayout->addWidget(central);
+    setCentralWidget(m_windowRoot);
+    setWindowShadowMargin(kShadowMargin);
 
+    // 标题栏那个选择器是唯一的切号入口，启动时先把配置目标对齐到默认账号
+    syncConfigAppIdFromTitleBot();
 }
 constexpr unsigned int hash(const char* str, unsigned int h = 0) {
     return *str ? hash(str + 1, (h * 31) + static_cast<unsigned int>(*str)) : h;
@@ -847,6 +932,88 @@ constexpr unsigned int hash(const char* str, unsigned int h = 0) {
 constexpr unsigned int getRandomNumber() {
     return hash(__TIME__) % 100;
 }
+
+namespace {
+
+// ── 标题栏图标全部自绘 ──
+// 原来是 style()->standardIcon(SP_TitleBar*)：不同 Windows 主题下线条粗细、颜色、周围留白都不一样，
+// 几个按钮并排放在 26×26 的小方块里显得参差（尤其和「快速重启」这种自定义图标放一起时）。
+// 这里统一成「16×16 坐标系里的 1.5px 圆头细线 + 指定颜色」，hover 换色走 QIcon::Active。
+enum TitleGlyph { GlyphMinimize, GlyphMaximize, GlyphRestore, GlyphClose, GlyphRestart };
+
+QPixmap titleGlyphPixmap(TitleGlyph glyph, const QColor &color, int px)
+{
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.scale(px / 16.0, px / 16.0);       // 统一在 16×16 里画，尺寸不同只改 px
+
+    if (glyph == GlyphRestart) {
+        // 圆形箭头：280° 圆弧（缺口留在右侧）+ 缺口处的实心三角。
+        // 三角按弧起点（40°）的逆时针切向算，不是随手摆的。
+        p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(3.4, 3.4, 9.2, 9.2), 40 * 16, 280 * 16);
+
+        QPainterPath tri;
+        tri.moveTo(10.75, 4.12);
+        tri.lineTo(10.06, 6.26);
+        tri.lineTo(12.98, 3.82);
+        tri.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPath(tri);
+        return pm;
+    }
+
+    p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(Qt::NoBrush);
+    switch (glyph) {
+    case GlyphMinimize:
+        p.drawLine(QPointF(3.6, 8.0), QPointF(12.4, 8.0));
+        break;
+    case GlyphMaximize:
+        p.drawRect(QRectF(4.0, 4.0, 8.0, 8.0));
+        break;
+    case GlyphRestore: {
+        // 最大化之后：两个错位的方框（后框只画上/右两条边，不然线会重叠发黑）
+        p.drawRect(QRectF(3.2, 5.8, 7.0, 7.0));
+        QPainterPath back;
+        back.moveTo(5.6, 5.8);
+        back.lineTo(5.6, 3.2);
+        back.lineTo(12.8, 3.2);
+        back.lineTo(12.8, 10.4);
+        back.lineTo(10.2, 10.4);
+        p.drawPath(back);
+        break;
+    }
+    case GlyphClose:
+    default:
+        p.drawLine(QPointF(4.6, 4.6), QPointF(11.4, 11.4));
+        p.drawLine(QPointF(11.4, 4.6), QPointF(4.6, 11.4));
+        break;
+    }
+    return pm;
+}
+
+// normal = 常态颜色，active = 鼠标悬停颜色（QIcon::Active 由样式在 hover 时自动取用）
+QIcon titleGlyphIcon(TitleGlyph glyph, const QColor &normal, const QColor &active)
+{
+    QIcon icon;
+    const int kLogical = 16;
+    QPixmap on = titleGlyphPixmap(glyph, normal, kLogical * 2);
+    on.setDevicePixelRatio(2.0);         // 2 倍图，高 DPI 下不糊
+    icon.addPixmap(on, QIcon::Normal, QIcon::Off);
+
+    QPixmap hov = titleGlyphPixmap(glyph, active, kLogical * 2);
+    hov.setDevicePixelRatio(2.0);
+    icon.addPixmap(hov, QIcon::Active, QIcon::Off);
+    return icon;
+}
+
+} // namespace
 
 void MainWindow::createTitleBar()
 {
@@ -950,14 +1117,28 @@ void MainWindow::createTitleBar()
         QApplication::quit();
     });
 
-    minBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarMinButton));
-    maxBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton));
-    closeBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarCloseButton));
+    // 快速重启：挨着最小化左边。语义就是「立即重启框架」，所以不弹确认（点了就重启）
+    restartBtn = new QToolButton;
+    restartBtn->setObjectName("restartBtn");
+    restartBtn->setFixedSize(btnSize, btnSize);
+    restartBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    restartBtn->setCursor(Qt::PointingHandCursor);
+    restartBtn->setToolTip("快速重启框架（所有机器人会断开重连）");
+    connect(restartBtn, &QToolButton::clicked, this, [](){ restartFramework(); });
 
-    int iconSize = 14;
+    // 图标全部自绘，风格统一（见文件上方 titleGlyphIcon）
+    const QColor glyphColor("#3D3D3D");
+    const QColor glyphHover("#E2681F");
+    minBtn->setIcon(titleGlyphIcon(GlyphMinimize, glyphColor, glyphHover));
+    maxBtn->setIcon(titleGlyphIcon(GlyphMaximize, glyphColor, glyphHover));
+    closeBtn->setIcon(titleGlyphIcon(GlyphClose, glyphColor, QColor("#D83B32")));
+    restartBtn->setIcon(titleGlyphIcon(GlyphRestart, glyphColor, glyphHover));
+
+    const int iconSize = 16;
     minBtn->setIconSize(QSize(iconSize, iconSize));
     maxBtn->setIconSize(QSize(iconSize, iconSize));
     closeBtn->setIconSize(QSize(iconSize, iconSize));
+    restartBtn->setIconSize(QSize(iconSize, iconSize));
 
     QString btnStyle = R"(
     QToolButton {
@@ -974,13 +1155,35 @@ void MainWindow::createTitleBar()
     )";
     minBtn->setStyleSheet(btnStyle);
     maxBtn->setStyleSheet(btnStyle);
+    restartBtn->setStyleSheet(btnStyle);
     closeBtn->setStyleSheet(btnStyle + "QToolButton:hover { background-color: #FFE2DF; color: #D83B32; }");
+
+    // ========== 检查更新 / 关于（原在导航条右端，导航条让位给机器人下拉后挪到这里） ==========
+    checkUpdateBtn = new QPushButton("检查更新");
+    checkUpdateBtn->setFlat(true);
+    checkUpdateBtn->setObjectName("linkBtn");
+    checkUpdateBtn->setCursor(Qt::PointingHandCursor);
+    connect(checkUpdateBtn, &QPushButton::clicked, this, [this](){
+        checkUpdate();
+    });
+
+    QPushButton *btnLicense = new QPushButton("关于");
+    btnLicense->setObjectName("linkBtn");
+    btnLicense->setCursor(Qt::PointingHandCursor);
+    connect(btnLicense, &QPushButton::clicked, this, [](){
+        showClickableLicenseInfo();
+    });
 
     // ========== 组装布局 ==========
     layout->addWidget(leftWidget);            // 新增的左侧区域
     layout->addStretch();                     // 弹性空间，将后续元素推到右侧
+    layout->addWidget(checkUpdateBtn);
+    layout->addWidget(btnLicense);
+    layout->addSpacing(10);
     layout->addWidget(botStatusWidget);       // 机器人状态区域（保持原有位置）
-    layout->addSpacing(12);
+    layout->addSpacing(10);
+    layout->addWidget(restartBtn);            // 快速重启：窗口按钮组左边
+    layout->addSpacing(6);
     layout->addWidget(minBtn);
     layout->addWidget(maxBtn);
     layout->addWidget(closeBtn);
@@ -994,6 +1197,12 @@ void MainWindow::createTitleBar()
 void MainWindow::updateCurrentBotInfo()
 {
     if (!titleBotNameLabel || !titleBotStatusLabel || !titleAvatarLabel) return;
+
+    // 顶部账号下拉删除后，g_appid 的首次初始化挪到这里：谁都没选过时默认第一个账号，
+    // 否则各配置页大量 if (g_appid == 0) return 会导致界面一片空白。
+    if (g_appid == 0 && !m_accounts.isEmpty() && m_accounts.first())
+        applyConfigAppId(m_accounts.first()->appid_int);
+
     if (m_currentBotIndex == -1) {
         titleAvatarLabel->setText("A");
         titleAvatarLabel->setStyleSheet(
@@ -1147,8 +1356,58 @@ void MainWindow::showBotSelectorMenu()
 }
 
 
+// 切换「配置目标」账号。
+// 原来由顶部那条「机器人 [下拉]」触发，下拉删除后并入标题栏的机器人选择器。
+// 返回 false = 被拦下（批量推送中），调用方应中止本次切换。
+bool MainWindow::applyConfigAppId(int appid)
+{
+    if (appid == 0) return true;                 // 无账号，什么都不用做
+
+    if (ts_m_stopPush) {
+        QMessageBox::warning(this, "批量推送中", "批量推送信息中展示不能切换 账号");
+        return false;
+    }
+
+    g_appid = appid;
+    RuleConfigWidget->列表行被单击();
+    TextReplace->列表行被单击();
+    keyword->列表行被单击();
+    schedule->列表行被单击();
+    ai_ui->list_c();
+
+    ui_qunguan->列表行被单击();
+    m_nickReviewWidget->setAppId(g_appid);
+    material_ui->setAppId(g_appid);
+    Black->setAppId(g_appid);          // 黑名单按账号隔离：切账号即换一份
+
+    // 当前停在「菜单 / 指令 / 素材」三页（同一个 MenuPanelWidget）时重新拉取
+    QListWidgetItem *curNavItem = configNav ? configNav->item(configNav->currentRow()) : nullptr;
+    if (curNavItem && curNavItem->data(Qt::UserRole + 1).toInt() >= 0) {
+        ui_MenuPanel->switchBot();
+        _g_qieh = false;
+        return true;
+    }
+    _g_qieh = true;
+    return true;
+}
+
+// 启动时把配置目标对齐到标题栏当前显示的机器人（显示「全部」时取第一个账号）
+void MainWindow::syncConfigAppIdFromTitleBot()
+{
+    if (m_accounts.isEmpty()) return;
+    int idx = m_currentBotIndex;
+    if (idx < 0 || idx >= m_accounts.size()) idx = 0;
+    const auto &info = m_accounts.at(idx);
+    if (info) applyConfigAppId(info->appid_int);
+}
+
 void MainWindow::switchToBot(int index)
 {
+    // 标题栏选择器现在兼任「配置目标」：先切 g_appid，被拦（批量推送中）就整次不生效
+    if (index >= 0 && index < m_accounts.size() && m_accounts.at(index)) {
+        if (!applyConfigAppId(m_accounts.at(index)->appid_int)) return;
+    }
+
     if (index == m_currentBotIndex) return;
     m_currentBotIndex = index;
     m_appliedLogBotId.clear();
@@ -1188,11 +1447,19 @@ void MainWindow::onMaximizeClicked()
 void MainWindow::changeEvent(QEvent *event)
 {
     if (event->type() == QEvent::WindowStateChange) {
+        // 最大化 / 全屏：收掉外圈阴影带（否则四边漏桌面），同时禁掉拖边缩放
+        const bool maxed = isMaximized() || isFullScreen();
+        setWindowShadowMargin(maxed ? 0 : kShadowMargin);
+        if (maxed) applyEdgeCursor(Qt::Edges());
+
+        // 图标同样是自绘的（见 titleGlyphIcon），不用系统 standardIcon
+        const QColor glyphColor("#3D3D3D");
+        const QColor glyphHover("#E2681F");
         if (isMaximized()) {
-            maxBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarNormalButton));
+            maxBtn->setIcon(titleGlyphIcon(GlyphRestore, glyphColor, glyphHover));
             maxBtn->setToolTip("还原");
         } else {
-            maxBtn->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton));
+            maxBtn->setIcon(titleGlyphIcon(GlyphMaximize, glyphColor, glyphHover));
             maxBtn->setToolTip("最大化");
         }
     }
@@ -1222,17 +1489,108 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 
 
-// 窗口缩放与侧边栏拖拽
+// ═════════════════ 无边框窗口的边缘缩放 ═════════════════
+// 窗口是 FramelessWindowHint，系统自带的那圈可拖拽边框一起没了，只能自己判。
+// 判定与接管都放在 eventFilter 里（装在 qApp 上）而不是 mouseMoveEvent：
+// 鼠标下面是 QListWidget / QLineEdit 这些子控件，它们会先吃掉鼠标事件，主窗口根本收不到。
+
+// 热区宽度始终等于阴影带宽度：热区落在「内容之外、窗口之内」的那一圈，
+// 与系统窗口的边框/阴影热区位置一致，也不会再抢内容区边缘的鼠标。
+void MainWindow::setWindowShadowMargin(int m)
+{
+    edgeMargin = m;
+    if (m_windowRoot)
+        static_cast<WindowShadowRoot *>(m_windowRoot)->setShadowMargin(m);
+    if (m <= 0)
+        applyEdgeCursor(Qt::Edges());
+}
+
+Qt::Edges MainWindow::edgesAt(const QPoint &globalPos) const
+{
+    if (!isVisible() || isMaximized() || isFullScreen()) return Qt::Edges();
+
+    const QRect r = geometry();               // 无边框窗口：frameGeometry() == geometry()
+    const int m = edgeMargin;
+    if (!r.adjusted(-2, -2, 2, 2).contains(globalPos)) return Qt::Edges();
+
+    Qt::Edges edges;
+    if (qAbs(globalPos.x() - r.left())   <= m) edges |= Qt::LeftEdge;
+    if (qAbs(globalPos.x() - r.right())  <= m) edges |= Qt::RightEdge;
+    if (qAbs(globalPos.y() - r.top())    <= m) edges |= Qt::TopEdge;
+    if (qAbs(globalPos.y() - r.bottom()) <= m) edges |= Qt::BottomEdge;
+    return edges;
+}
+
+void MainWindow::applyEdgeCursor(Qt::Edges edges)
+{
+    if (edges) {
+        const bool left   = edges & Qt::LeftEdge;
+        const bool right  = edges & Qt::RightEdge;
+        const bool top    = edges & Qt::TopEdge;
+        const bool bottom = edges & Qt::BottomEdge;
+
+        Qt::CursorShape shape = Qt::ArrowCursor;
+        if ((left && top) || (right && bottom))       shape = Qt::SizeFDiagCursor;   // ↖↘
+        else if ((right && top) || (left && bottom))  shape = Qt::SizeBDiagCursor;   // ↗↙
+        else if (left || right)                       shape = Qt::SizeHorCursor;
+        else if (top || bottom)                       shape = Qt::SizeVerCursor;
+
+        // 光标形状由「光标下方的子控件」决定，所以往主窗口上 setCursor 没用，
+        // 必须走 override cursor（全局压栈，成对 restore，别漏）。
+        if (!edgeCursorActive) {
+            QApplication::setOverrideCursor(QCursor(shape));
+            edgeCursorActive = true;
+        } else if (QApplication::overrideCursor() && QApplication::overrideCursor()->shape() != shape) {
+            QApplication::changeOverrideCursor(QCursor(shape));
+        }
+    } else if (edgeCursorActive) {
+        QApplication::restoreOverrideCursor();
+        edgeCursorActive = false;
+    }
+}
+
+void MainWindow::beginResize(Qt::Edges edges, const QPoint &globalPos)
+{
+    resizing = true;
+    resizeEdge = edges;
+    resizeStartRect = geometry();
+    startGlobalPos = globalPos;
+}
+
+void MainWindow::performResize(const QPoint &globalPos)
+{
+    if (!resizing || !resizeEdge) return;
+
+    const QPoint d = globalPos - startGlobalPos;
+    int left   = resizeStartRect.left();
+    int top    = resizeStartRect.top();
+    int right  = resizeStartRect.right();
+    int bottom = resizeStartRect.bottom();
+
+    if (resizeEdge & Qt::LeftEdge)   left   += d.x();
+    if (resizeEdge & Qt::RightEdge)  right  += d.x();
+    if (resizeEdge & Qt::TopEdge)    top    += d.y();
+    if (resizeEdge & Qt::BottomEdge) bottom += d.y();
+
+    // 最小尺寸：拖左/上边到极限时不能反向推着右边跑（否则窗口会整体横移）
+    const int minW = minimumSize().width();
+    const int minH = minimumSize().height();
+    if (right - left + 1 < minW) {
+        if (resizeEdge & Qt::LeftEdge) left  = right - minW + 1;
+        else                           right = left  + minW - 1;
+    }
+    if (bottom - top + 1 < minH) {
+        if (resizeEdge & Qt::TopEdge) top    = bottom - minH + 1;
+        else                          bottom = top    + minH - 1;
+    }
+
+    // QRect(QPoint, QPoint) 是 topLeft/bottomRight，两端都含
+    setGeometry(QRect(QPoint(left, top), QPoint(right, bottom)));
+}
+
+// 窗口缩放与拖拽（拖窗口统一走标题栏 eventFilter）
 void MainWindow::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) {
-        QPoint pos = event->pos();
-        if (sideBar && sideBar->geometry().contains(pos)) {
-            dragStartPos = event->globalPos() - frameGeometry().topLeft();
-            event->accept();
-            return;
-        }
-    }
     QMainWindow::mousePressEvent(event);
 }
 
@@ -1249,6 +1607,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
 void MainWindow::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
+        if (resizing) applyEdgeCursor(edgesAt(event->globalPos()));
         resizing = false;
         resizeEdge = Qt::Edges();
         dragStartPos = QPoint();
@@ -1257,6 +1616,66 @@ void MainWindow::mouseReleaseEvent(QMouseEvent *event)
 }
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // ── 边缘缩放压在最前面 ──
+    // 标题栏顶边同时也是窗口顶边，不能让下面「拖窗口」的分支先吃掉。
+    if (QWidget *w = qobject_cast<QWidget *>(obj)) {
+        if (w->window() == this) {
+            switch (event->type()) {
+            case QEvent::MouseMove: {
+                QMouseEvent *me = static_cast<QMouseEvent *>(event);
+                if (resizing) {
+                    if (!(me->buttons() & Qt::LeftButton)) {
+                        // release 掉了（拖太快滑出窗口），强制收尾，否则会一直处于缩放态
+                        resizing = false;
+                        resizeEdge = Qt::Edges();
+                        applyEdgeCursor(Qt::Edges());
+                        break;
+                    }
+                    performResize(me->globalPos());
+                    return true;
+                }
+                if (!me->buttons()) {
+                    const Qt::Edges e = edgesAt(me->globalPos());
+                    resizeEdge = e;              // 记一下，press 时省一次判断
+                    applyEdgeCursor(e);
+                }
+                break;
+            }
+            case QEvent::MouseButtonPress: {
+                QMouseEvent *me = static_cast<QMouseEvent *>(event);
+                if (me->button() == Qt::LeftButton) {
+                    const Qt::Edges e = edgesAt(me->globalPos());
+                    if (e) {
+                        beginResize(e, me->globalPos());
+                        applyEdgeCursor(e);
+                        dragStartPos = QPoint();   // 顺手清掉，避免标题栏拖拽逻辑接着跑
+                        return true;
+                    }
+                }
+                break;
+            }
+            case QEvent::MouseButtonRelease: {
+                if (resizing) {
+                    QMouseEvent *me = static_cast<QMouseEvent *>(event);
+                    resizing = false;
+                    resizeEdge = Qt::Edges();
+                    applyEdgeCursor(edgesAt(me->globalPos()));
+                    return true;
+                }
+                break;
+            }
+            case QEvent::Leave:
+                // 只有当光标真的离开整个窗口才撤（子控件之间来回移动也会发 Leave，
+                // 无条件撤会让缩放光标一闪一闪）
+                if (!resizing && !geometry().contains(QCursor::pos()))
+                    applyEdgeCursor(Qt::Edges());
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
     if (obj == botStatusWidget && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
@@ -1591,11 +2010,13 @@ void MainWindow::applyStyleSheet()
             border-bottom-left-radius: 10px;
             border-bottom-right-radius: 10px;
         }
-        QWidget#sideBar {
+        QWidget#navBar {
             background: #FEFEFC;
-            border-right: 1px solid #F4E8DA;
-            border-top-right-radius: 10px;
-            border-bottom-left-radius: 10px;
+            border-bottom: 1px solid #F4E8DA;
+        }
+        QFrame#navSep {
+            background: #EADFD2;
+            border: none;
         }
         QLabel#brandLogoLabel {
             background: transparent;
@@ -1604,19 +2025,33 @@ void MainWindow::applyStyleSheet()
         QPushButton#navBtn {
             background: transparent;
             border: none;
-            border-radius: 6px;
+            border-bottom: 2px solid transparent;
+            border-radius: 0px;
             color: #687589;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
-            padding: 0px 16px;
-            text-align: left;
+            padding: 0px 14px;
+            text-align: center;
         }
         QPushButton#navBtn:hover {
             background: #FFF6EA;
             color: #FF914D;
+            border-bottom: 2px solid #FFD7A8;
         }
         QPushButton#navBtn:checked {
-            background: #FFF0DE;
+            background: transparent;
+            color: #FF7F32;
+            border-bottom: 2px solid #FF7F32;
+        }
+        QPushButton#linkBtn {
+            background: transparent;
+            border: none;
+            color: #9A9384;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 0px 8px;
+        }
+        QPushButton#linkBtn:hover {
             color: #FF7F32;
         }
         QLabel#mascotImage {
@@ -1626,12 +2061,20 @@ void MainWindow::applyStyleSheet()
         QStackedWidget#contentStack {
             background: #F7EFE5;
             border: none;
+            border-bottom-left-radius: 5px;
             border-bottom-right-radius: 5px;
         }
         QFrame, QGroupBox {
             background: #FFFFFF;
             border: none; /* 移除残余硬边框 */
             border-radius: 5px;
+        }
+        /* ⚠ QLabel 继承自 QFrame，会被上面那条染成白底圆角块（米色面板上特别显眼，
+           按钮生成页的表单标签就是这样）。这里显式改回透明；
+           带 objectName（QLabel#xxx）或自身 setStyleSheet 的标签特异性更高，不受影响。 */
+        QLabel {
+            background: transparent;
+            border: none;
         }
         QGroupBox {
             margin-top: 14px;
@@ -1682,15 +2125,18 @@ void MainWindow::applyStyleSheet()
             color: #AfAfAf;
         }
         QPushButton {
-            border: none;
+            /* 浅橙实底 + 细描边 + 深色字：比原来的「无边框 + 橙字」更清楚，
+               深色主题下三色都会被替换成暗橙底 / 深灰边 / 浅字，不会糊成一片 */
+            border: 1px solid #E6D4C0;
             border-radius: 6px;
             padding: 6px 12px;
             background: #FFF0DE;
-            color: #FF7F32;
+            color: #344054;
             font-weight: 600;
         }
         QPushButton:hover {
             background: #FFE5C8;
+            border: 1px solid #FFB066;
         }
         QPushButton:pressed {
             background: #FFD7A8;
@@ -1772,6 +2218,49 @@ void MainWindow::applyStyleSheet()
     padding: 0px;
     border: none;
 }
+        /* ---------- 高级配置页：二级竖排导航 ---------- */
+        QListWidget#configNav {
+            background: #FFFFFF;
+            border: 1px solid #F0E3D3;
+            border-radius: 8px;
+            outline: none;
+            padding: 6px;
+        }
+        QListWidget#configNav::item {
+            color: #687589;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            padding: 0px 10px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        QListWidget#configNav::item:hover {
+            background: #FFF6EA;
+            color: #FF914D;
+        }
+        QListWidget#configNav::item:selected {
+            background: #FFF0DE;
+            color: #FF7F32;
+        }
+        QStackedWidget#configStack {
+            background: #FFFFFF;
+            border: 1px solid #F0E3D3;
+            border-radius: 8px;
+        }
+        QScrollBar:horizontal {
+            background: transparent;
+            height: 6px;
+            margin: 0px 2px 0px 2px;
+        }
+        QScrollBar::handle:horizontal {
+            background: #E7D9C8;
+            border-radius: 3px;
+            min-width: 40px;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
         QTableWidget { border: 1px solid #AE8AB1; gridline-color: #d0d0d0; }
         QHeaderView::section { background-color: #f5f5f5; border: 1px solid #d0d0d0; }
     )")));

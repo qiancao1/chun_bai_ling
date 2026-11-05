@@ -1397,6 +1397,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     }
 
     if(ev.msgId.isEmpty()) ev.msgId = payload.value("id").toString();
+    if(ev.user.isEmpty()) ev.user = d.value("member_openid").toString();
     if(ev.user.isEmpty()) ev.user = d.value("user_openid").toString();
     if(ev.groupId.isEmpty()) ev.groupId = ev.user;
     if(neizev(d,ev)) return; //真是代表被处理 没必要传递下去
@@ -1433,7 +1434,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         QString text = "点击下发按钮查看广告 完成后可获得1000铃铛";
         if(ev.type==2){
-            return;
+
             send_msgAsync(ev.type,ev.groupId,"[广告观看]",text,ev.msgId,ev.user,false,0,false,[this,ev](const QString &resp,auto){
                 if(resp.contains("message")){
                     QString text = resp;
@@ -1450,6 +1451,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     {
         QString text = "点击下发按钮查看广告 完成后可获得1000铃铛";
         if(ev.type==2 || ev.type==0){
+
             send_msgAsync(ev.type,ev.groupId,"[广告观看]",text,ev.msgId,ev.user,false,0,false,[this,ev](const QString &resp,auto){
                 if(resp.contains("message")){
                     QString text = resp;
@@ -2468,22 +2470,14 @@ void QQBotClient::fetchSelfInfo()
         m_info->unid = obj.value("union_openid").toString();
         m_info->nickname = nickname;
 
-        for (int i = 0; i < robotListWidget->count(); ++i) {
-            QListWidgetItem *item = robotListWidget->item(i);
-            if (item->data(Qt::UserRole).toInt() == m_info->appid_int) {
-                item->setText(nickname);               // 更新显示名称
-
-                item->setData(Qt::UserRole, m_info->appid_int);
-                break;
-            }
-        }
-
         if (!avatarUrl.isEmpty()) {
             QString avatarDir = QCoreApplication::applicationDirPath() + "/avatars/";
             QDir dir;
             if (!dir.exists(avatarDir))
                 dir.mkpath(avatarDir);
-            QString avatarPath = avatarDir + m_info->appid + ".png";
+            // 存成 <appid>_sq.png：和 chatpage 的头像缓存同一套命名。
+            // 那边存的是「正方形原图」、绘制时自己裁圆角，名字一致才不会重复下一份自己的头像。
+            QString avatarPath = avatarDir + m_info->appid + "_sq.png";
             downloadAvatar(avatarUrl, avatarPath);
             m_info->avatarPath = avatarPath;
         }

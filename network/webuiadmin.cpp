@@ -1856,15 +1856,19 @@ void handleSetAiConfig(const QJsonObject &p, ClientConnection *c, const QString 
 
 // 黑名单文件是 QDataStream 序列化的 QHash<QString,QString>，网页端解析不了，
 // 所以读写统一走 BlacklistPage 的桥接口。
-void handleGetBlacklist(ClientConnection *client, const QString &reqId)
+void handleGetBlacklist(const QJsonObject &params, ClientConnection *client, const QString &reqId)
 {
     if (!Black) {
         sendReply(client, "getBlacklist", false, QJsonValue(), reqId, "黑名单页未就绪");
         return;
     }
 
+    // 黑名单按账号隔离：前端传 appid 就按它查，没传就落到当前选中的账号
+    int blAppid = params.value("appid").toInt(0);
+    if (blAppid <= 0) blAppid = g_appid;
+
     QList<QPair<QString, QString>> list;
-    const QHash<QString, QString> snap = Black->webuiSnapshot();
+    const QHash<QString, QString> snap = Black->webuiSnapshot(blAppid);
     list.reserve(snap.size());
     for (auto it = snap.constBegin(); it != snap.constEnd(); ++it) {
         list.append(qMakePair(it.key(), it.value()));
@@ -1885,6 +1889,7 @@ void handleGetBlacklist(ClientConnection *client, const QString &reqId)
     QJsonObject ret;
     ret["items"] = items;
     ret["count"] = items.size();
+    ret["appid"] = blAppid;
     sendReply(client, "getBlacklist", true, ret, reqId);
 }
 
@@ -1910,17 +1915,22 @@ void handleSetBlacklist(const QJsonObject &params, ClientConnection *client, con
         data.insert(id, o.value("remark").toString());
     }
 
-    if (!Black->webuiApply(data)) {
+    // 黑名单按账号隔离：前端传 appid 就写那一份，没传就写当前选中的账号
+    int blAppid = params.value("appid").toInt(0);
+    if (blAppid <= 0) blAppid = g_appid;
+
+    if (!Black->webuiApply(blAppid, data)) {
         sendReply(client, "setBlacklist", false, QJsonValue(), reqId,
-                  "写 data/blacklist.json 失败，改动已应用到界面但没能落盘");
+                  "写黑名单文件失败，改动已应用到界面但没能落盘");
         return;
     }
 
-    AppendEventLog(QString("[WebUI] 更新黑名单 %1 条").arg(data.size()));
+    AppendEventLog(QString("[WebUI] 更新黑名单 %1 条（appid=%2）").arg(data.size()).arg(blAppid));
 
     QJsonObject ret;
     ret["count"]   = data.size();
     ret["skipped"] = skipped;
+    ret["appid"]   = blAppid;
     sendReply(client, "setBlacklist", true, ret, reqId,
               skipped > 0 ? QString("已保存 %1 条（忽略了 %2 条空 ID）").arg(data.size()).arg(skipped)
                           : QString("已保存 %1 条黑名单").arg(data.size()));
@@ -2193,7 +2203,7 @@ bool webuiAdminHandle(const QString &action,
     if (action == "setAiConfig")         { handleSetAiConfig(params, client, reqId);                return true; }
 
     // 黑名单
-    if (action == "getBlacklist")        { handleGetBlacklist(client, reqId);                       return true; }
+    if (action == "getBlacklist")        { handleGetBlacklist(params, client, reqId);               return true; }
     if (action == "setBlacklist")        { handleSetBlacklist(params, client, reqId);               return true; }
 
     // Ai · 模型配置 / 附加模型
