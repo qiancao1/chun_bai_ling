@@ -1102,11 +1102,12 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.type = 2; ev.subType = 6;
         ev.msg = "机器人被添加好友";
         m_info->今日好友数量++;
+        ev.user = d.value("openid").toString();
 
     }
     else if (ev.msgType == "FRIEND_DEL") { //好友删除
         ev.type = 2; ev.subType = 7;
-
+        ev.user = d.value("openid").toString();
         ev.msg = "机器人被删除好友";
         m_info->今日删除好友数量++;
     }
@@ -1389,6 +1390,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msg ="【有人申请加群】 群：%1(%2) 用户:%3(%4)\n%5";
     }
 
+
     else {
         ev.type = 99;
         ev.extra = text;
@@ -1398,6 +1400,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     if(ev.msgId.isEmpty()) ev.msgId = payload.value("id").toString();
     if(ev.user.isEmpty()) ev.user = d.value("member_openid").toString();
     if(ev.user.isEmpty()) ev.user = d.value("user_openid").toString();
+
     if(ev.groupId.isEmpty()) ev.groupId = ev.user;
     if(neizev(d,ev)) return; //真是代表被处理 没必要传递下去
     if(m_info->pbbot && ev.bot) return;

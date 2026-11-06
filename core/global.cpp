@@ -3096,22 +3096,18 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             QString sentText;
             if(info->rqhy.contains("#python"))
                 return   python_code4(info->rqhy,ev.appid,QStringList() << ev.user,QStringList() << ev.nickname);
-
             PendingGroupEvent ext;
             ext.gname = ev.groupname;
             ext.user.append(ev.user);
             ext.username.append( ev.nickname);
             return  sendapp(info->appid_int,info->rqhy,ext);
-
         }
         QMutexLocker locker(&info->pendingMutex);
         auto &entry = info->pendingJoin[ev.groupId];
         if (entry.user.isEmpty()) {
-
-            entry.startTime = QDateTime::currentSecsSinceEpoch();
             entry.gname = ev.groupname;
         }
-
+        entry.startTime = now+info->rq_ychf;
         entry.user.append(ev.user);
         entry.username.append(ev.nickname);
         entry.msgid = ev.msgId;
@@ -3137,6 +3133,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             gid.tq_CD = now;
             db->addGroup(ev.groupId, gid);
         }
+
         if(info->tq_ychf==0)
         {
             PendingGroupEvent ext;
@@ -3148,12 +3145,11 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         QMutexLocker locker(&info->pendingMutex2);
         auto &entry = info->pendingLeave[ev.groupId];
         if (entry.user.isEmpty()) {
-
-            entry.startTime = QDateTime::currentSecsSinceEpoch();
             entry.gname = ev.groupname;
 
         }
-        entry.msgid=ev.msgId;
+        entry.startTime = now+info->tq_ychf;
+
         entry.user.append(ev.user);
         entry.username.append(ev.nickname);
         return QString();
@@ -3181,7 +3177,7 @@ void processPendingEvents()
         PendingGroupEvent evt;
     };
 
-    for (const auto &acc : m_accounts) {
+    for (const auto &acc : std::as_const(m_accounts)) {
         if (!acc) continue;
 
         // ⚠ 绝对不能 return：某个账号没有 client（未登录 / 已停用）会把**后面所有账号**一起卡死。
@@ -3193,10 +3189,8 @@ void processPendingEvents()
         {
             QMutexLocker locker(&acc->pendingMutex);
             for (auto it = acc->pendingJoin.begin(); it != acc->pendingJoin.end(); ) {
-                if (it.value().startTime > now) {
-                    it.value().startTime = now;
-                }
-                if (now - it.value().startTime >= acc->rq_ychf) {
+
+                if (now >= it.value().startTime) {
                     joinOut.append({ it.key(), it.value() }); // 值拷贝，与 map 里的副本彻底解耦
                     it = acc->pendingJoin.erase(it);          // 先摘出，后面无论发生什么都不会残留
                 } else {
@@ -3213,10 +3207,8 @@ void processPendingEvents()
         {
             QMutexLocker locker(&acc->pendingMutex2);
             for (auto it = acc->pendingLeave.begin(); it != acc->pendingLeave.end(); ) {
-                if (it.value().startTime > now) {
-                    it.value().startTime = now;
-                }
-                if (now - it.value().startTime >= acc->tq_ychf) {
+
+                if (now >= it.value().startTime ) {
                     leaveOut.append({ it.key(), it.value() });
                     it = acc->pendingLeave.erase(it);
                 } else {

@@ -80,12 +80,12 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.5.182"
-#define APP_BUILD_NUMBER 182
+#define APP_VERSION_STR "v1.5.5.183"
+#define APP_BUILD_NUMBER 183
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.5.182 (2026-11-05)
+## v1.5.5.183 (2026-11-05)
 - 更新 新的UI 移除部分界面 黑名单改为分bot执行了
 - 修复 事件用户id获取失败问题
 - 增加 #^强制普通信息 #$强制MD信息
