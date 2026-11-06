@@ -32,7 +32,7 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
             // 查不到：可能传的本来就是展示名（新写法）→ 原样用；
             // 也可能是插件表里没有的 uuid → 保持老行为（不带前缀）。
             bool hex32 = (label.size() == 32);
-            for (const QChar c : label) {
+            for (const QChar c : std::as_const(label)) {
                 const QChar lo = c.toLower();
                 if (!(lo >= QLatin1Char('0') && lo <= QLatin1Char('9'))
                     && !(lo >= QLatin1Char('a') && lo <= QLatin1Char('f'))) { hex32 = false; break; }
@@ -853,7 +853,6 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
      QString url = get_url(type,openid, "messages");
-
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);

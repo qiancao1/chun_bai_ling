@@ -158,7 +158,7 @@ void QQBotClient::recallEnsureTimer()
 void QQBotClient::recallTickAll()
 {
     bool anyPending = false;
-    for (QQBotClient *c : s_recallClients) {
+    for (QQBotClient *c : std::as_const(s_recallClients)) {
         if (c->m_recallPending.load(std::memory_order_relaxed) <= 0) continue;
         c->recallTickSelf();
         if (c->m_recallPending.load(std::memory_order_relaxed) > 0) anyPending = true;
@@ -525,8 +525,7 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
                                         .arg(r.httpStatus)
                                         .arg(int(r.error))
                                         .arg(r.errorString.isEmpty() ? QString()
-                                                                     : ", " + r.errorString)
-                                        .arg(head.isEmpty() ? QString() : " | 返回：" + head);
+                                                                     : ", " + r.errorString, head.isEmpty() ? QString() : " | 返回：" + head);
                 AppendEventLog(msg, 0xff);
                 m_info->err += msg + "\n";
                 calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));

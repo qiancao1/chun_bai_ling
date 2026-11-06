@@ -937,10 +937,18 @@ int main(int argc, char *argv[]) {
         AppendEventLog("接收消息延迟高？ 到设置 提高线程池数量 即可",0xff);
         ret = a.exec();
         框架退出=true;
+
+        // ↓↓↓ 全程序唯一的退出清理入口（普通退出和「快速重启」都走这里）↓↓↓
         for(auto &c :m_botClients)
         {
             c->stop();
         }
+        // 这些库必须显式关掉：重启时新进程要打开同名 LMDB 环境，旧进程不放锁它会打不开。
+        // （普通退出多关一次无害，close() 内部会判空。）
+        for (const auto &c : qAsConst(g_botdb)) c->close();
+        g_botdb.clear();   // 必须清空：残留实例 m_env 已是 nullptr，getOrUpdateUser 会读不到记录返回 0
+        for (const auto &db : qAsConst(g_logdb)) db->close();
+        if (g_errlogdb) g_errlogdb->close();
         #ifdef _WIN32
         if(bridge)
         {
@@ -965,6 +973,14 @@ int main(int argc, char *argv[]) {
         delete accdb;
         accdb = nullptr;
         a.sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+        // 清理已经做完（LMDB 环境都关了），这时才能拉起新进程；
+        // 反过来的话新进程会卡在打开同名 LMDB 环境上。
+        if (g_restartRequested) {
+            QString program = QCoreApplication::applicationFilePath();
+            QStringList args = QCoreApplication::arguments();
+            QProcess::startDetached(program, args);
+        }
 
         #ifdef _WIN32
                 TerminateProcess(GetCurrentProcess(), 0);

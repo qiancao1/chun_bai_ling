@@ -196,6 +196,9 @@ extern BlacklistPage *Black;
 extern int 聊天发送模式;
 extern int 定时检查变量;
 extern bool 框架退出;
+// 「快速重启」请求：restartFramework() 置 true 后退出事件循环，main() 尾部做完唯一那份清理，
+// 再据此拉起新进程。它只表示「要不要重启」，不参与清理逻辑。
+extern bool g_restartRequested;
 
 
 extern QList<PluginInfo2> m_allPlugins;

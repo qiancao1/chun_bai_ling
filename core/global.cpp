@@ -36,6 +36,7 @@
 #include <QDateTime>
 #include "qq_bind_login.h"
 bool 框架退出=false;
+bool g_restartRequested=false;
 int miaomiao32=0;
 int miaomiao=0;
 QString wuqx= "机器人需要是管理员才能执行当前命令呢\n请将机器人添加到管理员列表后再试试\n如果已经是管理员 请艾特一次机器人后在试试\n**注意：得开启机器人接收全部信息,艾特机器人才有效果**\n\n---\n\n具体教程：1.点击机器人头像\n2.点击右上角设置\n3.机器人可获得群聊信息 改为 获取全部信息\n注意本操作只能群主设置 并且QQ版本不能过低";
@@ -1656,34 +1657,11 @@ QString upadmin(AccountInfo *info,MessageEvent &ev)
 void restartFramework()
 {
     // 指令「#确认重启框架」和标题栏「快速重启」按钮共用。
-    // 顺序不能换：先停机器人 / 关库 / 卸载插件，再拉新进程 —— 反过来的话新进程会打不开同名 LMDB 环境。
+    // 这里**只打标记 + 退出事件循环**，真正的清理统一在 main() 尾部做（全程序唯一一处），
+    // 尾部清理完看到这个标记才拉起新进程。
+    // 顺序不能换：新进程必须等旧进程把 LMDB 环境放掉才能打开同名环境。
     QMetaObject::invokeMethod(qApp, []() {
-        for (auto &c : m_botClients) {
-            c->stop();   // 假设 stop 是同步的，会等待数据发送完毕
-        }
-        for (const auto &c : std::as_const(g_botdb)) {
-            c->close();   // 假设 stop 是同步的，会等待数据发送完毕
-        }
-        // 关闭后必须清空：否则重启期间残留的实例 m_env 已是 nullptr，
-        // 任何 getOrUpdateUser 都会读不到记录而返回 0（表现为用户 ID「丢了」）
-        g_botdb.clear();
-        #ifdef _WIN32
-        if (bridge) {
-            bridge->writeResponseToBlock(1, "{\"type\":6}");
-            bridge->stopServer();   // 同步停止
-        }
-        #endif
-        for(const auto &db : std::as_const(g_logdb))
-        {
-            db->close();
-        }
-        if (g_errlogdb) g_errlogdb->close();   // 发送错误库也要先关，否则重启后新进程打开同名环境失败
-        pluginPage->foruninstall_Plugin();
-        QThreadPool::globalInstance()->waitForDone();
-        QString program = QCoreApplication::applicationFilePath();
-        QStringList args = QCoreApplication::arguments();
-        QProcess::startDetached(program, args);
-
+        g_restartRequested = true;
         qApp->quit();
     }, Qt::QueuedConnection);
 }
