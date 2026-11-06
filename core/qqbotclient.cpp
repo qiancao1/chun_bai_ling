@@ -1366,10 +1366,12 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     */
     else if (ev.msgType == "GROUP_MEMBER_ADD") {
         ev.type = 0; ev.subType = 2;
+         ev.user = d.value("member_openid").toString();
         ev.msg = "该成员加入本群...";
     }
     else if (ev.msgType == "GROUP_MEMBER_REMOVE") {
         ev.type = 0; ev.subType = 3;
+         ev.user = d.value("member_openid").toString();
         ev.msg = "群成员退群...";
     }
     else if (ev.msgType == "GROUP_JOIN_REQUEST") {
