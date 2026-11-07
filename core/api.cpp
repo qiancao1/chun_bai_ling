@@ -196,6 +196,7 @@ QString convertMarkdownLinksToXml(const QString &input)
         bool shouldConvert = !(lowerUrl.startsWith("http://") ||
                                lowerUrl.startsWith("https://") ||
                                lowerUrl.startsWith("mqqapi://") ||
+                               lowerUrl.startsWith("tenpaysdk://") ||
                                lowerUrl.startsWith("qagent://")) ;
 
         if (shouldConvert) {
@@ -5244,7 +5245,7 @@ void QQBotClient::initjgt(QJsonObject &json,const QJsonArray &prompt_keyboard,co
 
     if(is_wakeup=="true") //至于为什么是 文本 因为这个变量可能传用户id 为什么传用户id 只能说 为未来设计的
         json["is_wakeup"] = true;
-    else if (msgid.contains("ROBOT")|| !msgid.contains(":"))
+    else if (msgid.startsWith("ROBOT")|| !msgid.contains(":"))
         json["msg_id"] = msgid;
     else
         json["event_id"] = msgid;
@@ -6109,10 +6110,7 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
 QString QQBotClient::send_messagesAsync(int type, const QString &openid,const QString &pname, QString &text,
                                    const QString &msgid,const QString &is_wakeup,bool mode,int sendType,bool noref,Callback cb,int recallSec)
 {
-    // 定时消息（ui/scheduleconfigwidget.cpp）等直接调这个入口的，也认 #^ / #$ 前缀。
-    // 走 send_msgAsync 的那条链在更前面就摘过标签了，这里再判一次是空操作。
-    stripSendPrefix(text, mode, sendType);
-    // preParsed=false：自己跑 #python / 换行归一化 / bianl
+
     return sendMessagesAsyncCore(type, openid, pname, text, msgid, is_wakeup, mode, sendType, noref, cb,
                                  /*preParsed=*/false, QString(), QJsonArray(), QJsonValue(), recallSec);
 }

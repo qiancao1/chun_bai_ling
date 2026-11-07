@@ -318,6 +318,8 @@ void AiWidget::setupUi()
     modelListTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     modelListTable->setMaximumWidth(180);
     modelListTable->setColumnWidth(0, 160);
+    // 只有一列，让它跟着控件宽度走 —— 否则列宽 160 而控件 180，右边留 20px 空白
+    modelListTable->horizontalHeader()->setStretchLastSection(true);
     vLayoutLeft->addWidget(modelListTable);
 
     QHBoxLayout *hBtnLeft = new QHBoxLayout();
@@ -341,7 +343,8 @@ void AiWidget::setupUi()
     interfaceTable->verticalHeader()->setVisible(false);
     interfaceTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     interfaceTable->setColumnWidth(0, 90);
-    interfaceTable->setColumnWidth(1, 140);
+    // 「接口」列自动往右补满：原来固定 140 宽，表格被布局拉宽后右侧会空出一大片
+    interfaceTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
 
     vLayoutMid->addWidget(interfaceTable);
 
@@ -397,8 +400,7 @@ void AiWidget::setupUi()
     interfaceTable->setColumnCount(2);
     interfaceTable->setHorizontalHeaderLabels(QStringList() << "备注" << "接口");
 
-    interfaceTable->setColumnWidth(0, 100);
-    interfaceTable->setColumnWidth(0, 140);
+    interfaceTable->setColumnWidth(0, 140);   // 备注列宽（接口列在上面已设为 Stretch，自动补满）
 
 
     // 信号连接

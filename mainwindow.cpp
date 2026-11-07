@@ -39,6 +39,7 @@
 
 #include "chatpage.h"
 #include "forbiddenwordpage.h"
+#include "helppage.h"
 #include "global.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -80,11 +81,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.5.183"
-#define APP_BUILD_NUMBER 183
+#define APP_VERSION_STR "v1.5.6.184"
+#define APP_BUILD_NUMBER 184
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.5.6.184 (2026-11-07)
+- 修复 msgid判定范围导致 机器人加群msgid无效问题
+
+
 ## v1.5.5.183 (2026-11-05)
 - 更新 新的UI 移除部分界面 黑名单改为分bot执行了
 - 修复 事件用户id获取失败问题
@@ -142,6 +147,7 @@ KeywordMatchConfigWidget *keyword=nullptr;
 KeywordPunishConfigWidget *keyword_Punish=nullptr;
 BlacklistPage *Black=nullptr;
 ForbiddenWordPage *forbidden=nullptr;
+HelpPage *helpPage=nullptr;          // 顶部导航「帮助」：一段可编辑的引导文本
 ScheduleConfigWidget *schedule=nullptr;
 ScreenshotSyncClient *ScreenA=nullptr;
 AiWidget *ai_ui = nullptr;
@@ -184,6 +190,170 @@ void cleanInactiveUsers(QHash<int,UserStat> *hash, quint32 now, quint32 expireMs
 }
 
 namespace {
+
+// ── 左侧二级导航的图标 ──
+// 13 个纯文字按钮并排，靠文字找页面很费眼，所以每项配一个轮廓差异明显的小图标。
+// 画法和标题栏那套一致：16×16 坐标系、1.4px 圆头细线，Normal / hover / 选中 三态各出一张图。
+enum NavGlyph {
+    NavAi, NavMenu, NavCmd, NavMedia, NavBase, NavFaq, NavButton,
+    NavBan, NavReview, NavPush, NavReplace, NavClock, NavRecall
+};
+
+QPixmap navGlyphPixmap(NavGlyph glyph, const QColor &color, int px)
+{
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.scale(px / 16.0, px / 16.0);        // 统一在 16×16 里画，尺寸不同只改 px
+    p.setPen(QPen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+
+    switch (glyph) {
+    case NavAi: {                        // 四角星
+        QPainterPath star;
+        star.moveTo(8.0, 2.2);
+        star.quadTo(9.4, 6.6, 13.8, 8.0);
+        star.quadTo(9.4, 9.4, 8.0, 13.8);
+        star.quadTo(6.6, 9.4, 2.2, 8.0);
+        star.quadTo(6.6, 6.6, 8.0, 2.2);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPath(star);
+        break;
+    }
+    case NavMenu:                        // 三条横线
+        p.drawLine(QPointF(3.0, 4.6), QPointF(13.0, 4.6));
+        p.drawLine(QPointF(3.0, 8.0), QPointF(13.0, 8.0));
+        p.drawLine(QPointF(3.0, 11.4), QPointF(10.6, 11.4));
+        break;
+    case NavCmd: {                       // 终端窗口：方框 + > _
+        p.drawRoundedRect(QRectF(2.6, 3.6, 10.8, 8.8), 2.0, 2.0);
+        QPainterPath arrow;
+        arrow.moveTo(5.4, 6.4);
+        arrow.lineTo(7.4, 8.0);
+        arrow.lineTo(5.4, 9.6);
+        p.drawPath(arrow);
+        p.drawLine(QPointF(8.8, 9.6), QPointF(10.6, 9.6));
+        break;
+    }
+    case NavMedia: {                     // 图片：框 + 太阳 + 山
+        p.drawRoundedRect(QRectF(2.6, 3.6, 10.8, 8.8), 2.0, 2.0);
+        p.drawEllipse(QPointF(5.8, 6.4), 1.0, 1.0);
+        QPainterPath hill;
+        hill.moveTo(3.5, 11.5);
+        hill.lineTo(6.3, 8.6);
+        hill.lineTo(8.4, 10.7);
+        hill.lineTo(9.8, 9.3);
+        hill.lineTo(12.5, 11.5);
+        p.drawPath(hill);
+        break;
+    }
+    case NavBase: {                      // 滑块（设置）
+        const qreal ys[3] = {4.8, 8.0, 11.2};
+        const qreal xs[3] = {9.6, 6.2, 10.6};
+        for (int i = 0; i < 3; ++i) {
+            p.drawLine(QPointF(2.8, ys[i]), QPointF(xs[i] - 2.0, ys[i]));
+            p.drawLine(QPointF(xs[i] + 2.0, ys[i]), QPointF(13.2, ys[i]));
+            p.drawEllipse(QPointF(xs[i], ys[i]), 1.5, 1.5);
+        }
+        break;
+    }
+    case NavFaq: {                       // 对话气泡（问答）
+        p.drawRoundedRect(QRectF(2.6, 3.2, 10.8, 7.6), 2.4, 2.4);
+        QPainterPath tail;
+        tail.moveTo(5.4, 10.8);
+        tail.lineTo(5.4, 13.2);
+        tail.lineTo(7.8, 10.8);
+        p.drawPath(tail);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawEllipse(QPointF(5.9, 7.0), 0.75, 0.75);
+        p.drawEllipse(QPointF(8.0, 7.0), 0.75, 0.75);
+        p.drawEllipse(QPointF(10.1, 7.0), 0.75, 0.75);
+        break;
+    }
+    case NavButton:                      // 胶囊按钮
+        p.drawRoundedRect(QRectF(2.2, 5.2, 11.6, 5.6), 2.8, 2.8);
+        p.drawLine(QPointF(6.2, 8.0), QPointF(9.8, 8.0));
+        break;
+    case NavBan:                         // 禁止圈
+        p.drawEllipse(QPointF(8.0, 8.0), 5.2, 5.2);
+        p.drawLine(QPointF(4.3, 11.7), QPointF(11.7, 4.3));
+        break;
+    case NavReview: {                    // 审核：卡片 + 对勾
+        p.drawRoundedRect(QRectF(2.6, 3.4, 10.8, 9.2), 2.0, 2.0);
+        QPainterPath check;
+        check.moveTo(5.2, 8.4);
+        check.lineTo(7.2, 10.3);
+        check.lineTo(11.0, 5.9);
+        p.drawPath(check);
+        break;
+    }
+    case NavPush: {                      // 纸飞机（推送）
+        QPainterPath plane;
+        plane.moveTo(2.6, 8.0);
+        plane.lineTo(13.4, 3.0);
+        plane.lineTo(9.8, 13.0);
+        plane.lineTo(7.3, 9.1);
+        plane.closeSubpath();
+        p.drawPath(plane);
+        p.drawLine(QPointF(13.4, 3.0), QPointF(7.3, 9.1));
+        break;
+    }
+    case NavReplace: {                   // 双向箭头（文本替换）
+        p.drawLine(QPointF(3.2, 6.3), QPointF(12.8, 6.3));
+        QPainterPath a1;
+        a1.moveTo(10.8, 4.3);
+        a1.lineTo(12.8, 6.3);
+        a1.lineTo(10.8, 8.3);
+        p.drawPath(a1);
+        p.drawLine(QPointF(12.8, 9.7), QPointF(3.2, 9.7));
+        QPainterPath a2;
+        a2.moveTo(5.2, 7.7);
+        a2.lineTo(3.2, 9.7);
+        a2.lineTo(5.2, 11.7);
+        p.drawPath(a2);
+        break;
+    }
+    case NavClock:                       // 时钟（订阅 / 定时）
+        p.drawEllipse(QPointF(8.0, 8.0), 5.3, 5.3);
+        p.drawLine(QPointF(8.0, 8.0), QPointF(8.0, 5.1));
+        p.drawLine(QPointF(8.0, 8.0), QPointF(10.6, 9.4));
+        break;
+    case NavRecall: {                    // 回头的箭头（撤回）
+        QPainterPath path;
+        path.moveTo(12.6, 11.6);
+        path.cubicTo(12.6, 6.4, 7.4, 4.4, 4.6, 6.2);
+        p.drawPath(path);
+        QPainterPath tip;
+        tip.moveTo(7.6, 4.2);
+        tip.lineTo(3.6, 6.4);
+        tip.lineTo(7.6, 8.4);
+        p.drawPath(tip);
+        break;
+    }
+    }
+    return pm;
+}
+
+// normal = 常态，active = hover，selected = 选中（选中项文字是橙色的，图标跟着变）
+QIcon navGlyphIcon(NavGlyph glyph, const QColor &normal,
+                   const QColor &active, const QColor &selected)
+{
+    QIcon icon;
+    const int px = 16 * 2;               // 2 倍图，高 DPI 下不糊
+    auto add = [&](const QColor &c, QIcon::Mode mode) {
+        QPixmap pm = navGlyphPixmap(glyph, c, px);
+        pm.setDevicePixelRatio(2.0);
+        icon.addPixmap(pm, mode, QIcon::Off);
+    };
+    add(normal, QIcon::Normal);
+    add(active, QIcon::Active);
+    add(selected, QIcon::Selected);
+    return icon;
+}
 
 // ── 窗口外圈的「阴影带」──
 // 系统窗口的拖边热区其实不在内容里：它在窗口自带的不可见边框 / DWM 阴影上
@@ -521,6 +691,8 @@ MainWindow::~MainWindow()
     schedule = nullptr;
     delete forbidden;
     forbidden = nullptr;
+    delete helpPage;
+    helpPage = nullptr;
     delete Black;
     Black = nullptr;
 
@@ -589,6 +761,7 @@ void MainWindow::setupUi()
     keyword_Punish = new KeywordPunishConfigWidget;
     Black = new BlacklistPage;
     forbidden = new ForbiddenWordPage;
+    helpPage = new HelpPage;
     schedule =new ScheduleConfigWidget;
     // HTML制图页已下线，不再创建 HtmlToImageWidget
 
@@ -674,7 +847,8 @@ void MainWindow::setupUi()
 
     configNav = new QListWidget;
     configNav->setObjectName("configNav");
-    configNav->setFixedWidth(112);
+    configNav->setFixedWidth(126);           // 从 112 加宽：要给 14px 图标留位置，否则「关键词撤回」会被省略
+    configNav->setIconSize(QSize(16, 16));   // 与自绘坐标系 1:1，避免缩放发虚
     configNav->setFrameShape(QFrame::NoFrame);
     configNav->setCursor(Qt::PointingHandCursor);
     configNav->setSpacing(2);
@@ -697,33 +871,36 @@ void MainWindow::setupUi()
 
 
     // UserRole = stack 页下标；UserRole+1 = 页内子 tab 下标（-1 表示普通页）
-    auto addNavRow = [](const QString &title, int stackIndex, int subTab) {
+    // 图标三态取色与 QSS 一致：常态 #687589 系、hover 橙、选中深橙
+    auto addNavRow = [](const QString &title, int stackIndex, int subTab, NavGlyph glyph) {
         QListWidgetItem *navItem = new QListWidgetItem(title, configNav);
+        navItem->setIcon(navGlyphIcon(glyph, QColor(0x8A94A6),
+                                      QColor("#FF914D"), QColor("#FF7F32")));
         navItem->setSizeHint(QSize(0, 36));
         navItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         navItem->setData(Qt::UserRole, stackIndex);
         navItem->setData(Qt::UserRole + 1, subTab);
     };
-    auto addConfigPage = [&addNavRow](const QString &title, QWidget *page) {
-        addNavRow(title, configStack->addWidget(page), -1);
+    auto addConfigPage = [&addNavRow](const QString &title, QWidget *page, NavGlyph glyph) {
+        addNavRow(title, configStack->addWidget(page), -1, glyph);
     };
 
-    addConfigPage("Ai", ai_ui);
+    addConfigPage("Ai", ai_ui, NavAi);
     const int menuPanelStackIndex = configStack->addWidget(ui_MenuPanel);
     // 子 tab 下标必须跟着 m_tabWidget 实际的 addTab 顺序走（0=菜单 / 1=指令 / 2=素材），
     // 不能从 1 起数：越界时 setCurrentIndex 静默无效，就会停在上一个 tab 上（点「指令」却显示「素材」）。
-    addNavRow("菜单", menuPanelStackIndex, 0);
-    addNavRow("指令", menuPanelStackIndex, 1);
-    addNavRow("素材", menuPanelStackIndex, 2);
-    addConfigPage("基础", ui_qunguan);
-    addConfigPage("问答", keyword);
-    addConfigPage("按钮", RuleConfigWidget);
-    addConfigPage("黑名单", Black);     // 原顶部导航的「黑名单」，移到这里（数据本来就按账号隔离）
-    addConfigPage("昵称审核", m_nickReviewWidget);
-    addConfigPage("批量推送", myPlts);
-    addConfigPage("文本替换", TextReplace);
-    addConfigPage("订阅|定时", schedule);
-    addConfigPage("关键词撤回", keyword_Punish);
+    addNavRow("菜单", menuPanelStackIndex, 0, NavMenu);
+    addNavRow("指令", menuPanelStackIndex, 1, NavCmd);
+    addNavRow("素材", menuPanelStackIndex, 2, NavMedia);
+    addConfigPage("基础", ui_qunguan, NavBase);
+    addConfigPage("问答", keyword, NavFaq);
+    addConfigPage("按钮", RuleConfigWidget, NavButton);
+    addConfigPage("黑名单", Black, NavBan);     // 原顶部导航的「黑名单」，移到这里（数据本来就按账号隔离）
+    addConfigPage("昵称审核", m_nickReviewWidget, NavReview);
+    addConfigPage("批量推送", myPlts, NavPush);
+    addConfigPage("文本替换", TextReplace, NavReplace);
+    addConfigPage("订阅|定时", schedule, NavClock);
+    addConfigPage("关键词撤回", keyword_Punish, NavRecall);
 
 
     connect(configNav, &QListWidget::currentRowChanged, this,
@@ -785,6 +962,7 @@ void MainWindow::setupUi()
     stackedWidget->addWidget(buttonEditorPage);  // 6 按钮
     stackedWidget->addWidget(nwid);              // 7 内置（黑名单已并入其中的左侧导航）
     stackedWidget->addWidget(forbidden);         // 8 违禁词
+    stackedWidget->addWidget(helpPage);          // 9 帮助（可编辑的引导文本）
 
     stackedWidget->setObjectName("contentStack");
 
@@ -825,6 +1003,7 @@ void MainWindow::setupUi()
     QPushButton *btnCfgButton  = createNavButton("按钮",   QIcon());
     QPushButton *btnCfgBuiltin = createNavButton("内置",   QIcon());
     QPushButton *btnCfgForbid  = createNavButton("违禁词", QIcon());
+    QPushButton *btnCfgHelp    = createNavButton("帮助",   QIcon());
 
     btnGroup = new QButtonGroup(this);
     btnGroup->setExclusive(true);
@@ -837,6 +1016,7 @@ void MainWindow::setupUi()
     btnGroup->addButton(btnCfgButton, 6);
     btnGroup->addButton(btnCfgBuiltin, 7);
     btnGroup->addButton(btnCfgForbid, 8);
+    btnGroup->addButton(btnCfgHelp, 9);
 
     connect(btnGroup, QOverload<int>::of(&QButtonGroup::idClicked),
             [this](int id) {
@@ -883,6 +1063,7 @@ void MainWindow::setupUi()
     navLayout->addWidget(btnCfgButton);
     navLayout->addWidget(btnCfgBuiltin);
     navLayout->addWidget(btnCfgForbid);
+    navLayout->addWidget(btnCfgHelp);
     navLayout->addStretch();
 
     // 顶部这条「机器人 [下拉]」已删除：标题栏左侧那个机器人选择器就是唯一的切号入口

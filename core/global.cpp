@@ -3059,11 +3059,11 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
         auto *db = g_botdb[info->appid_int];
         if (ev.bitmap & BIT_ruqun) return QString(); // 已关闭入群提示
         qint64 now = QDateTime::currentSecsSinceEpoch();
-        if (info->fasjg > 0) {
+        if (info->rq_lq > 0) {
             GroupRecord2 gid;
             db->getGroupInfo(ev.groupId, gid);
             qint64 lastSend = gid.xychy_time;
-            if (now - lastSend < info->fasjg) {
+            if (now - lastSend < info->rq_lq) {
                 return QString();
             }
             gid.xychy_time = now;

@@ -82,7 +82,7 @@ QString AccountInfo::toJson() const {
     obj["niren"] = niren;
     obj["tools"] = QJsonArray::fromStringList(tools);
     obj["fujia"] = QJsonArray::fromStringList(fujia);
-    obj["fasjg"]=fasjg;
+
     obj["rqhy"]=rqhy;
     obj["apply"] = apply;
     obj["jojnhf"] = jojnhf;
@@ -110,6 +110,7 @@ QString AccountInfo::toJson() const {
     obj["juece"]=juece;
     obj["rq_ychf"]=rq_ychf;
     obj["tq_lq"]=tq_lq;
+    obj["rq_lq"]=rq_lq;
     obj["tq_ychf"]=tq_ychf;
     obj["tqhy"]=tqhy;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
@@ -168,7 +169,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.type = obj["type"].toInt();
     info.juece =obj["juece"].toBool();
     info.autoht =obj["autoht"].toBool(true);//自动回调
-    info.fasjg = obj["fasjg"].toInt();
+
     info.rqhy = obj["rqhy"].toString();
     info.help=obj["help"].toString();
     info.caidan=obj["caidan"].toString();
@@ -177,6 +178,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.jojnhf=obj["jojnhf"].toString();
     info.xxwb=obj["xxwb"].toString();
     info.tq_lq = obj["tq_lq"].toInt();
+    info.rq_lq = obj["rq_lq"].toInt();
     info.tq_ychf = obj["tq_ychf"].toInt();
     info.tqhy = obj["tqhy"].toString();
     info.rq_ychf=obj["rq_ychf"].toInt();

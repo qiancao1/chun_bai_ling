@@ -142,6 +142,7 @@ set(PROJECT_SOURCES_ALL
     ui/keywordpunishconfigwidget.h ui/keywordpunishconfigwidget.cpp
     ui/blacklistpage.h ui/blacklistpage.cpp
     ui/forbiddenwordpage.h ui/forbiddenwordpage.cpp
+    ui/helppage.h ui/helppage.cpp
     ui/scheduleconfigwidget.h ui/scheduleconfigwidget.cpp
     python/sharedmemorybridge.cpp python/sharedmemorybridge.h
     core/global.h core/global.cpp

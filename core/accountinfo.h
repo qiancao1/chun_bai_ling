@@ -118,7 +118,7 @@ struct AccountInfo {
     int 今日退出频道数量=0;
 
     int 日计时变量=0;          // 上次清零那天的「儒略日」(QDate::toJulianDay)，不是几号
-    int fasjg=0;
+
 
     int times =5;//检测时间
     int tiaoshu=5; //刷屏条数

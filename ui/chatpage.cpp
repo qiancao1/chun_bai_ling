@@ -38,9 +38,12 @@
 #include <QThreadPool>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QJsonParseError>
 #include <QDataStream>
 #include <QRegularExpression>
+#include <QMutex>
+#include <memory>
 #include <QSignalBlocker>
 
 // ---------- 会话列表左侧那排模式按钮的图标（纯代码画，不依赖图片资源） ----------
@@ -1772,6 +1775,141 @@ bool ChatPage::eventFilter(QObject *obj, QEvent *event) {
 
     return QWidget::eventFilter(obj, event);
 }
+// ---------- 「查看群信息」弹窗用：把两个接口的响应整成可读文本 ----------
+
+// Get() 失败时会把网络错误拼在响应末尾，弹窗前先切掉
+static QString trimNetworkErrorTail(const QString &rsp)
+{
+    QString body = rsp;
+    const int nlPos = body.indexOf("\n[Network Error");
+    if (nlPos >= 0) body = body.left(nlPos);
+    return body;
+}
+
+// get_groups_info（api2.cpp:1094，GET /v2/groups/{group_openid}/info）
+// 返回：{"group_openid","group_name","group_finger_memo","group_class_text","group_tags":[…],"group_member_num"}
+static QString formatGroupInfoRsp(const QString &rsp)
+{
+    const QString body = trimNetworkErrorTail(rsp);
+    QJsonParseError pe{};
+    QJsonDocument doc = QJsonDocument::fromJson(body.trimmed().toUtf8(), &pe);
+    if (!doc.isObject())
+        return QString("群资料：接口返回（非JSON）\n%1").arg(body.trimmed());
+
+    const QJsonObject o = doc.object();
+    const int code = o.value("code").toInt(0);   // 成功一般没有 code 字段
+    if (code != 0)
+        return QString("群资料：接口返回错误 code=%1 %2")
+                .arg(code).arg(o.value("message").toString());
+    if (!o.contains("group_name") && !o.contains("group_member_num"))
+        return QString("群资料：接口返回\n%1")
+                .arg(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Indented)).trimmed());
+
+    QStringList tags;
+    const QJsonArray arr = o.value("group_tags").toArray();
+    for (const QJsonValue &v : arr) {
+        const QString tag = v.toString().trimmed();
+        if (!tag.isEmpty() && !tags.contains(tag)) tags << tag;
+    }
+
+    const QString name = o.value("group_name").toString();
+    const QString memo = o.value("group_finger_memo").toString();
+    const QString cls  = o.value("group_class_text").toString();
+    const int     num  = o.value("group_member_num").toInt(0);
+
+    QString t = "群资料：\n";
+    t += QString("　　群名称：%1\n").arg(name.isEmpty() ? QString("未知") : name);
+    t += QString("　　群人数：%1\n").arg(num > 0 ? QString::number(num) : QString("未知"));
+    t += QString("　　群分类：%1\n").arg(cls.isEmpty()  ? QString("无") : cls);
+    t += QString("　　群简介：%1\n").arg(memo.isEmpty() ? QString("无") : memo);
+    t += QString("　　群标签：%1").arg(tags.isEmpty()  ? QString("无") : tags.join("、"));
+    return t;
+}
+
+// get_groups_bot_state（api2.cpp:1098，GET /v2/groups/{group_openid}/bot_state）
+static QString formatGroupBotStateRsp(const QString &rsp)
+{
+    const QString body = trimNetworkErrorTail(rsp);
+    QJsonParseError pe{};
+    QJsonDocument doc = QJsonDocument::fromJson(body.trimmed().toUtf8(), &pe);
+    if (!doc.isObject())
+        return QString("机器人状态：接口返回（非JSON）\n%1").arg(body.trimmed());
+
+    const QJsonObject obj = doc.object();
+    const int code = obj.value("code").toInt(0);
+    if (code != 0)
+        return QString("机器人状态：接口返回错误 code=%1 %2")
+                .arg(code).arg(obj.value("message").toString());
+
+    const bool hasKnown = obj.contains("member_openid") || obj.contains("joined_at")
+            || obj.contains("member_role") || obj.contains("recv_msg_setting")
+            || obj.contains("allow_proactive_msg");
+    if (!hasKnown)
+        return QString("机器人状态：接口返回\n%1")
+                .arg(QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Indented)).trimmed());
+
+    QString openid   = obj.value("member_openid").toString();
+    QString joinedAt = obj.value("joined_at").toString();
+    QString role     = obj.value("member_role").toString();
+    QString recv     = obj.value("recv_msg_setting").toString();
+
+    if (role == "owner")        role = "群主";
+    else if (role == "admin")   role = "管理员";
+    else if (role == "member")  role = "普通成员";
+    else if (role.isEmpty())    role = "未知";
+
+    if (recv == "all")                       recv = "全部消息";
+    else if (recv == "only_mention")         recv = "仅被艾特时";
+    else if (recv == "mention_and_context")  recv = "被艾特及上下文";
+    else if (recv.isEmpty())                 recv = "未知";
+
+    const QString proactive = obj.contains("allow_proactive_msg")
+            ? (obj.value("allow_proactive_msg").toBool() ? QString("允许") : QString("不允许"))
+            : QString("未知");
+
+    return QString("机器人状态：\n"
+                   "　　机器人 OpenID：%1\n　　入群时间：%2\n"
+                   "　　机器人身份：%3\n　　主动推送：%4\n　　接收消息：%5")
+            .arg(openid.isEmpty()   ? QString("未知") : openid,
+                 joinedAt.isEmpty() ? QString("未知") : joinedAt,
+                 role, proactive, recv);
+}
+
+// 本地群开关：数据源与群里发「本群状态」完全一样（g_botdb → GroupRecord2.bitmap）。
+// ⚠ 位语义不统一：入群提示 / 退群提示 / AI拟人 是 0=开（见 global.cpp 的开关指令），
+//    所以统一翻成「开/关」措辞，别按位直接显示，容易看反。
+static QString formatGroupStateSwitches(int appid, const QString &groupId)
+{
+    auto git = g_botdb.find(appid);
+    GroupRecord2 gr;
+    if (git == g_botdb.end() || !git.value() || !git.value()->getGroupInfo(groupId, gr))
+        return "群状态开关：本地没有该群记录（机器人可能刚进群、还没收到过消息）";
+
+    const uint32_t bm = gr.bitmap;
+    auto sw = [](bool on) {
+        return on ? QStringLiteral("✅ 开") : QStringLiteral("❌ 关");
+    };
+    int tuoguan = 0;   // 代管人数：qid[20] 里非 0 的槽位
+    for (int i = 0; i < 20; ++i)
+        if (gr.qid[i]) ++tuoguan;
+
+    QString t = QString("群状态开关（bitmap=%1）：\n")
+                    .arg(QString::number(bm, 16).toUpper().rightJustified(4, QLatin1Char('0')));
+    t += QString("　　入群提示：%1\n").arg(sw(!(bm & BIT_ruqun)));
+    t += QString("　　退群提示：%1\n").arg(sw(!(bm & BIT_tuiqun)));
+    t += QString("　　刷屏检测：%1\n").arg(sw(bm & BIT_SHUA_P));
+    t += QString("　　AI 拟人：%1\n").arg(sw(!(bm & BIT_Ainiren)));
+    t += QString("　　AI 白名单：%1\n")
+             .arg((bm & BIT_AI_BAI) ? QStringLiteral("✅ 在白名单")
+                                    : QStringLiteral("❌ 不在白名单"));
+    t += QString("　　入群验证：%1\n").arg(sw(bm & BIT_RUQUN_YZ));
+    t += QString("　　入群申请提示：%1\n").arg(sw(bm & BIT_AUTO_JOJN_KG));
+    t += QString("　　自动同意加群：%1（代管 %2/20）\n")
+             .arg(sw(bm & BIT_AUTO_JOJN)).arg(tuoguan);
+    t += QString("　　违禁词检测：%1").arg(sw(bm & BIT_PUNISH));
+    return t;
+}
+
 void ChatPage::showContactListContextMenu(const QPoint &pos)
 {
     if(isGroupMode!=0 && isGroupMode!=1) return;
@@ -1801,7 +1939,7 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
             delAll = menu.addAction("从全量群删除");
         }
 
-        // --- 查看群信息：调 get_groups_bot_state（api2.cpp） ---
+        // --- 查看群信息：群资料（get_groups_info）+ 机器人状态（get_groups_bot_state）并行取，凑齐再弹一个窗 ---
         connect(qkxx, &QAction::triggered, this, [this, id, appid, groupName]() {
             if (id.isEmpty()) {
                 QMessageBox::warning(this, "错误", "未获取到群ID");
@@ -1814,103 +1952,34 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                 return;
             }
 
-            // 本群状态开关：数据源和群里发「本群状态」完全一样 —— g_botdb 里该群的 GroupRecord2.bitmap。
-            // ⚠ 这些位不是统一的「1=开」：入群提示 / 退群提示 / AI拟人 是 **0=开**（见 global.cpp 的开关指令），
-            //    所以下面统一换成「开/关」措辞，别直接按位显示，容易看反。
-            // 在主线程读（LMDB 读很快），不放进回调线程，省得担心线程安全
-            QString stateText;
-            {
-                auto git = g_botdb.find(appid);
-                GroupRecord2 gr;
-                if (git == g_botdb.end() || !git.value() || !git.value()->getGroupInfo(id, gr)) {
-                    stateText = "群状态开关：本地没有该群记录（机器人可能刚进群、还没收到过消息）";
-                } else {
-                    const uint32_t bm = gr.bitmap;
-                    auto sw = [](bool on) {
-                        return on ? QStringLiteral("✅ 开") : QStringLiteral("❌ 关");
-                    };
-                    int tuoguan = 0;   // 代管人数：qid[20] 里非 0 的槽位
-                    for (int i = 0; i < 20; ++i)
-                        if (gr.qid[i]) ++tuoguan;
+            // 本地群开关（LMDB 读很快）在主线程先取好，回调线程不去碰库
+            const QString stateText = formatGroupStateSwitches(appid, id);
 
-                    stateText  = QStringLiteral("群状态开关（bitmap=%1）：\n")
-                                     .arg(QString::number(bm, 16).toUpper()
-                                              .rightJustified(4, QLatin1Char('0')));
-                    stateText += QStringLiteral("　　入群提示：%1\n").arg(sw(!(bm & BIT_ruqun)));
-                    stateText += QStringLiteral("　　退群提示：%1\n").arg(sw(!(bm & BIT_tuiqun)));
-                    stateText += QStringLiteral("　　刷屏检测：%1\n").arg(sw(bm & BIT_SHUA_P));
-                    stateText += QStringLiteral("　　AI 拟人：%1\n").arg(sw(!(bm & BIT_Ainiren)));
-                    stateText += QStringLiteral("　　AI 白名单：%1\n")
-                                     .arg((bm & BIT_AI_BAI) ? QStringLiteral("✅ 在白名单")
-                                                            : QStringLiteral("❌ 不在白名单"));
-                    stateText += QStringLiteral("　　入群验证：%1\n").arg(sw(bm & BIT_RUQUN_YZ));
-                    stateText += QStringLiteral("　　入群申请提示：%1\n").arg(sw(bm & BIT_AUTO_JOJN_KG));
-                    stateText += QStringLiteral("　　自动同意加群：%1（代管 %2/20）\n")
-                                     .arg(sw(bm & BIT_AUTO_JOJN)).arg(tuoguan);
-                    stateText += QStringLiteral("　　违禁词检测：%1").arg(sw(bm & BIT_PUNISH));
+            struct Collect {
+                QMutex  mu;
+                QString info;      // 群资料那段
+                QString bot;       // 机器人状态那段
+                int     pending = 2;
+            };
+            auto col = std::make_shared<Collect>();
+
+            // 两个回调都在线程池 → 用 mu 判「谁是最后一个到的」，后到的负责弹窗
+            auto store = [col](int which, const QString &v) -> bool {
+                QMutexLocker lk(&col->mu);
+                if (which == 0) col->info = v;
+                else            col->bot  = v;
+                return --col->pending == 0;
+            };
+            auto show = [col, id, appid, groupName, stateText]() {
+                QString info, bot;
+                {
+                    QMutexLocker lk(&col->mu);
+                    info = col->info;
+                    bot  = col->bot;
                 }
-            }
-
-            // 回调跑在线程池线程 → 这里只做解析拼串，弹窗回主线程（qApp 永不析构，安全）
-            client->get_groups_bot_state(id, [id, appid, groupName, stateText]
-                                         (const QString &rsp, QNetworkReply::NetworkError) {
-                QString body = rsp;
-                int nlPos = body.indexOf("\n[Network Error");
-                if (nlPos >= 0) body = body.left(nlPos);
-
-                QString text;
-                QJsonParseError pe{};
-                QJsonDocument doc = QJsonDocument::fromJson(body.trimmed().toUtf8(), &pe);
-                if (!doc.isObject()) {
-                    text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回（非JSON）：\n%4")
-                               .arg(groupName, id, QString::number(appid), body.trimmed());
-                } else {
-                    QJsonObject obj = doc.object();
-                    const int code = obj.value("code").toInt(0);   // 成功一般没有 code 字段
-                    const bool hasKnown = obj.contains("member_openid") || obj.contains("joined_at")
-                            || obj.contains("member_role") || obj.contains("recv_msg_setting")
-                            || obj.contains("allow_proactive_msg");
-
-                    if (code != 0) {
-                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回错误：code=%4\n%5")
-                                   .arg(groupName, id, QString::number(appid),
-                                        QString::number(code), obj.value("message").toString());
-                    } else if (!hasKnown) {
-                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n接口返回：\n%4")
-                                   .arg(groupName, id, QString::number(appid),
-                                        QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Indented)).trimmed());
-                    } else {
-                        QString openid   = obj.value("member_openid").toString();
-                        QString joinedAt = obj.value("joined_at").toString();
-                        QString role     = obj.value("member_role").toString();
-                        QString recv     = obj.value("recv_msg_setting").toString();
-
-                        if (role == "owner")        role = "群主";
-                        else if (role == "admin")   role = "管理员";
-                        else if (role == "member")  role = "普通成员";
-                        else if (role.isEmpty())    role = "未知";
-
-                        if (recv == "all")                   recv = "全部消息";
-                        else if (recv == "only_mention")     recv = "仅被艾特时";
-                        else if (recv == "mention_and_context") recv = "被艾特及上下文";
-                        else if (recv.isEmpty())             recv = "未知";
-
-                        QString proactive = obj.contains("allow_proactive_msg")
-                                ? (obj.value("allow_proactive_msg").toBool() ? QString("允许") : QString("不允许"))
-                                : QString("未知");
-
-                        text = QString("群名称：%1\n群ID：%2\n机器人：%3\n\n"
-                                       "机器人 OpenID：%4\n入群时间：%5\n"
-                                       "机器人身份：%6\n主动推送：%7\n接收消息：%8")
-                                   .arg(groupName, id, QString::number(appid),
-                                        openid.isEmpty()   ? QString("未知") : openid,
-                                        joinedAt.isEmpty() ? QString("未知") : joinedAt,
-                                        role, proactive, recv);
-                    }
-                }
-
-                // 三种分支（正常 / 平台报错 / 不认识的结构）都补上本地群状态开关
-                text += "\n\n" + stateText;
+                const QString text =
+                        QString("群名称：%1\n群ID：%2\n机器人：%3\n\n%4\n\n%5\n\n%6")
+                            .arg(groupName, id, QString::number(appid), info, bot, stateText);
 
                 QMetaObject::invokeMethod(qApp, [text]() {
                     QMessageBox box(QApplication::activeWindow());
@@ -1919,6 +1988,15 @@ void ChatPage::showContactListContextMenu(const QPoint &pos)
                     box.setText(text);
                     box.exec();
                 });
+            };
+
+            client->get_groups_info(id, [store, show]
+                                    (const QString &rsp, QNetworkReply::NetworkError) {
+                if (store(0, formatGroupInfoRsp(rsp))) show();
+            });
+            client->get_groups_bot_state(id, [store, show]
+                                         (const QString &rsp, QNetworkReply::NetworkError) {
+                if (store(1, formatGroupBotStateRsp(rsp))) show();
             });
         });
 

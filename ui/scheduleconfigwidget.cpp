@@ -648,6 +648,21 @@ int accinfo(int appid);
 // 全局互斥锁，保护 schedule->tasksMap 的访问
 QMutex scheduleMutex;
 
+// ── 定时推送的发送结果判定 ──
+// 判定标准和 addmsglog（core/api2.cpp）保持一致：平台回执里有 id 才算真发出去。
+//   0 = 成功（有 id / 安全审核通过）
+//   1 = 结果不明（空串、"{}" 占位响应）—— 不能当失败，否则会误删群
+//   2 = 失败（响应里有内容但没有 id）
+static int scheduleSendState(const QString &resp)
+{
+    if (resp.isEmpty() || resp.trimmed() == QLatin1String("{}")) return 1;
+
+    const QJsonObject obj = QJsonDocument::fromJson(resp.toUtf8()).object();
+    if (!obj["id"].toString().isEmpty()) return 0;
+    if (obj["message"].toString() == QStringLiteral("消息提交安全审核成功")) return 0;
+    return 2;
+}
+
 // 一次性扫库，拿「该 appid 下所有会话还能用来被动回复的 msgid」
 //   isGroup=true → 群（最近 5 分钟）；false → 好友/单聊（最近 1 小时）
 // 拿不到就是空表 → 调用方传空 msgid 走主动推送。
@@ -885,7 +900,22 @@ void processAppidTasks(int appid) {
             if (!msgid.isEmpty()) paceMsgIdReply(60);
 
             if (!data.isEmpty()) {
-                client->send_messagesAsync(type, openid, text, data, msgid, "false");
+                // 发完看回执：真失败（既不是限频，也不是空/占位响应）说明这个群已经发不了了
+                // （被踢 / 群解散 / 机器人被禁言），把该群从这个订阅里删掉，
+                // 否则每次定时都白发一遍、还白吃群 50 条/分钟的额度。
+                // 判定见上面的 scheduleSendState()：有 id 才算真发出去。
+                const int delAppid = appid;
+                const int delMark = t.mark;
+                const uint8_t delType = static_cast<uint8_t>(type);
+                const QString delGid = openid;
+                client->send_messagesAsync(type, openid, text, data, msgid, "false", false, 0, false,
+                    [delAppid, delMark, delType, delGid](const QString &resp, auto){
+                        if (scheduleSendState(resp) != 2) return;              // 成功 / 结果不明 → 不动
+                        if (resp.contains(QStringLiteral("频率"))) return;     // 限频不是群的问题
+                        if (BotDB *b = g_botdb.value(delAppid))                // 账号已删就自然跳过
+                            b->removeSubscription(QString("t_%1_%2").arg(delAppid).arg(delMark),
+                                                  delType, delGid, QStringList());
+                    });
                 if (msgid.isEmpty()) groupCount++;   // 只有主动发送才吃 50 条/分钟
             }
 
@@ -1181,15 +1211,37 @@ QString ScheduleConfigWidget::ppzl(const MessageEvent &ev,QString &订阅名,Acc
                 return QString("订阅失败 订阅该功能 需要 %1 才能触发").arg(t.role==0?"机器人管理|后台管理":"群主|管理员|代管");
             }
             if(!g_botdb.contains(ev.appid)) return "机器人数据库不存在 请反馈开发者后试试";
-            订阅名 = "[添加订阅：" + t.remark + "|%1ms]";
+            //auto *c = m_botClients[ev.appid];
+            // QString text = "这是一条主动信息用于检查是否有推送能力";
+            // c->send_msgAsync(ev.type,ev.groupId,"[主动测试]",text,QString(),"false",false,0,false,[c,t,ev](const QString &resp,auto){
+            //     if(!c) return;
+            //     if(resp.contains("无权限")) {
+            //         QString ret = "订阅失败 请先打开允许机器人发送主动信息后再试";
+            //         c->send_msgAsync(ev.type,ev.groupId,QString("[添加订阅：%1]").arg(t.remark),ret,ev.msgId);
+            //         return;
+            //     }
+                // QString data;
+                // bool ok=false;
+                // QString ret = python_code2(t.addSubscribe_text,ev,data,ok);
+                // if(!ok){
+                //     c->send_msgAsync(ev.type,ev.groupId,QString("[添加订阅：%1]").arg(t.remark),ret,ev.msgId);
+                //     return;
+                // }
+                // BotDB *bot = g_botdb[ev.appid];
+                // if(!bot->addSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||")))
+                //     ret = "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
+                // c->send_msgAsync(ev.type,ev.groupId,QString("[添加订阅：%1]").arg(t.remark),ret,ev.msgId);
+            //});
+            订阅名 = QString("[添加订阅：%1]").arg(t.remark);
             QString data;
             bool ok=false;
             QString ret = python_code2(t.addSubscribe_text,ev,data,ok);
             if(!ok) return ret;
-            BotDB *bot = g_botdb[ev.appid];
-            if(bot->addSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||")))
-                return ret;
-            return "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
+            if(!g_botdb[ev.appid]->addSubscription(QString("t_%1_%2").arg(ev.appid).arg(t.mark),ev.type,ev.groupId,data.split("|||")))
+                ret = "添加订阅|定时失败 添加数据库返回失败 可能已经添加了不是吗？";
+            return ret;
+
+
         }else if(!t.cancelSubscribeCmd.isEmpty() && ev.msg.startsWith(t.cancelSubscribeCmd))
         {
             if(t.role==0 && ev.member_role<=2 ) {}
