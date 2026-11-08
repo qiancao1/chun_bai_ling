@@ -454,8 +454,9 @@ int AddAccountDialog::computeIntentsMask() const {
 }
 
 void AddAccountDialog::setIntentsMask(int mask) {
+    // 0 = 没配过 → 按默认订阅显示（和 addbot / WebUI 用的是同一个常量）
     if(mask==0)
-        mask = 1174409216;
+        mask = kDefaultWsIntents;
     for (auto chk : std::as_const(m_intentCheckboxes)) {
         int m = chk->property("mask").toInt();
         chk->setChecked((mask & m) != 0);

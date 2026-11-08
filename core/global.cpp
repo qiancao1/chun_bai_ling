@@ -924,7 +924,7 @@ QString addbot(int appid,const QString &secret,int type,const QString  &markdown
             oldInfoPtr->markdown = (md==1);
 
         if(wsIntents == 0)
-            oldInfoPtr->wsIntents = 1191186432;
+            oldInfoPtr->wsIntents = kDefaultWsIntents;
         else
             oldInfoPtr->wsIntents = wsIntents;
         oldInfoPtr->nickname = QString::number(appid);
@@ -956,7 +956,7 @@ QString addbot(int appid,const QString &secret,int type,const QString  &markdown
         else
             oldInfoPtr->markdown = (md==1);
         if(wsIntents == 0)
-            oldInfoPtr->wsIntents = 0;
+            oldInfoPtr->wsIntents = kDefaultWsIntents;
         else
             oldInfoPtr->wsIntents = wsIntents;
         accountPage->saveAccounts(oldInfoPtr.get());

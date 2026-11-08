@@ -1972,7 +1972,9 @@ void QQBotClient::sendIdentify()
     QJsonObject identify;
     identify["token"] = QString("QQBot %1").arg(m_accessToken);
 
-    identify["intents"] = m_info->wsIntents;
+    // wsIntents = 0（老账号没配过 / 表单留空）会让 identify 一个事件都不订阅，
+    // 上线了也收不到任何消息 → 这种情况直接用默认掩码。
+    identify["intents"] = (m_info->wsIntents == 0) ? kDefaultWsIntents : m_info->wsIntents;
     //if(m_info->botqq.toInt()<=128)
     //     m_info->botqq= QString::number(m_info->wsIntents);
     //identify["intents"] =m_info->botqq.toInt() | (1 << ___aaa);

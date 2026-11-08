@@ -331,7 +331,12 @@ void handleSaveBot(const QJsonObject &p, ClientConnection *client, const QString
     if (p.contains("fallbackReply")) info->fallbackReply= p.value("fallbackReply").toString();
 
     if (p.contains("type"))         info->type      = p.value("type").toInt(info->type);
-    if (p.contains("wsIntents"))    info->wsIntents = p.value("wsIntents").toInt(info->wsIntents);
+    // 订阅事件：没给 / 给 0 都用默认掩码。sendIdentify() 把 wsIntents 原样发出去，
+    // 0 = 一个事件都不订阅（机器人上线也收不到消息），所以这里不能直接落 0。
+    if (p.contains("wsIntents")) {
+        const int intents = p.value("wsIntents").toInt(0);
+        info->wsIntents = (intents == 0) ? kDefaultWsIntents : intents;
+    }
     if (p.contains("times"))        info->times     = p.value("times").toInt(info->times);
     if (p.contains("tiaoshu"))      info->tiaoshu   = p.value("tiaoshu").toInt(info->tiaoshu);
 
@@ -1594,6 +1599,12 @@ const AcctField kBasicFields[] = {
     { "cbl", "启用纯白铃指令", "bool", "switch", "允许群里使用框架的内置指令", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.cbl); },
       [](AccountInfo &a, const QJsonValue &v) { a.cbl = jsonToBool(v); } },
+    { "ychfwcl", "延迟回应未被处理", "bool", "switch", "延迟回应里还没处理掉的留下（对应桌面端 checkBox_3）", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.ychfwcl); },
+      [](AccountInfo &a, const QJsonValue &v) { a.ychfwcl = jsonToBool(v); } },
+    { "action_button", "私聊附加小按钮", "bool", "switch", "私聊回复时附带快捷按钮（对应桌面端 checkBox_4）", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.action_button); },
+      [](AccountInfo &a, const QJsonValue &v) { a.action_button = jsonToBool(v); } },
 
     // 各类回复文本
     { "admin", "机器人管理", "string", "text", "群管理指令的回复", nullptr,
@@ -1620,12 +1631,24 @@ const AcctField kBasicFields[] = {
     { "xxwb", "信息尾巴", "string", "text", "每条回复后面追加的固定文本", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.xxwb); },
       [](AccountInfo &a, const QJsonValue &v) { a.xxwb = v.toString(); } },
+    { "ldsd", "广告完成", "string", "text", "看完广告后的提示词（可用 [余额] 等变量）", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.ldsd); },
+      [](AccountInfo &a, const QJsonValue &v) { a.ldsd = v.toString(); } },
+    { "qiandao", "签到", "string", "text", "普通文本 = 一天一次 +1000 并按它回复（留空 = 静默签到）；#python 开头 = 脚本，返回值 = 本次加多少铃铛", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.qiandao); },
+      [](AccountInfo &a, const QJsonValue &v) { a.qiandao = v.toString(); } },
+    { "gxrz", "更新日志", "string", "text", "更新日志指令的回复内容", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.gxrz); },
+      [](AccountInfo &a, const QJsonValue &v) { a.gxrz = v.toString(); } },
     { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.fallbackReply); },
       [](AccountInfo &a, const QJsonValue &v) { a.fallbackReply = v.toString(); } },
     { "welcomeMsg", "机器人入群", "string", "text", "机器人被拉进群时的欢迎语", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.welcomeMsg); },
       [](AccountInfo &a, const QJsonValue &v) { a.welcomeMsg = v.toString(); } },
+    { "welcomeMsg2", "被添加好友", "string", "text", "机器人被添加为好友时的欢迎语，支持 py 代码与变量", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.welcomeMsg2); },
+      [](AccountInfo &a, const QJsonValue &v) { a.welcomeMsg2 = v.toString(); } },
     { "apply", "有人申请加群", "string", "text", "收到加群申请时的处理逻辑", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.apply); },
       [](AccountInfo &a, const QJsonValue &v) { a.apply = v.toString(); } },

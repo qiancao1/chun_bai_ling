@@ -432,7 +432,8 @@ QString addbot(const QJsonObject &params)
         oldInfoPtr->markdown = params.value("markdown").toBool();
         oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();
         oldInfoPtr->markdown_pd_mb = params.value("markdown_pd_mb").toBool();
-        oldInfoPtr->wsIntents =params.value("wsIntents").toInt();
+        oldInfoPtr->wsIntents = params.value("wsIntents").toInt(0);
+        if (oldInfoPtr->wsIntents == 0) oldInfoPtr->wsIntents = kDefaultWsIntents;  // 0 = 用默认订阅
         m_accounts.append(oldInfoPtr);
         accountPage->saveAccounts(oldInfoPtr.get());
         accountPage->refreshCards2(oldInfoPtr.get());
@@ -444,7 +445,8 @@ QString addbot(const QJsonObject &params)
         oldInfoPtr->markdown = params.value("markdown").toBool();
         oldInfoPtr->markdown_pd = params.value("markdown_pd").toBool();
         oldInfoPtr->markdown_pd_mb = params.value("markdown_pd_mb").toBool();
-        oldInfoPtr->wsIntents =params.value("wsIntents").toInt();
+        oldInfoPtr->wsIntents = params.value("wsIntents").toInt(0);
+        if (oldInfoPtr->wsIntents == 0) oldInfoPtr->wsIntents = kDefaultWsIntents;  // 0 = 用默认订阅
         accountPage->saveAccounts(oldInfoPtr.get());
     }
 

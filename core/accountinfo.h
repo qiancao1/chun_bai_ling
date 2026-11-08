@@ -33,6 +33,13 @@
 #include <qmutex.h>
 #include <qtimer.h>
 
+// WebSocket 默认订阅掩码（新建账号 / 没勾任何订阅事件时用这个）。
+// 位 = GROUP_MEMBER(1<<24) + GROUP_AND_C2C_EVENT(1<<25) + INTERACTION(1<<26)
+//    + DIRECT_MESSAGE(1<<12) + PUBLIC_GUILD_MESSAGES(1<<30) = 1191186432
+// 注意：sendIdentify() 是原样把 wsIntents 发出去的，0 等于一个事件都不订阅 →
+// 机器人连上线也收不到任何消息，所以「0」必须翻译成这个默认值。
+constexpr int kDefaultWsIntents = 1191186432;
+
 struct mdbtn {
     QStringList zl; //指令
     QStringList jzc;//禁止词
