@@ -2297,7 +2297,10 @@ static int parseTimeUnit(const QString &unit) {
 // 解析禁言命令，返回 {ID, 禁言秒数}，失败时秒数返回负数
 static std::pair<QString, int> parseBanCommand(const QString &msg) {
     // 1. 预处理：去掉常见的 @ 提及符号，只保留核心内容
+    //    ⚠ 先删 <@! 再删 <@：平台的 at 有两种写法（<@id> / <@!id>），
+    //      少删一个「!」整条正则就失配，指令会变成"解析失败"。
     QString clean = msg;
+    clean.remove("<@!");
     clean.remove("<@");
     clean.remove(">");
     clean = clean.trimmed();
@@ -2367,6 +2370,7 @@ static QPair<QString, int> parseRecallCommand(const QString &msg) {
     // 1. 预处理：去掉 "撤回" 前缀，去除尖括号，去除“条”字
     QString clean = msg;
     clean.remove("撤回");
+    clean.remove("<@!");     // 同 parseBanCommand：<@id> / <@!id> 两种 at 写法都要吃掉
     clean.remove("<@");
     clean.remove(">");
     clean.remove("条");      // 忽略单位后缀
@@ -2404,11 +2408,112 @@ static QPair<QString, int> parseRecallCommand(const QString &msg) {
     return qMakePair(QString(), -1);
 }
 
+// ==================== 群管指令的权限判定 ====================
+// member_role 取值见 qqbotclient.h：1超管 2机器人管理 3群主 4群管 5代管 6群成员。
+// 下面这批指令都写在 ruqunhy 的 if(admin) 块里，只有 role 6（普通成员）走不到那儿 ——
+// 以前是**静默吞掉**，普通成员发完一个字都收不到；现在统一回一句明确的没权限。
+static const char *kGroupManageDenied =
+    "该命令需要 管理员 或 群主 或 代管 才能执行";
+
+// 这个 msg 是不是「群管指令」。判断口径要和下面 if(admin){...} 里的分支保持一致，
+// 否则会出现「管理员能用、普通成员却被当聊天放过去」的漏判。
+// 消息里有 @ 人吗（<@openid> / <@!openid> 两种写法都认；id 不限定 32 位，
+// 免得某些场景平台给的是 uid —— 否则会「管理员能用、普通人被当聊天」）
+static bool hasMention(const QString &msg)
+{
+    static const QRegularExpression re(QStringLiteral("<@!?[^>]{1,80}>"));
+    return re.match(msg).hasMatch();
+}
+
+static bool isGroupManageCmd(const QString &rawMsg)
+{
+    // 归一化，两个坑都在这里：
+    //   ① 机器人自己的 at 有时没被剥掉，会留在消息最前面 → 不切掉的话 startsWith 全失配；
+    //   ② at 有两种写法 <@id> / <@!id>，而 parseBanCommand / parseRecallCommand
+    //      只认 <@，遇到 <@! 会解析失败 → 统一成 <@。
+    QString msg = rawMsg.trimmed();
+    while (msg.startsWith(QStringLiteral("<@"))) {
+        const int gt = msg.indexOf(QLatin1Char('>'));
+        if (gt < 0) break;
+        msg = msg.mid(gt + 1).trimmed();
+    }
+    msg.replace(QStringLiteral("<@!"), QStringLiteral("<@"));
+
+    // 1) 整句指令（不带参数）
+    //    ⚠ 铃铛商店**不在这**：它是面向全体成员的商店（积分靠看广告来），
+    //       拦了普通成员就看不到在售列表了。同理「兑换物品」也不管。
+    static const QStringList kExact = {
+        QStringLiteral("一键解禁"),
+        QStringLiteral("禁言列表"),
+        QStringLiteral("本群状态"),
+        QStringLiteral("开入群验证"),
+        QStringLiteral("关入群验证"),
+        QStringLiteral("获取加群列表"),
+        QStringLiteral("开申请加群提示"),
+        QStringLiteral("关申请加群提示"),
+        QStringLiteral("开自动同意加群"),
+        QStringLiteral("关自动同意加群"),
+        QStringLiteral("设置刷屏检测"),
+        QStringLiteral("取消刷屏检测"),
+        QStringLiteral("设置入群提示"),
+        QStringLiteral("取消入群提示"),
+        QStringLiteral("设置退群提示"),
+        QStringLiteral("取消退群提示"),
+    };
+    if (kExact.contains(msg)) return true;
+
+    // 2) 参数型指令：**带得上参数才算命令**。
+    //    普通成员聊天里蹦出「禁言」「撤回」两个字不该被糊一句权限提示；
+    //    但写了目标（@人 / 32 位 id）就是真的想执行，必须回。
+    static const QRegularExpression kId32(QStringLiteral("[0-9a-fA-F]{32}"));
+    // 代管可以写 32 位 openid，也可以写库里的数字 id（见添加本群代管的实现）
+    static const QRegularExpression kNumId(QStringLiteral("\\b\\d{1,10}\\b"));
+    auto hasTarget = [](const QString &s) {
+        return hasMention(s) || kId32.match(s).hasMatch();
+    };
+
+    if (msg.startsWith(QStringLiteral("禁言"))) {          // 禁言 <@id> [秒/分钟/月]
+        return hasTarget(msg);
+    }
+    if (msg.startsWith(QStringLiteral("撤回"))) {          // 撤回 [<@id>] [条数]
+        // 只写条数也算命令（撤回机器人自己那几条）
+        return parseRecallCommand(msg).second >= 0 || hasMention(msg);
+    }
+    if (msg.startsWith(QStringLiteral("解禁"))) {          // 解禁 <@id>（「一键解禁」是整句，走上面）
+        return hasTarget(msg);
+    }
+    if (msg.startsWith(QStringLiteral("免验证"))) {        // 免验证 <@id>
+        return hasTarget(msg);
+    }
+    if (msg.startsWith(QStringLiteral("添加本群代管"))) {  // <@id openid> 或 <数字id>
+        const QString rest = msg.mid(QStringLiteral("添加本群代管").length());
+        return hasTarget(rest) || kNumId.match(rest).hasMatch();
+    }
+    if (msg.startsWith(QStringLiteral("删除本群代管"))) {  // <@id openid> 或 <数字id>
+        const QString rest = msg.mid(QStringLiteral("删除本群代管").length());
+        return hasTarget(rest) || kNumId.match(rest).hasMatch();
+    }
+    if (msg.startsWith(QStringLiteral("设置自动同意加群答案"))) {   // 后面必须有关键词
+        return !msg.mid(QStringLiteral("设置自动同意加群答案").length()).trimmed().isEmpty();
+    }
+
+    // 3) 踢：只认「踢 <@id>」/「踢 id」这种真命令。
+    //    这里故意不用 contains("踢")——普通成员聊天里带个「踢」字就回权限提示太吵。
+    static const QRegularExpression kTuo(
+        QStringLiteral("^踢\\s*(?:<@!?[^>]{1,80}>|[0-9a-fA-F]{32})$"));
+    return kTuo.match(msg).hasMatch();
+}
+
 
 QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
 {
     if (ev.type != 0) return QString(); // 仅群聊
     if(ev.user.isEmpty()) return QString();
+    // 群成员（role 6）发**完整**的群管指令 → 明确回一句没权限。
+    // 为什么放在 if(info->cbl) 外面：群管指令总开关关着的时候，后面整块都进不去，
+    // 用户照菜单敲了一份完整指令却一点反应都没有 —— 这条判断必须走在开关前面。
+    if (ev.member_role >= 6 && isGroupManageCmd(ev.msg))
+        return QString::fromUtf8(kGroupManageDenied);
     if(info->cbl || ev.member_role <=2) {
         bool admin=(ev.member_role <=3);
 
@@ -3050,6 +3155,7 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
             }
             // 其他管理命令不处理，继续往下
         }else{
+            // 没权限的（role 6）在 ruqunhy 开头就拦掉了，这里只剩关键词处罚
             if(keyword_Punish->match(ev)) return "!!!!";
         }
     }

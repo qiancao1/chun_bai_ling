@@ -28,6 +28,8 @@ static constexpr int kTopPluginCount = 6;
 #ifdef _WIN32
 #include <windows.h>
 #include <Psapi.h>
+#include <vector>      // NtQuerySystemInformation 的缓冲
+#include <cstddef>     // offsetof / size_t
 #else
 #include <unistd.h>
 #include <sys/resource.h>
@@ -687,20 +689,24 @@ QLabel *HomePage::createStatusLabel(const QString &title, const QString &value)
 
 
 #ifdef _WIN32
-// 本进程实际占用内存（MB）；三种方式依次降级，全失败返回 0。
-//   1) PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize —— 即任务管理器「内存」列那个值
-//      ⚠️ 这个字段只有 Win10 22H2 / Win11 22H2 打上 2023-09 累积更新之后才会真正被填充。
-//         更早的系统（Windows Server 2016/2019/2022 内核都早于 22H2）上传 sizeof(EX2) 时：
-//           a) 可能直接返回 FALSE（cb 不被认识）；或
-//           b) 返回 TRUE 但压根不写 PrivateWorkingSetSize —— 缓冲区是我们 ZeroMemory 过的，读出来就是 0。
-//         所以**不能只看返回值**，必须再判 > 0；否则在服务器上会算出「0 MB」，
-//         而调用方又用 memMB > 0 当成功条件 → 整个内存面板一直挂着初始的 0 不动。
-//   2) PROCESS_MEMORY_COUNTERS.WorkingSetSize —— 普通工作集（含共享 DLL，比任务管理器偏大，但一定是真数）
-//   3) psapi.dll 的 GetProcessMemoryInfo —— 动态加载，兜住最老的系统
-static double queryProcessMemMB()
-{
-    HANDLE hProc = GetCurrentProcess();
+// ===================== 本进程内存 =====================
+// 面板要显示的是「专用工作集」—— 任务管理器「内存」列那个数：只算本进程私有、且当前真正驻留的页。
+// ⚠ 绝对不能用 WorkingSetSize 顶替：本框架把 LMDB 整库 mmap 进来、还嵌了 Python / Qt，
+//   映射进来的库页和共享 DLL 页全算在工作集里（它们不是私有页），
+//   实测同一进程「工作集 1650 MB / 专用工作集 230 MB」，差 7 倍 —— 首页数字就是这么跟任务管理器对不上的。
+struct WinMemSnapshot {
+    double workingSetMB = 0.0;   // 工作集（含共享页 / mmap 的文件页）
+    double privateWsMB  = 0.0;   // 专用工作集；0 = 没取到
+    double commitMB     = 0.0;   // 提交大小
+    int    privateSrc   = 0;     // 1 = EX2 字段，2 = NtQuerySystemInformation；0 = 取不到
+};
 
+// 路径①：PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize
+//   ⚠ 有系统门槛：Win10 22H2 / Win11 22H2 打上 2023-09 累积更新才算有；Server 2016/2019/2022 全够不到。
+//   老系统上 K32GetProcessMemoryInfo 可能返回 TRUE 却根本不写这个字段（缓冲区我们清零过 → 读出来是 0），
+//   所以必须再判 > 0，不能只看返回值。
+static bool queryMemViaEx2(WinMemSnapshot &snap)
+{
     struct PmcEx2 {
         DWORD     cb;
         DWORD     PageFaultCount;
@@ -718,31 +724,118 @@ static double queryProcessMemMB()
     } pmc2;
     ZeroMemory(&pmc2, sizeof(pmc2));
     pmc2.cb = sizeof(pmc2);
-    if (K32GetProcessMemoryInfo(hProc,
-                                reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc2),
-                                sizeof(pmc2))
-        && pmc2.PrivateWorkingSetSize > 0
-        && pmc2.PrivateWorkingSetSize <= pmc2.WorkingSetSize) {
-        return pmc2.PrivateWorkingSetSize / (1024.0 * 1024.0);
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc2),
+                                 sizeof(pmc2)))
+        return false;
+
+    const double mb = 1024.0 * 1024.0;
+    snap.workingSetMB = pmc2.WorkingSetSize / mb;
+    snap.commitMB     = pmc2.PrivateUsage / mb;
+    if (pmc2.PrivateWorkingSetSize > 0 && pmc2.PrivateWorkingSetSize <= pmc2.WorkingSetSize) {
+        snap.privateWsMB = pmc2.PrivateWorkingSetSize / mb;
+        snap.privateSrc  = 1;
+        return true;
     }
+    return false;
+}
 
-    PROCESS_MEMORY_COUNTERS pmc;
-    ZeroMemory(&pmc, sizeof(pmc));
-    pmc.cb = sizeof(pmc);
-    if (K32GetProcessMemoryInfo(hProc, &pmc, sizeof(pmc)) && pmc.WorkingSetSize > 0)
-        return pmc.WorkingSetSize / (1024.0 * 1024.0);
+// 路径②：NtQuerySystemInformation(SystemProcessInformation).WorkingSetPrivateSize
+//   任务管理器自己就是这个字段；Vista 起所有内核都会填，不受累积更新影响 —— 服务器上也准。
+//   SYSTEM_PROCESS_INFORMATION 是变长链表（每条后面还挂着线程/模块数组），这里只读到 WorkingSetSize 为止。
+#if defined(_WIN64)
+// UNICODE_STRING 在部分头文件组合下不可见，直接按布局写一份（2+2+对齐+指针 = 16 字节）
+struct SpiUnicodeString {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+};
+struct SpiHead {
+    ULONG           NextEntryOffset;
+    ULONG           NumberOfThreads;
+    LONGLONG        WorkingSetPrivateSize;
+    ULONG           HardFaultCount;
+    ULONG           NumberOfThreadsHighWatermark;
+    ULONGLONG       CycleTime;
+    LONGLONG        CreateTime;
+    LONGLONG        UserTime;
+    LONGLONG        KernelTime;
+    SpiUnicodeString ImageName;
+    LONG            BasePriority;
+    // 编译器在这里自动补 4 字节，和内核布局一致
+    HANDLE          UniqueProcessId;
+    HANDLE          InheritedFromUniqueProcessId;
+    ULONG           HandleCount;
+    ULONG           SessionId;
+    ULONG_PTR       UniqueProcessKey;
+    SIZE_T          PeakVirtualSize;
+    SIZE_T          VirtualSize;
+    ULONG           PageFaultCount;
+    SIZE_T          PeakWorkingSetSize;
+    SIZE_T          WorkingSetSize;   // 后面还有别字段，我们不用
+};
+static_assert(sizeof(SpiHead) == 152, "SYSTEM_PROCESS_INFORMATION 头部布局变了");
+static_assert(offsetof(SpiHead, UniqueProcessId) == 80, "SYSTEM_PROCESS_INFORMATION 偏移变了");
 
-    typedef BOOL (WINAPI *FnGetProcessMemoryInfo)(HANDLE, PPROCESS_MEMORY_COUNTERS, DWORD);
-    static FnGetProcessMemoryInfo fnPsapi = []() -> FnGetProcessMemoryInfo {
-        HMODULE h = ::LoadLibraryA("psapi.dll");
-        return h ? reinterpret_cast<FnGetProcessMemoryInfo>(
-                       ::GetProcAddress(h, "GetProcessMemoryInfo"))
-                 : nullptr;
+static bool queryMemViaSystemInfo(WinMemSnapshot &snap)
+{
+    typedef LONG (NTAPI *FnNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+    static FnNtQuerySystemInformation fn = []() -> FnNtQuerySystemInformation {
+        HMODULE ntdll = ::GetModuleHandleA("ntdll.dll");
+        return ntdll ? reinterpret_cast<FnNtQuerySystemInformation>(
+                           ::GetProcAddress(ntdll, "NtQuerySystemInformation"))
+                     : nullptr;
     }();
-    if (fnPsapi && fnPsapi(hProc, &pmc, sizeof(pmc)) && pmc.WorkingSetSize > 0)
-        return pmc.WorkingSetSize / (1024.0 * 1024.0);
+    if (!fn) return false;
 
-    return 0.0;
+    static const ULONG kSystemProcessInformation = 5;
+    static const ULONG kInfoLengthMismatch = 0xC0000004UL;
+
+    static std::vector<char> buf;   // 几 MB，复用一份，别每两秒重新开
+    ULONG need = 0;
+    LONG st = fn(kSystemProcessInformation,
+                 buf.empty() ? nullptr : buf.data(),
+                 static_cast<ULONG>(buf.size()), &need);
+    for (int i = 0; i < 3 && static_cast<ULONG>(st) == kInfoLengthMismatch; ++i) {
+        buf.resize(static_cast<size_t>(need) + 64 * 1024);
+        st = fn(kSystemProcessInformation, buf.data(),
+                static_cast<ULONG>(buf.size()), &need);
+    }
+    if (st != 0 || buf.empty()) return false;
+
+    const ULONG_PTR selfPid = static_cast<ULONG_PTR>(::GetCurrentProcessId());
+    const double mb = 1024.0 * 1024.0;
+    size_t off = 0;
+    while (off + sizeof(SpiHead) <= buf.size()) {
+        const SpiHead *e = reinterpret_cast<const SpiHead *>(buf.data() + off);
+        if (reinterpret_cast<ULONG_PTR>(e->UniqueProcessId) == selfPid) {
+            snap.workingSetMB = static_cast<double>(e->WorkingSetSize) / mb;
+            if (e->WorkingSetPrivateSize > 0
+                && static_cast<unsigned long long>(e->WorkingSetPrivateSize)
+                       <= static_cast<unsigned long long>(e->WorkingSetSize)) {
+                snap.privateWsMB = static_cast<double>(e->WorkingSetPrivateSize) / mb;
+                snap.privateSrc  = 2;
+                return true;
+            }
+            return false;
+        }
+        if (e->NextEntryOffset == 0) break;
+        off += e->NextEntryOffset;
+    }
+    return false;
+}
+#endif  // _WIN64
+
+// 本进程内存快照：专用工作集优先（EX2 → NtQuerySystemInformation），
+// 两条路都拿不到才退回工作集（数值会明显偏大，tooltip 里会标「不是任务管理器那个数」）。
+static WinMemSnapshot queryWinMemSnapshot()
+{
+    WinMemSnapshot snap;
+    queryMemViaEx2(snap);
+#if defined(_WIN64)
+    if (snap.privateWsMB <= 0.0) queryMemViaSystemInfo(snap);
+#endif
+    return snap;
 }
 
 // 机器物理内存总量（MB）；拿不到返回 0，由调用方决定怎么显示
@@ -761,13 +854,30 @@ static double queryTotalMemMB()
 void HomePage::updateProcessStats()
 {
     // ========== 1. 内存占用（带进度条） ==========
-    double memMB = 0.0;        // 本进程占用
+    double memMB = 0.0;        // 本进程占用（专用工作集 = 任务管理器「内存」列那个数）
     double totalMB = 0.0;      // 机器（或容器）总量
+    QString memTooltip;        // 鼠标悬停看明细，免得再有人拿工作集跟任务管理器比
 #ifdef _WIN32
-    // 专用工作集 = 任务管理器「内存」列显示的那个值（只算本进程私有部分，不含共享 DLL）
-    memMB = queryProcessMemMB();
+    const WinMemSnapshot memSnap = queryWinMemSnapshot();
     static const double s_totalMemMB = queryTotalMemMB();
     totalMB = s_totalMemMB;
+    // ⚠ 只有「专用工作集」才和任务管理器对得上；两条路都取不到才退回工作集，
+    //    并且 tooltip 会明确写出来（工作集含 mmap 的库页/共享页，能大好几倍）
+    memMB = (memSnap.privateWsMB > 0.0) ? memSnap.privateWsMB : memSnap.workingSetMB;
+    if (memSnap.privateWsMB > 0.0) {
+        memTooltip = QStringLiteral("专用工作集（任务管理器「内存」列）: %1 MB\n"
+                                    "工作集（含共享页 / mmap 映射页）: %2 MB\n"
+                                    "提交大小: %3 MB\n取数来源: %4")
+                         .arg(memSnap.privateWsMB, 0, 'f', 1)
+                         .arg(memSnap.workingSetMB, 0, 'f', 1)
+                         .arg(memSnap.commitMB, 0, 'f', 1)
+                         .arg(memSnap.privateSrc == 1 ? QStringLiteral("PROCESS_MEMORY_COUNTERS_EX2")
+                                                      : QStringLiteral("NtQuerySystemInformation"));
+    } else {
+        memTooltip = QStringLiteral("取不到专用工作集，当前显示的是工作集（含共享页 / mmap 映射页），"
+                                    "会比任务管理器「内存」列大好几倍。\n工作集: %1 MB")
+                         .arg(memSnap.workingSetMB, 0, 'f', 1);
+    }
 #else
     // Linux: 读取 /proc/self/status 中的 VmRSS
     long rss = 0;  // 单位 kB
@@ -826,6 +936,7 @@ void HomePage::updateProcessStats()
                                         .arg(totalMB, 0, 'f', 0)
                                         .arg(memPercent));
             if (m_ramProgressBar) m_ramProgressBar->setValue(memPercent);
+            if (!memTooltip.isEmpty()) m_ramTextLabel->setToolTip(memTooltip);
         } else {
             m_ramTextLabel->setText(QStringLiteral("内存消耗: 获取失败"));
             if (m_ramProgressBar) m_ramProgressBar->setValue(0);

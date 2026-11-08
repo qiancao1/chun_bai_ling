@@ -99,14 +99,13 @@ static void showSenderAvatar(QWidget *parent, int appid, const QString &userId, 
 LogPage::LogPage(QWidget *parent) : QWidget(parent)
 {
     m_model = new QStandardItemModel(this); //先加载 因为setipUi 会动这个 类
-    g_logdb[0]->cleanDatabase(200);
+    // 日志清理已搬到「启动后 30 秒 + 每天 05:00」（main.cpp 的 runLogClean → cleanDatabaseAsync）。
+    // 这里原来每次建页面都要同步扫全库删一遍：十几万条时打开日志页要卡好几秒，
+    // 而且会跟后台清理抢 m_mutex。
     Message mes;
     mes.Color_0=0xF3312F;
-    int logs = g_config["logs"].toInt(100000);
     for(int i=0 ;i<5;++i)
     {
-        if(i>0)
-            g_logdb[i]->cleanDatabase(logs);
         QList<QPair<QString, Message>> list = g_logdb[i]->getLatestMessagesWithOffset(0,1,0);
         if (!list.isEmpty()) {
             QPair<QString, Message> pair = list.first();
@@ -114,14 +113,6 @@ LogPage::LogPage(QWidget *parent) : QWidget(parent)
             if(!m.msg.isEmpty())
                 g_logdb[i]->appendLog("0", "0", mes);
         }
-    }
-    // 「发送错误」独立库（第 6 个 tab 的数据源）：上限 10 万条（可用 err_logs 覆盖）。
-    // ⚠ 只在**本次启动**（= 上次退出后重启）第一次建这个页面时清一次 —— LogPage 被重建
-    //   （切号/重建 UI）时不再清，避免把还没看的错误记录顺手删掉。
-    static bool errDbCleaned = false;
-    if (!errDbCleaned && g_errlogdb) {
-        errDbCleaned = true;
-        g_errlogdb->cleanDatabase(qMax(1000, g_config["err_logs"].toInt(100000)));
     }
 
 

@@ -81,14 +81,16 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.6.184"
-#define APP_BUILD_NUMBER 184
+#define APP_VERSION_STR "v1.5.6.187"
+#define APP_BUILD_NUMBER 187
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.6.184 (2026-11-07)
+## v1.5.6.187 (2026-11-07)
 - 修复 msgid判定范围导致 机器人加群msgid无效问题
-
+- 优化 数据库清理机制
+- 优化 linux 运行 之前没测试现在运行会强制开webhook 和ws端口
+- 优化 首页显示的内存占用
 
 ## v1.5.5.183 (2026-11-05)
 - 更新 新的UI 移除部分界面 黑名单改为分bot执行了

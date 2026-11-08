@@ -761,27 +761,49 @@ void set::setupUI()
     });
 
     ws_server = new WebSocketServer;
-    if(g_config["webws_run"].toBool())
+    // Linux 上无论配置如何都启动 WS —— 和上面的 HTTP 保持一致。
+    // 原因：headless 没有界面，用户点不到「启用 WS」那个勾选框，webws_run 一旦是 false
+    // 就永远是 false，于是 WebUI 页面能打开、却一直卡在「尚未连接到后端 / not connected」。
+#ifdef Q_OS_LINUX
+    const bool wsAutoStart = true;
+#else
+    const bool wsAutoStart = g_config["webws_run"].toBool();
+#endif
+    if(wsAutoStart)
     {
-        int port = g_config["webws_p"].toInt();
-        if(port!=0){
+        int wsPort = g_config["webws_p"].toInt();
+        if(wsPort!=0){
 
             if(ESSL->isChecked())
 
-                Ews->setChecked(ws_server->open(port,"ssl.crt","ssl.key","ssl.pem"));  // 监听 8080 端口
+                Ews->setChecked(ws_server->open(wsPort,"ssl.crt","ssl.key","ssl.pem"));  // 监听 8080 端口
             else
-                Ews->setChecked(ws_server->open(port));
+                Ews->setChecked(ws_server->open(wsPort));
+            // 让内存里的状态和实际监听结果一致（端口被占时是 false），别处读 webws_run 才准
+            g_config["webws_run"] = Ews->isChecked();
         }
     }
 
+#ifdef Q_OS_LINUX
+    // Linux 上无论配置如何都尝试启动 WebUI
+    // ⚠ 必须自己一层花括号：上面 244 行已经有一个 setupUI() 作用域的 `int port`，
+    //   Windows 分支是靠 `if(...){ }` 把变量圈住的，Linux 分支原来没圈 → 重定义（Linux 独有编译错）。
+    {
+        int port = g_config["webhook_p"].toInt();
+        if (port == 0) port = 8080;  // 默认端口
+        Ewebhook->setChecked(true);
+        Ewebhook->setChecked(onStartStopClicked(port));
+    }
+#else
     if(g_config["webhook_run"].toBool())
     {
         int port = g_config["webhook_p"].toInt();
         if(port!=0){
             Ewebhook->setChecked(true);
-            Ewebhook->setChecked(onStartStopClicked(port));  //不会触发信号
+            Ewebhook->setChecked(onStartStopClicked(port));
         }
     }
+#endif
 
     connect(Ewebhook, &QCheckBox::clicked, [this](){
         int port = g_config["webhook_p"].toInt();

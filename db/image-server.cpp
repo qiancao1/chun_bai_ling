@@ -968,7 +968,12 @@ bool startImageServer(quint16 port,
     g_server->setMaxPendingConnections(4096);
 
     if (!g_server->listen(QHostAddress::Any, port)) {
-        qDebug() << "Failed to start server on port" << port;
+        // 以前这里只说 "Failed to start server on port X"，不带原因，
+        // headless 下根本分不清是端口被占用还是权限不足（<1024 需要 root）。
+        const QString reason = g_server->errorString();
+        qWarning().noquote() << QString("Failed to start server on port %1: %2").arg(port).arg(reason);
+        AppendEventLog(QString("HTTP 端口 %1 监听失败：%2（端口被占用就换个端口，或用 --webui-port 临时指定）")
+                           .arg(port).arg(reason), 0xff);
         delete g_server;
         g_server = nullptr;
         return false;

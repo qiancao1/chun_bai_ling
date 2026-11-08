@@ -36,6 +36,9 @@
 #include "mainwindow.h"
 #include <QFile>
 #include <QJsonObject>
+#include <QNetworkInterface>
+#include <QHostAddress>
+#include <QAbstractSocket>
 #include "global.h"
 #include <QDir>
 #include <QDate>
@@ -191,21 +194,49 @@ void loadconfig()
         ev->appid  = obj["appid"].toInt();
         g_cqev = ev;   // 全局指针指向动态对象
     }
-    if(!g_config["___dyc"].toBool())
-    {
-        QMessageBox::warning(nullptr,"特别说明","本框架禁止黑灰违法使用");
-        g_config["___dyc"] = true;
-        saveConfig();
-    }
+    // if(!g_config["___dyc"].toBool())
+    // {
+    //     QMessageBox::warning(nullptr,"特别说明","本框架禁止黑灰违法使用");
+    //     g_config["___dyc"] = true;
+    //     saveConfig();
+    // }
 
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 命令行 --webui-port：临时覆盖 HTTP（WebUI / 图床）端口，**只在本次运行生效**
+//
+// 为什么不在 saveConfig 之外的地方处理：saveConfig() 是全局唯一的写盘出口
+// （各页面、各插件改配置都走它），而 set::onStartStopClicked 一进函数就先
+// saveConfig() 一次 —— 如果只是改 g_config 里的值，那个临时端口会被当场写进
+// data/config.json，就成了「永久生效」，跟 A 方案（只用一次）正好相反。
+//
+// 所以：内存里 g_config 一直是覆盖后的端口（运行期所有读 webhook_p 的地方都用它），
+//       写盘时把这一项换回原值（原值不存在就删掉该键），其它字段照旧。
+//       例外：运行期有人显式把端口改成别的值（WebUI 设置页 / 设置页点确认）→
+//             说明用户就是要改，覆盖作废，按新值正常写盘。
+// ─────────────────────────────────────────────────────────────────────────────
+static bool        s_webuiPortOverridden = false;
+static int         s_webuiPortValue      = 0;               // 命令行给的那个端口
+static QJsonValue  s_webuiPortOriginal;            // 可能是 Undefined（config.json 本来没这个键）
 
 void saveConfig()
 {
     if(框架退出) return;
+    QJsonObject out = g_config;
+    if (s_webuiPortOverridden) {
+        if (g_config.value(QStringLiteral("webhook_p")).toInt() != s_webuiPortValue) {
+            // 运行期有人显式改过端口（WebUI 设置页 / 设置页点确认）→ 覆盖作废，按用户新值写盘
+            s_webuiPortOverridden = false;
+        } else if (s_webuiPortOriginal.isUndefined() || s_webuiPortOriginal.isNull()) {
+            out.remove(QStringLiteral("webhook_p"));
+        } else {
+            out[QStringLiteral("webhook_p")] = s_webuiPortOriginal;
+        }
+    }
     QFile file("data/config.json");
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QJsonDocument(g_config).toJson(QJsonDocument::Indented));
+        file.write(QJsonDocument(out).toJson(QJsonDocument::Indented));
         file.close();
     }
 }
@@ -759,6 +790,25 @@ void setupCrashHandler()
     // 可选：SIGBUS, SIGSYS
 }
 #endif
+// ===== 日志清理（2026-11-08）=====
+// 原来只有「打开日志页」时才会 cleanDatabase（ui/logpage.cpp 构造里），
+// 不点那个页就一次都不清 —— 日志能一路写下去。现在启动清一次 + 每天 05:00 清一次（凌晨人少）。
+// 清理走后台线程（LogDB::cleanDatabaseAsync），十几万条也不会卡界面。
+static void runLogClean();
+
+// 每天 05:00 触发；清完再把自己排到下一天（单次定时器，跨天不漂移）
+static void scheduleDailyLogClean()
+{
+    const QDateTime now = QDateTime::currentDateTime();
+    QDateTime next(now.date(), QTime(5, 0));
+    if (next <= now) next = next.addDays(1);
+    const qint64 ms = qMin<qint64>(now.msecsTo(next) + 1000, 24LL * 3600 * 1000);
+    QTimer::singleShot(static_cast<int>(ms), qApp, []() {
+        runLogClean();
+        scheduleDailyLogClean();
+    });
+}
+
 void initDBs() {
     for (int i = 0; i < 5; ++i) {
         auto db = std::make_unique<LogDB>(QString("botdb/logdb_%1").arg(i));
@@ -779,6 +829,23 @@ void initDBs() {
             g_errlogdb = std::move(edb);
         }
     }
+
+    // 启动 30 秒后再清（别和界面首帧、插件加载抢 IO），之后交给每日 05:00 的定时器
+    QTimer::singleShot(30 * 1000, qApp, &runLogClean);
+    scheduleDailyLogClean();
+}
+
+static void runLogClean()
+{
+    const int keepLogs = qMax(1000, g_config["logs"].toInt(100000));
+    const int keepErr  = qMax(1000, g_config["err_logs"].toInt(100000));
+    for (int i = 0; i < 5; ++i) {
+        if (!g_logdb[i]) continue;
+        // 0 号库放系统消息，只留 200 条（与日志页打开时的口径一致）
+        g_logdb[i]->cleanDatabaseAsync(i == 0 ? 200 : keepLogs);
+    }
+    if (g_errlogdb) g_errlogdb->cleanDatabaseAsync(keepErr);
+    qDebug() << "LogDB: 定时清理已派发 keepLogs =" << keepLogs << "keepErr =" << keepErr;
 }
 
 
@@ -789,9 +856,62 @@ qint64 g_totalRuntime=0;
 void detectOptimalRegion();
 QString processText(const QString &text, int timeoutMs);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// --headless：完全不显示界面（Linux 服务器 / 无显示器的机器 / 容器里跑）
+//
+// 只跳过「显示」这一步，MainWindow 仍然照常构造 —— WebSocket、WebUI、插件派发
+// 全都长在它构造出来的那些页面里（ui/set.cpp 的 set 构造里就起 WebUI），
+// 少构造一个页面等于少一半功能。
+//
+// 运行期仍然要装 Qt5 的 GUI 运行库（libQt5Widgets / libQt5Gui），但**不需要**
+// X11 / Wayland / 桌面环境：平台插件换成 offscreen，界面画在一张虚拟屏上。
+//
+// ⚠ QPA 平台插件是 QApplication 构造时一次性选定的，所以这个判断必须跑在
+//    QApplication 构造之前；构造之后再 qputenv 完全无效。
+// ─────────────────────────────────────────────────────────────────────────────
+static bool hasHeadlessArg(int argc, char *argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--headless") == 0) return true;
+    }
+    return false;
+}
+
+// --webui-port <端口> / --webui-port=<端口>：本次运行临时换 HTTP（WebUI / 图床）端口。
+// 返回值：0 = 没带这个参数；>0 = 端口；-1 = 带了但参数非法（调用方报错退出）。
+static int parseWebuiPortArg(int argc, char *argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        const char *a   = argv[i];
+        const char *val = nullptr;
+        if (qstrcmp(a, "--webui-port") == 0) {
+            if (i + 1 >= argc) return -1;
+            val = argv[i + 1];
+        } else if (qstrncmp(a, "--webui-port=", 13) == 0) {
+            val = a + 13;
+        } else {
+            continue;
+        }
+        bool ok = false;
+        const int p = QString::fromLocal8Bit(val).trimmed().toInt(&ok);
+        if (!ok || p <= 10 || p > 0xffff) return -1;   // 与设置页「端口错误」的校验口径保持一致
+        return p;
+    }
+    return 0;
+}
 
 int main(int argc, char *argv[]) {
 
+    const bool headless = hasHeadlessArg(argc, argv);
+    const int  webuiPortArg = parseWebuiPortArg(argc, argv);
+    if (webuiPortArg < 0) {
+        qCritical().noquote() << QStringLiteral(
+            "--webui-port 需要一个 11-65535 的端口，例如：./qiancao --headless --webui-port 8081");
+        return 2;
+    }
+    // 已经有 QT_QPA_PLATFORM 就听用户的（例如 minimal，或 offscreen:size=1920x1080）
+    if (headless && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
 
     int ret=0;
     {
@@ -833,6 +953,19 @@ int main(int argc, char *argv[]) {
 
         initdir();
         loadconfig();
+
+        // --webui-port：只覆盖内存里的值。必须在 new MainWindow() 之前 ——
+        // ui/set.cpp 的 set 构造里就是拿 g_config["webhook_p"] 去 startImageServer 的。
+        // 写盘那一路由 saveConfig() 还原原值，所以 config.json 不会被改。
+        if (webuiPortArg > 0) {
+            s_webuiPortOverridden = true;
+            s_webuiPortValue      = webuiPortArg;
+            s_webuiPortOriginal   = g_config.value(QStringLiteral("webhook_p"));
+            g_config[QStringLiteral("webhook_p")] = webuiPortArg;
+            qInfo().noquote() << QStringLiteral(
+                "--webui-port：本次运行使用 WebUI/图床端口 %1（不写回 data/config.json）").arg(webuiPortArg);
+        }
+
         clearPTmpFolder();
 
         std::unique_ptr<py::scoped_interpreter> interpreter;
@@ -852,9 +985,12 @@ int main(int argc, char *argv[]) {
     )");
         } catch (const std::exception& e) {
             QString text = QString("Python 解释器初始化失败(看看lib文件夹在不在):\n%1").arg(e.what());
+            // headless 下不能弹框：模态框没人点，进程会静默挂在启动阶段，日志里一个字都没有
+            if (headless) { qCritical().noquote() << text; return -1; }
             QMessageBox::critical(nullptr, "错误", text);
             return -1;
         } catch (...) {
+            if (headless) { qCritical() << "Python 解释器初始化失败：未知异常"; return -1; }
             QMessageBox::critical(nullptr, "错误", "未知异常");
             return -1;
         }
@@ -876,7 +1012,11 @@ int main(int argc, char *argv[]) {
         accdb = new LmdbKV("botdb/accountinfo");
 
         MainWindow *w = new MainWindow();
-        if (QSystemTrayIcon::isSystemTrayAvailable()) {
+#ifdef _WIN32
+        // 托盘只有 Windows 需要。Linux 上：服务器/容器里没有 StatusNotifier 宿主
+        // （isSystemTrayAvailable() 本来就返 false），桌面版也是关窗口就退出、不做常驻，
+        // 所以整段直接不编译。headless 下同理不建，看不见的托盘只会碍事。
+        if (!headless && QSystemTrayIcon::isSystemTrayAvailable()) {
             QSystemTrayIcon *trayIcon = new QSystemTrayIcon(&a);
             trayIcon->setIcon(QIcon(":/icons/app_icon.ico")); // 从资源文件加载[reference:2][reference:3]
             trayIcon->setToolTip("纯白铃铛");
@@ -904,8 +1044,41 @@ int main(int argc, char *argv[]) {
                              });
             trayIcon->show();
         }
+#endif
 
-        w->show();
+        if (!headless) {
+            w->show();
+        } else {
+            // 不显示界面时，别让「最后一个窗口关闭」把整个进程带走
+            // （插件/对话框万一 show 完又 close，会误触发 quit）。
+            QGuiApplication::setQuitOnLastWindowClosed(false);
+
+            // ws_token 是在 set 的构造函数里 QUuid::createUuid() 现生成的（ui/set.cpp），
+            // 不落盘、每次启动都换 —— 没有界面就没人能点「复制聊天室链接」，
+            // 所以这里必须把带 token 的完整地址打到控制台，否则 WebUI 等于打不开。
+            const int  webPort = g_config.value(QStringLiteral("webhook_p")).toInt();
+            const QString scheme = g_config.value(QStringLiteral("SSL")).toBool()
+                                       ? QStringLiteral("https") : QStringLiteral("http");
+            const QString tail = QStringLiteral("/webui/index.html?token=") + ws_token;
+
+            qInfo().noquote() << QStringLiteral("headless: 界面不显示，用浏览器打开下面的地址管理（端口来源：%1）")
+                                     .arg(webuiPortArg > 0 ? QStringLiteral("--webui-port")
+                                                           : QStringLiteral("data/config.json 的 webhook_p"));
+            if (ws_token.isEmpty()) {
+                qWarning().noquote() << QStringLiteral(
+                    "headless: ws_token 为空 —— WebUI 服务没起来，检查 %1 端口是否被占用").arg(webPort);
+            }
+            qInfo().noquote() << QStringLiteral("  本机   %1://127.0.0.1:%2%3").arg(scheme).arg(webPort).arg(tail);
+            const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
+            for (const QHostAddress &addr : addrs) {
+                if (addr.protocol() != QAbstractSocket::IPv4Protocol || addr.isLoopback())
+                    continue;
+                qInfo().noquote() << QStringLiteral("  局域网 %1://%2:%3%4")
+                                         .arg(scheme).arg(addr.toString()).arg(webPort).arg(tail);
+            }
+            qInfo().noquote() << QStringLiteral("  WebSocket 端口 %1（页面里已内置，若开了防火墙记得放行）")
+                                     .arg(g_config.value(QStringLiteral("webws_p")).toInt());
+        }
         detectOptimalRegion();
 
         // 上传缓存：每分钟比一次「槽位」（一次 QDateTime + 整除，微秒级），
@@ -934,6 +1107,7 @@ int main(int argc, char *argv[]) {
         //uploadToMhimgAsync(R_file("C:\\Users\\Airuan\\Pictures\\AI绘画\\下载.png"),"纳西妲.png",[](const QString& url){
         //    qDebug() << url;
         //});
+        AppendEventLog("框架禁止黑灰使用",0xff);
         AppendEventLog("接收消息延迟高？ 到设置 提高线程池数量 即可",0xff);
         ret = a.exec();
         框架退出=true;

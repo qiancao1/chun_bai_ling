@@ -26,6 +26,10 @@
 #include <QDateTime>
 #include <QSet>
 #include <QCoreApplication>
+#include <QThreadPool>
+#include <QRunnable>
+#include <QFile>
+#include <QFileInfo>
 #include <cstring>
 
 #include <algorithm>
@@ -91,6 +95,10 @@ LogDB::~LogDB()
 // ========== 关闭 ==========
 void LogDB::close()
 {
+    // 0. 后台清理可能正持着 m_mutex 扫全库（十几万条要几秒）——必须等它跑完再关 env，
+    //    否则它会拿着已经 close 掉的 m_env 继续 mdb_cursor_get（踩野指针）。
+    if (m_cleanPool) m_cleanPool->waitForDone();
+
     // 1. 停止定时器，防止在刷库过程中再次触发
     if (m_flushTimer) {
         m_flushTimer->stop();
@@ -223,9 +231,28 @@ bool LogDB::open()
         return false;
     }
 
+    // 上次压缩中途被打断（进程被杀/断电）的现场恢复：
+    //   data.mdb 已被挪成 .bak、新的还没换上来 → 把备份改回去，别让库开不起来。
+    const QString dataPath = m_dbPath + "/data.mdb";
+    const QString bakPath  = m_dbPath + "/data.mdb.bak";
+    const QString tmpDir   = m_dbPath + "/compact_tmp";
+    if (!QFile::exists(dataPath) && QFile::exists(bakPath)) {
+        if (QFile::rename(bakPath, dataPath))
+            qWarning() << "LogDB: 上次压缩中断，已从备份恢复" << m_dbPath;
+    } else if (QFile::exists(dataPath) && QFile::exists(bakPath)) {
+        // 新库已经换上了，.bak 只是没来得及删 —— 直接清掉，别白占几百 MB
+        QFile::remove(bakPath);
+    }
+    if (QDir(tmpDir).exists()) QDir(tmpDir).removeRecursively();
+
     // 直接调用 reopenEnv 完成初始打开
     m_mapsize = DEFAULT_MAPSIZE;
-    return reopenEnv(m_mapsize);
+    if (!reopenEnv(m_mapsize)) return false;
+
+    // 启动时顺手压一次（只在文件远大于实际数据时才真做，见 compactIfNeeded）
+    compactIfNeeded();
+    // 压缩里任何一步失败都会回滚重开；万一连回滚都没开起来，这里必须如实报失败
+    return m_env != nullptr;
 }
 
 QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
@@ -940,6 +967,156 @@ bool LogDB::cleanDatabase(int keepN)
     mdb_cursor_close(cursor);
     rc = mdb_txn_commit(delTxn);
     return rc == MDB_SUCCESS;
+}
+
+// ========== 后台清理 / 启动压缩 ==========
+
+// 后台清理：丢进一个单线程池跑，界面不卡。
+// ⚠ 日志库单库十几万条时 cleanDatabase 要扫全库 + 逐条删，主线程跑会明显卡顿
+//   （尤其是打开「日志」页那一下）。
+bool LogDB::cleanDatabaseAsync(int keepN)
+{
+    if (!m_env || keepN < 0) return false;
+
+    // 一轮没跑完就别排第二轮（定时器和「打开日志页」可能同时触发，扫两遍纯浪费）
+    bool expected = false;
+    if (!m_cleaning.compare_exchange_strong(expected, true))
+        return false;
+
+    if (!m_cleanPool) {
+        m_cleanPool = new QThreadPool(this);
+        m_cleanPool->setMaxThreadCount(1);     // 5 个库都清的时候别一起抢磁盘
+        m_cleanPool->setObjectName(QStringLiteral("LogDB-clean"));
+    }
+
+    const QString path = m_dbPath;
+    m_cleanPool->start(QRunnable::create([this, keepN, path]() {
+        const bool ok = cleanDatabase(keepN);  // 内部自己拿 m_mutex
+        m_cleaning.store(false, std::memory_order_release);
+        qDebug() << "LogDB: 后台清理结束" << path << "keepN =" << keepN << "ok =" << ok;
+    }));
+    return true;
+}
+
+// 启动时压缩：LMDB 删条目只把页还给 freelist，data.mdb 一分不缩，文件会停在历史峰值。
+// 实测 logdb_1 已经 512 MB —— 每天清一次库，文件却永远不降。
+// ⚠ 只在启动时做（此时没有活动事务、没有并发读），运行期重开 env 风险太大。
+// ⚠ 它会 rename data.mdb，所以同一目录绝不能双开两个实例（本来双开也会互相覆盖 seq）。
+bool LogDB::compactIfNeeded()
+{
+    QMutexLocker locker(&m_mutex);        // Recursive：reopenEnv 内部还会再拿一次
+    if (!m_env) return false;
+
+    const QString dataPath = m_dbPath + "/data.mdb";
+    QFileInfo fi(dataPath);
+    if (!fi.exists()) return false;
+    const qint64 fileSize = fi.size();
+    if (fileSize < 128LL * 1024 * 1024) return false;   // 小库不值得动（复制本身就要写一遍）
+
+    // 一周最多压一次：删掉旧日志后空洞只会越积越多，每天启动都重写几百 MB 太浪费
+    const QString stampPath = m_dbPath + "/compact.stamp";
+    QFileInfo stamp(stampPath);
+    if (stamp.exists()
+        && stamp.lastModified().secsTo(QDateTime::currentDateTime()) < 7 * 24 * 3600) {
+        return false;
+    }
+
+    // 实际占用 = 子库 B-tree 的页数 × 页大小（不含 freelist 里的空洞）。
+    // ⚠ 不能用 mdb_env_info().me_last_pgno：它只是「最高页号」，
+    //   删掉的是最旧的那批（页号在前半段），空洞留在中间，last_pgno 根本不降 ——
+    //   用它判断会得出「文件没浪费」的错误结论，压缩永远不触发。
+    MDB_stat st;
+    MDB_txn *statTxn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &statTxn) != MDB_SUCCESS) return false;
+    const int src = mdb_stat(statTxn, m_dbi_main, &st);
+    mdb_txn_abort(statTxn);
+    if (src != MDB_SUCCESS) return false;
+
+    const double pageSize = st.ms_psize > 0 ? static_cast<double>(st.ms_psize) : 4096.0;
+    const double used = (static_cast<double>(st.ms_branch_pages)
+                         + static_cast<double>(st.ms_leaf_pages)
+                         + static_cast<double>(st.ms_overflow_pages)) * pageSize;
+    if (used <= 0.0) return false;
+
+    // 省不出 25% 就算了：compact 要把整个库重写一遍，白写几百 MB 只省几十 MB 不值
+    if (static_cast<double>(fileSize) < used * 1.25 || fileSize - qint64(used) < 64LL * 1024 * 1024) {
+        qDebug() << "LogDB: 文件无需压缩" << m_dbPath
+                 << "文件" << fileSize / 1048576 << "MB / 逻辑占用" << qint64(used) / 1048576 << "MB";
+        return false;
+    }
+
+    flushCacheToDBUnlocked();             // 先落盘，别把缓存里的脏数据丢了
+
+    const QString tmpDir  = m_dbPath + "/compact_tmp";
+    const QString bakPath = m_dbPath + "/data.mdb.bak";
+    QDir(tmpDir).removeRecursively();
+    if (!QDir().mkpath(tmpDir)) {
+        qWarning() << "LogDB: 无法创建压缩临时目录" << tmpDir;
+        return false;
+    }
+
+    int rc = mdb_env_copy2(m_env, tmpDir.toUtf8().constData(), MDB_CP_COMPACT);
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: 压缩复制失败" << mdb_strerror(rc);
+        QDir(tmpDir).removeRecursively();
+        return false;
+    }
+    QFileInfo copied(tmpDir + "/data.mdb");
+    if (!copied.exists() || copied.size() < 4096) {
+        qWarning() << "LogDB: 压缩产物不可用，放弃";
+        QDir(tmpDir).removeRecursively();
+        return false;
+    }
+
+    // 拆掉环境 —— 不能调 close()：那会把 m_buffer 删掉、把 flushTimer 停掉
+    if (m_currentTxn) { mdb_txn_abort(m_currentTxn); m_currentTxn = nullptr; }
+    if (m_dbi_main) { mdb_dbi_close(m_env, m_dbi_main); m_dbi_main = 0; }
+    mdb_env_close(m_env);
+    m_env = nullptr;
+    QFile::remove(m_dbPath + "/lock.mdb");   // 旧锁跟着旧库走，重开时 LMDB 自己重建
+
+    // 换文件：原库先留成 .bak，新库能正常打开才删 —— 任何一步失败都要把 .bak 换回来
+    QFile::remove(bakPath);
+    if (!QFile::rename(dataPath, bakPath)) {
+        qWarning() << "LogDB: 备份原库失败，放弃压缩" << m_dbPath;
+        QDir(tmpDir).removeRecursively();
+        reopenEnv(DEFAULT_MAPSIZE);
+        return false;
+    }
+    if (!QFile::rename(tmpDir + "/data.mdb", dataPath)) {
+        qWarning() << "LogDB: 新库改名失败，回滚" << m_dbPath;
+        QFile::rename(bakPath, dataPath);
+        QDir(tmpDir).removeRecursively();
+        reopenEnv(DEFAULT_MAPSIZE);
+        return false;
+    }
+
+    const uint64_t keepSeq = m_nextId.load(std::memory_order_relaxed);
+    bool ok = reopenEnv(DEFAULT_MAPSIZE);
+    if (!ok) {
+        // 新库打不开 → 把备份换回来再开一次。宁可回到大文件，也不能让库消失。
+        qWarning() << "LogDB: 压缩后打开失败，回滚到备份" << m_dbPath;
+        QFile::remove(dataPath);
+        QFile::rename(bakPath, dataPath);
+        ok = reopenEnv(DEFAULT_MAPSIZE);
+    }
+    // 序号绝不回退：reopenEnv 是按「库里最大 key」恢复的，清理/压缩后可能比原来小
+    if (ok && m_nextId.load(std::memory_order_relaxed) < keepSeq)
+        m_nextId.store(keepSeq, std::memory_order_relaxed);
+    if (ok) {
+        QFile::remove(bakPath);
+        QFile sf(stampPath);
+        if (sf.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            sf.write(QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8());
+    }
+    QDir(tmpDir).removeRecursively();
+
+    if (ok) {
+        qDebug() << "LogDB: 压缩完成" << m_dbPath
+                 << fileSize / 1048576 << "MB →"
+                 << QFileInfo(dataPath).size() / 1048576 << "MB";
+    }
+    return ok;
 }
 
 // 在 LogDB.cpp 中实现

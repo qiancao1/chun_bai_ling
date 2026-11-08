@@ -65,6 +65,12 @@ public:
     bool readLog(const QString &keyStr, Message &msg) const;
     // 清理数据库，保留全局最新 N 条，删除其余
     bool cleanDatabase(int keepN);
+    // 后台清理（不阻塞 UI，不排队）：单库十几万条时同步扫全库会把界面卡住。
+    //   已有一次在跑就直接返回 false；实际删除逻辑与 cleanDatabase 完全相同。
+    bool cleanDatabaseAsync(int keepN);
+    // 启动时压缩：LMDB 删条目不缩文件，data.mdb 会停在历史峰值。
+    //   只有「文件明显大于实际数据」才做一次 compact copy（重写整个库，所以很贵）。
+    bool compactIfNeeded();
 
 
     void setBufferRaw(uint64_t seq, uint64_t value) {
@@ -231,6 +237,12 @@ private:
     };
     mutable QMap<QString, CacheEntry> m_cache;
     QTimer* m_flushTimer;
+
+    // ---- 后台清理（单线程池，懒创建）----
+    // 用 QThreadPool 而不是自己 new QThread：池是 this 的子对象，
+    // 析构会自动 waitForDone，不会出现「线程还在跑、对象已经没了」。
+    class QThreadPool *m_cleanPool = nullptr;
+    std::atomic<bool> m_cleaning{false};   // 防止定时器 + 打开日志页同时触发两轮全库扫描
 
     bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
     void flushCacheToDB() ;
