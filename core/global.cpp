@@ -311,6 +311,221 @@ void paceMsgIdReply(int perSec)
 }
 
 
+// 未命中兜底（有 ychfwcl 时）的延迟：用户说完这句之后安静 5 秒才回，
+// 期间又发一条就**重新计时**（见 botnomsg）。
+static constexpr int kNoReplyDelayMs = 5000;
+
+// ==================== 未命中兜底：把 [匹配指令] 换成最接近的几条指令 ====================
+// 场景：用户艾特机器人说了句什么都没命中 → 走到 botnomsg 的兜底回复（fallbackReply）。
+// 兜底文案由管理员配，里面可以写占位符 [匹配指令]，**发送时**替换成跟用户输入最像的指令，
+// 比干巴巴一句「没听懂」有用得多。文案本身是共享配置，绝不原地改（每次发都是临时副本）。
+//
+// 取「这条消息」的用户正文：**直接读日志库**。
+// 收消息时 qqbotclient 已经把正文 append 进 g_logdb[tabIndex] 了（msgid 里的编号就是它的 seq），
+// 而 LogDB::readLog 先查 m_cache 再落库 —— 刚进来的那条必然在缓存里，等于零磁盘 I/O。
+// 读不到（日志页清了库 / seq 已经过期）就返回空 → 占位符清空，不影响兜底本身。
+static QString hintUserText(int tabIndex, const QString &appidStr,
+                            const QString &openid, uint64_t seq)
+{
+    if (tabIndex < 0 || tabIndex >= static_cast<int>(g_logdb.size())) return QString();
+    LogDB *db = g_logdb[tabIndex].get();
+    if (!db) return QString();
+    Message m;
+    if (!db->readLog(appidStr, openid, seq, m)) return QString();
+    return m.msg;
+}
+
+// ---------- 候选指令词：按 appid 缓存 ----------
+// 兜底这条路上唯一「重」的就是候选词表：要遍历**所有插件 × 所有规则**，每条规则还要查一次
+// 改名覆盖（读锁 + 哈希）。而它只在「插件增删 / 规则配置保存」时才变 ——
+// 所以按 appid 缓存一份**预处理过的**词表（展示名 + 小写名 + 长度），匹配时零 trim、零 toLower。
+// 失效判据：插件数量变了 / 规则版本号变了（改名、改启用类型都会 ++）/ 超过 TTL
+//   （TTL 只为兜住「重载插件但插件数量不变」这种，60 秒内的旧名字最多只影响提示，不影响功能）。
+struct HintWord {
+    QString disp;    // 展示用（改过名就是新名）
+    QString low;     // 小写，比较用（trim 在构建时就做完了）
+    int     len = 0;
+};
+struct HintWordCache {
+    QVector<HintWord> words;
+    qint64  builtMs   = 0;
+    int     pluginNum = -1;
+    quint64 version   = 0;
+};
+static QHash<int, HintWordCache> g_hintWordCache;
+static QMutex      g_hintWordCacheMutex;      // botnomsg 在多个工作线程 + 主线程（定时器）上都会跑
+static constexpr qint64 kHintWordCacheTtlMs = 60000;
+
+// 编辑距离（按字符算，中文 1 字 = 1 步）。带早退：某一行最小值已经 > maxDist 就直接放弃 ——
+// 阈值 0.5 意味着绝大多数候选在前面几步就能判死，不用把整张表算完。
+// 缓冲区 thread_local：这条路径上不额外 new QVector。
+static int hintEditDistance(const QString &a, const QString &b, int maxDist)
+{
+    const int n = a.size();
+    const int m = b.size();
+    if (n == 0) return m;
+    if (m == 0) return n;
+    if (qAbs(n - m) > maxDist) return maxDist + 1;   // 长度差就超了，根本不用算
+
+    thread_local QVector<int> prev;
+    thread_local QVector<int> cur;
+    if (prev.size() < m + 1) { prev.resize(m + 1); cur.resize(m + 1); }
+
+    for (int j = 0; j <= m; ++j) prev[j] = j;
+    for (int i = 1; i <= n; ++i) {
+        cur[0] = i;
+        int rowMin = i;
+        const QChar ca = a.at(i - 1);
+        for (int j = 1; j <= m; ++j) {
+            const int cost = (ca == b.at(j - 1)) ? 0 : 1;
+            int v = prev[j] + 1;                                  // 删
+            if (cur[j - 1] + 1 < v) v = cur[j - 1] + 1;            // 增
+            if (prev[j - 1] + cost < v) v = prev[j - 1] + cost;    // 改
+            cur[j] = v;
+            if (v < rowMin) rowMin = v;
+        }
+        if (rowMin > maxDist) return maxDist + 1;   // 这一行整行都超了，往后只会更大
+        prev.swap(cur);
+    }
+    return prev[m];
+}
+
+// 相似度 0~1。两个入参都已经是 trim + 小写，长度也一并传进来（省掉每个候选两次 size()）。
+// 中文的实际情况是「带参数」「打半截」远多于「打错字」→ 先看前缀 / 包含，都不沾才算编辑距离。
+static double hintSimilarityLow(const QString &a, int aLen, const QString &b, int bLen)
+{
+    if (aLen == 0 || bLen == 0) return 0.0;
+    if (a == b) return 1.0;                                       // 一模一样（多半是权限没放行 / 已停用）
+
+    if (bLen >= 2) {                                              // 单字指令不做包含判断，太容易误伤
+        if (a.startsWith(b)) return 0.90;                         // "签到一下"
+        if (a.contains(b))   return 0.80;                         // "我想签到"
+    }
+    if (aLen >= 2) {
+        if (b.startsWith(a)) return 0.86;                         // 只打了半截："签" → 签到（2 字起判）
+        if (b.contains(a))   return 0.70;
+    }
+
+    const int len = qMax(aLen, bLen);
+    const int maxDist = len / 2;                 // 阈值 0.5 ⇔ dist ≤ len/2，超了不算
+    if (maxDist <= 0) return 0.0;
+    const int dist = hintEditDistance(a, b, maxDist);
+    if (dist > maxDist) return 0.0;
+    return 1.0 - double(dist) / double(len);
+}
+
+// 构建候选词表（只建一次，命中的是 hintWordsFor 的缓存）
+static QVector<HintWord> hintBuildWords(int appid)
+{
+    QStringList raw;
+    if (pluginPage) raw = pluginPage->pluginCommandWords(appid);
+
+    // 框架自带的那几条（# 开头的管理指令不放：普通群成员打不出来，提示了也没用）
+    static const QStringList kBuiltin = {
+        QStringLiteral("菜单"),         QStringLiteral("帮助"),         QStringLiteral("签到"),
+        QStringLiteral("我的id"),       QStringLiteral("代管列表"),     QStringLiteral("修改昵称"),
+        QStringLiteral("添加本群代管"), QStringLiteral("删除本群代管"),
+        QStringLiteral("本群状态"),     QStringLiteral("获取加群列表"), QStringLiteral("禁言列表"),
+        QStringLiteral("数据统计"),     QStringLiteral("更新日志")
+    };
+    raw += kBuiltin;
+    if (!g_currency_name.isEmpty()) raw << (g_currency_name + QStringLiteral("商店"));
+    raw << QStringLiteral("兑换物品");
+
+    QVector<HintWord> out;
+    out.reserve(raw.size());
+    QSet<QString> seen;                     // 插件词和自带词会撞（"签到"两边都有），统一在这儿去重
+    for (const QString &w : qAsConst(raw)) {
+        const QString t = w.trimmed();
+        const QString low = t.toLower();
+        const int len = low.size();
+        if (len == 0 || len > 32) continue;  // 太长的（整句说明）提示出来也不像指令
+        if (seen.contains(low)) continue;
+        seen.insert(low);
+        HintWord hw;
+        hw.disp = t;
+        hw.low  = low;
+        hw.len  = len;
+        out.append(hw);
+    }
+    return out;
+}
+
+// 取候选词表：命中缓存就是 O(1) 浅拷贝（QVector 隐式共享），不命中才重建。
+static QVector<HintWord> hintWordsFor(int appid)
+{
+    const int pluginNum = m_pluginList.size();
+    const quint64 version = pluginPage ? pluginPage->ruleVersion() : 0;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker lk(&g_hintWordCacheMutex);
+        auto it = g_hintWordCache.constFind(appid);
+        if (it != g_hintWordCache.constEnd()) {
+            const HintWordCache &e = it.value();
+            if (e.version == version && e.pluginNum == pluginNum
+                && now - e.builtMs < kHintWordCacheTtlMs) {
+                return e.words;
+            }
+        }
+    }
+
+    // 重建放在锁外：遍历插件表本身不慢，万一两个线程同时重建也就是白干一次
+    HintWordCache e;
+    e.words     = hintBuildWords(appid);
+    e.builtMs   = now;
+    e.pluginNum = pluginNum;
+    e.version   = version;
+    {
+        QMutexLocker lk(&g_hintWordCacheMutex);
+        if (g_hintWordCache.size() > 64) g_hintWordCache.clear();   // 机器人数量正常远小于这个
+        g_hintWordCache.insert(appid, e);
+    }
+    return e.words;
+}
+
+// 挑跟输入最像的 maxCount 条（分数从高到低，只留 >= 0.5 的）。
+static QStringList hintClosestCommands(const QString &input, int appid, int maxCount)
+{
+    QStringList out;
+    const QString text = input.trimmed();
+    // 说了一整段话就别猜了（乱猜比不猜更烦），只做「短句 / 命令 + 少量参数」这一档
+    if (text.isEmpty() || text.size() > 32 || maxCount <= 0) return out;
+
+    const QString low = text.toLower();          // 只转一次，候选那边构建时就转好了
+    const int inLen = low.size();
+    const QVector<HintWord> cand = hintWordsFor(appid);   // 隐式共享，拷贝 O(1)
+    struct Hit { double score; QString word; };
+    QVector<Hit> best;      // 最多 maxCount 条，一直保持从高到低
+
+    for (const HintWord &w : cand) {
+        const double s = hintSimilarityLow(low, inLen, w.low, w.len);
+        if (s < 0.5) continue;                      // 低于 0.5 基本是无关的了
+        int pos = best.size();
+        while (pos > 0 && best.at(pos - 1).score < s) --pos;   // 稳定：同分保留先来的
+        if (pos >= maxCount) continue;
+        best.insert(pos, Hit{s, w.disp});
+        while (best.size() > maxCount) best.removeLast();
+    }
+
+    for (const Hit &h : qAsConst(best)) out.append(h.word);
+    return out;
+}
+
+// 把兜底文案里的 [匹配指令] 换成最像的几条（最多 3 条）。文案里没这个占位符就原样返回。
+static QString hintFillFallback(const QString &tpl, const QString &userText, int appid)
+{
+    static const QString kPlaceholder = QStringLiteral("[匹配指令]");
+    if (!tpl.contains(kPlaceholder)) return tpl;
+
+    const QStringList best = hintClosestCommands(userText, appid, 3);
+    QString fill;
+    for (const QString &w : best) fill += QStringLiteral("「[%1]()」").arg(w);
+
+    QString out = tpl;
+    out.replace(kPlaceholder, fill);    // 一条都没匹配上 → 占位符清空（不瞎猜，也不留一串方括号）
+    return out;
+}
+
 void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int addint)
 {
     if (!m_botClients.contains(appid)) return;
@@ -324,8 +539,17 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
     if(n >= 250) return; //255代表被处理了
     if(n >= 3)
     {
+        // 正文从日志库里取（msgid 里的编号 = 这条消息在 g_logdb[tabIndex] 里的 seq）
+        const QString appidStr = c->m_info->appid;
+        const uint64_t seq = static_cast<uint64_t>(index);
+
         if(!c->m_info->ychfwcl){
-            c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, "false", false, 0, true);
+            // 立即兜底：文案里 [匹配指令] 已经换成最像的指令了
+            // ⚠ send_msgAsync 第 4 参是 QString&（非 const），别传 const
+            QString reply = hintFillFallback(c->m_info->fallbackReply,
+                                             hintUserText(tabIndex, appidStr, openid, seq), appid);
+            if(!reply.isEmpty())
+                c->send_msgAsync(type, openid, "[未被处理回应]", reply, msgid, "false", false, 0, true);
             return;
         }
 
@@ -338,7 +562,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
 
             QTimer *timer = new QTimer();
             timer->setSingleShot(true);
-            timer->setInterval(6000);
+            timer->setInterval(kNoReplyDelayMs);
 
             // 3. 连接回调（注意 lambda 捕获所有需要的变量）
             QObject::connect(timer, &QTimer::timeout, qApp, [=]() {
@@ -350,13 +574,18 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
                     timer->deleteLater();
                     return;
                 }
-                QQBotClient *c = m_botClients[appid];
-                if (c->m_info->fallbackReply.isEmpty()) {
+                QQBotClient *c2 = m_botClients[appid];
+                if (c2->m_info->fallbackReply.isEmpty()) {
                     timer->deleteLater();
                     return;
                 }
 
-                c->send_msgAsync(type, openid, "[未被处理回应]", c->m_info->fallbackReply, msgid, "false", false, 0, true);
+                // 文案与 [匹配指令] 都到点再取：管理员可能刚改过配置，日志库那边也早就刷盘了
+                // （在不在缓存里都一样，readLog 自己会判）。
+                QString reply = hintFillFallback(c2->m_info->fallbackReply,
+                                                 hintUserText(tabIndex, appidStr, openid, seq), appid);
+                if (!reply.isEmpty())
+                    c2->send_msgAsync(type, openid, "[未被处理回应]", reply, msgid, "false", false, 0, true);
 
                 timer->deleteLater();  // 任务完成，清理定时器
             });

@@ -7,6 +7,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QMessageBox>
 #include <QStandardPaths>
@@ -22,28 +23,36 @@ QString ForbiddenWordPage::defaultFilePath() {
 void ForbiddenWordPage::loadFromDefaultFile() {
     QString path = defaultFilePath();
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-
+    if (!file.open(QIODevice::ReadOnly)) {
 
         refreshTable();
         buildAutomaton();
         saveToDefaultFile();   // 保存示例到文件
         return;
     }
-    QTextStream in(&file);
+    // 词库文件一律 UTF-8；老 GBK 文件由 decodeForbiddenWordsText() 兼容读入
+    const QByteArray raw = file.readAll();
+    const bool wasUtf8 = !QString::fromUtf8(raw).contains(QChar(0xFFFD));
+    const QString text = decodeForbiddenWordsText(raw);
+    file.close();
+
     QStringList words;
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();   // 顺带去掉 Windows 的 \r
         if (!line.isEmpty())
             words << line;
     }
-    file.close();
     if (!words.isEmpty())
         m_forbiddenWords = words;
     m_forbiddenWords.removeDuplicates();   // Qt 内置方法，原地去重
 
     refreshTable();
     buildAutomaton();
+
+    // 读进来的是老 GBK 词库 → 顺手转存成 UTF-8，之后 WebUI / 别的工具直接读都不会乱码
+    if (!wasUtf8)
+        saveToDefaultFile();
 }
 
 void ForbiddenWordPage::saveToDefaultFile() {
@@ -53,14 +62,17 @@ void ForbiddenWordPage::saveToDefaultFile() {
             nonEmpty << w.trimmed();
     }
     QString path = defaultFilePath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
 
         return;
     }
-    QTextStream out(&file);
-    for (const QString &w : std::as_const(nonEmpty))
-        out << w << "\n";
+    // 明确写 UTF-8：QTextStream 在 Qt5 默认走系统码页（GBK），WebUI 那边按 UTF-8 读会乱码
+    QByteArray body = nonEmpty.join(QLatin1Char('\n')).toUtf8();
+    if (!body.isEmpty())
+        body.append('\n');
+    file.write(body);
     file.close();
 }
 
@@ -234,13 +246,15 @@ void ForbiddenWordPage::onSave() {
                                                     "文本文件 (*.txt)");
     if (fileName.isEmpty()) return;
     QFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QMessageBox::critical(this, "错误", "无法保存文件");
         return;
     }
-    QTextStream out(&file);
-    for (const QString &w : std::as_const(nonEmpty))
-        out << w << "\n";
+    // 导出同样写 UTF-8（WPS / 记事本 / 别的工具打开都不会乱码）
+    QByteArray body = nonEmpty.join(QLatin1Char('\n')).toUtf8();
+    if (!body.isEmpty())
+        body.append('\n');
+    file.write(body);
     file.close();
     QMessageBox::information(this, "成功", QString("已导出 %1 个违禁词").arg(nonEmpty.size()));
 }
@@ -251,19 +265,22 @@ void ForbiddenWordPage::onBatchImport() {
     if (fileName.isEmpty()) return;
 
     QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(this, "错误", "无法打开文件");
         return;
     }
 
-    QTextStream in(&file);
+    // 导入的文件可能是 UTF-8 也可能是 GBK（别处导出/旧版本文档），统一兼容
+    const QString text = decodeForbiddenWordsText(file.readAll());
+    file.close();
+
     QStringList newWords;
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();
         if (!line.isEmpty())
             newWords << line;
     }
-    file.close();
 
     if (newWords.isEmpty()) {
         QMessageBox::information(this, "提示", "文件中没有有效违禁词");

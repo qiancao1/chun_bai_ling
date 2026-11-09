@@ -221,6 +221,10 @@ QString replaceFileTag(const QString &content, const QString &format = "[文件]
 QString joinIntListFast(const QList<int>& list, const QString& sep);//整数到文本数组
 QString subTextReplace(const QString &source,const QString &find,const QString &replace,int replaceCount = -1,int startPos = 1); //子文本替换
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
+// 未命中兜底：累计到第 3 次仍没人处理这条消息 → 按 fallbackReply 回一句。
+// 文案里可以写占位符 **[匹配指令]**，发送时替换成「跟用户输入最接近的几条指令」
+// （框架自带指令 + 插件注册的生效命令词，模糊匹配取前 3，见 global.cpp 的 hint* 那组函数）。
+// 用户输入直接从日志库按 msgid 里的 seq 读回（LogDB::readLog 先查内存缓存，等于零 I/O）。
 void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int addint=0);
 // 被动回复（带 msgid 的发送）全局限速：跨线程共享，平均约 perSec 条/秒，会阻塞调用线程。
 // 主动推送有频率限制，被动回复基本没有（官方 100 条/秒）→ 保险起见默认按 60 条/秒发。

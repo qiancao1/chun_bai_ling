@@ -14,6 +14,28 @@
 
 
 #define QTextEdit PlaceholderTextEdit
+
+// ---------- 违禁词词库文件的编码 ----------
+// 统一按 UTF-8 存取。老版本桌面端用的是 QTextStream 默认编码（Windows 上是系统
+// ANSI 码页，中文机器 = GBK），写出来的文件 WebUI 按 UTF-8 读就是乱码。
+// 这里读取时先按 UTF-8 解，出现替换字符（U+FFFD）再退回本地码页 —— 老文件能正常
+// 显示，下一次保存就自动转成 UTF-8 了。
+inline QString decodeForbiddenWordsText(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return QString();
+
+    QString text = QString::fromUtf8(bytes);
+    if (text.contains(QChar(0xFFFD))) {
+        const QString local = QString::fromLocal8Bit(bytes);
+        if (!local.contains(QChar(0xFFFD)))
+            text = local;   // GBK 老文件
+    }
+    if (text.startsWith(QChar(0xFEFF)))
+        text.remove(0, 1);  // 去掉可能存在的 UTF-8 BOM
+    return text;
+}
+
 // ---------- 违禁词专用 Aho‑Corasick 自动机 ----------
 class ForbiddenWordAhoCorasick {
 public:

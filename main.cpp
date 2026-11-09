@@ -841,8 +841,8 @@ static void runLogClean()
     const int keepErr  = qMax(1000, g_config["err_logs"].toInt(100000));
     for (int i = 0; i < 5; ++i) {
         if (!g_logdb[i]) continue;
-        // 0 号库放系统消息，只留 200 条（与日志页打开时的口径一致）
-        g_logdb[i]->cleanDatabaseAsync(i == 0 ? 200 : keepLogs);
+        // 0 号库放系统消息，保留 2000 条（比原来的 200 条宽容些，方便回溯）
+        g_logdb[i]->cleanDatabaseAsync(i == 0 ? 2000 : keepLogs);
     }
     if (g_errlogdb) g_errlogdb->cleanDatabaseAsync(keepErr);
     qDebug() << "LogDB: 定时清理已派发 keepLogs =" << keepLogs << "keepErr =" << keepErr;

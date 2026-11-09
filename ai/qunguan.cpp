@@ -380,7 +380,12 @@ __result__ = "返回的内容"
     else if(fieldName=="welcomeMsg")
     {
         ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为python代码 有msg事件)");
-    }else
+    }
+    else if(fieldName=="apply")
+    {
+        ui->textEdit->setPlaceholderText(R"(有个变量 [匹配指令] 他是 当用户输入指令时 匹配相关指令)");
+    }
+    else
     {
         ui->textEdit->setPlaceholderText("无明显提示呢...");
     }

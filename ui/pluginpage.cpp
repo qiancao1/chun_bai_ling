@@ -2586,6 +2586,51 @@ bool PluginPage::handleShopCommand(const QString &frame, MessageEvent &msg)
     return true;
 }
 
+// ==================== 未命中兜底：这台机器人下能提示给用户的指令词 ====================
+// 只给 core/global.cpp 的 botnomsg 用（兜底回复里的 [匹配指令]），跟用户输入做模糊匹配。
+// 与 dispatch_message 同口径：插件没启用 / 对该 appid 禁用 → 整个跳过；
+// 规则停用（role = -1）跳过；正则 / 事件这两类 key 不是「用户能打的话」，也跳过。
+QStringList PluginPage::pluginCommandWords(int appid) const
+{
+    QStringList out;
+    QSet<QString> seen;      // 忽略大小写去重（"签到" / "签到" 只留一条）
+
+    auto add = [&](const QString &w) {
+        const QString t = w.trimmed();
+        // 太长的多半是整句说明（有人把 key 写成 "帮我查一下今天的天气"），提示出来也不像指令
+        if (t.isEmpty() || t.size() > 32) return;
+        const QString k = t.toLower();
+        if (seen.contains(k)) return;
+        seen.insert(k);
+        out.append(t);
+    };
+
+    for (const PluginInfo &p : std::as_const(m_pluginList)) {
+        if (!p.enabled) continue;
+        if (p.appid.contains(appid)) continue;          // 这个插件对该机器人禁用
+        const QString cfgKey = p.id.isEmpty() ? p.name : p.id;
+
+        auto take = [&](int type, const QString &key, const QString &newKey0, int role0) {
+            if (role0 <= kRuleRoleOff) return;          // 这条指令停用了
+            if (type == static_cast<int>(MatchType::Regex) ||
+                type == static_cast<int>(MatchType::event)) return;
+            int role = role0;
+            QString newKey = newKey0;
+            botRuleOverrideOf(appid, cfgKey, type, key, role, newKey);   // 该机器人的改名 / 启用覆盖
+            if (role <= kRuleRoleOff) return;
+            add(ruleMatchKey(key, newKey));             // 改过名 = 新名，没改 = 原名
+        };
+
+        for (const Rule &r : std::as_const(p.python.rules))
+            take(static_cast<int>(r.type), r.key, r.newKey, r.role);
+        for (const Rule_js &r : std::as_const(p.js.rules))
+            take(static_cast<int>(r.type), r.key, r.newKey, r.role);
+        for (const Rule_Dll &r : std::as_const(p.DLL.rules))
+            take(static_cast<int>(r.type), r.key, r.newKey, r.role);
+    }
+    return out;
+}
+
 int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
 {
 
@@ -6116,6 +6161,7 @@ void PluginPage::applySavedRuleConfig(PluginInfo &info)
 // 只在「载入配置 / 保存配置」时重建一次（都是用户动作，频率极低）。
 void PluginPage::rebuildBotRuleRoles()
 {
+    ++m_ruleVersion;                       // 兜底提示的候选词缓存按它失效（见 ruleVersion）
     QWriteLocker locker(&m_botRoleLock);   // dispatch 在工作线程上读，这里整表重建
     m_botRuleRole.clear();
     for (auto it = m_ruleCfg.constBegin(); it != m_ruleCfg.constEnd(); ++it) {

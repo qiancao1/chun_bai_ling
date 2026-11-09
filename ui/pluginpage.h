@@ -24,6 +24,7 @@
 #include <QLibrary>
 #include <QPlainTextEdit>  // pip/npm 安装日志区（纯文本，别用 QTextEdit —— 本工程被 #define 成 PlaceholderTextEdit 了）
 #include <functional>      // sendData32Async 的回调
+#include <atomic>          // m_ruleVersion（兜底提示的缓存版本号，工作线程读）
 #include "qqbotclient.h"
 
 
@@ -415,6 +416,21 @@ public:
     void loadPlugins();
     int dispatch_message(const QString &text, MessageEvent &msg);
 
+    // ==================== 未命中兜底：能提示给用户的指令词总表 ====================
+    // 只给 core/global.cpp 的 botnomsg 用（兜底回复里的 [匹配指令] 占位符），
+    // 拿它跟用户输入算相似度、挑最像的几条。收词口径：
+    //   · 只收「用户会照着打」的匹配方式（等于 / 开头是 / 结尾是 / 包含）；
+    //     正则（key 是模式串）与事件（key 是事件名）跳过 —— 提示出来用户也打不出来。
+    //   · 取**生效命令词**（该机器人下改过名就是新名），停用（role = -1）的跳过。
+    //   · 插件本身没启用 / 对该 appid 禁用 → 整个插件跳过，与 dispatch_message 同口径。
+    //   · 结果去重（忽略大小写），顺序稳定（按 m_pluginList 顺序）。
+    // ⚠ 读 m_pluginList 是「工作线程只读、GUI 线程改」那套口径（与 dispatch_message 一致）。
+    QStringList pluginCommandWords(int appid) const;
+
+    // 规则配置版本号：**任何**会改变「生效命令词 / 启用类型」的保存动作都会让 rebuildBotRuleRoles() ++。
+    // 只给兜底提示（global.cpp）做缓存失效用 —— 它把候选指令词表按 appid 缓存，靠这个数判断要不要重建。
+    quint64 ruleVersion() const { return m_ruleVersion.load(std::memory_order_relaxed); }
+
     // ==================== AI 工具：直接调用某个插件的一条注册指令 ====================
     // 与 dispatch_message 的区别：**不做关键词匹配**，按「插件 + 注册原指令 + 匹配方式」定位
     // 到那一条规则直接调，所以 AI 调哪条就只跑哪条，不会顺带触发别的插件 / 框架指令。
@@ -690,6 +706,10 @@ private:
     //   · "bots" 里的 "n" 可以**不写**（= 跟随默认档的改名）；写了空串 = 这个号不改名。
     // ⚠ 老配置（值是**数组**）读进来时会被 migrateRuleCfg() 直接包成 { "rows": [...] }，行为不变。
     QJsonObject m_ruleCfg;
+    // 规则配置的版本号：rebuildBotRuleRoles() 每次都 ++（载入配置 / 每次保存各一次）。
+    // 兜底提示（global.cpp）拿它判断「候选指令词缓存」要不要重建 —— 改名 / 改启用类型后立刻生效。
+    // atomic：写发生在 GUI 线程，读发生在工作线程 / 主线程定时器。
+    std::atomic<quint64> m_ruleVersion{0};
     // 商品定价 / 上下架（结构见 shopPriceFor 上方的注释）：
     //   { "<插件id>": { "items": { "<商品备注>": 1200 },              // 默认档价格
     //                   "bots":  { "<appid>": { "<商品备注>": 500 } },

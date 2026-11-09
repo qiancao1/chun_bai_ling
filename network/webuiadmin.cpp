@@ -1256,7 +1256,7 @@ void handleGetForbiddenWords(ClientConnection *client, const QString &reqId)
                       QString("打不开 %1").arg(path));
             return;
         }
-        text = QString::fromUtf8(f.readAll());
+        text = decodeForbiddenWordsText(f.readAll());   // UTF-8；老 GBK 文件自动兼容
         f.close();
     }
 
@@ -1640,7 +1640,7 @@ const AcctField kBasicFields[] = {
     { "gxrz", "更新日志", "string", "text", "更新日志指令的回复内容", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.gxrz); },
       [](AccountInfo &a, const QJsonValue &v) { a.gxrz = v.toString(); } },
-    { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复", nullptr,
+    { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复。可写 [匹配指令]，发送时会替换成跟用户输入最接近的几条指令（最多 3 条）", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.fallbackReply); },
       [](AccountInfo &a, const QJsonValue &v) { a.fallbackReply = v.toString(); } },
     { "welcomeMsg", "机器人入群", "string", "text", "机器人被拉进群时的欢迎语", nullptr,

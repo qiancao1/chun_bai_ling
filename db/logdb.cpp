@@ -1011,12 +1011,20 @@ bool LogDB::compactIfNeeded()
     QFileInfo fi(dataPath);
     if (!fi.exists()) return false;
     const qint64 fileSize = fi.size();
-    if (fileSize < 128LL * 1024 * 1024) return false;   // 小库不值得动（复制本身就要写一遍）
+
+    // 手工修库入口：库目录里放一个 compact.force，下次启动强制重建一次。
+    //   copy2 压坏的库只有 freelist 坏了，阈值判断看不出来（文件跟数据一样大），
+    //   必须能强制重建才能修好 —— 重建走 mdb_put，新库的 freelist 是干净的。
+    const QString forcePath = m_dbPath + "/compact.force";
+    const bool forced = QFile::exists(forcePath);
+
+    if (!forced && fileSize < 128LL * 1024 * 1024)
+        return false;                                    // 小库不值得动（复制本身就要写一遍）
 
     // 一周最多压一次：删掉旧日志后空洞只会越积越多，每天启动都重写几百 MB 太浪费
     const QString stampPath = m_dbPath + "/compact.stamp";
     QFileInfo stamp(stampPath);
-    if (stamp.exists()
+    if (!forced && stamp.exists()
         && stamp.lastModified().secsTo(QDateTime::currentDateTime()) < 7 * 24 * 3600) {
         return false;
     }
@@ -1038,8 +1046,11 @@ bool LogDB::compactIfNeeded()
                          + static_cast<double>(st.ms_overflow_pages)) * pageSize;
     if (used <= 0.0) return false;
 
-    // 省不出 25% 就算了：compact 要把整个库重写一遍，白写几百 MB 只省几十 MB 不值
-    if (static_cast<double>(fileSize) < used * 1.25 || fileSize - qint64(used) < 64LL * 1024 * 1024) {
+    // 省不出 25% 就算了：重建要把整个库重写一遍，白写几百 MB 只省几十 MB 不值
+    // （forced = 修坏库，不按这个来）
+    if (!forced
+        && (static_cast<double>(fileSize) < used * 1.25
+            || fileSize - qint64(used) < 64LL * 1024 * 1024)) {
         qDebug() << "LogDB: 文件无需压缩" << m_dbPath
                  << "文件" << fileSize / 1048576 << "MB / 逻辑占用" << qint64(used) / 1048576 << "MB";
         return false;
@@ -1055,15 +1066,104 @@ bool LogDB::compactIfNeeded()
         return false;
     }
 
-    int rc = mdb_env_copy2(m_env, tmpDir.toUtf8().constData(), MDB_CP_COMPACT);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: 压缩复制失败" << mdb_strerror(rc);
+    // ==== 手工重建，不能用 mdb_env_copy2(MDB_CP_COMPACT) ====
+    // ⚠ 2026-11-08 实测崩溃：copy2 压完库能打开、能读，3 分钟后第一次「删除 + 提交」就
+    //   在 mdb_freelist_save() 里断言 'x <= dl[0].mid' 直接 abort（0.9.x 的 compact copy
+    //   会把目标库的空闲页链表算坏）。自己按 key 一条条 mdb_put 进一个新库虽然慢，
+    //   但目标库的 freelist 是 LMDB 正常写出来的，不会留下这个雷。
+    MDB_env *dst = nullptr;
+    if (mdb_env_create(&dst) != MDB_SUCCESS) {
+        qWarning() << "LogDB: 压缩目标环境创建失败";
         QDir(tmpDir).removeRecursively();
         return false;
     }
-    QFileInfo copied(tmpDir + "/data.mdb");
-    if (!copied.exists() || copied.size() < 4096) {
+    mdb_env_set_maxdbs(dst, 1);
+    const qint64 wantMap = qMax<qint64>(fileSize, 64LL * 1024 * 1024) * 3 / 2;
+    const size_t dstMap  = static_cast<size_t>(qMin<qint64>(wantMap, static_cast<qint64>(MAX_MAPSIZE)));
+    mdb_env_set_mapsize(dst, dstMap);
+    int rc = mdb_env_open(dst, tmpDir.toUtf8().constData(), MDB_NOSYNC, 0664);
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "LogDB: 压缩目标库打开失败" << mdb_strerror(rc);
+        mdb_env_close(dst);
+        if (forced) QFile::remove(forcePath);
+        QDir(tmpDir).removeRecursively();
+        return false;
+    }
+
+    bool copyOk = true;
+    size_t copied = 0;
+    MDB_txn *srcTxn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &srcTxn) != MDB_SUCCESS) {
+        copyOk = false;
+    } else {
+        MDB_cursor *cur = nullptr;
+        if (mdb_cursor_open(srcTxn, m_dbi_main, &cur) != MDB_SUCCESS) {
+            copyOk = false;
+        } else {
+            MDB_txn *dstTxn = nullptr;
+            MDB_dbi dstDbi = 0;
+            bool setupOk = (mdb_txn_begin(dst, nullptr, 0, &dstTxn) == MDB_SUCCESS);
+            if (setupOk && mdb_dbi_open(dstTxn, "logs", MDB_CREATE, &dstDbi) != MDB_SUCCESS)
+                setupOk = false;
+            if (!setupOk) {
+                // dbi_open 失败时事务还开着，必须还掉，否则 mdb_env_close 会断言
+                if (dstTxn) { mdb_txn_abort(dstTxn); dstTxn = nullptr; }
+                copyOk = false;
+            } else {
+                MDB_val k, v;
+                int crc = mdb_cursor_get(cur, &k, &v, MDB_FIRST);
+                while (crc == MDB_SUCCESS) {
+                    if (mdb_put(dstTxn, dstDbi, &k, &v, 0) != MDB_SUCCESS) {
+                        copyOk = false;
+                        break;
+                    }
+                    // 分批提交：一次事务塞十万条会让脏页表爆掉
+                    if (++copied % 20000 == 0) {
+                        if (mdb_txn_commit(dstTxn) != MDB_SUCCESS) {
+                            dstTxn = nullptr;
+                            copyOk = false;
+                            break;
+                        }
+                        dstTxn = nullptr;
+                        // dbi 句柄在同一个 env 内一直是有效的，重开事务不用重开 dbi
+                        if (mdb_txn_begin(dst, nullptr, 0, &dstTxn) != MDB_SUCCESS) {
+                            copyOk = false;
+                            break;
+                        }
+                    }
+                    crc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+                }
+                if (copyOk && dstTxn) {
+                    if (mdb_txn_commit(dstTxn) != MDB_SUCCESS) copyOk = false;
+                } else if (!copyOk && dstTxn) {
+                    mdb_txn_abort(dstTxn);
+                }
+                dstTxn = nullptr;
+            }
+            mdb_cursor_close(cur);
+        }
+        mdb_txn_abort(srcTxn);
+    }
+
+    if (copyOk && copied > 0) {
+        // MDB_NOSYNC：最后一次交给 fsync，失败就别替换（半截库比大库糟多了）
+        if (mdb_env_sync(dst, 1) != MDB_SUCCESS) {
+            qWarning() << "LogDB: 重建后落盘失败，放弃压缩" << m_dbPath;
+            copyOk = false;
+        }
+    }
+    mdb_env_close(dst);
+
+    if (!copyOk || copied == 0) {
+        qWarning() << "LogDB: 重建复制失败，放弃压缩" << m_dbPath << "已复制" << copied;
+        if (forced) QFile::remove(forcePath);   // 失败一次就摘开关，别每次启动都卡几秒重试
+        QDir(tmpDir).removeRecursively();
+        return false;
+    }
+    QFileInfo copiedFile(tmpDir + "/data.mdb");
+    if (!copiedFile.exists() || copiedFile.size() < 4096) {
         qWarning() << "LogDB: 压缩产物不可用，放弃";
+        if (forced) QFile::remove(forcePath);
         QDir(tmpDir).removeRecursively();
         return false;
     }
@@ -1105,6 +1205,7 @@ bool LogDB::compactIfNeeded()
         m_nextId.store(keepSeq, std::memory_order_relaxed);
     if (ok) {
         QFile::remove(bakPath);
+        QFile::remove(forcePath);          // 强制重建已生效，摘掉开关
         QFile sf(stampPath);
         if (sf.open(QIODevice::WriteOnly | QIODevice::Truncate))
             sf.write(QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8());
