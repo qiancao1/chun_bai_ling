@@ -32,12 +32,25 @@
 #include <QFileInfo>
 #include <cstring>
 
+#ifdef Q_OS_WIN
+// qt_windows.h 内部已定义 NOMINMAX / WIN32_LEAN_AND_MEAN，不会把 std::min/std::max 打成宏
+#include <qt_windows.h>
+#endif
+
 #include <algorithm>
 
 // 常量定义
-static const size_t DEFAULT_MAPSIZE = 64ULL * 1024 * 1024;   // 64 MB
-static const size_t MAX_MAPSIZE = 16ULL * 1024 * 1024 * 1024; // 16 GB
+// 日志库是「写多读极少」的负载，映射不需要开得很大：
+//   · DEFAULT_MAPSIZE 只决定 mmap 的虚拟区间，写满再翻倍（扩容 = 重开 env，偶发一次）。
+//     32MB 能放十几万条，正常够用；小一点对 32 位/低内存机器更友好。
+//   · MAX_MAPSIZE 是「翻倍的上限」，不是硬限制：文件本身比它还大时按 fileSize 兜（见 reopenEnv）。
+static const size_t DEFAULT_MAPSIZE = 32ULL * 1024 * 1024;    // 32 MB
+static const size_t MAX_MAPSIZE = 2ULL * 1024 * 1024 * 1024;  // 2 GB（约 500 万条日志，远超 keepN）
 static const int SEQ_DIGITS = 20; // 序号填充位数
+
+// 缓存积压的硬上限：正常 5 秒刷一次，这里只兜「写不进去」的异常路径
+// （坏记录 / 磁盘满 / I-O 错误 / 扩容失败），否则 appendLog 会一直往里堆 = 无界涨内存。
+static const int MAX_PENDING_CACHE = 20000;
 
 // ---- 被动回复 msgid 的有效窗口（2026-10-11）----
 // 被动回复用的 msg_id 有效期：群 5 分钟、好友 1 小时（用户口径）。超窗的 msg_id 发出去会失败，
@@ -72,19 +85,33 @@ static qint64 logBlobTimeSecs(const QByteArray &blob)
 LogDB::LogDB(const QString &dbPath, QObject *parent)
     : QObject(parent)
     , m_bufferSize(10000)
-    , m_buffer(new std::atomic<uint64_t>[m_bufferSize])
+    , m_buffer(nullptr)
     , m_dbPath(dbPath)
     , m_env(nullptr)
     , m_dbi_main(0)
     , m_currentTxn(nullptr)          // 初始化事务指针
 {
-    for (size_t i = 0; i < m_bufferSize; ++i) {
-        m_buffer[i].store(0, std::memory_order_relaxed);
+    // 环形缓冲 + 刷库定时器由 ensureRuntime 统一创建：
+    // close() 会把这两个拆掉，而 open() 允许在 close() 之后再调（= 重开），
+    // 所以「建」必须能重复执行，不能只写在构造函数里。
+    ensureRuntime();
+}
+
+// 补齐运行期资源（环形缓冲 + 刷库定时器）。已存在就什么都不做，可反复调用。
+// ⚠ 必须在主线程调用（QTimer 的 start 要求事件循环所在线程）。
+void LogDB::ensureRuntime()
+{
+    if (!m_buffer) {
+        m_buffer = new std::atomic<uint64_t>[m_bufferSize];
+        for (size_t i = 0; i < m_bufferSize; ++i)
+            m_buffer[i].store(0, std::memory_order_relaxed);
     }
-    m_flushTimer = new QTimer(this);
-    m_flushTimer->setInterval(5000);   // 4000 毫秒
-    connect(m_flushTimer, &QTimer::timeout, this, &LogDB::flushCacheToDB);
-    m_flushTimer->start();
+    if (!m_flushTimer) {
+        m_flushTimer = new QTimer(this);
+        m_flushTimer->setInterval(5000);
+        connect(m_flushTimer, &QTimer::timeout, this, &LogDB::flushCacheToDB);
+        m_flushTimer->start();
+    }
 }
 
 LogDB::~LogDB()
@@ -93,6 +120,9 @@ LogDB::~LogDB()
 }
 
 // ========== 关闭 ==========
+// ⚠ close() 会把「运行期资源」（环形缓冲、刷库定时器）一起拆掉 —— 之后这个对象
+//   只能靠 open() 重开：open() 第一件事就是 ensureRuntime() 把它们重新建出来。
+//   所以「关了再开」是安全的，「关了继续 appendLog」不是（会把 m_buffer 当空指针写）。
 void LogDB::close()
 {
     // 0. 后台清理可能正持着 m_mutex 扫全库（十几万条要几秒）——必须等它跑完再关 env，
@@ -121,6 +151,8 @@ void LogDB::close()
         m_env = nullptr;
         m_dbi_main = 0;
     }
+    // 缓存里剩下的（刷库失败/被跳过的那批）在关库后已经不可能再落盘，直接丢掉省内存。
+    m_cache.clear();
     if (m_buffer) {
         delete[] m_buffer;
         m_buffer = nullptr;
@@ -224,6 +256,8 @@ bool LogDB::readLogInTxn(MDB_txn* txn, const QString& appid, const QString& grou
 bool LogDB::open()
 {
     if (m_env) close();
+    // close() 会把环形缓冲和刷库定时器一起拆掉（见 close 上方说明），这里必须补回来
+    ensureRuntime();
 
     QDir dir;
     if (!dir.mkpath(m_dbPath)) {
@@ -724,19 +758,32 @@ void LogDB::flushCacheToDB() {
     flushCacheToDBUnlocked();
 }
 
+// 缓存积压兜底：只在「一直写不进去」的异常路径上被调用，保证内存有界。
+// ⚠ 调用方需已持 m_mutex（本函数不再加锁）。
+void LogDB::trimCacheIfTooLarge()
+{
+    if (m_cache.size() <= MAX_PENDING_CACHE) return;
+    int drop = m_cache.size() - MAX_PENDING_CACHE;
+    const int before = m_cache.size();
+    auto it = m_cache.begin();
+    while (drop-- > 0 && it != m_cache.end())
+        it = m_cache.erase(it);          // erase 返回下一条，QMap 迭代器失效规则安全
+    qWarning() << "LogDB: 缓存积压" << before << "条，丢弃最旧" << (before - m_cache.size())
+               << "条以保证内存有界" << m_dbPath;
+}
+
 // 新增不加锁版本（复制原逻辑，去掉锁）
 void LogDB::flushCacheToDBUnlocked() {
     // 假设已持有锁
     if (!m_env || m_cache.isEmpty()) return;
 
-    // 收集脏 key
+    // 收集脏 key（缓存里现在只会有脏条目：读缓存已不再写入，见 readLog）
     QList<QString> dirtyKeys;
     for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
         if (it->dirty) dirtyKeys.append(it.key());
     if (dirtyKeys.isEmpty()) {
-        if (m_cache.size() > 1000) { // 比如，超过500条只读缓存就直接清理，防止内存疯长
-            m_cache.clear();
-        }
+        // 只剩非脏条目（理论上不该有）：攒到一定量就清掉，别让它白占内存
+        if (m_cache.size() > 2000) m_cache.clear();
         return;
     }
 
@@ -746,6 +793,7 @@ void LogDB::flushCacheToDBUnlocked() {
         int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
         if (rc != MDB_SUCCESS) {
             qWarning() << "flushCacheToDBUnlocked: 开启事务失败" << mdb_strerror(rc);
+            trimCacheIfTooLarge();
             return;
         }
 
@@ -771,6 +819,7 @@ void LogDB::flushCacheToDBUnlocked() {
                 mdb_txn_abort(txn);
                 if (!expandAndReopen()) {
                     qWarning() << "flushCacheToDBUnlocked: 扩容失败";
+                    trimCacheIfTooLarge();
                     return;
                 }
                 ok = false;
@@ -785,6 +834,9 @@ void LogDB::flushCacheToDBUnlocked() {
         if (!ok) {
             if (rc == MDB_MAP_FULL) continue;
             if (txn) mdb_txn_abort(txn);
+            // 写失败（坏记录 / 磁盘满 / I-O 错误）：脏数据留着下次再试，
+            // 但要有上限 —— 否则 appendLog 一直堆、永远刷不动 = 无界涨内存。
+            trimCacheIfTooLarge();
             return;
         }
 
@@ -794,11 +846,13 @@ void LogDB::flushCacheToDBUnlocked() {
             //   这里再 mdb_txn_abort(txn) 是「对已结束事务 abort」= 未定义行为（野指针）。
             if (!expandAndReopen()) {
                 qWarning() << "flushCacheToDBUnlocked: 提交时扩容失败";
+                trimCacheIfTooLarge();
                 return;
             }
             continue;
         } else if (rc != MDB_SUCCESS) {
             qWarning() << "flushCacheToDBUnlocked: 提交事务失败" << mdb_strerror(rc);
+            trimCacheIfTooLarge();
             return;
         }
 
@@ -807,8 +861,9 @@ void LogDB::flushCacheToDBUnlocked() {
         return;
     }
 
-    qWarning() << "flushCacheToDBUnlocked: 重试次数耗尽，清空缓存（数据可能丢失）";
-    m_cache.clear();
+    // 重试耗尽（连扩 3 次还是满）：留最新的那批，丢掉最旧的，保住内存
+    qWarning() << "flushCacheToDBUnlocked: 重试次数耗尽（数据可能丢失）" << m_dbPath;
+    trimCacheIfTooLarge();
 }
 
 // appendLog 中添加主动刷库
@@ -840,12 +895,11 @@ bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, 
         msg = it->msg;
         return true;
     }
-    // 缓存未命中，从数据库读取并放入缓存（dirty=false）
-    if (loadFromDB(keyStr, msg)) {
-        m_cache[keyStr] = {msg, false};
-        return true;
-    }
-    return false;
+    // 缓存未命中 → 直接读库，**不往缓存里塞**。
+    // 日志库是「写多读极少」的负载：只读缓存命中率极低，却会常驻一堆 Message 副本
+    // （每条 11 个 QString）。刚写入的消息本来就以 dirty 形式在缓存里，读得到；
+    // 历史消息只被读一两次，读完就扔才是省内存的做法。
+    return loadFromDB(keyStr, msg);
 }
 bool LogDB::readLog(const QString &keyStr, Message &msg) const
 {
@@ -855,12 +909,8 @@ bool LogDB::readLog(const QString &keyStr, Message &msg) const
         msg = it->msg;
         return true;
     }
-    // 缓存未命中，从数据库读取并放入缓存（dirty=false）
-    if (loadFromDB(keyStr, msg)) {
-        m_cache[keyStr] = {msg,false};
-        return true;
-    }
-    return false;
+    // 同上：只读不缓存
+    return loadFromDB(keyStr, msg);
 }
 bool LogDB::loadFromDB(const QString &keyStr, Message &msg) const {
     // 注意：此函数假设调用者已持有 m_mutex，因此不再加锁
@@ -906,7 +956,11 @@ bool LogDB::cleanDatabase(int keepN)
         return rc == MDB_SUCCESS;
     }
 
-    // 1. 只读事务：统计总记录数（只遍历键，不解析）
+    // 1. 只读事务：从尾往前数 keepN 条，拿到「保留区最旧那条」的 key 当删除边界。
+    //    ⚠ 原来第一步是 MDB_FIRST→MDB_NEXT 把**全库数一遍总数**，第二步再从 FIRST 删
+    //      toDelete 条 —— 同一批页要遍历两遍。LMDB 是 mmap，遍历过的页会进进程工作集，
+    //      而 Windows 在内存不紧张时永远不回收 → 这是「日志库一直吃内存」的主要来源。
+    //      改成一趟：先数 keepN 条（有界），再从头删到边界，少碰一半页。
     MDB_txn *txn = nullptr;
     int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
     if (rc != MDB_SUCCESS) return false;
@@ -918,26 +972,26 @@ bool LogDB::cleanDatabase(int keepN)
         return false;
     }
 
+    QByteArray boundary;              // 保留区最旧的那条：从 FIRST 删到它的前一条为止
     MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
-    size_t totalCount = 0;
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    int kept = 0;
     while (rc == MDB_SUCCESS) {
-        totalCount++;
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+        if (++kept >= keepN) {
+            boundary = QByteArray(static_cast<const char *>(key.mv_data),
+                                  static_cast<int>(key.mv_size));
+            break;
+        }
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
     }
 
     mdb_cursor_close(cursor);
     mdb_txn_abort(txn);
 
-    // 如果总数 <= 保留数，不需要删
-    if (totalCount <= (size_t)keepN) {
-        return true;
-    }
+    // 总共不到 keepN 条（从 LAST 往回走没走满就没了）→ 没什么可删
+    if (boundary.isEmpty()) return true;
 
-    // 2. 计算要删除的数量（最旧的那批）
-    size_t toDelete = totalCount - keepN;
-
-    // 3. 写事务：从头（最旧）开始，逐条删除前 toDelete 条
+    // 2. 写事务：从头（最旧）开始，逐条删到边界为止
     MDB_txn *delTxn = nullptr;
     rc = mdb_txn_begin(m_env, nullptr, 0, &delTxn);
     if (rc != MDB_SUCCESS) return false;
@@ -948,25 +1002,34 @@ bool LogDB::cleanDatabase(int keepN)
         return false;
     }
 
-    // 定位到最旧的第一条
     rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
     size_t deleted = 0;
-    while (rc == MDB_SUCCESS && deleted < toDelete) {
-        // 删除当前游标指向的条目
+    while (rc == MDB_SUCCESS) {
+        // 到达保留区就停（key 是变长字符串：长度相同 + 逐字节相同才算相等）
+        if (key.mv_size == static_cast<size_t>(boundary.size())
+            && std::memcmp(key.mv_data, boundary.constData(), boundary.size()) == 0) {
+            break;
+        }
         rc = mdb_cursor_del(cursor, 0);
         if (rc != MDB_SUCCESS) {
+            qWarning() << "cleanDatabase: 删除失败" << mdb_strerror(rc);
             mdb_cursor_close(cursor);
             mdb_txn_abort(delTxn);
             return false;
         }
-        deleted++;
-        // 删除后，游标自动指向下一条（MDB_NEXT）
+        ++deleted;
+        // lmdb.h 明确写了：del 之后 MDB_NEXT / MDB_GET_CURRENT 都返回同一条（= 下一条），不会跳
         rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
     }
 
     mdb_cursor_close(cursor);
     rc = mdb_txn_commit(delTxn);
-    return rc == MDB_SUCCESS;
+    if (rc != MDB_SUCCESS) {
+        qWarning() << "cleanDatabase: 提交删除事务失败" << mdb_strerror(rc);
+        return false;
+    }
+    qDebug() << "LogDB: 清理完成" << m_dbPath << "删除" << deleted << "条，保留" << keepN;
+    return true;
 }
 
 // ========== 后台清理 / 启动压缩 ==========
@@ -994,7 +1057,39 @@ bool LogDB::cleanDatabaseAsync(int keepN)
         const bool ok = cleanDatabase(keepN);  // 内部自己拿 m_mutex
         m_cleaning.store(false, std::memory_order_release);
         qDebug() << "LogDB: 后台清理结束" << path << "keepN =" << keepN << "ok =" << ok;
+        if (ok) {
+            // 清理那一趟把整库的页都摸进了进程工作集（LMDB 是 mmap，摸过就等于占着，
+            // Windows 在内存不紧张时不会回收）。回主线程把 env 卸掉再挂上 ——
+            // mdb_env_close 会 UnmapViewOfFile，这些页立刻归还系统，之后只按需重新加载。
+            QMetaObject::invokeMethod(this, [this]() { reloadAfterClean(); },
+                                      Qt::QueuedConnection);
+        }
     }));
+    return true;
+}
+
+// 清理后「卸载再挂上」。比 SetProcessWorkingSetSize 彻底：那个只是把页挪进 standby list，
+// 这个是真 munmap，页直接不再算在进程头上。
+// ⚠ 只碰 env，不碰 m_buffer / m_flushTimer —— setBuffer_255 之类不加锁的写缓冲接口照常可用。
+// ⚠ reopenEnv 全程持 m_mutex（Recursive），readLog / appendLog / readLogInTxn 会被挡在外面，
+//   看不到中间的 m_env == nullptr。
+bool LogDB::reloadAfterClean()
+{
+    {
+        QMutexLocker locker(&m_mutex);
+        if (!m_env) return false;
+        flushCacheToDBUnlocked();       // 清理期间可能又进来新数据，先落盘再卸载
+    }
+
+    if (!reopenEnv(m_mapsize)) {
+        qWarning() << "LogDB: 清理后卸载重载失败，回退到完整 open()" << m_dbPath;
+        return open() && m_env != nullptr;
+    }
+
+#ifdef Q_OS_WIN
+    // 顺带把进程里其它库/UI 的冷页也收一收（进程级；清理一天一次，代价只是几毫秒软缺页）
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
     return true;
 }
 
@@ -1018,16 +1113,8 @@ bool LogDB::compactIfNeeded()
     const QString forcePath = m_dbPath + "/compact.force";
     const bool forced = QFile::exists(forcePath);
 
-    if (!forced && fileSize < 128LL * 1024 * 1024)
+    if (!forced && fileSize < 64LL * 1024 * 1024)
         return false;                                    // 小库不值得动（复制本身就要写一遍）
-
-    // 一周最多压一次：删掉旧日志后空洞只会越积越多，每天启动都重写几百 MB 太浪费
-    const QString stampPath = m_dbPath + "/compact.stamp";
-    QFileInfo stamp(stampPath);
-    if (!forced && stamp.exists()
-        && stamp.lastModified().secsTo(QDateTime::currentDateTime()) < 7 * 24 * 3600) {
-        return false;
-    }
 
     // 实际占用 = 子库 B-tree 的页数 × 页大小（不含 freelist 里的空洞）。
     // ⚠ 不能用 mdb_env_info().me_last_pgno：它只是「最高页号」，
@@ -1046,11 +1133,23 @@ bool LogDB::compactIfNeeded()
                          + static_cast<double>(st.ms_overflow_pages)) * pageSize;
     if (used <= 0.0) return false;
 
-    // 省不出 25% 就算了：重建要把整个库重写一遍，白写几百 MB 只省几十 MB 不值
+    // 冷却：3 天最多压一次（重建要把整个库重写一遍，不能每次启动都干）。
+    // 例外：文件比实际数据大出一倍以上 = 就是「删日志留下的空洞」，压一次能实打实省上百 MB，
+    //   这时无视冷却 —— 否则把保留条数调小之后，文件要干等 3 天才肯缩，期间映射一直是老大小。
+    //   （正常刚压完的库 fileSize ≈ used，不会命中这个例外，也就不可能天天重写。）
+    const QString stampPath = m_dbPath + "/compact.stamp";
+    QFileInfo stamp(stampPath);
+    const bool bigHole = static_cast<double>(fileSize) > used * 2.0;
+    if (!forced && !bigHole && stamp.exists()
+        && stamp.lastModified().secsTo(QDateTime::currentDateTime()) < 3 * 24 * 3600) {
+        return false;
+    }
+
+    // 省不出 20% 就算了：重建要把整个库重写一遍，白写几十 MB 只省几 MB 不值
     // （forced = 修坏库，不按这个来）
     if (!forced
-        && (static_cast<double>(fileSize) < used * 1.25
-            || fileSize - qint64(used) < 64LL * 1024 * 1024)) {
+        && (static_cast<double>(fileSize) < used * 1.20
+            || fileSize - qint64(used) < 32LL * 1024 * 1024)) {
         qDebug() << "LogDB: 文件无需压缩" << m_dbPath
                  << "文件" << fileSize / 1048576 << "MB / 逻辑占用" << qint64(used) / 1048576 << "MB";
         return false;
@@ -1240,7 +1339,10 @@ bool LogDB::reopenEnv(size_t minSize) {
     // 2. 计算目标 mapsize：至少为 minSize，且大于文件大小，留有余量
     size_t targetSize = std::max(minSize, fileSize * 2);          // 翻倍
     targetSize = std::max(targetSize, static_cast<size_t>(fileSize + 10ULL * 1024 * 1024));
-    targetSize = std::min(targetSize, MAX_MAPSIZE);
+    // 上限只约束「翻倍」这一路：文件本身已经比软上限还大时（历史遗留的大库）
+    // 仍然必须 ≥ fileSize，否则 mdb_env_open 会以 MDB_INVALID 直接失败。
+    if (targetSize > MAX_MAPSIZE)
+        targetSize = std::max(MAX_MAPSIZE, static_cast<size_t>(fileSize + 10ULL * 1024 * 1024));
 
     // 4. 关闭旧环境
     if (m_env) {
@@ -1261,7 +1363,14 @@ bool LogDB::reopenEnv(size_t minSize) {
     mdb_env_set_mapsize(m_env, targetSize);
 
     QByteArray pathBytes = m_dbPath.toUtf8();
-    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_WRITEMAP | MDB_NOMETASYNC, 0664);
+    // ⚠ 这里**不能**再用 MDB_WRITEMAP。
+    //   WRITEMAP 把写操作直接写进映射区，脏页全算在进程工作集里，要靠 FlushViewOfFile
+    //   才转成 clean —— 任务管理器上就是「日志越写越多、内存只涨不降」。
+    //   日志库是「写多读极少」，不需要那个写入带宽，普通模式（数据页用 write() 落盘）
+    //   反而省内存：读页是只读文件映射，内存压力下可被回收。
+    //   NOMETASYNC：数据页仍然 fsync，只省掉 meta 的 fsync（崩溃最多丢最后一次提交，库不坏）。
+    //   NORDAHEAD：Linux 上不做 madvise(WILLNEED) 预读 —— 读这么少，预读纯属往内存里灌页。
+    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_NOMETASYNC | MDB_NORDAHEAD, 0664);
     if (rc != MDB_SUCCESS) {
         qCritical() << "reopenEnv: mdb_env_open 失败" << mdb_strerror(rc);
         mdb_env_close(m_env);
@@ -1335,9 +1444,16 @@ bool LogDB::expandAndReopen()
 
     size_t newSize = m_mapsize * 2;
     if (newSize > MAX_MAPSIZE) newSize = MAX_MAPSIZE;
-    if (newSize == m_mapsize) {
-        qWarning() << "LogDB: 已达到最大 mapsize，无法继续扩容";
-        return false;
+    if (newSize <= m_mapsize) {
+        // 已经顶到软上限：只有「数据文件本身比当前 mapsize 还大」才值得再开一次
+        // （交给 reopenEnv 按 fileSize 兜底），否则就是真写满了，直接失败别反复重开。
+        const size_t fileSize = static_cast<size_t>(QFileInfo(m_dbPath + "/data.mdb").size());
+        if (fileSize <= m_mapsize) {
+            qWarning() << "LogDB: 已达到最大 mapsize，无法继续扩容" << m_dbPath
+                       << "mapsize =" << m_mapsize << "文件 =" << fileSize;
+            return false;
+        }
+        newSize = m_mapsize;   // reopenEnv 会算成 fileSize + 10MB
     }
 
     // 关闭当前环境（注意：此时不应有任何活动事务）

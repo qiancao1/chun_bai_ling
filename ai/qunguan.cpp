@@ -432,6 +432,9 @@ void qunguan::on_pushButton_clicked() {
     info->rq_lq = ui->lineEdit_2->text().toInt();
     info->tq_ychf = ui->lineEdit_3->text().toInt();
     info->tq_lq = ui->lineEdit_4->text().toInt();
+    // 自动撤回(秒)：0 = 不撤；上限跟插件那条通道一致（kRecallMaxSec = 110），超了按 110 存
+    info->auto_recall = qBound(0, ui->lineEdit_5->text().toInt(), 110);
+    ui->lineEdit_5->setText(QString::number(info->auto_recall));
     info->cbl = ui->checkBox->isChecked();
     info->ychfwcl = ui->checkBox_3->isChecked();
     info->action_button = ui->checkBox_4->isChecked();
@@ -453,7 +456,13 @@ void qunguan::on_pushButton_clicked() {
     // ---- 4. 持久化 ----
     accountPage->saveAccounts(info.get());
 
-    QMessageBox::information(this, "成功", "保存成功");
+    // 自动撤回是「账号秒数 + 群开关」两段式：光设秒数不会撤，提醒一句免得以为没生效
+    if (info->auto_recall > 0)
+        QMessageBox::information(this, "成功",
+            QString("保存成功\n\n自动撤回已设为 %1 秒，但它是按群生效的：\n"
+                    "群里发「开自动撤回」才会撤，「关自动撤回」关闭。").arg(info->auto_recall));
+    else
+        QMessageBox::information(this, "成功", "保存成功");
 }
 
 QString qunguan::currentPageName() const
@@ -532,6 +541,7 @@ void qunguan::列表行被单击()
         ui->lineEdit_2->setText(QString::number(info->rq_lq));
         ui->lineEdit_3->setText(QString::number(info->tq_ychf));
         ui->lineEdit_4->setText(QString::number(info->tq_lq));
+        ui->lineEdit_5->setText(QString::number(info->auto_recall));
 
         refreshList();
 

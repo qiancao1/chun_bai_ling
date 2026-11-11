@@ -55,8 +55,21 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     // ── 自动撤回的唯一登记点 ──
     //   所有发送路径收尾都要过这里，所以发送函数只把秒数带进来就行，不用各自判断。
     //   deleteid 非空 = 平台确实收下了这条（真发出去才有 id），没发出去的失败响应不会进缓冲。
-    if (recallSec > 0 && !deleteid.isEmpty())
-        scheduleAutoRecall(type, openid, deleteid, recallSec);
+    // ── 这里再加一层「强制自动撤回」（账号设置 → 机器人管理 → 自动撤回(秒)）──
+    //   插件自己传了秒数（recallSec > 0）就以插件的为准；插件没传才回落到账号配置。
+    //   账号配置只在「本群 bitmap 开了 BIT_AUTO_RECALL」时生效 —— 群里发「开自动撤回」才撤。
+    //   私聊 / 查不到群记录 = bitmap 读不到 → 不撤（自动撤回是群功能）。
+    int effRecallSec = recallSec;
+    if (effRecallSec <= 0 && m_info && m_info->auto_recall > 0) {
+        auto git = g_botdb.find(m_info->appid_int);
+        if (git != g_botdb.end() && git.value()) {
+            GroupRecord2 gr;                       // getGroupInfo 先查内存缓存，不每条都打 LMDB
+            if (git.value()->getGroupInfo(openid, gr) && (gr.bitmap & BIT_AUTO_RECALL))
+                effRecallSec = qBound(0, m_info->auto_recall, QQBotClient::kRecallMaxSec);
+        }
+    }
+    if (effRecallSec > 0 && !deleteid.isEmpty())
+        scheduleAutoRecall(type, openid, deleteid, effRecallSec);
 
     // ── 「发送错误」独立库（g_errlogdb）的唯一写入点 ──
     //   就是「把这条失败的 Message 原样复制一份到另一个库」：
@@ -852,7 +865,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-     QString url = get_url(type,openid, "messages");
+    QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);

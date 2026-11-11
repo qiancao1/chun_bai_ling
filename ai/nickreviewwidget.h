@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QComboBox>
+#include <QStringList>
 #include <qpushbutton.h>
 #include "botdb.h"
 
@@ -52,7 +53,7 @@ private slots:
     //void onSearch();
 
 protected:
-    void showEvent(QShowEvent *event) override;   // 每次显示时重建插件下拉项（插件是异步加载的）
+    void showEvent(QShowEvent *event) override;   // 首次显示补齐插件项（之后不再跟插件列表同步）
 
 private:
     void setupUI();
@@ -64,7 +65,17 @@ private:
     void updateButtonsVisibility();
 
     // ---- 插件审核模式 ----
-    void refreshPluginItems();                        // 重建 m_modeCombo 里的插件项
+    // 下拉框里的插件项来自「扫描名单」（g_config["reviewPlugins"]），只在点「扫描审核插件」时更新，
+    // 不再跟着插件列表自动同步 —— 插件列表变来变去不该把用户选中的项冲掉。
+    QStringList m_scanPluginNames;                    // 扫描到的插件名（持久化到配置）
+    bool m_pluginItemsReady = false;                  // 首次显示补齐用（插件是启动后异步加载的）
+    QPushButton *m_btnScanPlugins = nullptr;          // 「扫描审核插件」按钮
+    void refreshPluginItems();                        // 重建 m_modeCombo 里的插件项（只按「扫描名单」，不再跟插件列表同步）
+    void fillPluginItems();                           // 把扫描名单里的插件塞进 combo（不碰信号/选中项）
+    void onScanPlugins();                             // 点「扫描审核插件」：扫出真有审核数据的插件 → 记进配置
+    void scanReviewPlugins(bool showTip);              // 扫描本体；showTip=false 用于升级后自动扫一次
+    // 真调一次 get_review_list 探测这个插件到底有没有审核数据（SDK 基类普遍带这个函数，光看指针不算数）
+    bool pluginProbeReview(int pluginIndex);
     // 调插件 get_review_list(开始位置,数量,状态) 拉一页并填表；state: 1=待审核 2=已审核
     void loadFromPluginPage(int start, int count, int state);
     void submitPluginReview(bool approved);           // 投递 {"状态":同意/拒绝,"data":[{id,name,id2}]} 给 submit_review

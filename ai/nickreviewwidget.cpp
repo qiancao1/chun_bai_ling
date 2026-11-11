@@ -15,6 +15,9 @@
 #include <QJsonArray>
 #include <QJsonParseError>
 #include <QShowEvent>
+#include <QApplication>       // 扫描时切等待光标 + processEvents（探测要真调插件，可能慢）
+#include <QEventLoop>        // ExcludeUserInputEvents
+#include <utility>            // std::as_const（遍历全局插件列表不加锁、也不 detach）
 
 // ---------- 插件审核 ----------
 // 插件侧函数名与地址都在 ui/pluginpage.h + PluginInfo 里定死，加载插件时就取好了：
@@ -103,10 +106,62 @@ static QByteArray makeKey(uint32_t appId, uint32_t userSeqId) {
     return key;
 }
 
+// 插件是否真的带昵称审核功能（点「扫描审核插件」时按这个挑）
+//   Python → get_review_list 句柄存在且可调用（空句柄判空不需要 GIL，但 is_none/PyCallable_Check 要持）
+//   原生库 → 导出的函数指针非空
+// ⚠ 这一步只是「结构上像」，SDK 基类普遍都实现了 get_review_list（返回空表），
+//   所以真正算不算还得靠 pluginProbeReview() 真调一次看有没有数据。
+static bool pluginHasReview(const PluginInfo &info)
+{
+    if (!info.enabled) return false;
+    if (info.type == 0) {
+        if (!info.python.getReviewList) return false;
+        py::gil_scoped_acquire gil;
+        py::object fn = info.python.getReviewList;
+        return pyObjectCallable(fn);
+    }
+    if (info.type == 1) return info.DLL.getReviewList != nullptr;
+    return false;
+}
+
+// JSON 里的整数松一点读：total 写成数字或字符串都认
+static int jsonIntLoose(const QJsonValue &v)
+{
+    if (v.isDouble()) return v.toInt();
+    if (v.isString()) return v.toString().toInt();
+    return 0;
+}
+
+// get_review_list 的返回里到底有没有审核数据
+//   {"total":3,"data":[...]} / {"总数量":3,...} 都认，data 非空也算（有的插件不给 total）
+//   空串 / 解析失败 / total=0 且 data 空 → 没数据（SDK 默认实现就是这种）
+static bool reviewJsonHasData(const QString &json)
+{
+    const QString t = json.trimmed();
+    if (t.isEmpty()) return false;
+    QJsonParseError perr;
+    const QJsonDocument doc = QJsonDocument::fromJson(t.toUtf8(), &perr);
+    if (perr.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    const QJsonObject o = doc.object();
+    int total = jsonIntLoose(o.value("total"));
+    if (total <= 0) total = jsonIntLoose(o.value("总数量"));
+    if (total > 0) return true;
+    return !o.value("data").toArray().isEmpty();
+}
+
 // ---------- NickReviewWidget 实现 ----------
 NickReviewWidget::NickReviewWidget(QWidget *parent)
     : QWidget(parent), m_model(new QStandardItemModel(this))
 {
+    // 审核插件名单 = 上次点「扫描审核插件」扫到的（存配置里，不再跟插件列表同步）
+    // ⚠ 用 value() 不用 operator[]：后者可能在 key 不存在时插一个 Undefined，
+    //   让 showEvent 里「配置里还没有这份名单 → 自动扫一次」的判断永远为假。
+    const QJsonArray saved = g_config.value("reviewPlugins").toArray();
+    for (const auto &v : saved) {
+        const QString n = v.toString();
+        if (!n.isEmpty() && !m_scanPluginNames.contains(n))
+            m_scanPluginNames << n;
+    }
 
     setupUI();
 }
@@ -126,13 +181,19 @@ void NickReviewWidget::setupUI() {
     m_modeCombo = new QComboBox;
     m_modeCombo->addItem("申请审核", (int)Mode::Application);
     m_modeCombo->addItem("批量审核", (int)Mode::BatchUser);
-    // 插件审核：已启用的 Python/原生库插件加进下拉框（data = -(下标+1) 标记为插件模式）
-    for (int i = 0; i < m_pluginList.size(); ++i) {
-        const PluginInfo &info = m_pluginList[i];
-        if (!info.enabled) continue;
-        if (info.type != 0 && info.type != 1) continue;  // 仅支持 Python(0) / 原生库(1)
-        m_modeCombo->addItem("插件:" + info.name, -(i + 1));
-    }
+    // 插件审核：只填「扫描名单」里的插件（data = -(下标+1) 标记为插件模式）。
+    // 从没扫过 → 下拉框里就只有申请/批量两项，点右边的「扫描审核插件」扫一次才会出现插件项。
+    m_modeCombo->blockSignals(true);
+    fillPluginItems();
+    m_modeCombo->setCurrentIndex(0);
+    m_modeCombo->blockSignals(false);
+
+    m_btnScanPlugins = new QPushButton("扫描审核插件");
+    m_btnScanPlugins->setCursor(Qt::PointingHandCursor);
+    m_btnScanPlugins->setToolTip("扫描已启用的插件，把实现了 get_review_list / submit_review 的加进左边的下拉框并记住。\n"
+                                 "下拉框只认这份名单，之后不会再跟着插件列表自动变化。");
+    connect(m_btnScanPlugins, &QPushButton::clicked, this, &NickReviewWidget::onScanPlugins);
+
     connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &NickReviewWidget::onModeChanged);
 
@@ -165,6 +226,7 @@ void NickReviewWidget::setupUI() {
     connect(btnAis, &QPushButton::clicked, this, &NickReviewWidget::onAiApprove);
     topLayout->addWidget(titleLabel);
     topLayout->addWidget(m_modeCombo);
+    topLayout->addWidget(m_btnScanPlugins);   // 紧挨下拉框：「扫描审核插件」
     topLayout->addWidget(m_aimode);
     topLayout->addWidget(btnAis);
     //topLayout->addWidget(m_ss);
@@ -306,31 +368,123 @@ void NickReviewWidget::onModeChanged(int index) {
 }
 
 // ---------- 插件审核 ----------
-// 每次显示时重建插件下拉项（插件是启动后异步加载的，构造时可能还没扫完）
+// 下拉框里的插件项**只**来自「扫描名单」：点一次「扫描审核插件」写进配置，之后一直用这份名单，
+// 不再跟着插件列表自动同步（插件列表动一下就把用户选中的项冲掉，很烦）。
+// 插件是启动后异步加载的 → 第一次显示时列表可能还是空的，补填一次（m_pluginItemsReady）。
 void NickReviewWidget::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
+    if (m_pluginItemsReady) return;
+
+    // 升级上来的第一次（配置里还没有这份名单）：静默扫一遍，别让用户打开发现插件项全没了。
+    // 只这一次 —— 之后名单只由「扫描审核插件」按钮更新。
+    if (!g_config.contains("reviewPlugins") && !m_pluginList.isEmpty()) {
+        scanReviewPlugins(false);
+        return;
+    }
+
     refreshPluginItems();
+    // 名单为空 = 从没扫过，没什么可补；有名单却一个都没匹配上（插件还没加载完）→ 下次显示再试
+    if (m_scanPluginNames.isEmpty() || m_modeCombo->count() > 2)
+        m_pluginItemsReady = true;
 }
 
-void NickReviewWidget::refreshPluginItems() {
-    QVariant cur = m_modeCombo->currentData();
-    m_modeCombo->blockSignals(true);
+// 把「扫描名单」里的插件塞进 combo（不动信号、不动选中项）
+void NickReviewWidget::fillPluginItems() {
     while (m_modeCombo->count() > 2)   // 前 2 项固定是 申请审核/批量审核，只清后面的插件项
         m_modeCombo->removeItem(m_modeCombo->count() - 1);
     for (int i = 0; i < m_pluginList.size(); ++i) {
         const PluginInfo &info = m_pluginList[i];
         if (!info.enabled) continue;
-        if (info.type != 0 && info.type != 1) continue;
+        if (!m_scanPluginNames.contains(info.name)) continue;   // 没被扫到过的不进下拉框
         m_modeCombo->addItem("插件:" + info.name, -(i + 1));
     }
+}
+
+// 重建插件项并尽量保住当前选中（选中的插件没了 → 回「申请审核」）
+void NickReviewWidget::refreshPluginItems() {
+    const QVariant cur = m_modeCombo->currentData();
+    m_modeCombo->blockSignals(true);
+    fillPluginItems();
     int idx = m_modeCombo->findData(cur);
-    bool changed = (idx < 0);          // 之前选中的插件没了 -> 回到申请审核
+    const bool changed = (idx < 0);    // 之前选中的插件没了（卸载 / 禁用 / 改名）
     if (idx < 0) idx = 0;
     m_modeCombo->setCurrentIndex(idx);
     m_modeCombo->blockSignals(false);
     // 选择发生实际变化时手动同步一次（blockSignals 期间信号被吞了）
     if (changed || m_modeCombo->currentData() != cur)
         onModeChanged(m_modeCombo->currentIndex());
+}
+
+// 「扫描审核插件」：真调到审核数据的插件才进名单
+void NickReviewWidget::onScanPlugins()
+{
+    scanReviewPlugins(true);
+}
+
+// 真调一次插件：先要 1 条待审核(状态1)，没数据再要 1 条已审核(状态2)。
+// 两次都空 → 当它不是审核插件（SDK 基类普遍带这个函数，返回的就是空表）。
+bool NickReviewWidget::pluginProbeReview(int pluginIndex)
+{
+    if (reviewJsonHasData(pluginCallInts(pluginIndex, 0, 1, 1))) return true;
+    return reviewJsonHasData(pluginCallInts(pluginIndex, 0, 1, 2));
+}
+
+// showTip=false 时静默扫描（升级上来的第一次自动扫，免得用户打开发现插件项全没了）
+void NickReviewWidget::scanReviewPlugins(bool showTip)
+{
+    QStringList found;      // 真调到审核数据
+    QStringList noData;     // 有函数、但一条数据都调不出来 → 跳过
+
+    if (m_btnScanPlugins) m_btnScanPlugins->setEnabled(false);
+    if (showTip) QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    for (int i = 0; i < m_pluginList.size(); ++i) {
+        const PluginInfo &info = m_pluginList[i];
+        if (!pluginHasReview(info)) continue;                       // 结构上没这个函数，直接跳过
+        if (found.contains(info.name) || noData.contains(info.name)) // 同名插件只算一次
+            continue;
+        // 探测要真调插件，可能有点慢 → 先把界面刷出来（不处理用户输入，避免重入）
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (pluginProbeReview(i))
+            found << info.name;
+        else
+            noData << info.name;
+    }
+
+    if (showTip) QApplication::restoreOverrideCursor();
+    if (m_btnScanPlugins) m_btnScanPlugins->setEnabled(m_enableCheck->isChecked());
+
+    // 写进配置：下次启动直接按名单填，不用再扫
+    m_scanPluginNames = found;
+    QJsonArray arr;
+    for (const QString &n : std::as_const(found)) arr.append(n);
+    g_config["reviewPlugins"] = arr;
+    saveConfig();
+
+    refreshPluginItems();
+    m_pluginItemsReady = true;
+
+    if (!showTip) return;
+
+    const QString skippedNote = noData.isEmpty()
+        ? QString()
+        : QString("\n\n另有 %1 个插件带 %2 但取不到数据（SDK 默认空实现就是这种），已跳过：\n%3")
+              .arg(noData.size())
+              .arg(QString::fromUtf8(kPluginFuncGetReviewList))
+              .arg(noData.join("\n"));
+
+    if (found.isEmpty()) {
+        QMessageBox::information(this, "扫描完成",
+            QString("没有扫描到需要审核的插件。\n\n"
+                    "判定方式：插件已启用 → 实现了 %1(开始位置, 数量, 状态) → 真调一次"
+                    "（先取 1 条待审核，再取 1 条已审核）能返回数据。")
+                .arg(QString::fromUtf8(kPluginFuncGetReviewList)) + skippedNote);
+        return;
+    }
+    QMessageBox::information(this, "扫描完成",
+        QString("扫描到 %1 个需要审核的插件：\n\n%2\n\n"
+                "已加进下拉框并记住 —— 以后只显示这份名单，不再跟着插件列表变化。")
+            .arg(found.size()).arg(found.join("\n")) + skippedNote);
 }
 
 // 调用插件的 get_review_list(开始位置,数量,状态) 拉一页数据并填表

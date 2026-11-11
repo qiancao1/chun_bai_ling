@@ -491,6 +491,11 @@ private:
     void onHandshakeTimeout();
     // 丢掉当前 socket，并且不触发 onDisconnected 里的重连排期（由调用方自己排）
     void closeSocketSilently();
+    // 明确不可恢复的错误（appid/secret 无效、机器人下架/封禁）→ 停掉自动重连。
+    // 只清"本次运行的用户意图"，不动持久化的 autoConnect：用户改好配置后点一次登录还能再试。
+    void stopAutoReconnect(const QString &why);
+    // 401=「IP 不在白名单」时探一次本机公网 IP（每个 client 只探一次，失败了也不重试）
+    void probePublicIpOnce();
     void fetchSelfInfo();   // 获取机器人自身信息
     void downloadAvatar(const QString &url, const QString &savePath);
 
@@ -609,6 +614,21 @@ private:
     // 有它才能同时满足两件事：手动点登录连上的账号被踢了也要自动重连；
     // 而用户点了「停止」之后不许再偷偷连回来（autoConnect 是持久化的设置，不能代替它）。
     bool m_userWantsOnline = false;
+    // true = 撞上了「再试也没用」的错误（appid/secret 无效、机器人下架/封禁），已主动停止重试。
+    // 只有再次 start()（用户点登录 / 自动登录）才清除 —— 避免 autoConnect 已是 true 的老账号
+    // 在改错 secret 之后又被任何一条晚到的失败路径重新排上重连。
+    bool m_autoReconnectBlocked = false;
+    // 本次 WS 连上的时刻（秒）。断线时用它算「在线了多久」：
+    //   30 分钟左右的断开是例行踢；几分钟就断、而且是 4030/40xx，那就是被拦/被踢。
+    //   只看日志里那句写死的话永远分不清，加上时长才能一眼定性。
+    qint64 m_connectedAtSec = 0;
+    // 握手用的头有这两套：
+    //   精简（默认，原来那套）——多数人正常；
+    //   完整（浏览器风格：Origin/Accept/Accept-Language/Cache-Control…）——给「被网关
+    //   安全策略判成攻击」的用户兜底，靠 4030 自动切换（见 onDisconnected）。
+    bool m_wsFullHeaders = false;
+    int  m_ws4030Streak = 0;   // 连续吃了几次 4030（每 3 次翻一套头，别在两个模式里死循环）
+    bool m_ipProbeStarted = false;  // 探测公网 IP 只做一次（连上后复位，下个会话还能探）
 };
 
 #endif // QQBOTCLIENT_H

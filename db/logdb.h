@@ -72,6 +72,12 @@ public:
     //   只有「文件明显大于实际数据」才做一次 compact copy（重写整个库，所以很贵）。
     bool compactIfNeeded();
 
+    // 清理完把库「卸载再挂上」：mdb_env_close → UnmapViewOfFile，清理那一趟摸过的文件页
+    // 立刻从进程工作集消失（SetProcessWorkingSetSize 只是挪进 standby，这个是直接归还）。
+    // ⚠ 只动 env，不动 m_buffer / m_flushTimer；reopenEnv 全程持 m_mutex，读/写线程会被挡住。
+    // ⚠ 必须在主线程调用（失败兜底会走 open()，它要重建 QTimer）。
+    bool reloadAfterClean();
+
 
     void setBufferRaw(uint64_t seq, uint64_t value) {
         m_buffer[seq % m_bufferSize].store(value, std::memory_order_release);
@@ -206,7 +212,7 @@ public:
 private:
     // ---- 环形缓冲区成员 ----
     size_t m_bufferSize;
-    std::atomic<uint64_t>* m_buffer;   // 改为 8 字节原子类型
+    std::atomic<uint64_t>* m_buffer = nullptr;   // 改为 8 字节原子类型（close() 里释放，open() 重新建）
 
     size_t m_mapsize;                // 当前映射大小
 
@@ -236,7 +242,7 @@ private:
         bool dirty;          // true = 尚未写入数据库
     };
     mutable QMap<QString, CacheEntry> m_cache;
-    QTimer* m_flushTimer;
+    QTimer* m_flushTimer = nullptr;   // close() 会删掉，open() 通过 ensureRuntime() 重建
 
     // ---- 后台清理（单线程池，懒创建）----
     // 用 QThreadPool 而不是自己 new QThread：池是 this 的子对象，
@@ -247,6 +253,10 @@ private:
     bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
     void flushCacheToDB() ;
     void flushCacheToDBUnlocked();   // 不加锁版本
+    // 把 m_buffer / m_flushTimer 补齐（close() 会把它们拆掉，open() 要能重建）。可重复调用。
+    void ensureRuntime();
+    // 缓存积压兜底：超过上限就丢最旧的那批（调用方需已持 m_mutex）
+    void trimCacheIfTooLarge();
     // 反向扫描最近日志收集 <会话id, msgid 列表>（调用方需已持有 m_mutex；只读，可 const）
     //   onlyConv 非空 = 只收这一个会话；cutoffSecs 之前的记录直接停（seq 递增≈时间递增）
     void collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,

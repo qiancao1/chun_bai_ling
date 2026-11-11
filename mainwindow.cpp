@@ -86,6 +86,9 @@
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.5.7.191
+- 优化 允许自定义自动撤回 不写在 纯白铃指令 但是完整纯白铃指令有
+
 ## v1.5.6.190 (2026-11-09)
 - 修复 msgid判定范围导致 机器人加群msgid无效问题
 - 优化 数据库清理机制

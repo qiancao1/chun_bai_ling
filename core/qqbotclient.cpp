@@ -44,6 +44,12 @@
 #include <netmanager.h>
 #include <QThreadPool>
 
+// 「上一次尝试根本没成功」时的最小重试间隔（秒）。
+// 反例（就是用户的现场）：401 拿不到网关 → 10 秒后重来 → 又 401 → 20 秒后重来……
+// 一条日志刷屏、token 反复作废重取，对端还会把这种高频重试当成异常客户端。
+// 真正稳定过的连接（在线≥30 秒）断开才走 3 秒快速重连，两条路径分开（见 onDisconnected）。
+static const int kFailRetryMinSec = 30;
+
 
 // 在文件头部包含 WinHttpClient 封装
 
@@ -315,6 +321,7 @@ void QQBotClient::start()
     }
     m_isConnecting = true;
     m_userWantsOnline = true;      // 用户/自动登录要这个机器人在线 → 掉线后允许自动重连
+    m_autoReconnectBlocked = false; // 新的一次登录尝试：把上一轮「不可恢复错误」的封锁解开
     m_info->err.clear();
     // 日志里把「这轮是复用本地 token 还是重新取 token」写清楚。
     // 「对面断开后一直连不上」现场，第一眼看这句就能判断本地 token 有没有刷新 ——
@@ -322,10 +329,11 @@ void QQBotClient::start()
     {
         const qint64 now0 = QDateTime::currentSecsSinceEpoch();
         const bool reuse = !m_accessToken.isEmpty() && m_tokenExpireTime > now0;
-        AppendEventLog(QString("尝试登录：%1(%2) %3")
+        AppendEventLog(QString("尝试登录：%1(%2) %3%4")
                            .arg(m_info->nickname, m_info->appid,
                                 reuse ? QString("token=复用(剩 %1 分钟)").arg((m_tokenExpireTime - now0) / 60)
-                                      : QStringLiteral("token=重新获取")), 0x0082FD);
+                                      : QStringLiteral("token=重新获取"),
+                                m_wsFullHeaders ? QStringLiteral(" 协议头=完整") : QString()), 0x0082FD);
     }
     Callback2 calls = [this](){
 
@@ -334,7 +342,9 @@ void QQBotClient::start()
             QMetaObject::invokeMethod(this, [this,wsUrl]() {
                 if (wsUrl.isEmpty()) {
                     m_isConnecting = false;
-                    scheduleReconnect(5);
+                    // 拿不到网关 = 这次尝试彻底失败（常见 401 IP 白名单 / token 被作废），
+                    // 别 5 秒一撞：最少 30 秒再来（kFailRetryMinSec 注释里有现场）。
+                    scheduleReconnect(kFailRetryMinSec);
 
                     return;
                 }
@@ -346,7 +356,27 @@ void QQBotClient::start()
                     closeSocketSilently();
 
                     QNetworkRequest request(wsUrl);
-                    request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux; WorkBuddy/1.2.6)");
+                    // 握手头两套（见头文件 m_wsFullHeaders 注释）。
+                    //
+                    // Qt 的 QWebSocket 只发 Host/Upgrade/Connection/Sec-WebSocket-*，
+                    // 跟真实客户端（Node ws / 浏览器）比少了 Origin、Accept、Accept-Language…
+                    // 再配上一条自称 "Node/Linux" 的 UA，而实际 TLS 是 Windows Schannel ——
+                    // 指纹和自称对不上，部分网关的 WAF 会直接判成异常客户端/攻击，
+                    // 表现就是 code=4030（connection blocked by security policy）。
+                    // 这里给一套完整头：UA 换成 Windows 浏览器风格（和 Schannel 不再冲突）、
+                    // 补上 Origin/Accept 等常见字段。只发 4030 时才切过来，不影响正常用户。
+                    if (m_wsFullHeaders) {
+                        request.setRawHeader("User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                        request.setRawHeader("Origin", "https://bot.q.qq.com");
+                        request.setRawHeader("Accept", "*/*");
+                        request.setRawHeader("Accept-Language", "zh-CN,zh;q=0.9");
+                        request.setRawHeader("Cache-Control", "no-cache");
+                        request.setRawHeader("Pragma", "no-cache");
+                    } else {
+                        request.setRawHeader("User-Agent", "QQBotPlugin/9.9.9 (Node/20.11.0; Linux; WorkBuddy/1.2.6)");
+                    }
                     m_webSocket.open(request);
                     m_handshakeTimer.start(15000);
                 }else{
@@ -382,7 +412,7 @@ void QQBotClient::start()
 
         if (err.error != QJsonParseError::NoError) {
             m_isConnecting = false;
-            scheduleReconnect(10);
+            scheduleReconnect(kFailRetryMinSec);   // 取 token 就失败 = 这次尝试没成功，至少等 30 秒
             AppendEventLog("解析 token 响应失败(无法获取AccessToken): " + err.errorString()+"\n返回内容："+resp,0xff);
             m_info->err+="解析 token 响应失败(无法获取AccessToken): " + err.errorString()+"\n返回内容："+resp;
             return ;
@@ -393,11 +423,30 @@ void QQBotClient::start()
         if (newToken.isEmpty()) {
             QString errMsg = obj.value("message").toString();
             if (errMsg.isEmpty())
+                errMsg = obj.value("msg").toString();
+            if (errMsg.isEmpty())
                 errMsg = "appid 或 secret 错误（无具体返回信息）";
             AppendEventLog("获取 token 失败: " + errMsg,0xff);
             m_info->err+="获取 token 失败: " + errMsg;
             m_isConnecting = false;
-            scheduleReconnect(10);
+
+            // ⚠「invalid appid or secret」是**配置写错了**，不是网络抖动：
+            //   重试一辈子都是同一句，只会每 30 秒刷一行日志、还白白撞 getAppAccessToken 的频率限制。
+            //   直接停掉自动重连，等用户去账号设置里改正 appid/secret 后重新点登录
+            //   （点登录会走 start()，重新把 m_userWantsOnline 打开）。
+            const QString all = (errMsg + " " + resp).toLower();
+            const bool badCredential = all.contains("invalid appid")
+                                    || all.contains("invalid secret")
+                                    || all.contains("appid or secret")
+                                    || all.contains("appsecret")
+                                    || all.contains("appid 或 secret")
+                                    || all.contains("不合法的appid");
+            if (badCredential) {
+                stopAutoReconnect("appid/secret 无效（" + errMsg
+                                  + "）—— 请到账号设置里改正后重新点登录");
+                return ;
+            }
+            scheduleReconnect(kFailRetryMinSec);   // 同上：失败就别 10 秒一撞
             return ;
         }
 
@@ -441,6 +490,7 @@ void QQBotClient::stop()
     m_reconnectTimer.stop();
     m_handshakeTimer.stop();
     m_userWantsOnline = false;     // 用户/上层明确要停 → 之后不许再自动连回来
+    m_autoReconnectBlocked = false; // 手动停止 → 下次 start() 从干净状态开始
     int appid = m_info ->appid_int;
     if(accinfo(appid)==-1) return;
 
@@ -531,9 +581,24 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
                 calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));
             };
 
-            // ① 鉴权被拒：token 已失效。必须换 token，否则重连多少次都是这一条。
+            // ① 鉴权被拒：401/403。**这里其实是两种完全不同的原因**，只能看 body 里的错误码分开：
+            //     · code 11298「接口访问源IP不在白名单」→ token 是好的！重试一万次也不会通，
+            //       必须用户去开放平台控制台把本机公网 IP 加进白名单。这种如果按"token 失效"
+            //       处理，会不停作废 token、重新取 token，把真正的提示淹没掉（也是"第一次用必定
+            //       这样、点登录也没用"的典型现场）。
+            //     · 其它 401 → 真·token 失效，作废重取。
             if (r.httpStatus == 401 || r.httpStatus == 403) {
-                fail("获取登录Ws失败: token 已失效(401/403)", true);
+                const bool ipBlocked = r.body.contains("白名单") || r.body.contains("11298");
+                if (ipBlocked) {
+                    fail("获取登录Ws失败: 本机公网 IP 不在开放平台 IP 白名单(code 11298)"
+                         "，请到开放平台控制台把本机公网 IP 加进白名单", false);
+                    // 这是 IP 白名单问题，跟 token 一点关系都没有：把连续计数清零，
+                    // 免得 fail() 里那条"连续 3 次拿不到网关就作废 token"跟着乱清 token。
+                    m_gatewayFailStreak = 0;
+                    probePublicIpOnce();   // 顺手把公网 IP 打进日志，省得用户自己查
+                } else {
+                    fail("获取登录Ws失败: token 已失效(401/403)", true);
+                }
                 return;
             }
             // ② 连 HTTP 响应都没拿到：DNS / TLS / 连接被拒 / 10 秒超时被 abort
@@ -573,6 +638,27 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
             calls(wsUrl, QNetworkReply::NetworkError());
         }, Qt::QueuedConnection);
     });
+}
+
+// 401=「IP 不在白名单」时顺手取一次本机公网 IP 打进日志。
+// 用户/售后看到"把 1.2.3.4 加进白名单"才知道要改什么；否则只能看到一句 code 11298。
+// 每个 client 只探一次（探不通就算了，绝不重试，不影响主流程）。
+void QQBotClient::probePublicIpOnce()
+{
+    if (m_ipProbeStarted) return;
+    m_ipProbeStarted = true;
+
+    NetManager::instance()->getAsyncEx("https://api.ipify.org?format=text",
+                                       QHash<QString, QString>(), 5000,
+        [this](const NetReplyInfo &r) {
+            const QString ip = r.body.trimmed().left(64);
+            if (r.httpStatus != 200 || ip.isEmpty())
+                return;
+            QMetaObject::invokeMethod(this, [this, ip]() {
+                AppendEventLog(QString("%1 当前公网 IP：%2（请把该 IP 加入开放平台 IP 白名单）")
+                                   .arg(m_info->nickname, ip), 0xff);
+            }, Qt::QueuedConnection);
+        });
 }
 
 //主线程 专属
@@ -638,6 +724,7 @@ void QQBotClient::onConnected()
     m_sessionId.clear();
     m_seq = 0;
     m_invalidHeartbeatCount = 0;
+    m_connectedAtSec = QDateTime::currentSecsSinceEpoch();   // 断线时用来算这次在线了多久
     sendIdentify();
 }
 
@@ -654,7 +741,11 @@ void QQBotClient::onDisconnected()
     // 4000 段是 QG 协议自己的错误码，见 https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/error-trace/websocket.html
     const int code = m_webSocket.closeCode();
     const QString reason = m_webSocket.closeReason();
+    const QString wsUrl = m_webSocket.requestUrl().toString();
+
     QString tip;
+    int waitSec = 3;          // 默认：抖动就 3 秒回来
+    bool giveUp  = false;     // 重试注定无意义（被下架/封禁）
     switch (code) {
     case 4003:   // 未鉴权
     case 4004:   // 鉴权失败（token 无效/过期）
@@ -669,8 +760,65 @@ void QQBotClient::onDisconnected()
         tip = " | 会话失效，下一轮重新握手";
         break;
     case 4008:   // 限流
+        waitSec = 10;
         tip = " | 被服务端限流";
         break;
+
+    // ---- 网关层错误（不在官方 4001~4014 / 4900~4915 表里，属于接入层/WAF 拦的）----
+    // 4030「connection blocked by security policy」= 连接被网关的安全策略挡掉。
+    // 常见触发（都不是"改代码就能连上"的类型，但处理方法一样）：
+    //   ① 同一个 appid 同时存在多条连接 —— 另一台机器/另一个实例/上次没退干净的进程；
+    //      网关只认一条，多出来的会被安全策略直接掐。
+    //   ② 短时间内建连太频繁（重连风暴）——之前"3 秒一次、不限次数"就会撞上，
+    //      被拦后惩罚窗口通常有几分钟，越贴着撞恢复越慢。
+    //   ③ IP 变了 / 不在控制台的 IP 白名单里（家用宽带拨号换 IP 就会触发）。
+    // 处理：作废本地 token（换一份鉴权上下文）+ 清会话 + 重置该 host 的整套连接池
+    //      （等价于"重启程序"那步，但不用重启）+ **放慢到 60 秒起**，别贴着撞。
+    case 4030:
+    case 4031: { // 同属安全策略拦截（429/封 IP 类）。花括号必须加：里面有局部变量，
+                 // 否则 MSVC 报 C2360「case 标签跳过初始化」
+        m_accessToken.clear();
+        m_tokenExpireTime = 0;
+        m_sessionId.clear();
+        m_seq = 0;
+        if (!wsUrl.isEmpty())
+            NetManager::instance()->resetHostPool(wsUrl);
+        // 4030 多半是接入层 WAF 判的：先换一套完整的浏览器协议头试（多数情况就是少了
+        // Origin / Accept 这类字段，被当成脚本或攻击）。连续 4 次还拦就翻回去再试，
+        // 每 4 次一轮 —— 既不会在两套头之间反复横跳，也不会把自己锁死在错的那一套上。
+        bool switched = false;
+        m_ws4030Streak++;
+        if (m_ws4030Streak == 1 || m_ws4030Streak >= 4) {
+            if (m_ws4030Streak >= 4)
+                m_ws4030Streak = 1;               // 压回 1，下一轮按「第一次」再翻
+            m_wsFullHeaders = !m_wsFullHeaders;
+            switched = true;
+            AppendEventLog(QString("%1 被 4030 拦截，已切换成「%2协议头」重试")
+                               .arg(m_info->nickname,
+                                    m_wsFullHeaders ? QStringLiteral("完整(Origin/Accept/浏览器UA)")
+                                                    : QStringLiteral("精简")),
+                           0xD891BC);
+        }
+        // 刚换了头就别等 60 秒：如果真是头的问题，马上重试才能立刻验证。
+        waitSec = switched ? 20 : 60;
+        tip = QString(" | 被网关安全策略拦截（当前连接环境=%1）："
+                      "①机器人还没上线/还在审核 → 生产网关会直接拒，必须勾「沙箱」或先上线；"
+                      "②控制台 IP 白名单不含当前公网 IP（挂梯子/加速器/机房 IP 也会被拦）；"
+                      "③同一 appid 别处也在跑（同一 bot 只允许一条连接）；"
+                      "④刚雪崩式重连过。已作废本地 token 并重置连接池，60 秒后再试")
+                  .arg(m_info->sandbox ? QStringLiteral("沙箱") : QStringLiteral("生产"));
+        break;
+    }
+
+    case 4914:   // 机器人已下架，只允许连沙箱
+        giveUp = true;
+        tip = " | 机器人已下架：请到 QQ 开放平台检查上线状态，或把账号改成沙箱模式";
+        break;
+    case 4915:   // 机器人已封禁
+        giveUp = true;
+        tip = " | 机器人已被封禁：重连没有意义，请到 QQ 开放平台申请解封";
+        break;
+
     default:
         break;
     }
@@ -680,7 +828,20 @@ void QQBotClient::onDisconnected()
     if (!reason.isEmpty())
         closeInfo += "（" + reason.left(80) + "）";
 
-    AppendEventLog(m_info->nickname+"WebSocket 已断开(30分钟会强行断开一次)" + closeInfo + tip, 0xff);
+    // 1000/1005/1006/4009 这类才是"30 分钟例行断开"，其它码写死这句话只会误导排查。
+    const bool routine = (code == 0 || code == 1000 || code == 1005 || code == 1006 || code == 4009);
+    // 本次这条连接活了多久。0 = 压根没连上过（握手被拒 / /gateway 401 之类）。
+    const qint64 aliveSec = (m_connectedAtSec > 0)
+                                ? QDateTime::currentSecsSinceEpoch() - m_connectedAtSec
+                                : 0;
+    QString aliveInfo;
+    if (m_connectedAtSec > 0) {
+        aliveInfo = QString(" 本次在线 %1 分 %2 秒").arg(aliveSec / 60).arg(aliveSec % 60);
+        m_connectedAtSec = 0;
+    }
+    AppendEventLog(m_info->nickname + " WebSocket 已断开"
+                       + (routine ? QStringLiteral("(60分钟会强行断开一次)") : QString())
+                       + closeInfo + aliveInfo + tip, 0xff);
     stopHeartbeatTimer();
     bool wasOnline = m_info->online;
     m_info->online = false;
@@ -688,8 +849,21 @@ void QQBotClient::onDisconnected()
     m_isConnecting = false;
     if (wasOnline)
         emit disconnected();
-    // 4008 被限流时别贴着 3 秒硬撞，退一步
-    scheduleReconnect(code == 4008 ? 10 : 3);
+
+    if (giveUp) {
+        // 明确不可重试：停掉自动重连，但不动 m_info->autoConnect（用户下一次点登录仍可试）
+        stopAutoReconnect("对端明确拒绝（机器人下架/被封禁），重试无效");
+        return;
+    }
+    // 「在线至少 30 秒」才算这条连接真的稳定过：
+    //   · 稳定过（≥30s）→ 例行被踢/正常断开，3 秒就回来，保持原有节奏；
+    //   · 没稳定过（刚连上就被掐、甚至从没连上）→ 说明是同一个错误在反复（401 / 4030 /
+    //     握手被拒）。这种 3~10 秒一次不但连不上，还会把自己刷成更明显的异常客户端、
+    //     并把日志刷满，所以**至少等 30 秒**再试。
+    if (aliveSec >= 30)
+        scheduleReconnect(waitSec);
+    else
+        scheduleReconnect(qMax(waitSec, kFailRetryMinSec));
 }
 
 // 握手看门狗触发：15 秒内既没连上也没断开（或断开信号没来），说明这条连接已经废了。
@@ -701,7 +875,7 @@ void QQBotClient::onHandshakeTimeout()
     AppendEventLog(QString("%1 连接网关超时(15秒无响应)，丢掉这次连接重来").arg(m_info->nickname), 0xff);
     m_isConnecting = false;
     closeSocketSilently();
-    scheduleReconnect(5);
+    scheduleReconnect(kFailRetryMinSec);   // 没连上就超时 = 失败，至少 30 秒再来
 }
 
 // 丢掉当前 socket，并且不让 onDisconnected 再排一次重连
@@ -714,6 +888,25 @@ void QQBotClient::closeSocketSilently()
     // 标志用 0ms 定时器复位而不是就地复位：abort() 的 disconnected 信号如果比返回
     // 慢一拍（走事件队列），就地复位就漏拦了，会把正在握手的新连接搅掉。
     QTimer::singleShot(0, this, [this]() { m_suppressDisconnect = false; });
+}
+
+// 明确不可恢复的错误 → 停掉自动重连（不再排定时器）。
+//
+// 与 stop() 的区别：stop() 是"用户手动下线"，会关连接、清会话、清计数；
+// 这里只处理"再试也没用"的判定错误（appid/secret 无效、机器人下架/封禁），
+// 连接反正已经断了/连不上，唯一要做的是**不要再无限重试**。
+// 故意不动 m_info->autoConnect（那是持久化设置）：用户改好配置点一次登录就能重新开始。
+void QQBotClient::stopAutoReconnect(const QString &why)
+{
+    m_userWantsOnline = false;
+    m_autoReconnectBlocked = true;   // 关键：autoConnect 可能是 true（以前登录成功过），单靠 userWants 拦不住
+    m_reconnectTimer.stop();
+    m_handshakeTimer.stop();
+    m_isConnecting = false;        // 别再让 start() 的 "连接中" 分支把下一次手动登录挡掉
+    m_reconnectAttempts = 0;
+    m_reconnectOverflow = 0;
+    AppendEventLog(QString("%1 已停止自动重连：%2").arg(m_info->nickname, why), 0xff);
+    m_info->err += "已停止自动重连：" + why + "\n";
 }
 
 void QQBotClient::onError(QAbstractSocket::SocketError error)
@@ -1391,7 +1584,6 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.msg ="【有人申请加群】 群：%1(%2) 用户:%3(%4)\n%5";
     }
 
-
     else {
         ev.type = 99;
         ev.extra = text;
@@ -1903,6 +2095,8 @@ QString QQBotClient::onTextMessage(const QByteArray &message)
             m_sessionId = obj.value("d").toObject().value("session_id").toString();
             m_info->online = true;
             m_isConnecting = false;
+            m_ws4030Streak = 0;          // 连上了，4030 计数与协议头模式都不再算"连续失败"
+            m_ipProbeStarted = false;    // 下个会话若又被 IP 白名单拦，可以再探一次
             QMetaObject::invokeMethod(this, [=]() {
                 resetReconnectAttempts();
                 fetchSelfInfo();
@@ -1939,12 +2133,12 @@ QString QQBotClient::onTextMessage(const QByteArray &message)
             m_info->online = false;
             m_isConnecting = false;
             stopHeartbeatTimer();
-            if (m_reconnectAttempts > 3)
-                m_reconnectAttempts = 3;     // 别让一次鉴权失败把退避直接顶到 60 秒
+            m_reconnectAttempts = 0;             // 从 30 秒重新起算（基数改成 30 秒了，别再 ×2^n 顶到几分钟）
+            m_reconnectOverflow = 0;
             if (wasOnline)
                 emit disconnected();
             closeSocketSilently();
-            scheduleReconnect(10);
+            scheduleReconnect(kFailRetryMinSec);   // 鉴权被拒 = 没连上，至少等 30 秒
         }, Qt::QueuedConnection);
         break;
     case 7: // Reconnect
@@ -2063,7 +2257,14 @@ void QQBotClient::stopHeartbeatTimer()
 //     避免长时间断线时一直贴着同一频率撞服务器。
 void QQBotClient::scheduleReconnect(int delaySec)
 {
-    // 用户手动停止（autoConnect=false 且不是本次运行里手动点过登录）就真的不再连
+    // 只要"用户还要这个机器人在线"，就一直重试（不限次数），直到他手动点下线。
+    // 两个来源：
+    //   · m_info->autoConnect：持久化设置 + 登录成功后置 true（fetchSelfInfo 里），
+    //     代表这个号本来就是自动登录的；
+    //   · m_userWantsOnline ：本次运行的"用户意图"，start() 打开、stop()/stopAutoReconnect() 关闭。
+    //     必须带上它 —— 手动点登录的号在**第一次 READY 之前** autoConnect 还是 false，
+    //     只看 autoConnect 的话一次重连都不会排（"点按钮能上、掉线就再也不试"就是这个）。
+    if (m_autoReconnectBlocked) return;   // 撞过「不可恢复」错误，等用户点登录再放开
     if(!m_info->autoConnect && !m_userWantsOnline) return;
 
     m_reconnectAttempts++;
@@ -2106,8 +2307,21 @@ void QQBotClient::resetReconnectAttempts()
 //   所以这里到点先把卡住的标志解开，保证这一次重试真的发得出去。
 void QQBotClient::onReconnectTimerFired()
 {
-    if (m_info->online)
-        return;                        // 已经在线了（可能刚被别的路径连上），别折腾
+    // 已经因为「不可恢复错误」停过重连：这次 timeout 可能只是之前排下的残响，别再动
+    if (m_autoReconnectBlocked)
+        return;
+
+    // ⚠ 这里以前是 `if (m_info->online) return;` —— 僵尸在线（TCP 被静默丢弃、
+    //   对端没发 FIN，disconnected 永远不来）时，online 会一直是 true，
+    //   定时器到点就**直接 return 且不再排下一次** → 自动重连永久停摆，
+    //   而手动点登录能好（start() 里有"状态在线但连接已断"的复位分支）。
+    //   所以这里只在 WS 真的还连着时才 return，其它情况交给 start() 去复位。
+    if (m_info->online) {
+        const bool wsAlive = (m_info->type != 0)
+                          || (m_webSocket.state() == QAbstractSocket::ConnectedState);
+        if (wsAlive)
+            return;                    // 已经在线了（可能刚被别的路径连上），别折腾
+    }
 
     if (m_isConnecting) {
         AppendEventLog(QString("%1 上一次连接没有收尾(状态卡在连接中)，强制重来").arg(m_info->nickname), 0xD891BC);

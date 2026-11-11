@@ -1119,9 +1119,10 @@ int main(int argc, char *argv[]) {
         }
         // 这些库必须显式关掉：重启时新进程要打开同名 LMDB 环境，旧进程不放锁它会打不开。
         // （普通退出多关一次无害，close() 内部会判空。）
-        for (const auto &c : qAsConst(g_botdb)) c->close();
+        for (const auto &c : qAsConst(g_botdb)) if (c) c->close();
         g_botdb.clear();   // 必须清空：残留实例 m_env 已是 nullptr，getOrUpdateUser 会读不到记录返回 0
-        for (const auto &db : qAsConst(g_logdb)) db->close();
+        // ⚠ initDBs() 里某个库 open 失败时 g_logdb[i] 保持 nullptr（只 qCritical），这里必须判空
+        for (const auto &db : qAsConst(g_logdb)) if (db) db->close();
         if (g_errlogdb) g_errlogdb->close();
         #ifdef _WIN32
         if(bridge)

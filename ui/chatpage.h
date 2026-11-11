@@ -135,6 +135,10 @@ public:
     // 返回命中的图片下标（对应 CachedData::images），没命中返回 -1。
     int imageIndexAt(const QModelIndex &index, const QRect &itemRect, const QPoint &pos) const;
 
+    // 清掉排版 / 图片 / 头像三份 QCache（设置页「重载数据库」按钮诊断内存用）。
+    // 清完图片会在下次 paint / 重新填充模型时按需回来；远端图没本地文件的话会短暂显示占位。
+    void clearCaches();
+
 signals:
     void imageLoaded();   // 有图片就绪，视图需要重排版
 
@@ -167,6 +171,11 @@ public:
     void extracted(int &bufferIdx, QStringList &list,
                    QSet<QPair<int, QString>> &seen);
     void updateAllContactLists(int index);
+    // 把本页所有「纯缓存」的东西丢掉（头像、图片、排版、换行、会话列表里的头像），
+    // 供设置页的「重载数据库」按钮做内存诊断。不动 全量群 / 最近对话（那是数据不是缓存，
+    // 而且用户/群缓存那份由 BotDB::clearAllCaches() 负责）。
+    // ⚠ 会清空当前会话的消息列表并重新拉一次，页面看上去会闪一下。
+    void resetRuntimeCaches();
     void addContact(int type, const MessageEvent &ev,const QString &name);
     int m_appid=0;
     int m_type=0;

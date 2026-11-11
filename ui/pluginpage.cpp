@@ -1449,7 +1449,7 @@ bool PluginPage::onMessageReceived(MessageEvent &msg,const PluginInfo &p,std::op
                     ret = rule.function(msg);                         // 老插件：1 参，同旧路径
                 }
                 process_ret(ret);
-
+                break;
             }
         }
 

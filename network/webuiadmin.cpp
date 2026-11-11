@@ -1588,6 +1588,10 @@ const AcctField kBasicFields[] = {
     { "tq_lq", "退群提醒 CD(秒)", "int", "delay", "同一个人退群提醒的最小间隔", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.tq_lq); },
       [](AccountInfo &a, const QJsonValue &v) { a.tq_lq = jsonToInt(v); } },
+    // 自动撤回：0 = 不撤；只在该群 bitmap 开了 BIT_AUTO_RECALL（群里发「开自动撤回」）时生效
+    { "auto_recall", "自动撤回(秒)", "int", "delay", "机器人发出去的消息多少秒后自动撤回（0=不撤，上限110）；群里开了「自动撤回」才生效", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.auto_recall); },
+      [](AccountInfo &a, const QJsonValue &v) { a.auto_recall = jsonToInt(v); } },
 
     // 开关
     { "autoht", "自动回应回调", "bool", "switch", "收到需要回调的事件时自动回应", nullptr,
@@ -1640,7 +1644,7 @@ const AcctField kBasicFields[] = {
     { "gxrz", "更新日志", "string", "text", "更新日志指令的回复内容", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.gxrz); },
       [](AccountInfo &a, const QJsonValue &v) { a.gxrz = v.toString(); } },
-    { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复。可写 [匹配指令]，发送时会替换成跟用户输入最接近的几条指令（最多 3 条）", nullptr,
+    { "fallbackReply", "未命中指令", "string", "text", "没匹配到任何规则时的兜底回复。可写 [匹配指令]，发送时会替换成跟用户输入最接近的几条指令（最多 9 条）", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.fallbackReply); },
       [](AccountInfo &a, const QJsonValue &v) { a.fallbackReply = v.toString(); } },
     { "welcomeMsg", "机器人入群", "string", "text", "机器人被拉进群时的欢迎语", nullptr,

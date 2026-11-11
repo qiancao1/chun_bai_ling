@@ -14,6 +14,13 @@
 #include "machinekey.h"
 #include "themecolorwidget.h"
 #include "themecolors.h"
+#include <QApplication>
+#ifdef Q_OS_WIN
+#ifndef _WINDOWS_
+#include <windows.h>
+#endif
+#include <Psapi.h>      // K32GetProcessMemoryInfo（kernel32 导出，不用额外加 psapi.lib）
+#endif
 void stopImageServer();
 bool startImageServer(quint16 port,const QString &certPath = "",const QString &keyPath = "",const QString &ssl_pem ="");
 QString uploadFileSync_cos(const QString &localPath);
@@ -24,6 +31,41 @@ QString ffmpegdiv;
 extern QString g_ip;
 extern bool e_img;
 WebSocketServer *ws_server=nullptr;
+
+// 「重载数据库」按钮用的内存读数（KB）。工作集 = 任务管理器「内存」那一列；
+// PagefileUsage = 「提交大小」；PrivateUsage = 私有提交（不含共享页）。
+// ⚠ 只做前后对比用，不追求跟任务管理器逐字节一致。
+namespace {
+struct MemSnap {
+    qint64 wsKB     = -1;   // -1 = 没取到
+    qint64 commitKB = -1;
+    qint64 privKB   = -1;
+};
+
+MemSnap readProcMem()
+{
+    MemSnap s;
+#ifdef Q_OS_WIN
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    ZeroMemory(&pmc, sizeof(pmc));
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+                                reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc),
+                                sizeof(pmc))) {
+        s.wsKB     = static_cast<qint64>(pmc.WorkingSetSize) / 1024;
+        s.commitKB = static_cast<qint64>(pmc.PagefileUsage)  / 1024;
+        s.privKB   = static_cast<qint64>(pmc.PrivateUsage)   / 1024;
+    }
+#endif
+    return s;
+}
+
+QString mbText(qint64 kb)
+{
+    if (kb < 0) return QStringLiteral("取不到");
+    return QString::number(kb / 1024.0, 'f', 1) + QStringLiteral(" MB");
+}
+} // namespace
 set::set(QWidget *parent) : QWidget(parent)
 {
     setupUI();
@@ -39,6 +81,8 @@ set::~set()
 #include <QImage>
 #include <QPainter>
 #include <QDir>
+#include <QFile>
+#include <QCoreApplication>
 #include <QRandomGenerator>
 #include <QDateTime>
 QString uploadImageByPath(const QString &serverUrl, const QString &localPath, int timeoutMs, QString *errorMsg);
@@ -163,11 +207,22 @@ void set::setupUI()
 
     QLabel *urlLabel3 = new QLabel(tr("日志数"), this);
     m_日志数量 = new QLineEdit(this);
-    m_日志数量->setPlaceholderText("200000");
-    m_日志数量->setToolTip("日志保留条数，默认 20 万条。看电脑配置来，是永久缓存（落数据库，不占内存）");
-    m_日志数量->setText(QString::number(g_config["logs"].toInt(200000)));
+    m_日志数量->setPlaceholderText("100000");
+    m_日志数量->setToolTip("日志保留条数。\n"
+                           "日志库是文件映射（mmap）：条数多不代表全读进内存，只按访问过的页占；\n"
+                           "但清理/压缩时要全表遍历一遍，那一趟会把整库页都摸进来。");
+    m_日志数量->setText(QString::number(g_config["logs"].toInt(100000)));
     m_日志数量->setMaximumWidth(120);
     QPushButton *bt2 = new QPushButton(tr("确认"), this);
+
+    // 内存诊断：把所有日志库卸载再挂上（munmap → mmap），顺带清用户/群/图片缓存，
+    // 弹窗给出前后对比 —— 用来判断「内存到底是不是数据库/缓存占的」。
+    QPushButton *btReloadDb = new QPushButton(tr("重载数据库"), this);
+    btReloadDb->setToolTip("把所有日志库卸载再重新挂载（munmap → mmap），并清空：\n"
+                           "· 用户缓存 / 群缓存（BotDB，下次访问自动从库里重读）\n"
+                           "· 头像 / 图片 / 排版缓存、Qt 全局图片缓存\n\n"
+                           "日志、配置、库内容一条都不动；当前会话里的图片可能要重新加载一下。\n"
+                           "点完弹窗会给出「工作集 / 提交大小」的前后对比。");
 
     Color_0 = g_config["log_Color0"].toInt(0);
     Color_1 = g_config["log_Color1"].toInt(0);
@@ -467,6 +522,12 @@ void set::setupUI()
         colorRow->addStretch();
         grid->addWidget(colorUnit, 1, 3);
 
+        // 内存诊断按钮：单独一行，右边跟一句灰字说明
+        grid->addWidget(makeLabel(tr("内存"), "setFieldLabel"), 2, 0);
+        grid->addWidget(btReloadDb, 2, 1);
+        grid->addWidget(makeLabel(tr("卸载并重新挂载全部日志库 + 清空用户/群/图片缓存，弹窗给出前后对比"),
+                                  "setCardHint"), 2, 2, 1, 2);
+
         card->addLayout(grid);
     }
 
@@ -492,6 +553,22 @@ void set::setupUI()
         switchRow->addWidget(ESSL);
         switchRow->addStretch();
         grid->addLayout(switchRow, 2, 0, 1, 4);
+
+        // 这里只给**格式说明**，不放输入框 —— 这条地址是填在 QQ 开放平台「回调配置」里的，
+        // 平台会往它 POST 事件。框架只接 POST 且 path 必须以 /webhook/ 开头（image-server.cpp:872），
+        // 然后按 split('/') 拆：parts[0]=webhook / parts[1]=appid / parts[2]=secret。
+        auto *hint = makeLabel(
+            tr("QQ 开放平台「回调配置」填的地址格式：  https://域名[:端口]/webhook/appid/secret\n"
+               "· 必须是 HTTPS 公网地址，端口只允许 80 / 443 / 8080 / 8443；\n"
+               "· 路径前缀固定是 /webhook/，后面紧跟 appid —— 少一段框架就不接这条回调；\n"
+               "· secret 可选（16 位以上）：只有「该 appid 还没添加进框架」时才用它做首次验证，"
+               "账号已在框架里就不用带；\n"
+               "· 用 nginx / 内网穿透反代时，按反代给出的对外域名和端口填这条地址；\n"
+               "· 勾「启用SSL」时证书要放程序目录：ssl.crt（证书）、ssl.key（私钥）、"
+               "ssl.pem（可选，中间证书链），缺文件时 http/ws 都会启动失败"),
+            "setCardHint");
+        hint->setWordWrap(true);
+        grid->addWidget(hint, 3, 0, 1, 4);
 
         card->addLayout(grid);
     }
@@ -645,7 +722,128 @@ void set::setupUI()
         g_config["logs"]= configCapacity;
         saveConfig();
         if(configCapacity<=0) configCapacity=1000;
-        QMessageBox::warning(this,"修改日志数量","修改完成 这里是修改数据库日志保留数据 日志不保存在内存");
+        QMessageBox::warning(this,"修改日志数量",
+            "修改完成。下次启动后生效（启动 30 秒会自动清理一次）。\n\n"
+            "注意：LMDB 删条目不缩文件，所以要真正省内存，还要让库压一次 ——\n"
+            "在 botdb/logdb_0 ~ logdb_4、botdb/logdb_err 里各放一个空文件 compact.force，再重启。");
+    });
+
+    // 内存诊断：卸载并重新挂载全部日志库 + 清用户/群/图片缓存，前后对比弹窗
+    connect(btReloadDb, &QPushButton::clicked, [this]() {
+        if (QMessageBox::question(this, "重载数据库",
+                "会把所有日志库卸载再重新挂载（munmap → mmap），并清空：\n"
+                "· 用户缓存 / 群缓存（BotDB，下次访问自动从库里重读）\n"
+                "· 头像 / 图片 / 排版缓存、Qt 全局图片缓存\n\n"
+                "日志、配置、库内容一条都不动；当前会话里的图片可能要重新加载一次。\n\n"
+                "继续吗？",
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+
+        const MemSnap before = readProcMem();
+
+        // 1. 日志库：flush 缓存 → mdb_env_close（munmap，把被清理/查询摸过的文件页直接还给系统）→ 重新 mmap
+        int okCount = 0, total = 0;
+        QStringList failed;
+        for (int i = 0; i < static_cast<int>(g_logdb.size()); ++i) {
+            LogDB *db = g_logdb[i].get();
+            if (!db) continue;
+            ++total;
+            if (db->reloadAfterClean()) ++okCount;
+            else failed << QStringLiteral("logdb_%1").arg(i);
+        }
+        if (g_errlogdb) {
+            ++total;
+            if (g_errlogdb->reloadAfterClean()) ++okCount;
+            else failed << QStringLiteral("logdb_err");
+        }
+
+        // 2. 用户 / 群缓存（BotDB 里那两份 QHash，本来只在 4h / 24h 定时清）
+        int botCount = 0;
+        for (BotDB *db : g_botdb) {
+            if (!db) continue;
+            db->clearAllCaches();
+            ++botCount;
+        }
+
+        // 3. 界面缓存（头像 / 图片 / 排版 / Qt 全局图片缓存）
+        if (chatPage) chatPage->resetRuntimeCaches();
+
+        // 4. 事件队列里排着的 deleteLater / 重排先跑掉（它们可能还攥着图片和 QString）
+        qApp->processEvents();
+
+        // ⚠ 必须在「压工作集」之前取这一次：SetProcessWorkingSetSize(-1,-1) 之后立刻读，
+        //   工作集会读到 0.1 MB 这种假数（页全被挪进 standby，还没缺页回来）。
+        const MemSnap afterWork = readProcMem();
+
+#ifdef Q_OS_WIN
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
+
+        // 等 400ms 再读一次：给缺页回来的时间，这才是「压过工作集之后」的真实水位
+        QTimer::singleShot(400, this, [this, before, afterWork, okCount, total, failed, botCount]() {
+            const MemSnap afterTrim = readProcMem();
+
+            auto diffText = [](qint64 a, qint64 b) -> QString {
+                if (a < 0 || b < 0) return QString();
+                const double d = (b - a) / 1024.0;
+                return QStringLiteral("（%1%2 MB）")
+                    .arg(d <= 0 ? QStringLiteral("-") : QStringLiteral("+"))
+                    .arg(QString::number(qAbs(d), 'f', 1));
+            };
+
+            QString text = QStringLiteral("日志库重载：%1/%2 成功%3\n"
+                                          "已清空用户/群缓存：%4 个账号\n\n"
+                                          "工作集（任务管理器「内存」列）\n"
+                                          "    重载前：%5\n"
+                                          "    清完缓存（未压工作集）：%6 %7\n"
+                                          "    压工作集后（等 400ms）：%8\n\n"
+                                          "提交大小（私有提交，不随映射页变动）\n"
+                                          "    重载前：%9\n"
+                                          "    重载后：%10 %11\n\n")
+                .arg(okCount)
+                .arg(total)
+                .arg(failed.isEmpty() ? QString()
+                                      : QStringLiteral("（失败：") + failed.join(QStringLiteral("、")) + QStringLiteral("）"))
+                .arg(botCount)
+                .arg(mbText(before.wsKB))
+                .arg(mbText(afterWork.wsKB), diffText(before.wsKB, afterWork.wsKB))
+                .arg(mbText(afterTrim.wsKB))
+                .arg(mbText(before.commitKB))
+                .arg(mbText(afterWork.commitKB), diffText(before.commitKB, afterWork.commitKB));
+
+            // 结论按数据算，不写死
+            if (before.wsKB > 0 && afterWork.wsKB > 0) {
+                const double dWs = (before.wsKB - afterWork.wsKB) / 1024.0;
+                const double dCm = (before.commitKB - afterWork.commitKB) / 1024.0;
+
+                if (dWs >= 30.0) {
+                    text += QStringLiteral("· 工作集掉了 %1 MB → 这部分就是日志库 mmap 出来的文件页"
+                                           "（清理/查询时摸过的那批）。它们是可回收的，系统内存紧张时"
+                                           "本来也会被收回，不是泄漏。\n")
+                                .arg(QString::number(dWs, 'f', 1));
+                } else if (dWs < 5.0) {
+                    text += QStringLiteral("· 工作集基本没动 → 日志库映射页不是大头。\n");
+                } else {
+                    text += QStringLiteral("· 工作集掉了 %1 MB（日志库映射页为主）。\n")
+                                .arg(QString::number(dWs, 'f', 1));
+                }
+
+                if (qAbs(dCm) < 5.0) {
+                    text += QStringLiteral("· 提交大小几乎没变 → 进程自身（Qt / Python / 插件）就占这么多，"
+                                           "内存问题不在库和缓存上。");
+                } else if (dCm > 0) {
+                    text += QStringLiteral("· 提交大小降了 %1 MB → 这部分是我们自己缓存的 Message / 图片副本"
+                                           "（真正的私有内存）。")
+                                .arg(QString::number(dCm, 'f', 1));
+                } else {
+                    text += QStringLiteral("· 提交大小反而涨了 %1 MB → 重载时新分配的临时缓冲，"
+                                           "过一会儿会被回收，不用管。")
+                                .arg(QString::number(-dCm, 'f', 1));
+                }
+            }
+
+            QMessageBox::information(this, "重载完成", text);
+        });
     });
 
     connect(m_startStopBtn, &QPushButton::clicked, [this](){
@@ -733,6 +931,28 @@ void set::setupUI()
 
     connect(ESSL, &QCheckBox::clicked, [this](){
         bool ssl = ESSL->isChecked();
+        // 证书没放好就开 SSL → http/ws 两个服务都起不来（日志里只有一句「启动失败」，
+        // 用户根本不知道是缺证书）。这里先查文件，缺了就提示并**不真的启用**。
+        if (ssl) {
+            const QString dir = QCoreApplication::applicationDirPath();
+            QStringList miss;
+            if (!QFile::exists(dir + QStringLiteral("/ssl.crt"))) miss << QStringLiteral("ssl.crt");
+            if (!QFile::exists(dir + QStringLiteral("/ssl.key"))) miss << QStringLiteral("ssl.key");
+            if (!miss.isEmpty()) {
+                QMessageBox::information(this, QStringLiteral("启用 SSL 前先放证书"),
+                    QStringLiteral("程序目录里缺少：%1\n\n"
+                                   "请放成 PEM 格式：\n"
+                                   "  ssl.crt —— 服务器证书\n"
+                                   "  ssl.key —— 私钥（不要带密码）\n"
+                                   "  ssl.pem —— 可选，中间证书链\n\n"
+                                   "目录：%2\n\n放好后再勾一次「启用SSL」。")
+                        .arg(miss.join(QStringLiteral("、")), dir));
+                ESSL->setChecked(false);         // 只触发 toggled，不会再次进这里
+                g_config["SSL"] = false;
+                saveConfig();
+                return;
+            }
+        }
         g_config["SSL"]=ssl;
         if(Ewebhook->isChecked())
         {
@@ -840,6 +1060,7 @@ void set::setupUI()
         }
     });
 }
+
 void set::set_webui(bool value)
 {
     QMetaObject::invokeMethod(qApp, [=]() {

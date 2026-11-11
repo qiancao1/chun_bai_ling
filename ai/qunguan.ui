@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>743</width>
+    <width>756</width>
     <height>484</height>
    </rect>
   </property>
@@ -145,6 +145,29 @@
         <widget class="QLineEdit" name="tiao_Edit">
          <property name="placeholderText">
           <string>5</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_7">
+         <property name="text">
+          <string>自动撤回(秒)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_5">
+         <property name="maximumSize">
+          <size>
+           <width>90</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="toolTip">
+          <string>机器人发出去的消息多少秒后自动撤回（0=不撤，上限110秒）。按群生效：群里发「开自动撤回」后才撤。</string>
+         </property>
+         <property name="placeholderText">
+          <string>0</string>
          </property>
         </widget>
        </item>

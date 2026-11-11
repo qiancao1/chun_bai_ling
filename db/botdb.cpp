@@ -87,6 +87,25 @@ void BotDB::cleanGroupCache()
         }
     }
 }
+
+// 设置页「重载数据库」按钮用：把用户/群两份内存缓存整个丢掉，下次访问按需从 LMDB 重读。
+// ⚠ 群缓存**不能无脑全清**：jojnyz / jojntime（待入群验证名单）是纯内存数据、不入 LMDB
+//   （见 getOrUpdateUser 里「直接覆盖 m_groupCache 会丢掉整份名单」那段注释），
+//   清掉就等于把正在验证的人全丢了。所以这里和 cleanGroupCache 一样，只删没有验证名单的群
+//   —— 实际上几乎所有群都属于这一类，省下来的内存没区别。
+void BotDB::clearAllCaches()
+{
+    QMutexLocker locker(&m_cacheMutex);
+    m_userCache.clear();
+    for (auto it = m_groupCache.begin(); it != m_groupCache.end(); ) {
+        const GroupRecord2 &rec = it.value();
+        if (rec.jojnyz.isEmpty() && rec.jojntime.isEmpty()) {
+            it = m_groupCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 // 在 Windows 上尝试将 data.mdb 设为稀疏文件
 bool BotDB::ensureSparseFile()
 {

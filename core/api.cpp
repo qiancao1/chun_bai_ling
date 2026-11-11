@@ -3128,6 +3128,55 @@ struct QQBotClient::FilesRegJob {
     MediaUploadDone onDone;
 };
 
+// 平台报错里带的 "trace_id"（每次请求都不一样，纯噪音，对用户和日志都毫无价值）→ 一律抹掉。
+// ⚠ 故意**不解析 JSON**：这里收到的常常是被截断的 JSON、夹隐藏字符的回包，或者
+//   "{…}\n[Network Error: 302]" 这种拼接文本，解析必失败；纯字符串扫键最稳。
+//   顺手把挨着它的那个逗号一起吃掉，免得留下 `{"a":1,,"b":2}`。
+static QString stripTraceIdField(QString s)
+{
+    static const QString kKey = QStringLiteral("\"trace_id\"");
+    if (!s.contains(kKey)) return s;                 // 常规情况：零处理直接返回
+
+    const int n = s.size();
+    int from = 0;
+    while (from < n) {
+        const int k = s.indexOf(kKey, from);
+        if (k < 0) break;
+
+        // 键后面必须是冒号（防止 "trace_id" 出现在 message 正文里被误删）
+        int i = k + kKey.size();
+        while (i < n && s.at(i).isSpace()) ++i;
+        if (i >= n || s.at(i) != QLatin1Char(':')) { from = k + kKey.size(); continue; }
+        ++i;
+        while (i < n && s.at(i).isSpace()) ++i;
+
+        if (i < n && s.at(i) == QLatin1Char('"')) {
+            ++i;                                     // 跳过开引号，逐个字符吃到收尾引号（认出 \" 转义）
+            while (i < n) {
+                if (s.at(i) == QLatin1Char('\\')) { i += 2; continue; }
+                if (s.at(i) == QLatin1Char('"')) { ++i; break; }
+                ++i;
+            }
+        } else {
+            while (i < n && s.at(i) != QLatin1Char(',') && s.at(i) != QLatin1Char('}')) ++i;  // 数字/true/null
+        }
+
+        int start = k;
+        int j = k - 1;
+        while (j >= 0 && s.at(j).isSpace()) --j;
+        if (j >= 0 && s.at(j) == QLatin1Char(',')) {
+            start = j;                               // 前面有别的字段 → 删它尾部的逗号
+        } else {
+            int t = i;                               // 它是第一个字段 → 删它后面的逗号
+            while (t < n && s.at(t).isSpace()) ++t;
+            if (t < n && s.at(t) == QLatin1Char(',')) i = t + 1;
+        }
+        s.remove(start, i - start);
+        from = start;
+    }
+    return s;
+}
+
 // 宽松 JSON 解析：平台回包偶尔夹隐藏字符（NUL / BOM / 代理页残留），裸 QJsonDocument::fromJson
 // 会把整段判成 null —— 日志里看着是**完全合法的 JSON**，代码却走「非 JSON」分支，重试理由全错。
 // 这里先剔 NUL，再截第一个 '{' 到最后一个 '}'，把这几种情况救回来。
@@ -4733,8 +4782,8 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
                 //   （ok==true 但 fileInfo 为空同样是异常，一并按失败处理，不然会静默跳过发送）
                 tc->segAllOk = false;               // 有段失败 → 本次不写缓存（避免缓存成半截音频）
                 const QString kind = mediaKindLabel(tc->fileType);
-                QString errInfo = fileInfo.trimmed();          // 非 const：send_* 收的是 QString&
- ;
+                // trace_id 每次都变、纯噪音 → 发出去之前先抹掉（纯字符串处理，见 stripTraceIdField）
+                QString errInfo = stripTraceIdField(fileInfo.trimmed());   // 非 const：send_* 收的是 QString&
                 if (errInfo.isEmpty())
                     errInfo = QStringLiteral("[%1发送失败：平台未返回错误信息]").arg(kind);
                 else
@@ -4805,7 +4854,8 @@ void QQBotClient::mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, s
                 if (!clientAlive(this, st->appid)) return;
 
                 auto sendOriginError = [this, st, errInfo]() {
-                    QString e = errInfo;             // 非 const：send_* 收的是 QString&
+                    // trace_id 每次都变、纯噪音 → 发出去之前先抹掉（纯字符串处理，见 stripTraceIdField）
+                    QString e = stripTraceIdField(errInfo);   // 非 const：send_* 收的是 QString&
                     if (st->ctx.openid.isEmpty())
                         send_messages(st->type, st->openid, st->pname, e, st->msgid,
                                       st->is_wakeup, st->mode, st->sendType, st->noref);
@@ -4826,7 +4876,8 @@ void QQBotClient::mediaRemoteAudioFallback(std::shared_ptr<MediaSendChain> st, s
                 auto afterSplit = [this, st, tc, errInfo, sendOriginError](QStringList segs) {
                     if (!clientAlive(this, st->appid)) return;
                     if (segs.isEmpty()) {
-                        AppendEventLog(QStringLiteral("远程音频超时长处理失败（无法切段），按原内容输出：") + errInfo);
+                        AppendEventLog(QStringLiteral("远程音频超时长处理失败（无法切段），按原内容输出：")
+                                       + stripTraceIdField(errInfo));
                         sendOriginError();
                         mediaChainFinishTag(st, tc);
                         return;
@@ -5126,9 +5177,9 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                     downloadRemoteAudioToTempAsync(uploadedUrl, kRemoteAudioMaxBytes,
                         [this, type, openid, pname, fileType, msgid, is_wakeup, mode, 发送类型, noref, now_us, segCtx, segCb, fileInfo]
                         (const QString &localFile) {
-                            // 失败兜底：把平台返回的报错内容原样发出去
+                            // 失败兜底：把平台返回的报错内容原样发出去（trace_id 每次都变、纯噪音 → 先抹掉）
                             auto sendOriginError = [&]() {
-                                QString errInfo = fileInfo;   // 非 const：send_* 收的是 QString&
+                                QString errInfo = stripTraceIdField(fileInfo);   // 非 const：send_* 收的是 QString&
                                 if (segCtx.openid.isEmpty())
                                     send_messages(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref);
                                 else
@@ -5154,7 +5205,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
 
                             if (segs.isEmpty()) {
                                 AppendEventLog(QStringLiteral("远程音频超时长处理失败（无法切段），按原内容输出：")
-                                               + fileInfo);
+                                               + stripTraceIdField(fileInfo));
                                 sendOriginError();
                                 return;
                             }
@@ -5166,10 +5217,12 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                                 // 同样只有最后一段带回调（见上面 lastSeg 的注释）
                                 const bool lastInner = (gi + 1 == segs.size());
                                 if (!okSeg) {
+                                    // trace_id 每次都变、纯噪音 → 发出去之前先抹掉（纯字符串处理）
+                                    QString segErr = stripTraceIdField(segInfo);
                                     if (segCtx.openid.isEmpty())
-                                        send_messages(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref);
+                                        send_messages(type,openid,pname,segErr,msgid,is_wakeup,mode,发送类型,noref);
                                     else
-                                        send_msgAsync(type,openid,pname,segInfo,msgid,is_wakeup,mode,发送类型,noref,
+                                        send_msgAsync(type,openid,pname,segErr,msgid,is_wakeup,mode,发送类型,noref,
                                                       lastInner ? segCb : Callback());
                                 } else if (!segInfo.isEmpty()) {
                                     send_Media(type, openid,pname, segInfo,now_us, msgid,is_wakeup,noref,
@@ -5184,10 +5237,12 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
                 if(!ok)
                 {
                     segAllOk = false;   // 有段失败 → 本次不写缓存（避免缓存成半截音频）
+                    // trace_id 每次都变、纯噪音 → 发出去之前先抹掉（纯字符串处理，见 stripTraceIdField）
+                    QString errInfo = stripTraceIdField(fileInfo);
                     if(segCtx.openid.isEmpty())
-                        send_messages(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref);
+                        send_messages(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref);
                     else
-                        send_msgAsync(type,openid,pname,fileInfo,msgid,is_wakeup,mode,发送类型,noref,segCb);
+                        send_msgAsync(type,openid,pname,errInfo,msgid,is_wakeup,mode,发送类型,noref,segCb);
                 }else if (!fileInfo.isEmpty()) {
                     // 累计本段的裸 file_info；真正的写缓存放到整条循环之后一次性做（见下）——
                     // 逐段各写一次会互相覆盖，最后只剩最后一段。

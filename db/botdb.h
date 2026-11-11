@@ -193,6 +193,10 @@ public:
     bool batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes);
     bool batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeMinutes);
     void cleanExpiredJojiyzCache(int expireMinutes = 5, int appid=0);
+    // 手动「重置用户 / 群缓存」（设置页诊断按钮用）：清掉两份内存缓存，
+    // 下次访问按需从 LMDB 重新加载。群缓存里带「待入群验证名单」的那几条**保留**
+    // （jojnyz/jojntime 是纯内存、不入库，清掉就把正在验证的人丢了）。
+    void clearAllCaches();
     bool addJojiyzRecord(const QString &groupIdHex, int userId);
 
 

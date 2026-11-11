@@ -134,6 +134,8 @@ struct AccountInfo {
     int tq_lq=0 ;
 
     int rq_ychf=0, rq_lq=0;
+    // 发送后自动撤回(秒)：0 = 不撤。只在该群 bitmap 开了 BIT_AUTO_RECALL 时才由 addmsglog 登记
+    int auto_recall=0;
     bool ychfwcl=false; //延迟回应未处理
     bool autoht=true;
     bool pbbot=true;

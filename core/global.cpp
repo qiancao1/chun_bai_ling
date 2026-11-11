@@ -397,14 +397,19 @@ static double hintSimilarityLow(const QString &a, int aLen, const QString &b, in
     if (aLen == 0 || bLen == 0) return 0.0;
     if (a == b) return 1.0;                                       // 一模一样（多半是权限没放行 / 已停用）
 
-    if (bLen >= 2) {                                              // 单字指令不做包含判断，太容易误伤
+    if (bLen >= 2) {                                              // 指令本身是单字时不做包含判断，太容易误伤
         if (a.startsWith(b)) return 0.90;                         // "签到一下"
         if (a.contains(b))   return 0.80;                         // "我想签到"
     }
-    if (aLen >= 2) {
-        if (b.startsWith(a)) return 0.86;                         // 只打了半截："签" → 签到（2 字起判）
-        if (b.contains(a))   return 0.70;
+    // 用户只打了 1 个字（"开"）：必须在这儿特判 —— 3 字以上的指令根本走不到编辑距离
+    // （"开" vs "开启签到" 差 3 步，> maxDist 1 → 直接 0 分），不特判就一条都命中不了。
+    if (aLen == 1) {
+        if (b.startsWith(a)) return 0.62;                         // "开" → 开启签到 / 开局
+        if (b.contains(a))   return 0.55;                         // 字在中间的："打开宝箱"
+        return 0.0;
     }
+    if (b.startsWith(a)) return 0.86;                             // 只打了半截："签到" → 签到一下
+    if (b.contains(a))   return 0.70;
 
     const int len = qMax(aLen, bLen);
     const int maxDist = len / 2;                 // 阈值 0.5 ⇔ dist ≤ len/2，超了不算
@@ -483,6 +488,10 @@ static QVector<HintWord> hintWordsFor(int appid)
     return e.words;
 }
 
+// [匹配指令] 最多填几条。9 条是权衡：单字输入（"开"）能提示到的词本来就多，
+// 3 条常常只看到三分之一；再往上加消息就太长了（每条约 8~14 个字）。
+static constexpr int kHintMaxCount = 9;
+
 // 挑跟输入最像的 maxCount 条（分数从高到低，只留 >= 0.5 的）。
 static QStringList hintClosestCommands(const QString &input, int appid, int maxCount)
 {
@@ -511,15 +520,21 @@ static QStringList hintClosestCommands(const QString &input, int appid, int maxC
     return out;
 }
 
-// 把兜底文案里的 [匹配指令] 换成最像的几条（最多 3 条）。文案里没这个占位符就原样返回。
+// 把兜底文案里的 [匹配指令] 换成最像的几条（最多 kHintMaxCount 条）。文案里没这个占位符就原样返回。
 static QString hintFillFallback(const QString &tpl, const QString &userText, int appid)
 {
     static const QString kPlaceholder = QStringLiteral("[匹配指令]");
     if (!tpl.contains(kPlaceholder)) return tpl;
 
-    const QStringList best = hintClosestCommands(userText, appid, 3);
+    const QStringList best = hintClosestCommands(userText, appid, kHintMaxCount);
+    // 一行 3 个：9 条串成一行太长，按 3 个断一次行（'\n' 发送前会被 normalizeNewlinesToCR 转成 '\r'）。
+    // 不足 3 个的尾巴就是最后一行，不会多出空行。
     QString fill;
-    for (const QString &w : best) fill += QStringLiteral("「[%1]()」").arg(w);
+    const int n = best.size();
+    for (int i = 0; i < n; ++i) {
+        if (i > 0 && i % 3 == 0) fill += QLatin1Char('\n');
+        fill += QStringLiteral("「[%1]()」").arg(best.at(i));
+    }
 
     QString out = tpl;
     out.replace(kPlaceholder, fill);    // 一条都没匹配上 → 占位符清空（不瞎猜，也不留一串方括号）
@@ -1913,12 +1928,14 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                     "[禁言列表]() 获取禁言列表\n>"
                     "[本群状态]() 查看开启列表\n>"
                     "[开入群验证]() | [关入群验证]()\n>"
+
                     "[获取加群列表]() 获取申请加群列表\n"
                     "[添加本群代管]() | [删除本群代管]()\n>"
                     "[开申请加群提示]() | [关申请加群提示]()\n>"
                     "[开自动同意加群]() | [关自动同意加群]()\n>"
                     "[设置自动同意加群答案]()\n>"
                     "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
+                    "[开自动撤回]() | [关自动撤回]() 本群发出去的秒数撤回(秒数在电脑端设)\n>"
                     "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
         }
         return QString();
@@ -1947,12 +1964,14 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
            "[禁言列表]() 获取禁言列表\n>"
            "[本群状态]() 查看开启列表\n>"
            "[开入群验证]() | [关入群验证]()\n>"
+            "[开自动撤回]() | [关自动撤回]()\n>"
             "[获取加群列表]() 获取申请加群列表\n"
             "[添加本群代管]() | [删除本群代管]()\n>"
             "[开申请加群提示]() | [关申请加群提示]()\n>"
             "[开自动同意加群]() | [关自动同意加群]()\n>"
             "[设置自动同意加群答案]()\n>"
             "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
+            "[开自动撤回]() | [关自动撤回]() 本群发出去的秒数撤回(秒数在电脑端设)\n>"
             "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n"
 
             "**管理**\n"
@@ -2684,6 +2703,8 @@ static bool isGroupManageCmd(const QString &rawMsg)
         QStringLiteral("关自动同意加群"),
         QStringLiteral("设置刷屏检测"),
         QStringLiteral("取消刷屏检测"),
+        QStringLiteral("开自动撤回"),
+        QStringLiteral("关自动撤回"),
         QStringLiteral("设置入群提示"),
         QStringLiteral("取消入群提示"),
         QStringLiteral("设置退群提示"),
@@ -2841,6 +2862,8 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 text.append("入群验证\n>");
                 text.append(ev.bitmap & BIT_AUTO_JOJN_KG ? "✅" : "❌");
                 text.append("入群申请提示\n>");
+                text.append(ev.bitmap & BIT_AUTO_RECALL ? "✅" : "❌");
+                text.append("自动撤回\n>");
 
 
 
@@ -3230,6 +3253,30 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     }
                     return QString("[撤回] 撤回完成，但可能未达到指定数量（已撤回 %1 条）").arg(deleted);
                 }
+            }
+            // 自动撤回：群级开关（bitmap 位），真正撤多少秒看电脑端「机器人管理 → 自动撤回(秒)」
+            // ⚠ 故意不判 ev.bot_admin：撤的是机器人自己发的消息，不需要机器人是管理员
+            if (ev.msg == "开自动撤回") {
+                if (ev.bitmap & BIT_AUTO_RECALL)  return "本群已经开启 自动撤回";
+                auto git = g_botdb.find(info->appid_int);
+                if (git == g_botdb.end() || !git.value()) return "开启失败：本地没有该机器人的群数据库";
+                auto *db = git.value();
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap |= BIT_AUTO_RECALL;
+                db->addGroup(ev.groupId, gid);
+                return "开启自动撤回成功 撤回秒数在电脑端 机器人管理 页的「自动撤回(秒)」设置";
+            }
+            if (ev.msg == "关自动撤回") {
+                if (!(ev.bitmap & BIT_AUTO_RECALL))  return "本群已经关闭 自动撤回";
+                auto git = g_botdb.find(info->appid_int);
+                if (git == g_botdb.end() || !git.value()) return "关闭失败：本地没有该机器人的群数据库";
+                auto *db = git.value();
+                GroupRecord2 gid;
+                db->getGroupInfo(ev.groupId, gid);
+                gid.bitmap &= ~BIT_AUTO_RECALL;
+                db->addGroup(ev.groupId, gid);
+                return "关闭自动撤回成功";
             }
             if (ev.msg == "设置刷屏检测") {
                 if(!ev.bot_admin) return wuqx;

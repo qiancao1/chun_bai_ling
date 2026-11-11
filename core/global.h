@@ -75,7 +75,8 @@ enum BitMask {
     BIT_AUTO_JOJN = 1<<6,  //自动同意加群
     BIT_ADMIN= 1<<7,  //机器人是否管理员
     BIT_PUNISH = 1<<8, //违禁词检测
-    BIT_RUQUN_YZ = 1<<9   //入群验证
+    BIT_RUQUN_YZ = 1<<9,  //入群验证
+    BIT_AUTO_RECALL = 1<<10  //本群开启自动撤回（配合账号设置里的「自动撤回(秒)」，addmsglog 查这一位）
 };
 
 struct dblog
@@ -223,7 +224,7 @@ QString subTextReplace(const QString &source,const QString &find,const QString &
 QString normalizeNewlinesToCR(const QString &input);//处理换行符
 // 未命中兜底：累计到第 3 次仍没人处理这条消息 → 按 fallbackReply 回一句。
 // 文案里可以写占位符 **[匹配指令]**，发送时替换成「跟用户输入最接近的几条指令」
-// （框架自带指令 + 插件注册的生效命令词，模糊匹配取前 3，见 global.cpp 的 hint* 那组函数）。
+// （框架自带指令 + 插件注册的生效命令词，模糊匹配取前 kHintMaxCount = 9，见 global.cpp 的 hint* 那组函数）。
 // 用户输入直接从日志库按 msgid 里的 seq 读回（LogDB::readLog 先查内存缓存，等于零 I/O）。
 void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int addint=0);
 // 被动回复（带 msgid 的发送）全局限速：跨线程共享，平均约 perSec 条/秒，会阻塞调用线程。

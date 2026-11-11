@@ -8,6 +8,7 @@
 #include <QScrollBar>
 #include <QPainter>
 #include <QPixmap>
+#include <QPixmapCache>
 #include <QFileInfo>
 #include <QTextDocument>
 #include <QAbstractTextDocumentLayout>
@@ -1906,7 +1907,8 @@ static QString formatGroupStateSwitches(int appid, const QString &groupId)
     t += QString("　　入群申请提示：%1\n").arg(sw(bm & BIT_AUTO_JOJN_KG));
     t += QString("　　自动同意加群：%1（代管 %2/20）\n")
              .arg(sw(bm & BIT_AUTO_JOJN)).arg(tuoguan);
-    t += QString("　　违禁词检测：%1").arg(sw(bm & BIT_PUNISH));
+    t += QString("　　违禁词检测：%1\n").arg(sw(bm & BIT_PUNISH));
+    t += QString("　　自动撤回：%1").arg(sw(bm & BIT_AUTO_RECALL));
     return t;
 }
 
@@ -2923,4 +2925,27 @@ void ChatPage::onSendFile()
     if(path.isEmpty()) return ;
     QString text = QString("[file,path=%1]").arg(path);
     onSendmsg(text);
+}
+
+// ==================== 内存诊断：手动丢缓存 ====================
+// 设置页「重载数据库」按钮会调这两个（见 ui/set.cpp）。
+// 只清「纯缓存」，任何数据（消息、全量群、最近对话、BotDB 记录）都不动。
+
+void BubbleDelegate::clearCaches()
+{
+    m_cache.clear();        // 单条消息的排版结果（字符串 + 行高）
+    m_imageCache.clear();   // 图片（key = URL）；清掉后 paint 时先从 tmp/聊天图片 读盘
+    m_avatarCache.clear();  // 32x32 圆角头像
+}
+
+void ChatPage::resetRuntimeCaches()
+{
+    avatarCache.clear();    // 会话列表头像（本文件 static QCache）
+    s_wrapCache.clear();    // 换行结果（本文件 static QCache）
+    m_avatarCache.clear();  // 本页绘制用的头像
+
+    if (m_bubbleDelegate) m_bubbleDelegate->clearCaches();
+
+    // Qt 全局图片缓存：按钮/图标/主题色块都挂在里面
+    QPixmapCache::clear();
 }
