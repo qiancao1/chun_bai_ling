@@ -76,7 +76,7 @@ int mapTypeToTabIndex(int type)
         return 0;
     }
 }
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType);   // 定义在 core/api2.cpp
 QMap<QString, QTimer*> m_openidTimers;  // 只能由主线程访问
 
 // ================== AI 插件工具调用：发送拦截（说明见 global.h） ==================
@@ -548,7 +548,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
     if (c->m_info->fallbackReply.isEmpty()) return;
     int tabIndex = type + 1;
     if(tabIndex<1 || tabIndex>4) return;
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
     if(index<0) return;
     int n = g_logdb [tabIndex]->incrementBufferStatus2(index,addint+1); //32位额外+1
     if(n >= 250) return; //255代表被处理了
@@ -2369,7 +2369,7 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
     ret = ai_ui->Ai_qx(info,ev);
     if(ret.isEmpty() || !ev.op){
         if(ev.subType ==0 && ev.type<=3){
-            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId);
+            auto [index, realMsgId] = splitWrappedMsgId(ev.msgId, ev.type);
             if(index<0) return;
             int n = g_logdb [ev.type+1]->getBufferStatus(index);
             if(n >= 250) return; //255代表被处理了

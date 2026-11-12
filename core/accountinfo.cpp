@@ -46,6 +46,8 @@ QString AccountInfo::toJson() const {
     obj["message_sent"] = message_sent;
     obj["received_day"] = received_day;
     obj["sent_day"] = sent_day;
+    obj["ad_total"] = ad_watched_total;   // 广告看完：累计（启动以来 ad_watched 不落盘）
+    obj["ad_day"] = ad_watched_day;       // 广告看完：今日
     obj["autoConnect"] = autoConnect;
     obj["dyindex"] = dyindex;
     obj["welcomeMsg"] = welcomeMsg;
@@ -190,6 +192,8 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
 
     info.received_day = obj["received_day"].toInt();
     info.sent_day = obj["sent_day"].toInt();
+    info.ad_watched_total = obj["ad_total"].toInt();
+    info.ad_watched_day = obj["ad_day"].toInt();
     info.autoConnect = obj["autoConnect"].toBool();
     info.welcomeMsg = obj["welcomeMsg"].toString();
     info.welcomeMsg2 = obj["welcomeMsg2"].toString();
@@ -286,5 +290,6 @@ bool AccountInfo::checkDailyReset()
     今日退出频道数量 = 0;
     received_day = 0;      // 今日接收
     sent_day = 0;          // 今日发送
+    ad_watched_day = 0;    // 今日广告看完次数
     return true;
 }

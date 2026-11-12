@@ -78,20 +78,20 @@ private:
     QStringList m_pluginRankOrder;                // 当前榜单顺序（变了才重建，避免定时刷新闪烁）
     QLabel *m_pluginRankSummary = nullptr;        // 标题右侧「共 N 条」小计
     bool m_pluginRankReady = false;               // 榜单是否已经建过一次（空榜也要建一次显示提示）
-    QLabel *m_todayMessageValue = nullptr;
-    QLabel *m_totalMessageValue = nullptr;      // 「今日消息」卡右上角的累计副值
-    QLabel *m_todaySentValue = nullptr;
-    QLabel *m_todayReceivedValue = nullptr;
-    QLabel *m_todaySentSub = nullptr;        // 「今日发送」卡右下角：本次运行以来（sent）
-    QLabel *m_todayReceivedSub = nullptr;    // 「今日接收」卡右下角：本次运行以来（received）
-    QLabel *m_todayQuitValue = nullptr;         // 「今日加群」卡右上角的退群副值
+    // 收发三个数原来是最左边三张卡，现在挪到「消息趋势」图表的标题行（见 createChartPanel）
+    QLabel *m_chartRecvLabel = nullptr;         // 图表标题行：启动以来接收
+    QLabel *m_chartSentLabel = nullptr;         // 图表标题行：启动以来发送
+    QLabel *m_chartTotalLabel = nullptr;        // 图表标题行：合计 + 历史累计
+    QLabel *m_activeDataValue = nullptr;        // 「活跃数据」：一行两值（用户 x · 群 y，今日口径，同「数据统计」指令）
+    QLabel *m_pluginCountValue = nullptr;       // 「插件数量」主数值
     QLabel *m_onlineAccountValue = nullptr;
-    QLabel *m_logCountValue = nullptr;
+    QLabel *m_adValue = nullptr;                // 「广告观看」主数值 = 启动以来
+    QLabel *m_adSub = nullptr;                  // 「广告观看」右上角：累计
+    QLabel *m_addDelValue = nullptr;            // 「群/好友 增删」：一行小字（启动以来 加/退）
     QLabel *m_systemStatusValue = nullptr;
     QLabel *m_cpuStatusValue = nullptr;
     QLabel *m_ramStatusValue = nullptr;
     QLabel *m_diskStatusValue = nullptr;
-    QLabel *m_pluginCountValue = nullptr;
 
     StatusChartWidget *m_chartWidget = nullptr;  // 替换原来的 m_chartView
 

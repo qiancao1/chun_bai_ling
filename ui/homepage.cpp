@@ -21,6 +21,7 @@
 #include <algorithm>
 #include "global.h"
 #include "themecolors.h"   // 页面自带样式表也要跟着主题走
+#include <QMutex>          // 读 BotDB 今日活跃表要加锁（m_msgMutex）
 
 // 「插件消息统计」面板最多展示的插件数（按发送量降序取前 N）
 static constexpr int kTopPluginCount = 6;
@@ -148,6 +149,14 @@ void HomePage::setStyleSheetA()
             color: #8A94A6;
             font-size: 13px;
             background: transparent;
+        }
+        /* 「消息趋势」标题行里的收发统计小胶囊 */
+        QLabel#chartStat {
+            color: #4A5568;
+            font-size: 12px;
+            background: #FFF4E8;
+            border-radius: 8px;
+            padding: 2px 8px;
         }
         QLabel#sectionTitle {
             color: #17202A;
@@ -307,13 +316,27 @@ static QLabel* createStatusLabel(const QString& title, const QString& value) {
 
 
 void HomePage::createStatCards(QGridLayout* statsLayout) {
-    // 紧凑卡：左图标、右边「标题 + 副值 / 大数值」两行。整卡高约 52px（原来 4 个大卡约 96px），
-    // 省下来的横向空间就用来多摆两张卡。
+    // 紧凑卡：左图标、右边「标题 + 副值 / 数值」两行，一排 5 张。
+    //
+    // 原来最左边那三张（启动以来 消息/发送/接收）已经挪到「消息趋势」的标题行里
+    // （见 createChartPanel），这里放的是：活跃数据 / 插件数量 / 在线账号 / 广告观看 / 群好友增删。
+    // 「活跃数据」那两个数就是「数据统计」指令里的 活跃用户 / 活跃群聊
+    // （BotDB 的今日活跃用户表 / 群表）。
+    //
+    // 宽度统一：卡里的文字长短差很多（「群+0/-0 好友+0/-0」比「4」长得多），
+    // 一旦让 label 的 sizeHint 参与布局，QGridLayout 就会按内容把各列撑成不同宽度。
+    // 所以标题 / 数值 label 的水平策略设成 Ignored（宽度不再由文字长度决定），
+    // 每张卡再统一一个最小宽度 + 列 stretch 相同 → 5 张卡等宽。
+    // （右上角副值是 Fixed + 固定宽度，别用 Ignored —— 那样它会整个不显示。）
+    const int kCardMinWidth = 150;
+    const int kSubWidth     = 62;    // 右上角「累计 x」固定宽度，别把标题挤掉
+
     auto createStatCard = [&](int col, const QString &icon, const QString &title,
                               const QString &value, const QString &sub, const QString &iconBg,
                               const QString &tip) {
         auto card = createPanel("statCard");
         card->setToolTip(tip);
+        card->setMinimumWidth(kCardMinWidth);
 
         auto layout = new QHBoxLayout(card);
         layout->setContentsMargins(10, 6, 10, 6);
@@ -327,34 +350,39 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
         textLayout->setSpacing(0);
         textLayout->setContentsMargins(0, 0, 0, 0);
 
-        // 第一行：标题 +（右对齐的）副值
+        // 第一行：标题 +（右对齐的）累计值
         auto titleRow = new QHBoxLayout;
         titleRow->setSpacing(4);
         titleRow->setContentsMargins(0, 0, 0, 0);
-        titleRow->addWidget(createLabel(title, "statTitle"));
-        titleRow->addStretch();
+        QLabel *titleLabel = createLabel(title, "statTitle");
+        titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        titleRow->addWidget(titleLabel, 1);
         if (!sub.isEmpty()) {
             QLabel *subLabel = createLabel(sub, "statSub");
             subLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            // 固定宽度 + Fixed 策略：宽度不随文字变（「累计 0」和「累计 27.7万」一样宽），
+            // 也不要 Ignored —— 那条会把 sizeHint 吃掉，实测副值会整个不显示。
+            subLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+            subLabel->setFixedWidth(kSubWidth);
             titleRow->addWidget(subLabel);
-            if (title == "今日消息")   m_totalMessageValue = subLabel;
-            if (title == "今日加群")   m_todayQuitValue   = subLabel;
-            if (title == "今日发送")   m_todaySentSub     = subLabel;
-            if (title == "今日接收")   m_todayReceivedSub = subLabel;
+            if (title == "广告观看") m_adSub = subLabel;
         }
         textLayout->addLayout(titleRow);
 
         auto valueLabel = createLabel(value, "statValue");
-        if (title == "今日消息")   m_todayMessageValue  = valueLabel;
-        if (title == "今日发送")   m_todaySentValue     = valueLabel;
-        if (title == "今日接收")   m_todayReceivedValue = valueLabel;
-        if (title == "在线账号")   m_onlineAccountValue = valueLabel;
-        if (title == "今日加群")   m_logCountValue      = valueLabel;
-        if (title == "插件数量") {
-            valueLabel->setObjectName("pluginCountValue");
-            m_pluginCountValue = valueLabel;
+        valueLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        if (title == "在线账号") m_onlineAccountValue = valueLabel;
+        if (title == "插件数量") m_pluginCountValue = valueLabel;
+        if (title == "广告观看") m_adValue      = valueLabel;
+        if (title == "活跃数据" || title == "群/好友 增删") {
+            // 一张卡里放两个以上数值：13px 一行。
+            // 卡宽现在是统一的，字号再大就会把后面的数裁掉。
+            // min-height 撑到和 19px 大数值一样高，否则这张卡矮一截、标题行跟别的卡错位。
+            valueLabel->setStyleSheet("font-size: 13px; font-weight: 600; color: #17202A; min-height: 22px;");
+            if (title == "活跃数据")   m_activeDataValue = valueLabel;
+            if (title == "群/好友 增删") m_addDelValue  = valueLabel;
         }
-        textLayout->addWidget(valueLabel);
+        textLayout->addWidget(valueLabel, 1);
 
         layout->addWidget(iconLabel);
         layout->addLayout(textLayout, 1);
@@ -363,19 +391,17 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
         statsLayout->setColumnStretch(col, 1);
     };
 
-    // 三个口径：主数值 = 当天（跨天清零）、右下副值 = 累计 / 本次运行
-    createStatCard(0, "💬", "今日消息", "0", "累计 0", "#E8F4FD",
-                   "今日收发消息合计（右下为程序里的历史累计量 message_received+sent）");
-    createStatCard(1, "📤", "今日发送", "0", "本次 0", "#FFF3E0",
-                   "今日由机器人发送的消息数（右下为本次运行以来的发送量 sent）");
-    createStatCard(2, "📥", "今日接收", "0", "本次 0", "#E8F8EE",
-                   "今日机器人收到的消息数（右下为本次运行以来的接收量 received）");
-    createStatCard(3, "🤖", "在线账号", "0 / 0", "", "#F3E5F5",
-                   "已登录 / 已配置 的账号数");
-    createStatCard(4, "🧩", "插件数量", QString::number(m_pluginList.size()), "", "#FDF1E3",
+    // 一排 5 张：活跃数据是「今日」口径（跟数据统计指令一致），其余是启动以来 + 累计
+    createStatCard(0, "📊", "活跃数据", "用户 0 · 群 0", "", "#E8F4FD",
+                   "今日活跃用户数 · 活跃群数（=「数据统计」指令里的 活跃用户 / 活跃群聊，BotDB 今日活跃表）");
+    createStatCard(1, "🧩", "插件数量", QString::number(m_pluginList.size()), "", "#FDF1E3",
                    "已加载的插件数量");
-    createStatCard(5, "🏠", "今日加群", "0", "退 0", "#EDF3FB",
-                   "今日加群数（副值为今日退群数）");
+    createStatCard(2, "🤖", "在线账号", "0 / 0", "", "#F3E5F5",
+                   "已登录 / 已配置 的账号数");
+    createStatCard(3, "📺", "广告观看", "0", "累计 0", "#FDEBE8",
+                   "本次启动以来广告看完次数（右上 = 历史累计）");
+    createStatCard(4, "👥", "群/好友 增删", "0/0 0/0", "", "#EAF0FF",
+                   "本次启动以来：群 加/退、好友 加/删");
 }
 
 QFrame* HomePage::createChartPanel() {
@@ -384,10 +410,21 @@ QFrame* HomePage::createChartPanel() {
     chartLayout->setContentsMargins(14, 10, 14, 8);   // 圆角 18px，标题别贴着边框
     chartLayout->setSpacing(4);
 
-    // 标题行（保持不变）
+    // 标题行：左边标题，右边一排收发统计（原来那三张卡片挪过来的）+ 图表说明
     auto chartTop = new QHBoxLayout;
+    chartTop->setSpacing(8);
     chartTop->addWidget(createLabel("消息趋势", "sectionTitle"));
     chartTop->addStretch();
+
+    m_chartRecvLabel  = createLabel("接收 0", "chartStat");
+    m_chartSentLabel  = createLabel("发送 0", "chartStat");
+    m_chartTotalLabel = createLabel("合计 0 · 累计 0", "chartStat");
+    m_chartRecvLabel->setToolTip("本次启动以来机器人收到的消息数（合计后面是历史累计 message_received）");
+    m_chartSentLabel->setToolTip("本次启动以来机器人发送的消息数（合计后面是历史累计 message_sent）");
+    m_chartTotalLabel->setToolTip("启动以来收发合计 / 历史累计（message_received + message_sent）");
+    chartTop->addWidget(m_chartRecvLabel);
+    chartTop->addWidget(m_chartSentLabel);
+    chartTop->addWidget(m_chartTotalLabel);
     chartTop->addWidget(createLabel("每小时收发量  ", "mutedText"));
     chartLayout->addLayout(chartTop);
 
@@ -662,7 +699,8 @@ void HomePage::setupUI()
     mainLayout->setSpacing(8);
 
     auto statsLayout = new QGridLayout;
-    statsLayout->setSpacing(8);          // 6 张紧凑卡，间距收一点才排得开
+    statsLayout->setSpacing(8);          // 一排 5 张等宽统计卡，间距 8 排满
+    statsLayout->setContentsMargins(0, 0, 0, 0);
     createStatCards(statsLayout);
     mainLayout->addLayout(statsLayout);
 
@@ -1091,37 +1129,58 @@ void HomePage::updateProcessStats()
 void HomePage::refreshRuntimeStats()
 {
     int onlineCount = 0;
-    qint64 todayRecv = 0, todaySent = 0, totalMsg = 0;
     qint64 runRecv = 0, runSent = 0;
-    int jiaq = 0, tq = 0;
+    qint64 totalRecv = 0, totalSent = 0;
+    int gAddRun = 0, gDelRun = 0, fAddRun = 0, fDelRun = 0;   // 启动以来 群/好友 增删
+    qint64 adRun = 0, adTotal = 0;
+    qint64 activeUsers = 0, activeGroups = 0;                 // 今日活跃用户 / 群（各账号求和）
     for (const auto &account : std::as_const(m_accounts)) {
         if (!account) continue;
         if (account->online) onlineCount++;
-        // 三个口径（AccountInfo 里是三组独立变量）：
-        //   received_day / sent_day      → 当天，跨天清零（AccountInfo::checkDailyReset）
-        //   received / sent              → 本次运行以来（进程内，不落盘）
+        // 首页只看两个口径（AccountInfo 里是独立变量）：
+        //   received / sent              → 本次启动以来（进程内，不落盘）
         //   message_received / _sent     → 历史累计（落盘）
-        todayRecv += account->received_day;
-        todaySent += account->sent_day;
+        // （今日 received_day/sent_day 首页不直接显示了，插件那套接口照旧用得到）
         runRecv   += account->received;
         runSent   += account->sent;
-        totalMsg  += account->message_received + account->message_sent;   // 累计
-        jiaq += account->今日加群数量;
-        tq   += account->今日退群数量;
+        totalRecv += account->message_received;
+        totalSent += account->message_sent;
+        gAddRun += account->加群本次;
+        gDelRun += account->退群本次;
+        fAddRun += account->好友本次;
+        fDelRun += account->删好友本次;
+        adRun   += account->ad_watched;
+        adTotal += account->ad_watched_total;
+        // 活跃用户 / 活跃群聊：和「数据统计」指令同一个来源
+        // （BotDB 里当天的用户表 / 群表，表的大小就是去重后的活跃数）
+        if (auto *db = g_botdb.value(account->appid_int, nullptr)) {
+            QMutexLocker locker(&db->m_msgMutex);
+            activeUsers  += db->m_userDailyMsg.size();
+            activeGroups += db->m_groupDailyMsg.size();
+        }
     }
 
-    const int pluginCount = m_pluginList.size();
+    // 图表标题行里的收发三个数（原来是最左边三张卡）
+    if (m_chartRecvLabel)     m_chartRecvLabel->setText(
+        QString("接收 %1").arg(formatCount(runRecv)));
+    if (m_chartSentLabel)     m_chartSentLabel->setText(
+        QString("发送 %1").arg(formatCount(runSent)));
+    if (m_chartTotalLabel)    m_chartTotalLabel->setText(
+        QString("合计 %1 · 累计 %2").arg(formatCountShort(runRecv + runSent),
+                                        formatCountShort(totalRecv + totalSent)));
 
-    if (m_todayMessageValue)  m_todayMessageValue->setText(formatCount(todayRecv + todaySent));
-    if (m_totalMessageValue)  m_totalMessageValue->setText(QString("累计 %1").arg(formatCountShort(totalMsg)));
-    if (m_todaySentValue)     m_todaySentValue->setText(formatCount(todaySent));
-    if (m_todayReceivedValue) m_todayReceivedValue->setText(formatCount(todayRecv));
-    if (m_todaySentSub)       m_todaySentSub->setText(QString("本次 %1").arg(formatCountShort(runSent)));
-    if (m_todayReceivedSub)   m_todayReceivedSub->setText(QString("本次 %1").arg(formatCountShort(runRecv)));
+    // 卡片：活跃按今日口径，其余启动以来 + 累计
+    if (m_activeDataValue)    m_activeDataValue->setText(
+        QString("用户 %1 · 群 %2").arg(formatCountShort(activeUsers), formatCountShort(activeGroups)));
+    if (m_pluginCountValue)   m_pluginCountValue->setText(QString::number(m_pluginList.size()));
     if (m_onlineAccountValue) m_onlineAccountValue->setText(QString("%1 / %2").arg(onlineCount).arg(m_accounts.size()));
-    if (m_logCountValue)      m_logCountValue->setText(formatCount(jiaq));
-    if (m_todayQuitValue)     m_todayQuitValue->setText(QString("退 %1").arg(formatCount(tq)));
-    if (m_pluginCountValue)   m_pluginCountValue->setText(QString::number(pluginCount));
+    if (m_adValue)            m_adValue->setText(formatCount(adRun));
+    if (m_adSub)              m_adSub->setText(
+        QString("累计 %1").arg(formatCountShort(adTotal)));
+    if (m_addDelValue)        m_addDelValue->setText(
+        QString("%1/%2 %3/%4")
+            .arg(formatCountShort(gAddRun), formatCountShort(gDelRun),
+                 formatCountShort(fAddRun), formatCountShort(fDelRun)));
 
 
     // 插件发送量 TOP 6 榜单（见 refreshPluginMessageRanking）
@@ -1285,7 +1344,5 @@ void HomePage::refreshPluginMessageRanking()
 
 void HomePage::refreshPluginList()
 {
-    if (m_pluginCountValue) m_pluginCountValue->setText(QString::number(m_pluginList.size()));
-
     refreshRuntimeStats();
 }

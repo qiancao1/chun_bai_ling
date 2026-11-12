@@ -251,6 +251,9 @@ QString botlist()
         obj["sent"]=info->sent;
         obj["today_received"] = info->received_day;//今日（跨天自动清零）
         obj["today_sent"] = info->sent_day;
+        obj["ad_total"] = info->ad_watched_total;   // 广告看完：累计
+        obj["ad_session"] = info->ad_watched;       // 广告看完：本次启动以来
+        obj["ad_today"] = info->ad_watched_day;     // 广告看完：今日（跨天自动清零）
         obj["online"] = info->online;
         obj["id"] = info->pduid; //频道id
         obj["union_openid"]=info->unid;   //QQid
@@ -5657,7 +5660,7 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
 
 
 QString processText(const QString &text, int timeoutMs = 30000);
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType);   // 定义在 api2.cpp
 
 // ── 正文开头的「发送方式」标签 ──
 //   #^  → 这条强制走普通文本（不看账号的 md 设置）
@@ -5720,7 +5723,7 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
         newtext =python_code(text,ev);
     }
     if(text.contains("[get url") || text.contains("[post url")){
-        auto [index, realMsgId] = splitWrappedMsgId(msgid);
+        auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
         QJsonValue keyboard;
         QJsonArray prompt_keyboard;
         QString mb;
@@ -5787,7 +5790,7 @@ QString QQBotClient::send_messages(int type, const QString &openid,const QString
         newtext =python_code(text,ev);
     }
 
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
     QJsonValue keyboard;
     QJsonArray prompt_keyboard;
     QString message_reference,mb;
@@ -5951,7 +5954,7 @@ QString QQBotClient::sendMessagesAsyncCore(int type, const QString &openid, cons
     // 自动撤回秒数跟着 ctx 走：所有 ctx 拷贝（含媒体链 ctxNoCb / ctxT）都带着它，
     // 最终由 addmsglog 统一登记。多段媒体 = 多条独立消息 → 每段各登记各的，不会只撤正文。
     ctx.recallSec = recallSec;
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
     ctx.index = index;
     QJsonValue keyboard = kbIn;
     QJsonArray prompt_keyboard = promptKbIn;

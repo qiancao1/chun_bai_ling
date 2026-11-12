@@ -455,13 +455,6 @@ public:
     QString effectiveCommandWord(const QString &pluginId, const QString &pluginName,
                                  int matchType, const QString &key, int appid) const;
 
-    // ==================== 广告奖励（积分入账，框架级）====================
-    // 腾讯激励广告看完会推一条 REWARDED_AD_COMPLETE 事件（qqbotclient 已解析成 type 0/2、subType 5，
-    // msgId = 事件 id、user = 看广告的人）。这里是**唯一**给用户加积分的地方：
-    //   · 额度 = g_points_per_ad（默认 1000，与商店定价同一基准）
-    //   · 幂等：同一个事件 id 只加一次（腾讯会重推，不去重就能刷分）
-    //   · 加不上（拿不到 openid / 库没开）只记事件日志，不打扰用户
-    // 返回 true = 已处理（调用方别再往下派发给插件 / AI）。
     bool handleAdRewardEvent(MessageEvent &msg);
 
     // ==================== 铃铛商店（框架级指令）====================

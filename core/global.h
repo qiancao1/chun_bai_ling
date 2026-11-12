@@ -240,6 +240,8 @@ void paceMsgIdReply(int perSec = 60);
 //         "|-<token>|<真实 msgid>"          （toolGateMsgId）
 //      负数下标让 splitWrappedMsgId 返回 index<0 → 所有「按 index 改日志 / 并进入站那条」的分支
 //      自动跳过，而真实 msgid 仍在第二个 '|' 之后（插件要用也不缺东西）。
+//      ⚠ 收消息时的正常包装是 "<type>|<log>|<真实msgid>"（type = 消息来源）。这里的标记**第 1 段留空**
+//        → 拆解时认不出 type、跳过「type 对不对」那道校验（见 splitWrappedMsgId 的 expectType）。
 //   2) 插件调 API_ID_SEND_MESSAGES 时，工具侧先 toolGateTokenFromMsgId() 从 msgid 里认出 token，
 //      命中全局表 → 正文塞进表里、**直接当发送成功返回**（一个字都不出这台机器，不 POST、不写日志）；
 //      没命中（token 过期/不是这次调用）→ 照常发送。

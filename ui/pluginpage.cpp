@@ -1568,15 +1568,6 @@ bool PluginPage::handleAdRewardEvent(MessageEvent &msg)
         AppendEventLog("[广告] 事件里没有合法用户 openid，积分未入账（事件 " + msg.msgId + "）", 0xff);
         return false;
     }
-
-    // ---- 2) 幂等：这个事件加过分就直接吞掉 ----
-    const QString seenKey = QStringLiteral("ad_evt_") + msg.msgId;
-    if (cache_db && !msg.msgId.isEmpty()) {
-        if (!cache_db->get(seenKey).isEmpty()) {
-            return false;                   // 重推的同一个事件：静默丢弃
-        }
-    }
-
     // ---- 3) 入账 ----
     BotDB *db = g_botdb.value(msg.appid, nullptr);
     if (!db) {
@@ -1589,8 +1580,7 @@ bool PluginPage::handleAdRewardEvent(MessageEvent &msg)
         AppendEventLog("[广告] 写积分失败（事件 " + msg.msgId + "）", 0xff);
         return false;                       // 不记去重 key：真失败了，重推时还能再试一次
     }
-    if (cache_db && !msg.msgId.isEmpty())
-        cache_db->put(seenKey, QString::number(QDateTime::currentSecsSinceEpoch()));
+
     if (QQBotClient *client = m_botClients.value(msg.appid, nullptr)) {
         if(client->m_info->ldsd.isEmpty()) return false;
 

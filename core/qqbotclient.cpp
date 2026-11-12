@@ -1285,17 +1285,20 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         if (ev.user.isEmpty()) ev.user = d.value("op_member_openid").toString();
         ev.msg = "机器人被邀请加群";
         m_info->今日加群数量++;
+        m_info->加群本次++;
     }
     else if (ev.msgType == "GROUP_DEL_ROBOT") { //被踢出群
         ev.type = 0; ev.subType = 5;
         ev.user = d.value("op_member_openid").toString();
         ev.msg = "机器人被移除出群聊";
         m_info->今日退群数量++;
+        m_info->退群本次++;
     }
     else if (ev.msgType == "FRIEND_ADD") { //好友增加
         ev.type = 2; ev.subType = 6;
         ev.msg = "机器人被添加好友";
         m_info->今日好友数量++;
+        m_info->好友本次++;
         ev.user = d.value("openid").toString();
 
     }
@@ -1304,6 +1307,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.user = d.value("openid").toString();
         ev.msg = "机器人被删除好友";
         m_info->今日删除好友数量++;
+        m_info->删好友本次++;
     }
     else if (ev.msgType == "C2C_MSG_REJECT") {
         ev.type = 5; ev.subType = 8;
@@ -1589,6 +1593,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.type = (d.value("chat_type").toString()=="c2c")?2:0;
         ev.subType = 5;
         ev.msg = "用户广告完成通知";
+        countRewardedAd();
     }
 
     else {
@@ -1736,6 +1741,16 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 }
 
 
+void QQBotClient::countRewardedAd()
+{
+    //大概统计就不加锁了
+    if (!m_info) return;
+    m_info->ad_watched_total++;
+    m_info->ad_watched++;
+    m_info->ad_watched_day++;
+}
+
+
 bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)
 {
     if(!ev.fullType) ev.at_you=true; //
@@ -1841,7 +1856,7 @@ bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
 
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
-    ev.msgId=  QStringLiteral("|%1|%2").arg(ev.log).arg(ev.msgId);
+    ev.msgId=  QStringLiteral("%1|%2|%3").arg(ev.type).arg(ev.log).arg(ev.msgId);
 
     mes.seq = ev.log;
 

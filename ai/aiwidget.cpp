@@ -2200,7 +2200,7 @@ void AiWidget::内置函数()
 //         JS、32 位易语言、以及那些自己调发送 API 的插件没有返回值 → 在发送入口把它们
 //         想说出口的话**扣下来**（msgid 打 "|-token|" 标记 + 全局 gate 表），一个字都不发出去，
 //         正文直接交给 AI 决定怎么处理。
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped);   // 定义在 core/api2.cpp
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType);   // 定义在 core/api2.cpp
 
 static QString ptIdentity(const QString &id, const QString &name)
 {
@@ -2742,7 +2742,7 @@ QString AiWidget::ptJoinArgs(const QString &argsJson)
 // 插件要的是真正的发送人 → 按 msgid 里的日志下标把那条入站消息读回来补上。
 void AiWidget::ptFillSender(MessageEvent &ev)
 {
-    const int baseSeq = splitWrappedMsgId(ev.msgId).first;
+    const int baseSeq = splitWrappedMsgId(ev.msgId, ev.type).first;
     if (baseSeq <= 0) return;
     LogDB *ldb = g_logdb[mapTypeToTabIndex(ev.type)].get();
     if (!ldb) return;
@@ -3195,7 +3195,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
 }
 
 // ========== 入口函数（只做检查，发射信号到主线程） ==========
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped); // 定义在 api.cpp
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType); // 定义在 core/api2.cpp
 QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
 {
 
@@ -3348,7 +3348,8 @@ QString AiWidget::trimContextByMessageCount2(QJsonObject &context, int maxMessag
 
     return nonSystem;
 }
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped);
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType);
+
 // ========== 主线程处理消息（延迟合并） ==========
 void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,bool notime)
 {
@@ -3374,7 +3375,7 @@ void AiWidget::onNewMessage(AccountInfo *info,const MessageEvent &ev,bool send,b
             QMutexLocker lk(&m_sessionsMutex);   // 主线程，但和线程池线程共享 m_sessions
             auto &session = m_sessions[openid];
 
-            auto [index, realMsgId] = splitWrappedMsgId(session.msgId);
+            auto [index, realMsgId] = splitWrappedMsgId(session.msgId, session.type);
             if(index>0) {  //跑这里必定延迟1s 像易语言 JS等就可以 等待返回值 看看有没有触发
                 int n = g_logdb [session.type+1]->getBufferStatus(index);
                 if(n >= 250) return; //255代表被处理了

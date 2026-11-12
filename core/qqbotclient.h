@@ -320,6 +320,8 @@ public:
     void uploadMediaImage(const QString &filePath, MediaImageDone onDone);
 void parseMessageEvent(QJsonObject &payload,const QString &text);
 
+void countRewardedAd();
+
 public slots:
     void onTextMessageReceived(const QString &message);
 

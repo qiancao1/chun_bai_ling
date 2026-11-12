@@ -674,16 +674,34 @@ QString QQBotClient::uploadSmallVideo(int targetType, const QString& openid,
     }
     return filesResp; // 重试耗尽，返回最后的错误
 }
-QPair<int, QString> splitWrappedMsgId(const QString &wrapped) {
+// 拆「包装后的 msgid」。当前格式（qqbotclient.cpp 收消息时拼的）是
+//     "<type>|<log>|<真实msgid>"      type = 消息来源(0群/1频道/2私聊/3/18进群申请)，log = 该条在 g_logdb 里的 seq
+// 另有两种**框架内部标记**，第 1 段是空的（不是消息来源，不参与下面的 type 校验）：
+//     "|-<token>|<真实msgid>"   toolGateMsgId（AI 调插件时拦截发送）
+//     "|T<seq>|<真实msgid>"     pluginTestMsgId（插件页「测试插件」）
+// ⚠ expectType = 这次发送/操作自己用的 type。解析出来的 type 跟它对不上 → 这条 msgid 不属于当前上下文，
+//   **下标记成 -1**（否则会拿 A 标签页的日志序号去改 B 标签页那条记录），但真实 msgid 照样拆出来返回，
+//   不然回复就发不出去了。
+//   传 -1 = 不校验（只取真实 msgid、根本不用下标的调用方，比如撤回）。
+QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType) {
     if (wrapped.isEmpty()) return qMakePair(-1, QString());
     int firstBar = wrapped.indexOf('|');
-    if (firstBar == -1) return qMakePair(-1, wrapped);
+    if (firstBar == -1) return qMakePair(-1, wrapped);                     // 没包装（出站 msgid）→ 整串就是真实 id
     int secondBar = wrapped.indexOf('|', firstBar + 1);
     if (secondBar == -1) return qMakePair(-1, wrapped);
+    bool typeOk = false;
+    const int type = QStringView(wrapped).left(firstBar).toInt(&typeOk);   // 第 1 段 = 消息来源
+    bool typeMatch = true;
+    if (typeOk && expectType >= 0) {
+        // 进群申请(18) 的回复按群消息(0) 发（send_msgAsync 里就这么映射的），这两种算同一个来源
+        const int cmpType = (type == 18) ? 0 : type;
+        const int cmpExpect = (expectType == 18) ? 0 : expectType;
+        if (cmpType != cmpExpect) typeMatch = false;                       // 来源对不上 → 下标作废
+    }
     bool ok;
     int addr = QStringView(wrapped).mid(firstBar + 1, secondBar - firstBar - 1).toInt(&ok);
-    if (!ok) addr = -1;
-    QString realMsgId = wrapped.mid(secondBar + 1);
+    if (!ok || !typeMatch) addr = -1;                                      // "T3" 这类内部标记也走这里
+    QString realMsgId = wrapped.mid(secondBar + 1);                        // 真实 msgid 永远单独拆出来
     return qMakePair(addr, realMsgId);
 }
 QString QQBotClient::send_Media(int type,const QString &openid,const QString &pname,const QString &info,qint64 now_us,
@@ -707,7 +725,7 @@ QString QQBotClient::send_Media(int type,const QString &openid,const QString &pn
         (fileType == 2) ? QStringLiteral("[video,path=%1,]").arg(info) :
         (fileType == 3) ? QStringLiteral("[audio,path=%1,]").arg(info) :
         (fileType == 4) ? QStringLiteral("[file,path=%1,]").arg(info)  : info;
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
     ctx.index=index;
     int seq_index=0;
     bool ok=false;
@@ -787,7 +805,7 @@ QString QQBotClient::send_messages_ark(int type, const QString &openid,const QSt
     QJsonArray prompt_keyboard;
     auto now = std::chrono::steady_clock::now();
     qint64 now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
 
     QJsonObject json;
     json["msg_type"] = 3;
@@ -865,7 +883,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-     QString url = get_url(type,openid, "messages");
+    QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);
@@ -1033,7 +1051,8 @@ QString QQBotClient::send_messages_mb(int type, const QString &openid,const QStr
 
 QString QQBotClient::delete_messages(int type, const QString &openid, const QString &msgid,Callback callbacks)
 {
-    auto [index, realMsgId] = splitWrappedMsgId(msgid);
+    // 撤回只用真实 msgid、不用日志下标 → 传 -1 不校验 type（插件传错 type 也得撤得掉）
+    auto [index, realMsgId] = splitWrappedMsgId(msgid, -1);
     QString url = get_url(type, openid, "messages", realMsgId);
     return Delete(url,QJsonObject(),QString(),10000,callbacks);
 }
