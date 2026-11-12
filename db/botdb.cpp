@@ -20,6 +20,7 @@
 
 #include "botdb.h"
 #include "global.h"
+#include "subdb.h"      // 订阅数据已搬到 SQLite（见 subdb.h 顶部说明）
 #include <QDir>
 #include <QDebug>
 #include <cstring>
@@ -142,7 +143,7 @@ private:
 };
 } // namespace
 
-bool BotDB::open()
+bool BotDB::open(size_t mapSizeOverride)
 {
     QMutexLocker locker(&m_mutex);
     // 整段「建环境 + 打开」都在换环境临界区里：mdb_env_create() 会先把 m_env 填成非空，
@@ -157,7 +158,9 @@ bool BotDB::open()
         return false;
     }
 
-    m_currentMapSize = m_initialMapSize;
+    // 0 = 首次打开（用构造时给的大小）；非 0 = 每日重载，沿用当前已经涨到的 mapsize，
+    // 否则会退回 8MB 再一路 MAP_FULL 翻倍，白白多几次 close/open。
+    m_currentMapSize = mapSizeOverride ? mapSizeOverride : m_initialMapSize;
 
     int rc = mdb_env_create(&m_env);
     if (rc != MDB_SUCCESS) {
@@ -222,6 +225,10 @@ bool BotDB::open()
     }
     //AppendEventLog( "数据库已打开，目录:" + m_path + "初始mapsize:" + QString::number((m_currentMapSize >> 20)) + "MB");
 
+    // 订阅数据搬到 SQLite（每个账号库只搬一次，标记在 subdb 的 meta 表里）。
+    // 必须在 open() 里做：订阅的读写在账号库打开后随时可能发生，迁移要是晚一步，
+    // 就会「库里明明有订阅，listSubscriptions 却返回空」（读的是空的 SQLite）。
+    migrateSubscriptions();
 
     return true;
 
@@ -326,6 +333,51 @@ void BotDB::close()
         m_userCache.clear();
         m_groupCache.clear();
     }
+}
+
+// 每日 05:00 重载（声明处 botdb.h 有大段说明）：close() + open() 一次，把整份 LMDB 映射
+// 还给系统，再按**当前 mapsize** 重开。代价是两份内存缓存被清空（下次访问按需从库里重读）。
+bool BotDB::reload()
+{
+    // 1) 先快照「待入群验证名单」：jojnyz / jojntime 是纯内存数据、根本不进 LMDB
+    //    （见 getOrUpdateUser 里那段注释），而 close() 会把 m_groupCache 整个清掉。
+    //    不快照就等于每天 05:00 把正在验证的人全丢掉。
+    QHash<BinKey, GroupRecord2> pendingGroups;
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        for (auto it = m_groupCache.constBegin(); it != m_groupCache.constEnd(); ++it) {
+            if (!it.value().jojnyz.isEmpty() || !it.value().jojntime.isEmpty())
+                pendingGroups.insert(it.key(), it.value());
+        }
+    }
+
+    const size_t keepMapSize = m_currentMapSize ? m_currentMapSize : m_initialMapSize;
+
+    // 2) 关环境：内部会 stop 并 saveDailyStats()（当日消息计数落盘）、等所有读租约退出、
+    //    然后 mdb_env_close() —— 这一步才是真正把工作集里的映射页交还给系统。
+    close();
+
+    // 3) 按原来的 mapsize 重开（不传就会退回 m_initialMapSize）
+    const bool ok = open(keepMapSize);
+
+    // 4) 回填验证名单（跟库有没有开成功无关，内存状态照旧保留）
+    if (!pendingGroups.isEmpty()) {
+        QMutexLocker locker(&m_cacheMutex);
+        for (auto it = pendingGroups.constBegin(); it != pendingGroups.constEnd(); ++it)
+            m_groupCache.insert(it.key(), it.value());
+    }
+
+    // 5) close() 把保存定时器停了，open() 不会重启 —— 不拉起来「当天计数」就再也不落盘
+    if (m_saveTimer && !m_saveTimer->isActive())
+        m_saveTimer->start(10 * 60 * 1000);
+
+    if (ok)
+        qDebug().noquote() << QStringLiteral("BotDB 每日重载成功 %1（mapsize %2MB，保留验证名单 %3 个群）")
+                                  .arg(m_path).arg(m_currentMapSize >> 20).arg(pendingGroups.size());
+    else
+        qCritical().noquote() << QStringLiteral("BotDB 每日重载失败 %1 —— 数据库现在是关闭状态，写入会全部失败")
+                                     .arg(m_path);
+    return ok;
 }
 
 // 重新打开环境（扩容后调用），保持原有的 m_currentMapSize
@@ -1998,7 +2050,19 @@ static QByteArray makeParamPrefix(uint32_t mark, uint8_t param)
 }
 
 
+// ==================== 订阅：统一走 SQLite（db/subdb.*）====================
+// 2026-11-12 起订阅数据不再写 LMDB。下面这几个是**对外的**入口，只做转发；
+// 真正的实现在原来的 *Legacy*（仅当订阅库打不开时兜底，见 subdb.h 顶部说明）。
 bool BotDB::addSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
+{
+    if (param > 3 || groupId.isEmpty() || dataList.isEmpty())
+        return false;
+    if (!g_subdb)
+        return addSubscriptionLegacy(mark, param, groupId, dataList);
+    return g_subdb->addSubscription(mark, static_cast<int>(param), groupId, QStringList(dataList));
+}
+
+bool BotDB::addSubscriptionLegacy(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
     if (param > 3 || groupId.isEmpty() || dataList.isEmpty())
         return false;
@@ -2060,6 +2124,15 @@ bool BotDB::addSubscription(const QString &mark, uint8_t param, const QString &g
     });
 }
 bool BotDB::removeSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
+{
+    if (groupId.isEmpty() || param > 3)
+        return false;
+    if (!g_subdb)
+        return removeSubscriptionLegacy(mark, param, groupId, dataList);
+    return g_subdb->removeSubscription(mark, static_cast<int>(param), groupId, QStringList(dataList));
+}
+
+bool BotDB::removeSubscriptionLegacy(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList)
 {
     if (groupId.isEmpty() || param > 3)
         return false;
@@ -2134,6 +2207,15 @@ bool BotDB::removeSubscription(const QString &mark, uint8_t param, const QString
 }
 QString BotDB::getSubscriptions(const QString &mark, uint8_t param, const QString &groupId) const
 {
+    if (groupId.isEmpty() || param > 3)
+        return QString();
+    if (!g_subdb)
+        return getSubscriptionsLegacy(mark, param, groupId);
+    return g_subdb->getSubscriptions(mark, static_cast<int>(param), groupId);
+}
+
+QString BotDB::getSubscriptionsLegacy(const QString &mark, uint8_t param, const QString &groupId) const
+{
     QString result;
     if (groupId.isEmpty() || param > 3)
         return result;
@@ -2190,6 +2272,13 @@ QString BotDB::getSubscriptions(const QString &mark, uint8_t param, const QStrin
 }
 QStringList BotDB::listSubscriptions(const QString &mark)
 {
+    if (!g_subdb)
+        return listSubscriptionsLegacy(mark);
+    return g_subdb->listSubscriptions(mark);
+}
+
+QStringList BotDB::listSubscriptionsLegacy(const QString &mark)
+{
     QStringList result;
     BotDBEnvLease lease(this);
     if (!lease) return result;
@@ -2229,6 +2318,13 @@ QStringList BotDB::listSubscriptions(const QString &mark)
 //批量删除
 bool BotDB::clearSubscriptionsByMark(const QString &mark)
 {
+    if (!g_subdb)
+        return clearSubscriptionsByMarkLegacy(mark);
+    return g_subdb->clearSubscriptionsByMark(mark);
+}
+
+bool BotDB::clearSubscriptionsByMarkLegacy(const QString &mark)
+{
     return retryWrite([&](MDB_txn *txn) -> int {
         QString k = mark+":";
         QByteArray prefix =  k.toUtf8();  // "标记:"
@@ -2266,6 +2362,79 @@ bool BotDB::clearSubscriptionsByMark(const QString &mark)
         return rc;
     });
 }
+// ==================== 一次性迁移：LMDB subscriptions → SQLite ====================
+// 只在「订阅库能打开」且「这个账号库还没搬过」时执行；搬完在 subdb 的 meta 表打标记。
+// ⚠ 全程只读旧库（MDB_RDONLY），**旧数据一条都不删** —— 留着当离线备份，
+//   要回退只需删掉 subscriptions.db（之后会自动退回 *Legacy 那套 LMDB 实现）。
+void BotDB::migrateSubscriptions()
+{
+    if (!g_subdb || !g_subdb->isOpen()) return;
+
+    const QString tag = QStringLiteral("botdb:") + m_path;
+    if (g_subdb->isMigrated(tag)) return;     // 每个账号库只搬一次
+    if (!m_env) return;
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+
+    int total = 0, imported = 0, skipped = 0;
+    bool iterated = false;          // 只有真的走完一遍才写标记，否则下次启动重试
+    MDB_cursor *cursor = nullptr;
+    if (mdb_cursor_open(txn, m_dbi_subscriptions, &cursor) == MDB_SUCCESS) {
+        iterated = true;
+        MDB_val key, value;
+        int rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+        while (rc == MDB_SUCCESS) {
+            ++total;
+            // 旧 key = "<mark>:<param>|<conv>"。mark 是用户自定义的，可能含 ':' 甚至 '|'，
+            // 但 param 是数字、conv（群号/openid）在最后且不含 '|' → 从右往左找最稳。
+            const QString k = QString::fromUtf8(static_cast<const char *>(key.mv_data), int(key.mv_size));
+            const int pipe  = k.lastIndexOf(QLatin1Char('|'));
+            const int colon = k.lastIndexOf(QLatin1Char(':'), pipe);
+            if (value.mv_data && pipe > 0 && colon > 0 && colon < pipe) {
+                const QString mark = k.left(colon);
+                bool okType = false;
+                const int ctype = k.mid(colon + 1, pipe - colon - 1).toInt(&okType);
+                const QString conv = k.mid(pipe + 1);
+
+                // value = 一串 [uint32 len][utf8 bytes]
+                QStringList data;
+                const char *raw = static_cast<const char *>(value.mv_data);
+                size_t size = value.mv_size, off = 0;
+                while (off + sizeof(uint32_t) <= size) {
+                    uint32_t len = 0;
+                    memcpy(&len, raw + off, sizeof(uint32_t));
+                    off += sizeof(uint32_t);
+                    if (len > size - off) break;      // 数据损坏，停止解析（跟读路径一致）
+                    data.append(QString::fromUtf8(raw + off, int(len)));
+                    off += len;
+                }
+
+                if (okType && !conv.isEmpty() && !data.isEmpty()
+                    && g_subdb->importRow(mark, ctype, conv, data))
+                    ++imported;
+                else
+                    ++skipped;
+            } else {
+                ++skipped;
+            }
+            rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+        }
+        mdb_cursor_close(cursor);
+    }
+    mdb_txn_abort(txn);
+
+    if (!iterated) {
+        qWarning() << "订阅迁移跳过（打不开 subscriptions 子库），下次启动再试" << m_path;
+        return;
+    }
+
+    g_subdb->markMigrated(tag);
+    qDebug().noquote()
+        << QStringLiteral("订阅迁移完成 %1：旧记录 %2 条，导入 %3 条，跳过 %4 条（旧数据保留在 LMDB 里）")
+               .arg(m_path).arg(total).arg(imported).arg(skipped);
+}
+
 bool BotDB::batchAddGroups(const QList<QString>& groupIdHexList, uint32_t createTimeMinutes)
 {
     if (groupIdHexList.isEmpty())

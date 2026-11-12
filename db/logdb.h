@@ -9,7 +9,28 @@
 #include <QStringList>
 #include <QMutex>
 #include <atomic>
-#include <lmdb.h>
+
+// 2026-11-11：日志库从 LMDB 换成 SQLite。
+//
+// 为什么换（LMDB 不适合「写多读极少 + 定期删旧」的日志负载）：
+//   1. 删条目不缩文件 —— 只能靠「重写整个库」的 compact，贵到要 3 天冷却；
+//   2. 清理必须从头删到边界，10 万条 = 把 199MB 的页全摸进进程工作集，
+//      而 Windows 在内存不紧张时永不回收 → 「每天 05:00 过后内存涨一大截」；
+//   3. key 是 seq:appid:group（按全局序号排序），「取某会话最近 N 条」只能倒扫过滤；
+//   4. 整文件 mmap，碰过的页一直算在进程工作集（任务管理器上就是几百 MB）。
+//
+// SQLite 这边：cache_size 是**硬上限**（8MB），不开 mmap，删旧走主键 O(log n)，
+// auto_vacuum=INCREMENTAL 能原地释放空闲页，会话查询走 (appid,conv,seq) 索引。
+//
+// ⚠ 对外接口签名保持不变（只把 MDB_txn* 换成不透明的 LogTxn），
+//   所有调用方（logpage / chatpage / websocketserver / plts / api2 / global）一行都不用改。
+
+struct sqlite3;   // 只前向声明：不在头文件里拉 sqlite3.h，避免整个工程重编
+
+// 事务句柄。原来这里是 MDB_txn*；换成 SQLite 后事务状态就在连接上，不需要真句柄，
+// 但外部有 4 处是「begin → getCurrentTxn() 透传给 readLogInTxn → commit」的写法，
+// 保留一个不透明指针，让他们继续原样编译。
+using LogTxn = void*;
 
 class LogDB : public QObject
 {
@@ -24,13 +45,13 @@ public:
     bool beginTransaction(bool readOnly = false);
     bool commitTransaction();
     bool abortTransaction();
-    bool getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const;
+    bool getLatestLogInTxn(LogTxn txn, const QString& appid, const QString& groupId, Message& msg) const;
     bool getLatestLog(const QString &appid, const QString &groupId, Message &msg) const;
-    // 加锁读：外面拿到的只是「当时有效」的指针，之后 close() / 扩容都可能把它作废，
-    // 所以 readLogInTxn / getLatestLogInTxn 内部还会再校验一次（见 .cpp）。
-    MDB_txn* getCurrentTxn() const { QMutexLocker locker(&m_mutex); return m_currentTxn; }
+    // 加锁读：外面拿到的只是一个不透明标记，事务真正挂在连接上；
+    // readLogInTxn / getLatestLogInTxn 会自己校验它是否仍然有效。
+    LogTxn getCurrentTxn() const { QMutexLocker locker(&m_mutex); return m_currentTxn; }
     // 使用外部已有事务进行读取（不自动开启事务）
-    bool readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
+    bool readLogInTxn(LogTxn txn, const QString& appid, const QString& groupId,
                       uint64_t seq, Message& msg) const;
     // 添加日志，返回分配的序号（全局唯一递增），失败返回 0
     uint64_t appendLog(const QString &appid, const QString &groupId, const Message &msg);
@@ -65,18 +86,27 @@ public:
     bool readLog(const QString &keyStr, Message &msg) const;
     // 清理数据库，保留全局最新 N 条，删除其余
     bool cleanDatabase(int keepN);
-    // 后台清理（不阻塞 UI，不排队）：单库十几万条时同步扫全库会把界面卡住。
+    // 后台清理（不阻塞 UI，不排队）：单库十几万条时同步删会把界面卡住。
     //   已有一次在跑就直接返回 false；实际删除逻辑与 cleanDatabase 完全相同。
     bool cleanDatabaseAsync(int keepN);
-    // 启动时压缩：LMDB 删条目不缩文件，data.mdb 会停在历史峰值。
-    //   只有「文件明显大于实际数据」才做一次 compact copy（重写整个库，所以很贵）。
+    // 回收空闲页（SQLite 的 auto_vacuum=INCREMENTAL 是原地释放，不需要 LMDB 那种
+    //   「重写整个库」的 compact）。启动时顺手跑一次，把上次删旧留下的空洞还掉。
     bool compactIfNeeded();
 
-    // 清理完把库「卸载再挂上」：mdb_env_close → UnmapViewOfFile，清理那一趟摸过的文件页
-    // 立刻从进程工作集消失（SetProcessWorkingSetSize 只是挪进 standby，这个是直接归还）。
-    // ⚠ 只动 env，不动 m_buffer / m_flushTimer；reopenEnv 全程持 m_mutex，读/写线程会被挡住。
+    // 「卸载再挂上」：关掉 SQLite 连接再重开。
+    //   目的不是省 mmap（SQLite 根本不开 mmap），而是把 page cache 里那 8MB 连同
+    //   所有临时缓冲一起扔掉；配合 trimWorkingSet 可以把进程工作集压到真实活跃集。
+    // ⚠ 只动连接，不动 m_buffer / m_flushTimer；openConnection 全程持 m_mutex，
+    //   读/写线程会被挡住，看不到中间的 m_db == nullptr。
     // ⚠ 必须在主线程调用（失败兜底会走 open()，它要重建 QTimer）。
-    bool reloadAfterClean();
+    // trimWorkingSet：成功后是否顺带 SetProcessWorkingSetSize(-1,-1)。
+    //   日常清理/内存看门要 true；设置页那个「重载数据库」诊断按钮必须传 false ——
+    //   否则每一步读数都已经被 trim 过，前后对比全部失真。
+    bool reloadAfterClean(bool trimWorkingSet = true);
+
+    // 后台清理是否正在跑。cleanDatabase 全程持 m_mutex，这时候调 reloadAfterClean()
+    // 会把主线程一起卡住 —— 内存看门要先问这个。
+    bool isCleaning() const { return m_cleaning.load(std::memory_order_relaxed); }
 
 
     void setBufferRaw(uint64_t seq, uint64_t value) {
@@ -133,9 +163,8 @@ public:
                                                     std::memory_order_acq_rel,
                                                     std::memory_order_acquire)) {
                 ok = true;
-                return newVal >> 8;   // 返回时间（与 old >> 8 相同）
+                return newVal >> 8;   // 返回时间
             }
-            // 如果 CAS 失败，old 已被更新为当前值，继续循环
         }
     }
     // 获取时间戳（微秒）
@@ -212,34 +241,36 @@ public:
 private:
     // ---- 环形缓冲区成员 ----
     size_t m_bufferSize;
-    std::atomic<uint64_t>* m_buffer = nullptr;   // 改为 8 字节原子类型（close() 里释放，open() 重新建）
-
-    size_t m_mapsize;                // 当前映射大小
-
+    std::atomic<uint64_t>* m_buffer = nullptr;   // 8 字节原子类型（close() 里释放，open() 重新建）
 
     // ---- 数据库成员 ----
     QString m_dbPath;
-    MDB_env *m_env;
-    MDB_dbi m_dbi_main;
+    sqlite3 *m_db = nullptr;         // SQLite 连接（单连接 + m_mutex 串行化）
 
-    // Recursive：reopenEnv()/expandAndReopen() 会在 flushCacheToDBUnlocked()（调用前已持锁）
-    // 里被重入调用，同线程必须能再拿一次，否则自锁。
+    // Recursive：openConnection() / flushCacheToDBUnlocked() 内部会重入加锁，
+    // 同线程必须能再拿一次，否则自锁。
     mutable QMutex m_mutex{QMutex::Recursive};
 
-    // 辅助函数
     std::atomic<uint64_t> m_nextId{1};
-
 
     bool serializeMessage(const Message &msg, QByteArray &data) const;
     bool deserializeMessage(const QByteArray &data, Message &msg) const;
-    bool expandAndReopen();
-    bool reopenEnv(size_t newMapsize);
-    MDB_txn* m_currentTxn;   // 当前活动事务（由 beginTransaction 创建）
+
+    // 建立/重建连接（建表 + 设 PRAGMA + 恢复最大序号）。已存在会先关掉。
+    bool openConnection();
+    // 按 seq 直接取（SQLite 里 seq 就是主键，不用拼 key 字符串）
+    bool loadBySeq(uint64_t seq, Message &msg) const;
+    // 从 makeKey 拼出来的字符串里取回 seq（前 SEQ_DIGITS 位）
+    static uint64_t seqFromKey(const QString &keyStr);
+
+    LogTxn m_currentTxn = nullptr;   // 非空 = 有活动事务（只是一个标记，事务在连接上）
 
     struct CacheEntry {
         Message msg;
-
-        bool dirty;          // true = 尚未写入数据库
+        QString appid;      // 落盘时直接用，不必再拆 key
+        QString conv;
+        uint64_t seq = 0;
+        bool dirty = true;  // true = 尚未写入数据库
     };
     mutable QMap<QString, CacheEntry> m_cache;
     QTimer* m_flushTimer = nullptr;   // close() 会删掉，open() 通过 ensureRuntime() 重建
@@ -248,9 +279,8 @@ private:
     // 用 QThreadPool 而不是自己 new QThread：池是 this 的子对象，
     // 析构会自动 waitForDone，不会出现「线程还在跑、对象已经没了」。
     class QThreadPool *m_cleanPool = nullptr;
-    std::atomic<bool> m_cleaning{false};   // 防止定时器 + 打开日志页同时触发两轮全库扫描
+    std::atomic<bool> m_cleaning{false};   // 防止定时器 + 打开日志页同时触发两轮清理
 
-    bool loadFromDB(const QString &keyStr, Message &msg) const; // 不加锁，假设外部已锁
     void flushCacheToDB() ;
     void flushCacheToDBUnlocked();   // 不加锁版本
     // 把 m_buffer / m_flushTimer 补齐（close() 会把它们拆掉，open() 要能重建）。可重复调用。

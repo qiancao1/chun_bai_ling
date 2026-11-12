@@ -117,8 +117,21 @@ public:
     explicit BotDB(const QString& path, size_t initialMapSizeMB = 8);
     ~BotDB();
 
-    bool open();
+    // mapSizeOverride：0 = 用构造时的 m_initialMapSize；非 0 = 按指定 mapsize 打开
+    //   （每日重载走这个，把当前大小传回去，见 reload()）
+    bool open(size_t mapSizeOverride = 0);
     void close();
+
+    // 每日 05:00 由 main.cpp 的定时器调用（见 main.cpp reloadBotDBs）。
+    // 做的事就是 close() + open()：LMDB 是**整文件 mmap**，MDB_WRITEMAP 又把脏页直接算进
+    // 工作集，跑一天后任务管理器里的 200~400MB 有相当一部分就是这块映射；mdb_env_close()
+    // 会 UnmapViewOfFile，是真正「还回去」，比 SetProcessWorkingSetSize 那种只挪进 standby 干净。
+    // ⚠ 两个必须保住的东西：
+    //   1. 群缓存里 jojnyz / jojntime（待入群验证名单）是纯内存、不入库，close() 会整份清掉
+    //      → 本函数先快照再回填；
+    //   2. m_saveTimer 被 close() stop 掉，open() 不会重启 → 不拉起来「当日消息计数」再也不落盘。
+    // ⚠ 不要在工作线程调（内部会 m_saveTimer->start()）；本函数设计成主线程调用。
+    bool reload();
 
     // ---- m_env 生命周期租约（内部用）----
     // 读线程进来先 `BotDBEnvLease lease(this); if (!lease) 直接返回;`
@@ -131,6 +144,11 @@ public:
     void endEnvChange();            // 退出「换环境」临界区
     void updateUserCache(const QByteArray &openidBin, const UserRecord &record);
     void updateGroupCache(const QByteArray &groupIdBin, const GroupRecord2 &record);
+    // ==================== 订阅（2026-11-12 起存在 SQLite：db/subdb.*）====================
+    // 这几个方法签名**一个字都没改**，但内部已经改成转发到全局 g_subdb；
+    // 只有订阅库打不开（g_subdb == nullptr）时才退回下面 private 里的 *Legacy*（原 LMDB 实现）。
+    // 为什么搬走：订阅是只增不减的业务数据，几百万条时 LMDB 的文件只涨不缩、整文件 mmap
+    // 一路把工作集顶上去；SQLite 这边 cache_size 是硬上限，库再大常驻也就 2MB。
     // 订阅（添加）：标记 + 群ID
     bool addSubscription(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &data);
     //获取单个配置信息
@@ -206,6 +224,17 @@ public:
     QHash<BinKey, quint64> m_groupDailyMsg;  // 群今日消息数
     QMutex m_msgMutex;
 private:
+    // ---- 订阅的 LMDB 兜底实现：只有 g_subdb == nullptr（订阅库打不开）时才走 ----
+    // 保留原实现是为了「订阅库挂了功能也不能丢」，正常路径永远走 SQLite。
+    bool addSubscriptionLegacy(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList);
+    QString getSubscriptionsLegacy(const QString &mark, uint8_t param, const QString &groupId) const;
+    bool removeSubscriptionLegacy(const QString &mark, uint8_t param, const QString &groupId, const QList<QString> &dataList);
+    bool clearSubscriptionsByMarkLegacy(const QString &mark);
+    QStringList listSubscriptionsLegacy(const QString &mark);
+    // 把旧 LMDB subscriptions 子库搬进 SQLite。每个账号库只搬一次（subdb 的 meta 表打标记）。
+    // ⚠ 只读不删：搬完旧数据仍留在 data.mdb 里当离线备份。
+    void migrateSubscriptions();
+
     // 内部辅助函数（原有）
     uint32_t getNextSeqId(MDB_txn *txn);
     int putRecord(MDB_txn *txn, MDB_dbi dbi, const QByteArray &keyData, const void *data, size_t size);

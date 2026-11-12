@@ -81,13 +81,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.6.190"
-#define APP_BUILD_NUMBER 190
+#define APP_VERSION_STR "v1.5.7.193"
+#define APP_BUILD_NUMBER 193
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.7.191
+## v1.5.7.193  (2026-11-12)
 - 优化 允许自定义自动撤回 不写在 纯白铃指令 但是完整纯白铃指令有
+- 优化 日志数据库 改为sqlit lmdb 效率虽然快但是会映射内存 从任务管理器看见是占用很多状态 实际上并没有
+- 优化 昵称审核界面
 
 ## v1.5.6.190 (2026-11-09)
 - 修复 msgid判定范围导致 机器人加群msgid无效问题

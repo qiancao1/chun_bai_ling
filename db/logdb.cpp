@@ -1,6 +1,5 @@
 /*
- * 纯白铃 - QQ 机器人管理平台 - DLL 插件 SDK
- * [当前文件的简短功能描述]
+ * 纯白铃 - QQ 机器人管理平台 - 日志数据库（SQLite 版）
  *
  * Copyright (C) 2026 两个月亮
  *
@@ -17,39 +16,55 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-// logdb.cpp
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2026-11-11：从 LMDB 换成 SQLite。
+//
+// 为什么换 —— LMDB 和「日志」这种负载是反着来的：
+//   ① 删条目不缩文件。data.mdb 会永远停在历史峰值（实测 logdb_1 = 198.9MB /
+//      10 万条），想缩只能「重写整个库」的 compact，贵到要 3 天冷却。
+//   ② 清理必须全表遍历。10 万条就是 199MB 的页全被摸进进程工作集，而 Windows
+//      在内存不紧张时永不回收 → 每天 05:00 过后任务管理器涨一大截。
+//   ③ 整文件 mmap。碰过的页一直算在进程头上（这就是「600MB」里那 200MB）。
+//   ④ key 是 seq:appid:group（按全局序号排序），「取某会话最近 N 条」只能倒扫
+//      全库再按 appid 过滤 —— 聊天页开一个会话就要走几千条。
+//
+// SQLite 这边：
+//   · cache_size 是**硬上限**（8MB），无论库多大，常驻就这么点；
+//   · mmap_size=0，数据页走 read()，根本不会把整个文件映射进进程；
+//   · 删旧走主键（seq INTEGER PRIMARY KEY）O(log n)，只碰要删那一段；
+//   · auto_vacuum=INCREMENTAL 原地释放空闲页，不需要重写整库；
+//   · (appid,conv,seq) 索引让「取某会话最近 N 条」变成一次索引范围扫描。
+//
+// 对外接口一行没改（只把 MDB_txn* 换成了不透明的 LogTxn），所以
+// logpage / chatpage / websocketserver / plts / api2 / global 全都不用动。
+// ════════════════════════════════════════════════════════════════════════════
+
 #include "logdb.h"
-#include "botdb.h"
 #include <QDebug>
 #include <QDir>
 #include <QDataStream>
 #include <QDateTime>
 #include <QSet>
-#include <QCoreApplication>
 #include <QThreadPool>
 #include <QRunnable>
 #include <QFile>
 #include <QFileInfo>
-#include <cstring>
+#include <sqlite3.h>
+
+#include <algorithm>
+#include <chrono>
 
 #ifdef Q_OS_WIN
 // qt_windows.h 内部已定义 NOMINMAX / WIN32_LEAN_AND_MEAN，不会把 std::min/std::max 打成宏
 #include <qt_windows.h>
 #endif
 
-#include <algorithm>
-
-// 常量定义
-// 日志库是「写多读极少」的负载，映射不需要开得很大：
-//   · DEFAULT_MAPSIZE 只决定 mmap 的虚拟区间，写满再翻倍（扩容 = 重开 env，偶发一次）。
-//     32MB 能放十几万条，正常够用；小一点对 32 位/低内存机器更友好。
-//   · MAX_MAPSIZE 是「翻倍的上限」，不是硬限制：文件本身比它还大时按 fileSize 兜（见 reopenEnv）。
-static const size_t DEFAULT_MAPSIZE = 32ULL * 1024 * 1024;    // 32 MB
-static const size_t MAX_MAPSIZE = 2ULL * 1024 * 1024 * 1024;  // 2 GB（约 500 万条日志，远超 keepN）
-static const int SEQ_DIGITS = 20; // 序号填充位数
+// 序号填充位数（makeKey 用；seqFromKey 也按这个宽度取）
+static const int SEQ_DIGITS = 20;
 
 // 缓存积压的硬上限：正常 5 秒刷一次，这里只兜「写不进去」的异常路径
-// （坏记录 / 磁盘满 / I-O 错误 / 扩容失败），否则 appendLog 会一直往里堆 = 无界涨内存。
+// （坏记录 / 磁盘满 / I-O 错误），否则 appendLog 会一直往里堆 = 无界涨内存。
 static const int MAX_PENDING_CACHE = 20000;
 
 // ---- 被动回复 msgid 的有效窗口（2026-10-11）----
@@ -57,6 +72,14 @@ static const int MAX_PENDING_CACHE = 20000;
 // 所以按各自窗口取最近一条即可；拿不到就传空 msgid 走主动发送。
 static const qint64 GROUP_MSGID_WINDOW_SECS  = 5 * 60;      // 群消息：5 分钟
 static const qint64 FRIEND_MSGID_WINDOW_SECS = 60 * 60;     // 好友/单聊：1 小时
+
+// ---- SQLite 参数 ----
+// cache_size 是「负值 = KB」，这里是**硬上限**：不管 logs.db 是 200MB 还是 2GB，
+// 进程里就只有这 8MB 页缓存。这才是「设 100 万条也不吃内存」的关键。
+static const int LOGDB_CACHE_KB   = 8 * 1024;
+static const int LOGDB_BUSY_MS    = 5000;      // 撞锁最多等 5 秒（单连接 + 我们的锁，正常撞不到）
+// 每次回收空闲页的上限（页数）：一次还太多会把清理拖到几秒，分批更稳
+static const int LOGDB_VACUUM_PAGES = 2000;
 
 // "yyyy-MM-dd hh:mm:ss"（入站消息）与 "yyyy-MM-dd HH:mm:ss"（出站/日志）两种写法都吃
 static qint64 parseLogTimeString(const QString &ts)
@@ -81,15 +104,35 @@ static qint64 logBlobTimeSecs(const QByteArray &blob)
     return parseLogTimeString(ts);
 }
 
+// 静默执行一条 SQL（失败只返回 false，不打印）
+static bool execQuiet(sqlite3 *db, const char *sql)
+{
+    if (!db || !sql) return false;
+    return sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
+}
+
+// 执行并打印错误（带 tag 方便定位）
+static bool execLog(sqlite3 *db, const char *sql, const char *tag)
+{
+    if (!db || !sql) return false;
+    char *msg = nullptr;
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &msg);
+    if (rc != SQLITE_OK) {
+        qWarning() << "LogDB:" << tag << "失败" << (msg ? msg : sqlite3_errmsg(db));
+        if (msg) sqlite3_free(msg);
+        return false;
+    }
+    if (msg) sqlite3_free(msg);
+    return true;
+}
+
 // ========== 构造函数、析构函数 ==========
 LogDB::LogDB(const QString &dbPath, QObject *parent)
     : QObject(parent)
     , m_bufferSize(10000)
     , m_buffer(nullptr)
     , m_dbPath(dbPath)
-    , m_env(nullptr)
-    , m_dbi_main(0)
-    , m_currentTxn(nullptr)          // 初始化事务指针
+    , m_currentTxn(nullptr)
 {
     // 环形缓冲 + 刷库定时器由 ensureRuntime 统一创建：
     // close() 会把这两个拆掉，而 open() 允许在 close() 之后再调（= 重开），
@@ -125,8 +168,7 @@ LogDB::~LogDB()
 //   所以「关了再开」是安全的，「关了继续 appendLog」不是（会把 m_buffer 当空指针写）。
 void LogDB::close()
 {
-    // 0. 后台清理可能正持着 m_mutex 扫全库（十几万条要几秒）——必须等它跑完再关 env，
-    //    否则它会拿着已经 close 掉的 m_env 继续 mdb_cursor_get（踩野指针）。
+    // 0. 后台清理可能正持着 m_mutex（几万条 DELETE 要几秒）——必须等它跑完再关连接
     if (m_cleanPool) m_cleanPool->waitForDone();
 
     // 1. 停止定时器，防止在刷库过程中再次触发
@@ -136,166 +178,185 @@ void LogDB::close()
         m_flushTimer = nullptr;
     }
 
-    // 2. 刷库（将缓存数据写入数据库）—— 内部会加锁
-    flushCacheToDB();
-
-    // 3. 关闭数据库环境
-    QMutexLocker locker(&m_mutex);
-    if (m_env) {
+    {
+        QMutexLocker locker(&m_mutex);
+        // 2. 外部开着的只读/写事务：直接回滚。没提交的数据本来就不该留，
+        //    而且 SQLite 单连接上挂着事务去 close 会返回 SQLITE_BUSY。
         if (m_currentTxn) {
-            mdb_txn_abort(m_currentTxn);
+            if (m_db) execQuiet(m_db, "ROLLBACK");
             m_currentTxn = nullptr;
         }
-        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        m_dbi_main = 0;
-    }
-    // 缓存里剩下的（刷库失败/被跳过的那批）在关库后已经不可能再落盘，直接丢掉省内存。
-    m_cache.clear();
-    if (m_buffer) {
-        delete[] m_buffer;
-        m_buffer = nullptr;
+        // 3. 刷库（将缓存数据写入数据库）—— 已在锁内，用不加锁版本
+        flushCacheToDBUnlocked();
+
+        // 4. 关连接
+        if (m_db) {
+            sqlite3_close_v2(m_db);   // v2 = 允许延迟关闭（万一还有 stmt 没 finalize 也不报 BUSY）
+            m_db = nullptr;
+        }
+        // 缓存里剩下的（刷库失败/被跳过的那批）在关库后已经不可能再落盘，直接丢掉省内存。
+        m_cache.clear();
+        if (m_buffer) {
+            delete[] m_buffer;
+            m_buffer = nullptr;
+        }
     }
 }
 
+// ========== 连接 ==========
+// 建连接 + 设 PRAGMA + 建表 + 恢复最大序号。已存在会先关掉（供 reloadAfterClean 复用）。
+// ⚠ 全程持 m_mutex：调用方看不到中间的 m_db == nullptr。
+bool LogDB::openConnection()
+{
+    QMutexLocker locker(&m_mutex);
+
+    if (m_db) {
+        sqlite3_close_v2(m_db);
+        m_db = nullptr;
+    }
+    m_currentTxn = nullptr;
+
+    if (!QDir().mkpath(m_dbPath)) {
+        qCritical() << "LogDB: 无法创建目录" << m_dbPath;
+        return false;
+    }
+
+    const QByteArray file = (m_dbPath + "/logs.db").toUtf8();
+    const int rc = sqlite3_open_v2(file.constData(), &m_db,
+                                   SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                                   nullptr);
+    if (rc != SQLITE_OK) {
+        qCritical() << "LogDB: 打开失败" << m_dbPath
+                    << (m_db ? sqlite3_errmsg(m_db) : "sqlite3_open_v2 返回 NULL");
+        if (m_db) { sqlite3_close_v2(m_db); m_db = nullptr; }
+        return false;
+    }
+    sqlite3_busy_timeout(m_db, LOGDB_BUSY_MS);
+
+    // ⚠ auto_vacuum 必须在**建表之前**设置，且只对「新建的空库」生效。
+    //   INCREMENTAL = 删记录只把页标成空闲，之后 PRAGMA incremental_vacuum 能
+    //   **原地**把文件缩回去 —— 这就是 LMDB 那个「必须重写整个库」的 compact 的替代。
+    const QByteArray cacheSql = "PRAGMA cache_size=-" + QByteArray::number(LOGDB_CACHE_KB);
+
+    execLog(m_db, "PRAGMA journal_mode=WAL",   "journal_mode=WAL");     // 追加写，不阻塞读
+    execLog(m_db, "PRAGMA synchronous=NORMAL", "synchronous=NORMAL");   // WAL 下够了：崩溃不坏库，最多丢最后一次提交
+    execLog(m_db, cacheSql.constData(),        "cache_size");
+    execLog(m_db, "PRAGMA mmap_size=0",        "mmap_size=0");          // ⚠ 明确不用 mmap
+    execLog(m_db, "PRAGMA temp_store=MEMORY",  "temp_store=MEMORY");
+    execLog(m_db, "PRAGMA auto_vacuum=INCREMENTAL", "auto_vacuum=INCREMENTAL");
+
+    // 表结构：
+    //   seq    = 全局递增序号，直接当主键（= rowid 别名，查得最快）
+    //   appid  = 账号 appid（字符串原样存，查询按它过滤）
+    //   conv   = 会话 id（群号 / openid）
+    //   appid_i= appid 的整数值，专门给 getLatestMessagesWithOffset 那种按数字 appid 过滤的查询
+    //   blob   = serializeMessage 出来的 Message
+    if (!execLog(m_db,
+                 "CREATE TABLE IF NOT EXISTS logs ("
+                 "  seq     INTEGER PRIMARY KEY,"
+                 "  appid   TEXT    NOT NULL,"
+                 "  conv    TEXT    NOT NULL,"
+                 "  appid_i INTEGER NOT NULL DEFAULT 0,"
+                 "  blob    BLOB    NOT NULL)",
+                 "CREATE TABLE logs")) {
+        sqlite3_close_v2(m_db);
+        m_db = nullptr;
+        return false;
+    }
+    // 这个索引是「取某会话最近 N 条」的命门：SQLite 直接按 (appid,conv,seq) 定位，
+    // 不用像 LMDB 那样从库尾一条条倒扫再过滤 appid/group。
+    execLog(m_db, "CREATE INDEX IF NOT EXISTS idx_logs_conv  ON logs(appid, conv, seq)",
+            "CREATE INDEX idx_logs_conv");
+    execLog(m_db, "CREATE INDEX IF NOT EXISTS idx_logs_appid ON logs(appid_i, seq)",
+            "CREATE INDEX idx_logs_appid");
+
+    // 恢复最大序号（保证重启后 seq 接着往上走，不会覆盖旧消息）
+    uint64_t maxSeq = 0;
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, "SELECT IFNULL(MAX(seq),0) FROM logs", -1, &st, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW)
+            maxSeq = static_cast<uint64_t>(sqlite3_column_int64(st, 0));
+        sqlite3_finalize(st);
+    }
+    m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
+
+    qDebug() << "LogDB 打开完成(SQLite)" << m_dbPath
+             << "最大序号 =" << maxSeq << "页缓存上限 =" << LOGDB_CACHE_KB << "KB";
+    return true;
+}
+
+bool LogDB::open()
+{
+    if (m_db) close();
+    // close() 会把环形缓冲和刷库定时器一起拆掉（见 close 上方说明），这里必须补回来
+    ensureRuntime();
+
+    if (!openConnection()) return false;
+
+    // 启动时顺手回收一批空闲页（上次删旧留下的空洞）。
+    // SQLite 是原地释放，不像 LMDB 要重写整个库，所以可以放心每次启动都做。
+    compactIfNeeded();
+    return m_db != nullptr;
+}
+
+QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
+{
+    QString seqStr = QString("%1").arg(seq, SEQ_DIGITS, 10, QChar('0'));
+    return seqStr + ":" + appid + ":" + groupId;
+}
+
+uint64_t LogDB::seqFromKey(const QString &keyStr)
+{
+    if (keyStr.size() < SEQ_DIGITS) return 0;
+    bool ok = false;
+    const uint64_t s = keyStr.left(SEQ_DIGITS).toULongLong(&ok);
+    return ok ? s : 0;
+}
 
 // ========== 事务控制 ==========
+// SQLite 的事务挂在连接上，没有 LMDB 那种 txn 句柄；这里 m_currentTxn 只是一个
+// 「有活动事务」的非空标记，专门给 getCurrentTxn() 透传给外部那 4 处调用点用。
 bool LogDB::beginTransaction(bool readOnly)
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_env) return false;
+    if (!m_db) return false;
     if (m_currentTxn) {
         qWarning() << "LogDB: 已有活动事务，不允许嵌套";
         return false;
     }
-    int rc = mdb_txn_begin(m_env, nullptr, readOnly ? MDB_RDONLY : 0, &m_currentTxn);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: 开启事务失败:" << mdb_strerror(rc);
-        return false;
-    }
+    // 只读用 BEGIN（DEFERRED，不拿写锁）；读写用 BEGIN IMMEDIATE 立刻拿写锁，
+    // 免得到提交那一刻才升级锁、撞上 SQLITE_BUSY。
+    const char *sql = readOnly ? "BEGIN" : "BEGIN IMMEDIATE";
+    if (!execLog(m_db, sql, sql)) return false;
+    m_currentTxn = reinterpret_cast<LogTxn>(static_cast<quintptr>(1));
     return true;
 }
 
 bool LogDB::commitTransaction()
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_currentTxn) {
+    if (!m_db || !m_currentTxn) {
         qWarning() << "LogDB: 没有活动事务可提交";
         return false;
     }
-    int rc = mdb_txn_commit(m_currentTxn);
-    m_currentTxn = nullptr;
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: 提交事务失败:" << mdb_strerror(rc);
-        return false;
-    }
-    return true;
+    const bool ok = execLog(m_db, "COMMIT", "COMMIT");
+    m_currentTxn = nullptr;      // ⚠ 无论成败都要清：COMMIT 失败时事务已被 SQLite 结束
+    return ok;
 }
 
 bool LogDB::abortTransaction()
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_currentTxn) {
+    if (!m_db || !m_currentTxn) {
         qWarning() << "LogDB: 没有活动事务可回滚";
         return false;
     }
-    mdb_txn_abort(m_currentTxn);
+    execLog(m_db, "ROLLBACK", "ROLLBACK");
     m_currentTxn = nullptr;
     return true;
 }
 
-// ========== 使用外部事务的读取（不自动开启事务） ==========
-bool LogDB::readLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId,
-                         uint64_t seq, Message& msg) const
-{
-    // ⚠ 整段读都在 m_mutex 里跑（不是整轮循环，只锁一次读，不会把刷库堵住）。
-    //   原因：调用方（network/websocketserver.cpp / ui/chatpage.cpp）的用法是
-    //   beginTransaction(true) → for(全量群){ readLogInTxn(getCurrentTxn(),…) } → commit，
-    //   **读的时候不持锁**；而 5 秒刷缓存撞 MAP_FULL 会走 expandAndReopen() → mdb_env_close()，
-    //   close() 也会 mdb_txn_abort(m_currentTxn)。环境/事务被拆掉之后再 mdb_get 就是踩野指针，
-    //   表现是堆破坏 → fail-fast（进程秒退、连 dump 都留不下）。
-    QMutexLocker locker(&m_mutex);
-    if (!m_env) return false;
-
-    // 传进来的 txn 必须还是「当前那一个」；否则（已 close / 已扩容 / 传了作废指针）
-    // 就自己开一个临时读事务，读完立刻还掉 —— 绝不拿作废的指针去 mdb_get。
-    MDB_txn *useTxn = nullptr;
-    bool ownTxn = false;
-    if (txn && txn == m_currentTxn) {
-        useTxn = txn;
-    } else {
-        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &useTxn) != MDB_SUCCESS)
-            return false;
-        ownTxn = true;
-    }
-
-    QString keyStr = makeKey(appid, groupId, seq);
-    QByteArray keyBytes = keyStr.toUtf8();
-
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-
-    int rc = mdb_get(useTxn, m_dbi_main, &key, &value);
-    // 先把数据拷出来，再结束临时事务（读事务的 map 页在 abort 后不保证仍可引用）
-    QByteArray blob;
-    if (rc == MDB_SUCCESS)
-        blob = QByteArray((const char*)value.mv_data, value.mv_size);
-    if (ownTxn) mdb_txn_abort(useTxn);
-
-    if (rc != MDB_SUCCESS) {
-        if (rc != MDB_NOTFOUND)
-            qWarning() << "LogDB: readLogInTxn 失败:" << mdb_strerror(rc);
-        return false;
-    }
-
-    return deserializeMessage(blob, msg);
-}
-
-bool LogDB::open()
-{
-    if (m_env) close();
-    // close() 会把环形缓冲和刷库定时器一起拆掉（见 close 上方说明），这里必须补回来
-    ensureRuntime();
-
-    QDir dir;
-    if (!dir.mkpath(m_dbPath)) {
-        qCritical() << "LogDB: 无法创建目录" << m_dbPath;
-        return false;
-    }
-
-    // 上次压缩中途被打断（进程被杀/断电）的现场恢复：
-    //   data.mdb 已被挪成 .bak、新的还没换上来 → 把备份改回去，别让库开不起来。
-    const QString dataPath = m_dbPath + "/data.mdb";
-    const QString bakPath  = m_dbPath + "/data.mdb.bak";
-    const QString tmpDir   = m_dbPath + "/compact_tmp";
-    if (!QFile::exists(dataPath) && QFile::exists(bakPath)) {
-        if (QFile::rename(bakPath, dataPath))
-            qWarning() << "LogDB: 上次压缩中断，已从备份恢复" << m_dbPath;
-    } else if (QFile::exists(dataPath) && QFile::exists(bakPath)) {
-        // 新库已经换上了，.bak 只是没来得及删 —— 直接清掉，别白占几百 MB
-        QFile::remove(bakPath);
-    }
-    if (QDir(tmpDir).exists()) QDir(tmpDir).removeRecursively();
-
-    // 直接调用 reopenEnv 完成初始打开
-    m_mapsize = DEFAULT_MAPSIZE;
-    if (!reopenEnv(m_mapsize)) return false;
-
-    // 启动时顺手压一次（只在文件远大于实际数据时才真做，见 compactIfNeeded）
-    compactIfNeeded();
-    // 压缩里任何一步失败都会回滚重开；万一连回滚都没开起来，这里必须如实报失败
-    return m_env != nullptr;
-}
-
-QString LogDB::makeKey(const QString &appid, const QString &groupId, uint64_t seq) const
-{
-    QString seqStr = QString("%1").arg(seq, SEQ_DIGITS, 10, QChar('0'));
-    return seqStr + ":" +appid + ":" + groupId  ;
-}
-
-
+// ========== 序列化 ==========
 bool LogDB::serializeMessage(const Message &msg, QByteArray &data) const
 {
     QDataStream stream(&data, QIODevice::WriteOnly);
@@ -315,175 +376,139 @@ bool LogDB::deserializeMessage(const QByteArray &data, Message &msg) const
     return stream.status() == QDataStream::Ok;
 }
 
-bool LogDB::getLatestLogInTxn(MDB_txn* txn, const QString& appid, const QString& groupId, Message& msg) const
+// ========== 点查 ==========
+// 调用方需已持 m_mutex。
+bool LogDB::loadBySeq(uint64_t seq, Message &msg) const
 {
-    // 与 readLogInTxn 同理：整段读持 m_mutex，并对调用方传入的 txn 做作废校验。
-    QMutexLocker locker(&m_mutex);
-    if (!m_env) return false;
+    if (!m_db) return false;
 
-    MDB_txn *useTxn = nullptr;
-    bool ownTxn = false;
-    if (txn && txn == m_currentTxn) {
-        useTxn = txn;
-    } else {
-        if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &useTxn) != MDB_SUCCESS)
-            return false;
-        ownTxn = true;
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, "SELECT blob FROM logs WHERE seq=?", -1, &st, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_int64(st, 1, static_cast<sqlite3_int64>(seq));
+    bool ok = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const void *p = sqlite3_column_blob(st, 0);
+        const int len = sqlite3_column_bytes(st, 0);
+        if (p && len > 0)
+            ok = deserializeMessage(QByteArray(static_cast<const char *>(p), len), msg);
     }
-
-    bool found = false;
-    MDB_cursor *cursor = nullptr;
-    int rc = mdb_cursor_open(useTxn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: getLatestLogInTxn 打开游标失败:" << mdb_strerror(rc);
-    } else {
-        MDB_val key, value;
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最大 seq 开始
-        int i=0;
-        while (rc == MDB_SUCCESS) {
-            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-            QStringList parts = keyStr.split(':');
-            if (parts.size() == 3) {
-                QString appidFromKey = parts[1];
-                QString groupIdFromKey = parts[2];
-                if (appidFromKey == appid && groupIdFromKey == groupId) {
-                    QByteArray blob((const char*)value.mv_data, value.mv_size);
-                    deserializeMessage(blob, msg);
-                    if(!msg.Gname.isEmpty()){
-                        found = true;
-                        break;
-                    }
-
-                }
-                i++;
-                if(i>5000) break;
-            }
-            rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
-        }
-        mdb_cursor_close(cursor);
-    }
-
-    if (ownTxn) mdb_txn_abort(useTxn);
-    return found;
+    sqlite3_finalize(st);
+    return ok;
 }
 
-// ---------- 公共接口 ----------
+bool LogDB::readLogInTxn(LogTxn txn, const QString& appid, const QString& groupId,
+                         uint64_t seq, Message& msg) const
+{
+    // 整段读持 m_mutex：调用方的用法是 beginTransaction(true) → 循环读 → commit，
+    // 读的时候不持锁。SQLite 单连接，如果外面同时在刷库就会撞 SQLITE_BUSY，
+    // 所以这里统一加锁（和 LMDB 版的锁口径完全一致，不会把刷库堵死：单次读很快）。
+    QMutexLocker locker(&m_mutex);
+    if (!m_db) return false;
+    if (txn && txn != m_currentTxn) {
+        // 传进来的句柄已经作废（事务被 commit/rollback/重载掉了）→ 退化成裸查，绝不去踩旧状态
+        qDebug() << "LogDB: readLogInTxn 收到已失效的事务句柄，退化为普通读取";
+    }
+
+    const QString keyStr = makeKey(appid, groupId, seq);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        msg = it->msg;
+        return true;
+    }
+    return loadBySeq(seq, msg);
+}
+
+bool LogDB::getLatestLogInTxn(LogTxn txn, const QString& appid, const QString& groupId, Message& msg) const
+{
+    Q_UNUSED(txn);   // SQLite 版不需要真实事务句柄
+    return getLatestLog(appid, groupId, msg);
+}
 
 bool LogDB::getLatestLog(const QString &appid, const QString &groupId, Message &msg) const
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_env) return false;
+    if (!m_db) return false;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    // 原逻辑：从最大 seq 往回找「同 appid:group 且 Gname 非空」的第一条，最多看 5000 条。
+    // SQLite 用索引直接限定到该会话，再按 seq 倒序取 5000 条 —— 比全库倒扫快得多。
+    static const char *kSql =
+        "SELECT blob FROM logs WHERE appid=? AND conv=? ORDER BY seq DESC LIMIT 5000";
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: getLatestLog prepare 失败" << sqlite3_errmsg(m_db);
         return false;
     }
+    const QByteArray a = appid.toUtf8();
+    const QByteArray c = groupId.toUtf8();
+    sqlite3_bind_text(st, 1, a.constData(), a.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, c.constData(), c.size(), SQLITE_TRANSIENT);
 
-    MDB_val key, value;
-    // 从数据库末尾（最大 seq）开始向前遍历
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-    while (rc == MDB_SUCCESS) {
-        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-        QStringList parts = keyStr.split(':');
-        if (parts.size() == 3) {
-            QString appidFromKey = parts[1];
-            QString groupIdFromKey = parts[2];
-            if (appidFromKey == appid && groupIdFromKey == groupId) {
-                QByteArray blob((const char*)value.mv_data, value.mv_size);
-                deserializeMessage(blob, msg);
-                if(!msg.Gname.isEmpty()){
-                    mdb_cursor_close(cursor);
-                    mdb_txn_abort(txn);
-                    return true;
-                }
-
-
-
-            }
+    bool found = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const void *p = sqlite3_column_blob(st, 0);
+        const int len = sqlite3_column_bytes(st, 0);
+        if (!p || len <= 0) continue;
+        if (deserializeMessage(QByteArray(static_cast<const char *>(p), len), msg) && !msg.Gname.isEmpty()) {
+            found = true;
+            break;
         }
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
     }
-
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
-    return false;
+    sqlite3_finalize(st);
+    return found;
 }
+
+// ========== 按会话取最近 N 条 ==========
 QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId,
-                                    int seq, int N,bool daoxu) const {
+                                    int seq, int N, bool daoxu) const
+{
     QMutexLocker locker(&m_mutex);
     QList<Message> result;
-    if (!m_env || N <= 0) return result;
+    if (!m_db || N <= 0) return result;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return result;
-
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    // seq < ? + 索引 (appid,conv,seq) 倒序 → 等价于原来「SET_RANGE 定位后向前扫」，
+    // 但只碰要取的那 N 条，不再一条条读出来比对 appid/group。
+    static const char *kSql =
+        "SELECT seq, blob FROM logs WHERE appid=? AND conv=? AND seq<? "
+        "ORDER BY seq DESC LIMIT ?";
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: getRecentLogs prepare 失败" << sqlite3_errmsg(m_db);
         return result;
     }
+    const QByteArray a = appid.toUtf8();
+    const QByteArray c = groupId.toUtf8();
+    sqlite3_bind_text(st, 1, a.constData(), a.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, c.constData(), c.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, static_cast<sqlite3_int64>(seq));
+    sqlite3_bind_int(st, 4, N);
 
-    // 构造目标 key 前缀，宽度请与存储格式一致（例如 6 位或 10 位）
-    int width = 20;  // 根据你的实际宽度调整，可以动态从数据库读取或配置
-    QString targetPrefix = QString("%1:").arg(seq, width, 10, QChar('0'));
-    QByteArray keyBuf = targetPrefix.toUtf8(); // 确保生命周期
-    MDB_val key, value;
-    key.mv_data = keyBuf.data();
-    key.mv_size = keyBuf.size();
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const qint64 s = sqlite3_column_int64(st, 0);
+        const void *p = sqlite3_column_blob(st, 1);
+        const int len = sqlite3_column_bytes(st, 1);
+        if (!p || len <= 0) continue;
 
-    // 定位到第一个 >= targetPrefix 的记录
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
-    if (rc != MDB_SUCCESS) {
-        // 没有比目标更大的 key（即所有 key 都小于目标），则从末尾开始
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-    }
+        Message msg;
+        msg.seq = static_cast<int>(s);
+        deserializeMessage(QByteArray(static_cast<const char *>(p), len), msg);
 
-    int fetched = 0;
-    while (rc == MDB_SUCCESS && fetched < N) {
-        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-        QStringList parts = keyStr.split(':');
-        if (parts.size() == 3) {
-            int seq2 = parts[0].toInt();
-            // 只接受 seq 严格小于传入 seq 的记录（避免包含 >= 传入 seq 的）
-            if (seq > seq2) {
-                QString appidFromKey = parts[1];
-                QString groupIdFromKey = parts[2];
-                if (appidFromKey == appid && groupIdFromKey == groupId) {
-                    // 反序列化消息（原有逻辑保持不变）
-                    QByteArray blob((const char*)value.mv_data, value.mv_size);
-                    Message msg;
-                    msg.seq = seq2;
-                    deserializeMessage(blob, msg) ;
-
-                    if (!msg.direction.isEmpty() && !msg.msg.isEmpty()) {
-                        msg.isSelf = true;
-                        QString hf = msg.hf;
-                        msg.hf = QString();
-                        result.append(msg);
-                        msg.isSelf = false;
-                        msg.hf = hf;
-                    }
-                    result.append(msg);
-                    fetched++;
-                }
-            }
+        // ⚠ 这段是聊天页的渲染约定，别删：机器人自己发出去的消息（direction 非空且有正文）
+        //   先补一条 isSelf=true、hf 清空的副本，界面才能把「发送方气泡」和「正文」分开画。
+        if (!msg.direction.isEmpty() && !msg.msg.isEmpty()) {
+            msg.isSelf = true;
+            QString hf = msg.hf;
+            msg.hf = QString();
+            result.append(msg);
+            msg.isSelf = false;
+            msg.hf = hf;
         }
-        // 向前移动（key 更小）
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+        result.append(msg);
     }
+    sqlite3_finalize(st);
 
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
-    if(!daoxu)
-    std::reverse(result.begin(), result.end());
+    if (!daoxu) std::reverse(result.begin(), result.end());
     return result;
 }
 
@@ -535,20 +560,20 @@ QHash<QString, QStringList> LogDB::getRecentMsgIdMap(const QString &appid, bool 
 void LogDB::collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,
                                 int maxPerConv, QHash<QString, QStringList> &out, int scanLimit) const
 {
-    if (!m_env || appid.isEmpty() || maxPerConv <= 0) return;
+    if (!m_db || appid.isEmpty() || maxPerConv <= 0) return;
 
     QSet<QString> seen;                 // 缓存/库里同一条消息去重（msgid 全局唯一）
     QHash<QString, int> convCount;      // 每个会话已经收了多少个
 
     // 1) 内存缓存优先：刚收到、还没落盘（最多 5 秒窗口）的消息也要算
     for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
-        const QStringList parts = it.key().split(':');
-        if (parts.size() != 3 || parts[1] != appid) continue;
-        const QString &conv = parts[2];
+        const CacheEntry &e = it.value();
+        if (e.appid != appid) continue;
+        const QString &conv = e.conv;
         if (!onlyConv.isEmpty() && conv != onlyConv) continue;
         if (convCount.value(conv) >= maxPerConv) continue;
 
-        const Message &m = it.value().msg;
+        const Message &m = e.msg;
         // ch = 用户发来的消息 id（被动回复用它）；plugin_ch = 机器人发出去的（只能撤回，不能发送）
         if (m.isSelf || !m.plugin_ch.isEmpty() || m.ch.isEmpty() || seen.contains(m.ch)) continue;
         if (parseLogTimeString(m.timestamp) < cutoffSecs) continue;
@@ -558,184 +583,174 @@ void LogDB::collectRecentMsgIds(const QString &appid, const QString &onlyConv, q
         convCount[conv] = convCount.value(conv) + 1;
     }
 
-    // 2) 数据库：从最大 seq 往回扫；撞到比时间窗还早的记录就停（seq 递增 ≈ 时间递增）
-    MDB_txn *txn = nullptr;
-    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+    // 2) 数据库：按会话（有索引）从新到旧扫；撞到比时间窗还早的记录就停（seq 递增 ≈ 时间递增）
+    QByteArray sql = "SELECT conv, blob FROM logs WHERE appid=?";
+    if (!onlyConv.isEmpty()) sql += " AND conv=?";
+    sql += " ORDER BY seq DESC LIMIT ?";
 
-    MDB_cursor *cursor = nullptr;
-    if (mdb_cursor_open(txn, m_dbi_main, &cursor) != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, sql.constData(), -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: collectRecentMsgIds prepare 失败" << sqlite3_errmsg(m_db);
         return;
     }
+    const QByteArray a = appid.toUtf8();
+    sqlite3_bind_text(st, 1, a.constData(), a.size(), SQLITE_TRANSIENT);
+    int idx = 2;
+    QByteArray c;
+    if (!onlyConv.isEmpty()) {
+        c = onlyConv.toUtf8();
+        sqlite3_bind_text(st, idx++, c.constData(), c.size(), SQLITE_TRANSIENT);
+    }
+    sqlite3_bind_int(st, idx, scanLimit);
 
-    MDB_val key, value;
-    int rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
     int scanned = 0;
-    while (rc == MDB_SUCCESS && scanned < scanLimit) {
+    while (sqlite3_step(st) == SQLITE_ROW && scanned < scanLimit) {
         ++scanned;
-        const QByteArray blob((const char*)value.mv_data, (int)value.mv_size);
+
+        const void *p = sqlite3_column_blob(st, 1);
+        const int len = sqlite3_column_bytes(st, 1);
+        if (!p || len <= 0) continue;
+        const QByteArray blob(static_cast<const char *>(p), len);
 
         const qint64 ts = logBlobTimeSecs(blob);
         if (ts > 0 && ts < cutoffSecs) break;    // 0=时间未知（旧格式）→ 不据此提前结束
 
-        const QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-        const QStringList parts = keyStr.split(':');
-        if (parts.size() == 3 && parts[1] == appid
-            && (onlyConv.isEmpty() || parts[2] == onlyConv)) {
-            const QString &conv = parts[2];
-            if (convCount.value(conv) < maxPerConv) {
-                Message m;
-                if (deserializeMessage(blob, m) && !m.isSelf && m.plugin_ch.isEmpty()
-                    && !m.ch.isEmpty() && !seen.contains(m.ch)) {
-                    seen.insert(m.ch);
-                    out[conv].append(m.ch);
-                    convCount[conv] = convCount.value(conv) + 1;
-                }
-            }
-        }
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
-    }
+        const char *convText = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+        const QString conv = QString::fromUtf8(convText);
+        if (convCount.value(conv) >= maxPerConv) continue;
 
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
+        Message m;
+        if (deserializeMessage(blob, m) && !m.isSelf && m.plugin_ch.isEmpty()
+            && !m.ch.isEmpty() && !seen.contains(m.ch)) {
+            seen.insert(m.ch);
+            out[conv].append(m.ch);
+            convCount[conv] = convCount.value(conv) + 1;
+        }
+    }
+    sqlite3_finalize(st);
 }
+
+// ========== key 列表 ==========
 QStringList LogDB::getLatestKeys(int N) const
 {
     QMutexLocker locker(&m_mutex);
     QStringList keys;
-    if (!m_env || N <= 0) return keys;
+    if (!m_db || N <= 0) return keys;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return keys;
-
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, "SELECT seq, appid, conv FROM logs ORDER BY seq DESC LIMIT ?",
+                           -1, &st, nullptr) != SQLITE_OK)
         return keys;
-    }
+    sqlite3_bind_int(st, 1, N);
 
-    MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 最大 seq
-    int count = 0;
-    while (rc == MDB_SUCCESS && count < N) {
-        if(key.mv_size>32)
-            keys.append(QString::fromUtf8((const char*)key.mv_data, key.mv_size));
-        count++;
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const uint64_t seq = static_cast<uint64_t>(sqlite3_column_int64(st, 0));
+        const QString appid = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 1)));
+        const QString conv  = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 2)));
+        // 原逻辑：key 总长 > 32 才收（过滤掉 appid/conv 都很短的脏记录）
+        const QString key = makeKey(appid, conv, seq);
+        if (key.size() > 32) keys.append(key);
     }
-
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
+    sqlite3_finalize(st);
     return keys;
-}
-
-QList<QPair<QString, Message>> LogDB::getLatestMessagesWithOffset(int appid, int limit, int offset) const
-{
-    QMutexLocker locker(&m_mutex);
-    QList<QPair<QString, Message>> result;
-    if (!m_env || limit <= 0) return result;
-
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return result;
-
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        return result;
-    }
-
-    MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);   // 从最后一条开始（最大 seq）
-    int skipped = 0;
-    int fetched = 0;
-    BotDB *db=nullptr;
-
-    while (rc == MDB_SUCCESS && fetched < limit) {
-        QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-        QStringList parts = keyStr.split(':');
-        if (parts.size() == 3) {
-            // 新格式：parts[0]=seq, parts[1]=appid, parts[2]=groupId
-            int appidFromKey = parts[1].toInt();
-            if (appid == 0 || appidFromKey == appid) {
-
-                if (skipped < offset) {
-                    skipped++;
-                } else {
-                    QByteArray blob((const char*)value.mv_data, value.mv_size);
-                    Message msg;
-                    deserializeMessage(blob, msg);
-
-                    result.append(qMakePair(keyStr, msg));
-                    fetched++;
-
-                }
-            }
-        }
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
-    }
-
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
-    std::reverse(result.begin(), result.end());
-
-
-    return result;
 }
 
 QStringList LogDB::getAllKeys() const
 {
     QMutexLocker locker(&m_mutex);
     QStringList keys;
-    if (!m_env) return keys;
+    if (!m_db) return keys;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return keys;
-
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, "SELECT seq, appid, conv FROM logs ORDER BY seq ASC",
+                           -1, &st, nullptr) != SQLITE_OK)
         return keys;
-    }
 
-    MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
-    while (rc == MDB_SUCCESS) {
-        keys.append(QString::fromUtf8((const char*)key.mv_data, key.mv_size));
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const uint64_t seq = static_cast<uint64_t>(sqlite3_column_int64(st, 0));
+        const QString appid = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 1)));
+        const QString conv  = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 2)));
+        keys.append(makeKey(appid, conv, seq));
     }
-
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
+    sqlite3_finalize(st);
     return keys;
 }
+
+// 日志页 / WebUI 的分页查询：从最新往回按 appid 过滤，跳过 offset 条，取 limit 条。
+// SQLite 直接用 LIMIT/OFFSET 走索引，比在代码里一条条跳过快得多。
+QList<QPair<QString, Message>> LogDB::getLatestMessagesWithOffset(int appid, int limit, int offset) const
+{
+    QMutexLocker locker(&m_mutex);
+    QList<QPair<QString, Message>> result;
+    if (!m_db || limit <= 0) return result;
+    if (offset < 0) offset = 0;
+
+    const char *kSqlAll  = "SELECT seq, appid, conv, blob FROM logs "
+                           "ORDER BY seq DESC LIMIT ? OFFSET ?";
+    const char *kSqlApp  = "SELECT seq, appid, conv, blob FROM logs WHERE appid_i=? "
+                           "ORDER BY seq DESC LIMIT ? OFFSET ?";
+    const bool all = (appid == 0);
+
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, all ? kSqlAll : kSqlApp, -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: getLatestMessagesWithOffset prepare 失败" << sqlite3_errmsg(m_db);
+        return result;
+    }
+    int idx = 1;
+    if (!all) sqlite3_bind_int64(st, idx++, appid);
+    sqlite3_bind_int(st, idx++, limit);
+    sqlite3_bind_int(st, idx, offset);
+
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const uint64_t seq  = static_cast<uint64_t>(sqlite3_column_int64(st, 0));
+        const QString appid_ = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 1)));
+        const QString conv   = QString::fromUtf8(reinterpret_cast<const char *>(sqlite3_column_text(st, 2)));
+        const void *p = sqlite3_column_blob(st, 3);
+        const int len = sqlite3_column_bytes(st, 3);
+        if (!p || len <= 0) continue;
+
+        Message msg;
+        deserializeMessage(QByteArray(static_cast<const char *>(p), len), msg);
+        result.append(qMakePair(makeKey(appid_, conv, seq), msg));
+    }
+    sqlite3_finalize(st);
+
+    std::reverse(result.begin(), result.end());   // 调用方要「旧 → 新」
+    return result;
+}
+
+// ========== 更新 ==========
 bool LogDB::updateLog(const QString &keyStr, const Message &msg)
 {
     QMutexLocker locker(&m_mutex);
+    if (!m_db) return false;
+
     auto it = m_cache.find(keyStr);
     if (it != m_cache.end()) {
         it->msg = msg;
         it->dirty = true;   // 数据变更，需重新落盘
         return true;
     }
-    // 缓存没有，尝试从数据库加载后再更新
+
+    // 缓存没有 → 先确认库里确实有这条，有才放进缓存等下一轮刷
     Message old;
-    if (loadFromDB(keyStr, old)) {
-        m_cache[keyStr] = {msg,true};
-        return true;
-    }
-    return false;
+    if (!loadBySeq(seqFromKey(keyStr), old)) return false;
+
+    CacheEntry e;
+    e.msg = msg;
+    e.dirty = true;
+    e.seq = seqFromKey(keyStr);
+    // key = "000…seq:appid:conv"，冒号后面的两段拆回去（appid/conv 本身不含冒号）
+    const QStringList parts = keyStr.split(':');
+    if (parts.size() == 3) { e.appid = parts[1]; e.conv = parts[2]; }
+    m_cache[keyStr] = e;
+    return true;
 }
 
 bool LogDB::updateLog(const QString &appid, const QString &groupId, uint64_t seq, const Message &msg)
 {
-    if (!m_env) return false;
-    QString keyStr = makeKey(appid, groupId, seq);
+    if (!m_db) return false;
+    const QString keyStr = makeKey(appid, groupId, seq);
 
     QMutexLocker locker(&m_mutex);
     auto it = m_cache.find(keyStr);
@@ -744,16 +759,54 @@ bool LogDB::updateLog(const QString &appid, const QString &groupId, uint64_t seq
         it->dirty = true;   // 数据变更，需重新落盘
         return true;
     }
-    // 缓存没有，尝试从数据库加载后再更新
     Message old;
-    if (loadFromDB(keyStr, old)) {
-        m_cache[keyStr] = {msg, true};
+    if (!loadBySeq(seq, old)) return false;
+
+    CacheEntry e;
+    e.msg = msg;
+    e.appid = appid;
+    e.conv = groupId;
+    e.seq = seq;
+    e.dirty = true;
+    m_cache[keyStr] = e;
+    return true;
+}
+
+// ========== 读取 ==========
+bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const
+{
+    if (!m_db) return false;
+
+    const QString keyStr = makeKey(appid, groupId, seq);
+    QMutexLocker locker(&m_mutex);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        msg = it->msg;
         return true;
     }
-    return false;
+    // 缓存未命中 → 直接读库，**不往缓存里塞**。
+    // 日志库是「写多读极少」的负载：只读缓存命中率极低，却会常驻一堆 Message 副本
+    // （每条 13 个 QString）。刚写入的消息本来就以 dirty 形式在缓存里，读得到；
+    // 历史消息只被读一两次，读完就扔才是省内存的做法。
+    return loadBySeq(seq, msg);
 }
-// 原 flushCacheToDB 改为：
-void LogDB::flushCacheToDB() {
+
+bool LogDB::readLog(const QString &keyStr, Message &msg) const
+{
+    if (!m_db) return false;
+    QMutexLocker locker(&m_mutex);
+    auto it = m_cache.find(keyStr);
+    if (it != m_cache.end()) {
+        msg = it->msg;
+        return true;
+    }
+    // 同上：只读不缓存
+    return loadBySeq(seqFromKey(keyStr), msg);
+}
+
+// ========== 写缓存 ==========
+void LogDB::flushCacheToDB()
+{
     QMutexLocker locker(&m_mutex);
     flushCacheToDBUnlocked();
 }
@@ -772,12 +825,17 @@ void LogDB::trimCacheIfTooLarge()
                << "条以保证内存有界" << m_dbPath;
 }
 
-// 新增不加锁版本（复制原逻辑，去掉锁）
-void LogDB::flushCacheToDBUnlocked() {
-    // 假设已持有锁
-    if (!m_env || m_cache.isEmpty()) return;
+// 批量落盘：一个事务里把所有脏条目 INSERT OR REPLACE 进去。
+// ⚠ 调用方需已持 m_mutex。
+void LogDB::flushCacheToDBUnlocked()
+{
+    if (!m_db || m_cache.isEmpty()) return;
 
-    // 收集脏 key（缓存里现在只会有脏条目：读缓存已不再写入，见 readLog）
+    // ⚠ 外部事务（beginTransaction）进行中：SQLite 是**单连接**，不能嵌套 BEGIN。
+    //   这一轮先不刷，等 commit/rollback 之后 5 秒定时器再来（脏数据还在缓存里，不丢）。
+    if (m_currentTxn) return;
+
+    // 缓存里现在只会有脏条目（读缓存已不再写入，见 readLog）
     QList<QString> dirtyKeys;
     for (auto it = m_cache.begin(); it != m_cache.end(); ++it)
         if (it->dirty) dirtyKeys.append(it.key());
@@ -787,92 +845,93 @@ void LogDB::flushCacheToDBUnlocked() {
         return;
     }
 
-    const int MAX_RETRY = 3;
-    for (int retry = 0; retry < MAX_RETRY; ++retry) {
-        MDB_txn *txn = nullptr;
-        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-        if (rc != MDB_SUCCESS) {
-            qWarning() << "flushCacheToDBUnlocked: 开启事务失败" << mdb_strerror(rc);
-            trimCacheIfTooLarge();
-            return;
-        }
-
-        bool ok = true;
-        for (const QString &key : dirtyKeys) {
-            auto it = m_cache.find(key);
-            if (it == m_cache.end() || !it->dirty) continue;
-
-            QByteArray keyBytes = key.toUtf8();
-            QByteArray valueBlob;
-            if (!serializeMessage(it->msg, valueBlob)) {
-                ok = false;
-                break;
-            }
-            MDB_val k, v;
-            k.mv_data = keyBytes.data();
-            k.mv_size = keyBytes.size();
-            v.mv_data = valueBlob.data();
-            v.mv_size = valueBlob.size();
-
-            rc = mdb_put(txn, m_dbi_main, &k, &v, 0);
-            if (rc == MDB_MAP_FULL) {
-                mdb_txn_abort(txn);
-                if (!expandAndReopen()) {
-                    qWarning() << "flushCacheToDBUnlocked: 扩容失败";
-                    trimCacheIfTooLarge();
-                    return;
-                }
-                ok = false;
-                break;
-            } else if (rc != MDB_SUCCESS) {
-                qWarning() << "flushCacheToDBUnlocked: mdb_put 失败" << mdb_strerror(rc) << key;
-                ok = false;
-                break;
-            }
-        }
-
-        if (!ok) {
-            if (rc == MDB_MAP_FULL) continue;
-            if (txn) mdb_txn_abort(txn);
-            // 写失败（坏记录 / 磁盘满 / I-O 错误）：脏数据留着下次再试，
-            // 但要有上限 —— 否则 appendLog 一直堆、永远刷不动 = 无界涨内存。
-            trimCacheIfTooLarge();
-            return;
-        }
-
-        rc = mdb_txn_commit(txn);
-        if (rc == MDB_MAP_FULL) {
-            // ⚠ mdb_txn_commit 一旦返回，无论成功失败事务都已经被释放，
-            //   这里再 mdb_txn_abort(txn) 是「对已结束事务 abort」= 未定义行为（野指针）。
-            if (!expandAndReopen()) {
-                qWarning() << "flushCacheToDBUnlocked: 提交时扩容失败";
-                trimCacheIfTooLarge();
-                return;
-            }
-            continue;
-        } else if (rc != MDB_SUCCESS) {
-            qWarning() << "flushCacheToDBUnlocked: 提交事务失败" << mdb_strerror(rc);
-            trimCacheIfTooLarge();
-            return;
-        }
-
-        // 成功提交，清空缓存
-        m_cache.clear();
+    static const char *kSql =
+        "INSERT OR REPLACE INTO logs(seq,appid,conv,appid_i,blob) VALUES(?,?,?,?,?)";
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: 刷库 prepare 失败" << sqlite3_errmsg(m_db);
+        trimCacheIfTooLarge();
         return;
     }
 
-    // 重试耗尽（连扩 3 次还是满）：留最新的那批，丢掉最旧的，保住内存
-    qWarning() << "flushCacheToDBUnlocked: 重试次数耗尽（数据可能丢失）" << m_dbPath;
-    trimCacheIfTooLarge();
+    if (!execQuiet(m_db, "BEGIN IMMEDIATE")) {
+        qWarning() << "LogDB: 刷库开启事务失败" << sqlite3_errmsg(m_db);
+        sqlite3_finalize(st);
+        trimCacheIfTooLarge();
+        return;
+    }
+
+    bool ok = true;
+    int written = 0;
+    for (const QString &key : dirtyKeys) {
+        auto it = m_cache.find(key);
+        if (it == m_cache.end() || !it->dirty) continue;
+
+        QByteArray blob;
+        if (!serializeMessage(it->msg, blob)) {
+            qWarning() << "LogDB: 序列化失败，跳过" << key;
+            ok = false;
+            break;
+        }
+
+        const QByteArray a = it->appid.toUtf8();
+        const QByteArray c = it->conv.toUtf8();
+
+        sqlite3_bind_int64(st, 1, static_cast<sqlite3_int64>(it->seq));
+        sqlite3_bind_text(st, 2, a.constData(), a.size(), SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 3, c.constData(), c.size(), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, it->appid.toLongLong());
+        sqlite3_bind_blob(st, 5, blob.constData(), blob.size(), SQLITE_TRANSIENT);
+
+        const int rc = sqlite3_step(st);
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+
+        if (rc != SQLITE_DONE) {
+            qWarning() << "LogDB: 写入失败" << sqlite3_errmsg(m_db) << key;
+            ok = false;
+            break;
+        }
+        ++written;
+    }
+    sqlite3_finalize(st);
+
+    if (!ok) {
+        execQuiet(m_db, "ROLLBACK");
+        // 写失败（坏记录 / 磁盘满 / I-O 错误）：脏数据留着下次再试，
+        // 但要有上限 —— 否则 appendLog 一直堆、永远刷不动 = 无界涨内存。
+        trimCacheIfTooLarge();
+        return;
+    }
+
+    if (!execQuiet(m_db, "COMMIT")) {
+        qWarning() << "LogDB: 提交刷库事务失败" << sqlite3_errmsg(m_db);
+        execQuiet(m_db, "ROLLBACK");
+        trimCacheIfTooLarge();
+        return;
+    }
+
+    m_cache.clear();
+    if (written > 0)
+        qDebug() << "LogDB: 刷库" << written << "条" << m_dbPath;
 }
 
 // appendLog 中添加主动刷库
 uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Message &msg) {
     QMutexLocker locker(&m_mutex);
-    if (!m_env) return 0;
-    uint64_t seq = m_nextId.fetch_add(1);
-    QString key = makeKey(appid, groupId, seq);
-    m_cache[key] = {msg, true};
+    if (!m_db) return 0;
+
+    const uint64_t seq = m_nextId.fetch_add(1);
+    const QString key = makeKey(appid, groupId, seq);
+
+    CacheEntry e;
+    e.msg = msg;
+    e.appid = appid;
+    e.conv = groupId;
+    e.seq = seq;
+    e.dirty = true;
+    m_cache[key] = e;
+
     // 更新环形缓冲区
     auto now = std::chrono::steady_clock::now();
     uint64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
@@ -884,164 +943,80 @@ uint64_t LogDB::appendLog(const QString &appid, const QString &groupId, const Me
     }
     return seq;
 }
-bool LogDB::readLog(const QString &appid, const QString &groupId, uint64_t seq, Message &msg) const
-{
-    if (!m_env) return false;
 
-    QString keyStr = makeKey(appid, groupId, seq);
-    QMutexLocker locker(&m_mutex);
-    auto it = m_cache.find(keyStr);
-    if (it != m_cache.end()) {
-        msg = it->msg;
-        return true;
-    }
-    // 缓存未命中 → 直接读库，**不往缓存里塞**。
-    // 日志库是「写多读极少」的负载：只读缓存命中率极低，却会常驻一堆 Message 副本
-    // （每条 11 个 QString）。刚写入的消息本来就以 dirty 形式在缓存里，读得到；
-    // 历史消息只被读一两次，读完就扔才是省内存的做法。
-    return loadFromDB(keyStr, msg);
-}
-bool LogDB::readLog(const QString &keyStr, Message &msg) const
-{
-    QMutexLocker locker(&m_mutex);
-    auto it = m_cache.find(keyStr);
-    if (it != m_cache.end()) {
-        msg = it->msg;
-        return true;
-    }
-    // 同上：只读不缓存
-    return loadFromDB(keyStr, msg);
-}
-bool LogDB::loadFromDB(const QString &keyStr, Message &msg) const {
-    // 注意：此函数假设调用者已持有 m_mutex，因此不再加锁
-    if (!m_env) return false;
-
-    QByteArray keyBytes = keyStr.toUtf8();
-
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
-
-    MDB_val key, value;
-    key.mv_data = keyBytes.data();
-    key.mv_size = keyBytes.size();
-
-    rc = mdb_get(txn, m_dbi_main, &key, &value);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        return false;
-    }
-
-    QByteArray blob((const char*)value.mv_data, value.mv_size);
-    bool ok = deserializeMessage(blob, msg);
-    mdb_txn_abort(txn);
-    return ok;
-}
+// ========== 清理 ==========
 bool LogDB::cleanDatabase(int keepN)
 {
     QMutexLocker locker(&m_mutex);
-    if (!m_env || keepN < 0) return false;
+    if (!m_db || keepN < 0) return false;
+
+    // 外部事务开着时不能删（会跟它的快照打架）——让定时器下一轮再来
+    if (m_currentTxn) {
+        qDebug() << "LogDB: 有活动事务，跳过本轮清理" << m_dbPath;
+        return false;
+    }
+
+    const int64_t before = [this]() -> int64_t {
+        sqlite3_stmt *st = nullptr;
+        int64_t n = -1;
+        if (sqlite3_prepare_v2(m_db, "SELECT COUNT(*) FROM logs", -1, &st, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+        return n;
+    }();
 
     // 特殊情况：清空所有
     if (keepN == 0) {
-        MDB_txn *txn = nullptr;
-        int rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-        if (rc != MDB_SUCCESS) return false;
-        rc = mdb_drop(txn, m_dbi_main, 1);  // 1 = 清空
-        if (rc != MDB_SUCCESS) {
-            mdb_txn_abort(txn);
-            return false;
-        }
-        rc = mdb_txn_commit(txn);
-        return rc == MDB_SUCCESS;
+        if (!execLog(m_db, "DELETE FROM logs", "DELETE all")) return false;
+        execQuiet(m_db, "PRAGMA incremental_vacuum");
+        qDebug() << "LogDB: 已清空" << m_dbPath << "原" << before << "条";
+        return true;
     }
 
-    // 1. 只读事务：从尾往前数 keepN 条，拿到「保留区最旧那条」的 key 当删除边界。
-    //    ⚠ 原来第一步是 MDB_FIRST→MDB_NEXT 把**全库数一遍总数**，第二步再从 FIRST 删
-    //      toDelete 条 —— 同一批页要遍历两遍。LMDB 是 mmap，遍历过的页会进进程工作集，
-    //      而 Windows 在内存不紧张时永远不回收 → 这是「日志库一直吃内存」的主要来源。
-    //      改成一趟：先数 keepN 条（有界），再从头删到边界，少碰一半页。
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc != MDB_SUCCESS) return false;
+    // 保留最新 keepN 条：删除边界 = 第 keepN+1 大的 seq。
+    //   · 走主键倒序 + OFFSET，O(log n) 定位到边界，**保留区一页都不碰**；
+    //   · OFFSET 超出范围时子查询返回 NULL，`seq <= NULL` 恒为 NULL → 一行都不删（安全）。
+    static const char *kSql =
+        "DELETE FROM logs WHERE seq <= ("
+        "  SELECT seq FROM logs ORDER BY seq DESC LIMIT 1 OFFSET ?)";
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(m_db, kSql, -1, &st, nullptr) != SQLITE_OK) {
+        qWarning() << "LogDB: cleanDatabase prepare 失败" << sqlite3_errmsg(m_db);
+        return false;
+    }
+    sqlite3_bind_int(st, 1, keepN);
+    const int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
 
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
+    if (rc != SQLITE_DONE) {
+        qWarning() << "LogDB: cleanDatabase 删除失败" << sqlite3_errmsg(m_db);
         return false;
     }
 
-    QByteArray boundary;              // 保留区最旧的那条：从 FIRST 删到它的前一条为止
-    MDB_val key, value;
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-    int kept = 0;
-    while (rc == MDB_SUCCESS) {
-        if (++kept >= keepN) {
-            boundary = QByteArray(static_cast<const char *>(key.mv_data),
-                                  static_cast<int>(key.mv_size));
-            break;
-        }
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
-    }
+    const int deleted = sqlite3_changes(m_db);
 
-    mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
+    // 回收空洞：auto_vacuum=INCREMENTAL 下文件不会自己缩，必须显式 incremental_vacuum。
+    // 这里是**原地**释放（把尾部空闲页搬到前面再截断），不像 LMDB 要重写整个库。
+    // 分批还，避免一次几万页把清理拖到几秒（上限见 LOGDB_VACUUM_PAGES，这里保持一致）
+    execQuiet(m_db, "PRAGMA incremental_vacuum(2000)");
 
-    // 总共不到 keepN 条（从 LAST 往回走没走满就没了）→ 没什么可删
-    if (boundary.isEmpty()) return true;
-
-    // 2. 写事务：从头（最旧）开始，逐条删到边界为止
-    MDB_txn *delTxn = nullptr;
-    rc = mdb_txn_begin(m_env, nullptr, 0, &delTxn);
-    if (rc != MDB_SUCCESS) return false;
-
-    rc = mdb_cursor_open(delTxn, m_dbi_main, &cursor);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(delTxn);
-        return false;
-    }
-
-    rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
-    size_t deleted = 0;
-    while (rc == MDB_SUCCESS) {
-        // 到达保留区就停（key 是变长字符串：长度相同 + 逐字节相同才算相等）
-        if (key.mv_size == static_cast<size_t>(boundary.size())
-            && std::memcmp(key.mv_data, boundary.constData(), boundary.size()) == 0) {
-            break;
-        }
-        rc = mdb_cursor_del(cursor, 0);
-        if (rc != MDB_SUCCESS) {
-            qWarning() << "cleanDatabase: 删除失败" << mdb_strerror(rc);
-            mdb_cursor_close(cursor);
-            mdb_txn_abort(delTxn);
-            return false;
-        }
-        ++deleted;
-        // lmdb.h 明确写了：del 之后 MDB_NEXT / MDB_GET_CURRENT 都返回同一条（= 下一条），不会跳
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
-    }
-
-    mdb_cursor_close(cursor);
-    rc = mdb_txn_commit(delTxn);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "cleanDatabase: 提交删除事务失败" << mdb_strerror(rc);
-        return false;
-    }
-    qDebug() << "LogDB: 清理完成" << m_dbPath << "删除" << deleted << "条，保留" << keepN;
+    const int64_t after = before > 0 ? before - deleted : -1;
+    qDebug() << "LogDB: 清理完成" << m_dbPath << "删除" << deleted << "条，保留" << keepN
+             << "（" << before << "→" << after << "）";
     return true;
 }
 
-// ========== 后台清理 / 启动压缩 ==========
+// ========== 后台清理 / 空闲页回收 ==========
 
 // 后台清理：丢进一个单线程池跑，界面不卡。
-// ⚠ 日志库单库十几万条时 cleanDatabase 要扫全库 + 逐条删，主线程跑会明显卡顿
+// ⚠ 单库十几万条时删旧仍要几毫秒到几百毫秒，主线程跑会明显卡顿
 //   （尤其是打开「日志」页那一下）。
 bool LogDB::cleanDatabaseAsync(int keepN)
 {
-    if (!m_env || keepN < 0) return false;
+    if (!m_db || keepN < 0) return false;
 
-    // 一轮没跑完就别排第二轮（定时器和「打开日志页」可能同时触发，扫两遍纯浪费）
+    // 一轮没跑完就别排第二轮（定时器和「打开日志页」可能同时触发）
     bool expected = false;
     if (!m_cleaning.compare_exchange_strong(expected, true))
         return false;
@@ -1058,9 +1033,8 @@ bool LogDB::cleanDatabaseAsync(int keepN)
         m_cleaning.store(false, std::memory_order_release);
         qDebug() << "LogDB: 后台清理结束" << path << "keepN =" << keepN << "ok =" << ok;
         if (ok) {
-            // 清理那一趟把整库的页都摸进了进程工作集（LMDB 是 mmap，摸过就等于占着，
-            // Windows 在内存不紧张时不会回收）。回主线程把 env 卸掉再挂上 ——
-            // mdb_env_close 会 UnmapViewOfFile，这些页立刻归还系统，之后只按需重新加载。
+            // 删旧之后的页缓存里全是冷数据，回主线程重开一次连接把它扔掉
+            // （SQLite 本来只占 8MB，这里主要是配合内存看门把工作集压下去）
             QMetaObject::invokeMethod(this, [this]() { reloadAfterClean(); },
                                       Qt::QueuedConnection);
         }
@@ -1068,401 +1042,57 @@ bool LogDB::cleanDatabaseAsync(int keepN)
     return true;
 }
 
-// 清理后「卸载再挂上」。比 SetProcessWorkingSetSize 彻底：那个只是把页挪进 standby list，
-// 这个是真 munmap，页直接不再算在进程头上。
-// ⚠ 只碰 env，不碰 m_buffer / m_flushTimer —— setBuffer_255 之类不加锁的写缓冲接口照常可用。
-// ⚠ reopenEnv 全程持 m_mutex（Recursive），readLog / appendLog / readLogInTxn 会被挡在外面，
-//   看不到中间的 m_env == nullptr。
-bool LogDB::reloadAfterClean()
+// 「卸载再挂上」：关连接 → 重开。
+// 和 LMDB 版的区别：那边是 munmap 200MB 的映射文件；这边是扔掉 8MB page cache
+// + 所有排序/临时缓冲，让 sqlite3 把内部的堆还给系统。
+// ⚠ 只碰连接，不碰 m_buffer / m_flushTimer —— setBuffer_255 之类不加锁的写缓冲接口照常可用。
+// ⚠ openConnection 全程持 m_mutex（Recursive），readLog / appendLog 会被挡在外面，
+//   看不到中间的 m_db == nullptr。
+bool LogDB::reloadAfterClean(bool trimWorkingSet)
 {
     {
         QMutexLocker locker(&m_mutex);
-        if (!m_env) return false;
+        if (!m_db) return false;
+        // 外部事务开着就别重载（会把它悄悄回滚掉）
+        if (m_currentTxn) {
+            qDebug() << "LogDB: 有活动事务，跳过重载" << m_dbPath;
+            return false;
+        }
         flushCacheToDBUnlocked();       // 清理期间可能又进来新数据，先落盘再卸载
     }
 
-    if (!reopenEnv(m_mapsize)) {
-        qWarning() << "LogDB: 清理后卸载重载失败，回退到完整 open()" << m_dbPath;
-        return open() && m_env != nullptr;
+    if (!openConnection()) {
+        qWarning() << "LogDB: 重载失败，回退到完整 open()" << m_dbPath;
+        return open() && m_db != nullptr;
     }
 
 #ifdef Q_OS_WIN
-    // 顺带把进程里其它库/UI 的冷页也收一收（进程级；清理一天一次，代价只是几毫秒软缺页）
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    // 顺带把进程里其它冷页也收一收（进程级；清理一天一次，代价只是几毫秒软缺页）
+    // ⚠ 诊断按钮传 false：这个调用会把**私有页也一起**挪进 standby，之后每一步读数都比实际低，
+    //   前后对比就没法归因了。
+    if (trimWorkingSet)
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#else
+    Q_UNUSED(trimWorkingSet);
 #endif
     return true;
 }
 
-// 启动时压缩：LMDB 删条目只把页还给 freelist，data.mdb 一分不缩，文件会停在历史峰值。
-// 实测 logdb_1 已经 512 MB —— 每天清一次库，文件却永远不降。
-// ⚠ 只在启动时做（此时没有活动事务、没有并发读），运行期重开 env 风险太大。
-// ⚠ 它会 rename data.mdb，所以同一目录绝不能双开两个实例（本来双开也会互相覆盖 seq）。
+// 回收空闲页。SQLite 有 auto_vacuum=INCREMENTAL，删记录只把页标空闲，
+// 要显式 incremental_vacuum 才把文件缩回去 —— 但它是**原地**搬页 + 截断，
+// 不需要 LMDB 那种「重写整个库」的 compact，所以每次启动顺手做都行。
 bool LogDB::compactIfNeeded()
 {
-    QMutexLocker locker(&m_mutex);        // Recursive：reopenEnv 内部还会再拿一次
-    if (!m_env) return false;
-
-    const QString dataPath = m_dbPath + "/data.mdb";
-    QFileInfo fi(dataPath);
-    if (!fi.exists()) return false;
-    const qint64 fileSize = fi.size();
-
-    // 手工修库入口：库目录里放一个 compact.force，下次启动强制重建一次。
-    //   copy2 压坏的库只有 freelist 坏了，阈值判断看不出来（文件跟数据一样大），
-    //   必须能强制重建才能修好 —— 重建走 mdb_put，新库的 freelist 是干净的。
-    const QString forcePath = m_dbPath + "/compact.force";
-    const bool forced = QFile::exists(forcePath);
-
-    if (!forced && fileSize < 64LL * 1024 * 1024)
-        return false;                                    // 小库不值得动（复制本身就要写一遍）
-
-    // 实际占用 = 子库 B-tree 的页数 × 页大小（不含 freelist 里的空洞）。
-    // ⚠ 不能用 mdb_env_info().me_last_pgno：它只是「最高页号」，
-    //   删掉的是最旧的那批（页号在前半段），空洞留在中间，last_pgno 根本不降 ——
-    //   用它判断会得出「文件没浪费」的错误结论，压缩永远不触发。
-    MDB_stat st;
-    MDB_txn *statTxn = nullptr;
-    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &statTxn) != MDB_SUCCESS) return false;
-    const int src = mdb_stat(statTxn, m_dbi_main, &st);
-    mdb_txn_abort(statTxn);
-    if (src != MDB_SUCCESS) return false;
-
-    const double pageSize = st.ms_psize > 0 ? static_cast<double>(st.ms_psize) : 4096.0;
-    const double used = (static_cast<double>(st.ms_branch_pages)
-                         + static_cast<double>(st.ms_leaf_pages)
-                         + static_cast<double>(st.ms_overflow_pages)) * pageSize;
-    if (used <= 0.0) return false;
-
-    // 冷却：3 天最多压一次（重建要把整个库重写一遍，不能每次启动都干）。
-    // 例外：文件比实际数据大出一倍以上 = 就是「删日志留下的空洞」，压一次能实打实省上百 MB，
-    //   这时无视冷却 —— 否则把保留条数调小之后，文件要干等 3 天才肯缩，期间映射一直是老大小。
-    //   （正常刚压完的库 fileSize ≈ used，不会命中这个例外，也就不可能天天重写。）
-    const QString stampPath = m_dbPath + "/compact.stamp";
-    QFileInfo stamp(stampPath);
-    const bool bigHole = static_cast<double>(fileSize) > used * 2.0;
-    if (!forced && !bigHole && stamp.exists()
-        && stamp.lastModified().secsTo(QDateTime::currentDateTime()) < 3 * 24 * 3600) {
-        return false;
-    }
-
-    // 省不出 20% 就算了：重建要把整个库重写一遍，白写几十 MB 只省几 MB 不值
-    // （forced = 修坏库，不按这个来）
-    if (!forced
-        && (static_cast<double>(fileSize) < used * 1.20
-            || fileSize - qint64(used) < 32LL * 1024 * 1024)) {
-        qDebug() << "LogDB: 文件无需压缩" << m_dbPath
-                 << "文件" << fileSize / 1048576 << "MB / 逻辑占用" << qint64(used) / 1048576 << "MB";
-        return false;
-    }
-
-    flushCacheToDBUnlocked();             // 先落盘，别把缓存里的脏数据丢了
-
-    const QString tmpDir  = m_dbPath + "/compact_tmp";
-    const QString bakPath = m_dbPath + "/data.mdb.bak";
-    QDir(tmpDir).removeRecursively();
-    if (!QDir().mkpath(tmpDir)) {
-        qWarning() << "LogDB: 无法创建压缩临时目录" << tmpDir;
-        return false;
-    }
-
-    // ==== 手工重建，不能用 mdb_env_copy2(MDB_CP_COMPACT) ====
-    // ⚠ 2026-11-08 实测崩溃：copy2 压完库能打开、能读，3 分钟后第一次「删除 + 提交」就
-    //   在 mdb_freelist_save() 里断言 'x <= dl[0].mid' 直接 abort（0.9.x 的 compact copy
-    //   会把目标库的空闲页链表算坏）。自己按 key 一条条 mdb_put 进一个新库虽然慢，
-    //   但目标库的 freelist 是 LMDB 正常写出来的，不会留下这个雷。
-    MDB_env *dst = nullptr;
-    if (mdb_env_create(&dst) != MDB_SUCCESS) {
-        qWarning() << "LogDB: 压缩目标环境创建失败";
-        QDir(tmpDir).removeRecursively();
-        return false;
-    }
-    mdb_env_set_maxdbs(dst, 1);
-    const qint64 wantMap = qMax<qint64>(fileSize, 64LL * 1024 * 1024) * 3 / 2;
-    const size_t dstMap  = static_cast<size_t>(qMin<qint64>(wantMap, static_cast<qint64>(MAX_MAPSIZE)));
-    mdb_env_set_mapsize(dst, dstMap);
-    int rc = mdb_env_open(dst, tmpDir.toUtf8().constData(), MDB_NOSYNC, 0664);
-    if (rc != MDB_SUCCESS) {
-        qWarning() << "LogDB: 压缩目标库打开失败" << mdb_strerror(rc);
-        mdb_env_close(dst);
-        if (forced) QFile::remove(forcePath);
-        QDir(tmpDir).removeRecursively();
-        return false;
-    }
-
-    bool copyOk = true;
-    size_t copied = 0;
-    MDB_txn *srcTxn = nullptr;
-    if (mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &srcTxn) != MDB_SUCCESS) {
-        copyOk = false;
-    } else {
-        MDB_cursor *cur = nullptr;
-        if (mdb_cursor_open(srcTxn, m_dbi_main, &cur) != MDB_SUCCESS) {
-            copyOk = false;
-        } else {
-            MDB_txn *dstTxn = nullptr;
-            MDB_dbi dstDbi = 0;
-            bool setupOk = (mdb_txn_begin(dst, nullptr, 0, &dstTxn) == MDB_SUCCESS);
-            if (setupOk && mdb_dbi_open(dstTxn, "logs", MDB_CREATE, &dstDbi) != MDB_SUCCESS)
-                setupOk = false;
-            if (!setupOk) {
-                // dbi_open 失败时事务还开着，必须还掉，否则 mdb_env_close 会断言
-                if (dstTxn) { mdb_txn_abort(dstTxn); dstTxn = nullptr; }
-                copyOk = false;
-            } else {
-                MDB_val k, v;
-                int crc = mdb_cursor_get(cur, &k, &v, MDB_FIRST);
-                while (crc == MDB_SUCCESS) {
-                    if (mdb_put(dstTxn, dstDbi, &k, &v, 0) != MDB_SUCCESS) {
-                        copyOk = false;
-                        break;
-                    }
-                    // 分批提交：一次事务塞十万条会让脏页表爆掉
-                    if (++copied % 20000 == 0) {
-                        if (mdb_txn_commit(dstTxn) != MDB_SUCCESS) {
-                            dstTxn = nullptr;
-                            copyOk = false;
-                            break;
-                        }
-                        dstTxn = nullptr;
-                        // dbi 句柄在同一个 env 内一直是有效的，重开事务不用重开 dbi
-                        if (mdb_txn_begin(dst, nullptr, 0, &dstTxn) != MDB_SUCCESS) {
-                            copyOk = false;
-                            break;
-                        }
-                    }
-                    crc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
-                }
-                if (copyOk && dstTxn) {
-                    if (mdb_txn_commit(dstTxn) != MDB_SUCCESS) copyOk = false;
-                } else if (!copyOk && dstTxn) {
-                    mdb_txn_abort(dstTxn);
-                }
-                dstTxn = nullptr;
-            }
-            mdb_cursor_close(cur);
-        }
-        mdb_txn_abort(srcTxn);
-    }
-
-    if (copyOk && copied > 0) {
-        // MDB_NOSYNC：最后一次交给 fsync，失败就别替换（半截库比大库糟多了）
-        if (mdb_env_sync(dst, 1) != MDB_SUCCESS) {
-            qWarning() << "LogDB: 重建后落盘失败，放弃压缩" << m_dbPath;
-            copyOk = false;
-        }
-    }
-    mdb_env_close(dst);
-
-    if (!copyOk || copied == 0) {
-        qWarning() << "LogDB: 重建复制失败，放弃压缩" << m_dbPath << "已复制" << copied;
-        if (forced) QFile::remove(forcePath);   // 失败一次就摘开关，别每次启动都卡几秒重试
-        QDir(tmpDir).removeRecursively();
-        return false;
-    }
-    QFileInfo copiedFile(tmpDir + "/data.mdb");
-    if (!copiedFile.exists() || copiedFile.size() < 4096) {
-        qWarning() << "LogDB: 压缩产物不可用，放弃";
-        if (forced) QFile::remove(forcePath);
-        QDir(tmpDir).removeRecursively();
-        return false;
-    }
-
-    // 拆掉环境 —— 不能调 close()：那会把 m_buffer 删掉、把 flushTimer 停掉
-    if (m_currentTxn) { mdb_txn_abort(m_currentTxn); m_currentTxn = nullptr; }
-    if (m_dbi_main) { mdb_dbi_close(m_env, m_dbi_main); m_dbi_main = 0; }
-    mdb_env_close(m_env);
-    m_env = nullptr;
-    QFile::remove(m_dbPath + "/lock.mdb");   // 旧锁跟着旧库走，重开时 LMDB 自己重建
-
-    // 换文件：原库先留成 .bak，新库能正常打开才删 —— 任何一步失败都要把 .bak 换回来
-    QFile::remove(bakPath);
-    if (!QFile::rename(dataPath, bakPath)) {
-        qWarning() << "LogDB: 备份原库失败，放弃压缩" << m_dbPath;
-        QDir(tmpDir).removeRecursively();
-        reopenEnv(DEFAULT_MAPSIZE);
-        return false;
-    }
-    if (!QFile::rename(tmpDir + "/data.mdb", dataPath)) {
-        qWarning() << "LogDB: 新库改名失败，回滚" << m_dbPath;
-        QFile::rename(bakPath, dataPath);
-        QDir(tmpDir).removeRecursively();
-        reopenEnv(DEFAULT_MAPSIZE);
-        return false;
-    }
-
-    const uint64_t keepSeq = m_nextId.load(std::memory_order_relaxed);
-    bool ok = reopenEnv(DEFAULT_MAPSIZE);
-    if (!ok) {
-        // 新库打不开 → 把备份换回来再开一次。宁可回到大文件，也不能让库消失。
-        qWarning() << "LogDB: 压缩后打开失败，回滚到备份" << m_dbPath;
-        QFile::remove(dataPath);
-        QFile::rename(bakPath, dataPath);
-        ok = reopenEnv(DEFAULT_MAPSIZE);
-    }
-    // 序号绝不回退：reopenEnv 是按「库里最大 key」恢复的，清理/压缩后可能比原来小
-    if (ok && m_nextId.load(std::memory_order_relaxed) < keepSeq)
-        m_nextId.store(keepSeq, std::memory_order_relaxed);
-    if (ok) {
-        QFile::remove(bakPath);
-        QFile::remove(forcePath);          // 强制重建已生效，摘掉开关
-        QFile sf(stampPath);
-        if (sf.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            sf.write(QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8());
-    }
-    QDir(tmpDir).removeRecursively();
-
-    if (ok) {
-        qDebug() << "LogDB: 压缩完成" << m_dbPath
-                 << fileSize / 1048576 << "MB →"
-                 << QFileInfo(dataPath).size() / 1048576 << "MB";
-    }
-    return ok;
-}
-
-// 在 LogDB.cpp 中实现
-bool LogDB::reopenEnv(size_t minSize) {
-    // 换环境全程持锁（m_mutex 是 Recursive：expandAndReopen 进来时已经持有了）。
     QMutexLocker locker(&m_mutex);
+    if (!m_db) return false;
 
-    // ⚠ 先把活动长事务掐掉再关 env。否则 mdb_env_close() 之后 m_currentTxn 的 mt_env
-    //   就是野指针，调用方再 commit/abort/读就是踩刚释放的堆（fail-fast 最常见的来源）。
-    //   有了这把锁 + 读接口也持锁，这里不会和「正在 mdb_get 的线程」撞车。
-    if (m_currentTxn) {
-        mdb_txn_abort(m_currentTxn);
-        m_currentTxn = nullptr;
-    }
-
-    // 1. 获取当前数据文件大小（data.mdb）
-    QFileInfo fileInfo(m_dbPath + "/data.mdb");
-    size_t fileSize = fileInfo.exists() ? (size_t)fileInfo.size() : 0;
-
-    // 2. 计算目标 mapsize：至少为 minSize，且大于文件大小，留有余量
-    size_t targetSize = std::max(minSize, fileSize * 2);          // 翻倍
-    targetSize = std::max(targetSize, static_cast<size_t>(fileSize + 10ULL * 1024 * 1024));
-    // 上限只约束「翻倍」这一路：文件本身已经比软上限还大时（历史遗留的大库）
-    // 仍然必须 ≥ fileSize，否则 mdb_env_open 会以 MDB_INVALID 直接失败。
-    if (targetSize > MAX_MAPSIZE)
-        targetSize = std::max(MAX_MAPSIZE, static_cast<size_t>(fileSize + 10ULL * 1024 * 1024));
-
-    // 4. 关闭旧环境
-    if (m_env) {
-        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        m_dbi_main = 0;
-    }
-
-    // 5. 创建新环境
-    int rc = mdb_env_create(&m_env);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "reopenEnv: mdb_env_create 失败" << mdb_strerror(rc);
+    char *msg = nullptr;
+    const QByteArray sql = "PRAGMA incremental_vacuum(" + QByteArray::number(LOGDB_VACUUM_PAGES) + ")";
+    if (sqlite3_exec(m_db, sql.constData(), nullptr, nullptr, &msg) != SQLITE_OK) {
+        qWarning() << "LogDB: 回收空闲页失败" << (msg ? msg : sqlite3_errmsg(m_db));
+        if (msg) sqlite3_free(msg);
         return false;
     }
-
-    mdb_env_set_maxdbs(m_env, 1);
-    mdb_env_set_mapsize(m_env, targetSize);
-
-    QByteArray pathBytes = m_dbPath.toUtf8();
-    // ⚠ 这里**不能**再用 MDB_WRITEMAP。
-    //   WRITEMAP 把写操作直接写进映射区，脏页全算在进程工作集里，要靠 FlushViewOfFile
-    //   才转成 clean —— 任务管理器上就是「日志越写越多、内存只涨不降」。
-    //   日志库是「写多读极少」，不需要那个写入带宽，普通模式（数据页用 write() 落盘）
-    //   反而省内存：读页是只读文件映射，内存压力下可被回收。
-    //   NOMETASYNC：数据页仍然 fsync，只省掉 meta 的 fsync（崩溃最多丢最后一次提交，库不坏）。
-    //   NORDAHEAD：Linux 上不做 madvise(WILLNEED) 预读 —— 读这么少，预读纯属往内存里灌页。
-    rc = mdb_env_open(m_env, pathBytes.constData(), MDB_NOMETASYNC | MDB_NORDAHEAD, 0664);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "reopenEnv: mdb_env_open 失败" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    // 6. 打开子库、恢复序号（与原来相同）
-    MDB_txn *txn = nullptr;
-    rc = mdb_txn_begin(m_env, nullptr, 0, &txn);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "reopenEnv: 开始事务失败" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    rc = mdb_dbi_open(txn, "logs", MDB_CREATE, &m_dbi_main);
-    if (rc != MDB_SUCCESS) {
-        mdb_txn_abort(txn);
-        qCritical() << "reopenEnv: 打开 logs 子库失败" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    // 恢复最大序号
-    uint64_t maxSeq = 0;
-    MDB_cursor *cursor = nullptr;
-    rc = mdb_cursor_open(txn, m_dbi_main, &cursor);
-    if (rc == MDB_SUCCESS) {
-        MDB_val key, value;
-        rc = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-        if (rc == MDB_SUCCESS) {
-            QString keyStr = QString::fromUtf8((const char*)key.mv_data, key.mv_size);
-            QStringList parts = keyStr.split(':');
-            if (!parts.isEmpty()) {
-                bool ok;
-                uint64_t seq = parts[0].toULongLong(&ok);
-                if (ok && seq > maxSeq) maxSeq = seq;
-            }
-        }
-        mdb_cursor_close(cursor);
-    }
-
-    rc = mdb_txn_commit(txn);
-    if (rc != MDB_SUCCESS) {
-        qCritical() << "reopenEnv: 提交事务失败" << mdb_strerror(rc);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        return false;
-    }
-
-    m_nextId.store(maxSeq + 1, std::memory_order_relaxed);
-    m_mapsize = targetSize;
-    qDebug() << "LogDB 打开/扩容完成，实际 mapsize =" << targetSize
-             << "，文件大小 =" << fileSize << "，下一个序号 =" << m_nextId.load();
+    if (msg) sqlite3_free(msg);
     return true;
-}
-
-bool LogDB::expandAndReopen()
-{
-    // 必须在持有 m_mutex 时调用（Recursive，重入也安全）
-    QMutexLocker locker(&m_mutex);
-
-    // 本函数自己会先关 env，所以长事务要在这里也掐一次（reopenEnv 里那次赶不上）
-    if (m_currentTxn) {
-        mdb_txn_abort(m_currentTxn);
-        m_currentTxn = nullptr;
-    }
-
-    size_t newSize = m_mapsize * 2;
-    if (newSize > MAX_MAPSIZE) newSize = MAX_MAPSIZE;
-    if (newSize <= m_mapsize) {
-        // 已经顶到软上限：只有「数据文件本身比当前 mapsize 还大」才值得再开一次
-        // （交给 reopenEnv 按 fileSize 兜底），否则就是真写满了，直接失败别反复重开。
-        const size_t fileSize = static_cast<size_t>(QFileInfo(m_dbPath + "/data.mdb").size());
-        if (fileSize <= m_mapsize) {
-            qWarning() << "LogDB: 已达到最大 mapsize，无法继续扩容" << m_dbPath
-                       << "mapsize =" << m_mapsize << "文件 =" << fileSize;
-            return false;
-        }
-        newSize = m_mapsize;   // reopenEnv 会算成 fileSize + 10MB
-    }
-
-    // 关闭当前环境（注意：此时不应有任何活动事务）
-    if (m_env) {
-        if (m_dbi_main) mdb_dbi_close(m_env, m_dbi_main);
-        mdb_env_close(m_env);
-        m_env = nullptr;
-        m_dbi_main = 0;
-    }
-
-    return reopenEnv(newSize);
 }

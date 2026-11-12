@@ -125,6 +125,16 @@ static QIcon chatModeIcon(int kind, const QColor &color)
 static QCache<QString, QPixmap> avatarCache;
 static QCache<QString, QStringList> s_wrapCache; //行数缓存
 static const int WRAP_CACHE_SIZE = 500;
+
+// 图片缓存改成按「解码后的字节数」计费（QCache 的 cost 是 int，这里用 KB 当单位）。
+// 现在图会先缩到 128px 再进缓存（单张约 64KB），600 张也就 39MB —— 它不是内存大头；
+// 但按字节算更稳：以后若放宽缩放尺寸、或有人贴超大图，也不会像按张数那样突然顶到几百 MB。
+static const int IMAGE_CACHE_MAX_KB = 128 * 1024;
+static inline int pixCostKB(const QPixmap &pix)
+{
+    if (pix.isNull()) return 1;
+    return qMax(1, pix.width() * pix.height() * 4 / 1024);
+}
 int 聊天发送模式=0;
 
 
@@ -533,8 +543,10 @@ BubbleDelegate::BubbleDelegate(QObject *parent)
     : QStyledItemDelegate(parent)
 {
     m_cache.setMaxCost(4000);       // 单条消息的排版结果
-    m_imageCache.setMaxCost(600);   // 图片（key = URL）
-    m_avatarCache.setMaxCost(600);  // 头像
+    // ⚠ 图片缓存改成按字节计费（单位 KB），不再按「张数」：图会先缩到 128px，
+    //   单张约 64KB，600 张≈39MB，本来就不是大头；但按字节算以后放宽缩放尺寸也不会突然爆。
+    m_imageCache.setMaxCost(IMAGE_CACHE_MAX_KB);
+    m_avatarCache.setMaxCost(600);  // 头像（32x32 缩略图，按张数算没压力）
 }
 
 // 只查内存/磁盘，绝不发请求 —— 专供 prepareMessageData 使用
@@ -558,7 +570,7 @@ QPixmap BubbleDelegate::imagePixmapFor(const QString &url, const QString &localF
     if (pix.isNull()) return QPixmap();
     if (pix.width() > 128 || pix.height() > 128)
         pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    m_imageCache.insert(url, new QPixmap(pix));
+    m_imageCache.insert(url, new QPixmap(pix), pixCostKB(pix));
     return pix;
 }
 
@@ -590,7 +602,7 @@ void BubbleDelegate::startImageDownload(const QString &url)
             if (pix.loadFromData(data)) {
                 if (pix.width() > 128 || pix.height() > 128)
                     pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                m_imageCache.insert(url, new QPixmap(pix));
+                m_imageCache.insert(url, new QPixmap(pix), pixCostKB(pix));
                 pix.save(filePath, "PNG");
             }
         }
@@ -620,7 +632,7 @@ void BubbleDelegate::prefetchImages(const QString &rawContent)
             if (pix.isNull()) continue;
             if (pix.width() > 128 || pix.height() > 128)
                 pix = pix.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            m_imageCache.insert(src, new QPixmap(pix));
+            m_imageCache.insert(src, new QPixmap(pix), pixCostKB(pix));
             loadedLocal = true;
         } else {
             startImageDownload(src);   // 下载完成时自己会清缓存 + emit

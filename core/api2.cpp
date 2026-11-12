@@ -865,7 +865,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-    QString url = get_url(type,openid, "messages");
+     QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);

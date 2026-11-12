@@ -5,6 +5,7 @@
 #include <qlist.h>
 #include <qmutex.h>
 #include <qnetworkreply.h>
+#include <qnetworkrequest.h>
 #include <qobject.h>
 #include <qthread.h>
 using Callback = std::function<void(const QString&, QNetworkReply::NetworkError)>;
@@ -70,6 +71,19 @@ public:
     static CallbackThread s_cbThread;
     static void setDefaultCallbackThread(CallbackThread t) { s_cbThread = t; }
     static CallbackThread defaultCallbackThread() { return s_cbThread; }
+
+    // ── 请求头兜底 / 协议开关（见 .cpp 的 applyHeaders 说明）──
+    //
+    // 默认 UA：Qt 5.15 **不会**自动补 User-Agent，抓包看到的是"裸请求"（空 UA），
+    // 这是各类 WAF 最常见的拦截规则之一。默认值与 qqbotclient 里 WS 握手那套
+    // "完整头"口径保持一致（同为 Windows 浏览器风格），避免同进程两条路指纹对不上。
+    static void setDefaultUserAgent(const QString &ua) { s_userAgent = ua; }
+    static QString defaultUserAgent() { return s_userAgent; }
+
+    // HTTP/2 总开关。某些 WAF 规则只按 HTTP/1.1 写，看到 h2 直接 RST；
+    // 排查时可一键把它关掉让全部请求退回 1.1（COS 内网改写那条仍单独强制 1.1）。
+    static void setHttp2Enabled(bool on) { s_http2Enabled = on; }
+    static bool http2Enabled() { return s_http2Enabled; }
 
     // 注意这里返回的是标准库的 std::future
     std::future<QByteArray> post(const QString &url, const QByteArray &jsonData,
@@ -167,6 +181,24 @@ private:
                                          const QByteArray &data, bool tooBig,
                                          QNetworkReply::NetworkError err,
                                          DownloadCallback cb);
+
+    // 统一注入请求头（所有 post/get/put/delete 都走这里，替代原来九处
+    // 逐字重复的 `for (headers) setRawHeader(...)`）。干四件事：
+    //   ① 补 User-Agent（调用方没给时）—— 空 UA 会被 WAF 拦；
+    //   ② 补 Accept: */* —— Cloudflare 之类把"缺 Accept"当异常评分项；
+    //   ③ 丢弃含 CR/LF 或非 ASCII 的头（HTTP/1.1 头只允许 ASCII，
+    //      中文原样塞进去会被判非法请求，COS 还会签名不匹配）；
+    //   ④ allowContentType=false 时跳过 Content-Type（GET/DELETE 没 body，
+    //      带它属于非标准用法，严格网关会 400）。
+    //   ⑤ skipHost=true 时跳过 Host（COS 内网改写要保留自己手写的 Host，
+    //      由 buildCosPutRequest 负责，不能被业务头的 Host 顶掉）。
+    static void applyHeaders(QNetworkRequest &request,
+                             const QHash<QString, QString> &headers,
+                             bool allowContentType = true,
+                             bool skipHost = false);
+
+    static QString s_userAgent;
+    static bool    s_http2Enabled;
 
     int m_index;
     QThread *m_netThread = nullptr;

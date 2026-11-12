@@ -47,6 +47,7 @@
 #include <QResource>
 #include "lmdbkv.h"
 #include "logdb.h"
+#include "subdb.h"      // 订阅数据单独一个 SQLite 库（botdb/subscriptions.db）
 #include <QStandardPaths>
 #include <QMessageBox>
 #include <QSystemTrayIcon>
@@ -316,6 +317,7 @@ static void safeCleanup()
 #include <windows.h>
 #include <DbgHelp.h>
 #include <tlhelp32.h>
+#include <Psapi.h>          // K32GetProcessMemoryInfo（内存看门量工作集用；kernel32 导出）
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -795,6 +797,8 @@ void setupCrashHandler()
 // 不点那个页就一次都不清 —— 日志能一路写下去。现在启动清一次 + 每天 05:00 清一次（凌晨人少）。
 // 清理走后台线程（LogDB::cleanDatabaseAsync），十几万条也不会卡界面。
 static void runLogClean();
+static void scheduleMemoryGuard();
+static void reloadBotDBs();
 
 // 每天 05:00 触发；清完再把自己排到下一天（单次定时器，跨天不漂移）
 static void scheduleDailyLogClean()
@@ -805,11 +809,24 @@ static void scheduleDailyLogClean()
     const qint64 ms = qMin<qint64>(now.msecsTo(next) + 1000, 24LL * 3600 * 1000);
     QTimer::singleShot(static_cast<int>(ms), qApp, []() {
         runLogClean();
+        reloadBotDBs();          // 顺手把 LMDB 的整文件映射重开一次，把工作集还回去
         scheduleDailyLogClean();
     });
 }
 
 void initDBs() {
+    // 订阅数据独立 SQLite 库（botdb/subscriptions.db）。
+    // ⚠ 必须排在账号库之前：BotDB::open() 里会做一次「旧 LMDB 订阅 → SQLite」的迁移，
+    //   那次迁移要用 g_subdb；没准备好就只能等下次启动，用户会看到订阅「消失」。
+    {
+        auto sdb = std::make_unique<SubDB>(QStringLiteral("botdb"));
+        if (!sdb->open()) {
+            qCritical() << "打开订阅数据库失败，订阅功能退回 LMDB 实现";
+        } else {
+            g_subdb = std::move(sdb);
+        }
+    }
+
     for (int i = 0; i < 5; ++i) {
         auto db = std::make_unique<LogDB>(QString("botdb/logdb_%1").arg(i));
         if (!db->open()) {
@@ -833,6 +850,10 @@ void initDBs() {
     // 启动 30 秒后再清（别和界面首帧、插件加载抢 IO），之后交给每日 05:00 的定时器
     QTimer::singleShot(30 * 1000, qApp, &runLogClean);
     scheduleDailyLogClean();
+
+    // 内存看门：跑久了工作集会涨到几百 MB（图片位图 + 冷掉的私有页，可回收但 Windows
+    // 不会主动收），定时量一下、超阈值就压一次工作集（见 runMemoryGuard 的注释）。
+    scheduleMemoryGuard();
 }
 
 static void runLogClean()
@@ -846,6 +867,91 @@ static void runLogClean()
     }
     if (g_errlogdb) g_errlogdb->cleanDatabaseAsync(keepErr);
     qDebug() << "LogDB: 定时清理已派发 keepLogs =" << keepLogs << "keepErr =" << keepErr;
+}
+
+// ── botdb 每日重载（2026-11-11）─────────────────────────────────────────────
+// botdb 是 LMDB：整个 data.mdb 一次性 mmap 进来，而且开了 MDB_WRITEMAP，脏页直接算进
+// 工作集。跑一天之后那几百 MB 里有一部分就是这块映射（不是泄漏，但任务管理器看着吓人）。
+// 05:00 把所有账号的 botdb 关一次再开一次 —— mdb_env_close() 走 UnmapViewOfFile，是真
+// 释放，不是 SetProcessWorkingSetSize 那种「挪进 standby」。
+//
+// ⚠ 必须在主线程跑：reload() 内部会 m_saveTimer->start()（QTimer 跨线程 start 会静默失败）。
+// ⚠ 每个库 close 时会等正在读的租约退完（BotDBEnvChange），通常几毫秒；05:00 是低谷。
+// ⚠ 验证名单 / 当日消息计数在 reload() 里已经处理好（快照回填 + 重启保存定时器）。
+static void reloadBotDBs()
+{
+    if (g_botdb.isEmpty()) return;
+
+    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+    int okCount = 0, failCount = 0;
+    for (BotDB *db : g_botdb) {
+        if (!db) continue;
+        if (db->reload()) ++okCount; else ++failCount;
+    }
+    qDebug().noquote() << QStringLiteral("BotDB: 每日重载完成，成功 %1 个 / 失败 %2 个，耗时 %3 ms")
+                              .arg(okCount).arg(failCount)
+                              .arg(QDateTime::currentMSecsSinceEpoch() - t0);
+}
+
+// ── 内存看门（2026-11-11）─────────────────────────────────────────────────
+// 为什么需要它：进程里有一大堆「用过就不再需要」的页 —— 图片位图、界面模型、
+// 插件/Python 堆里的冷数据。Windows 在内存不紧张时**从不主动回收**，跑一天，
+// 任务管理器就敢显示 600~1000MB，实测把这些页压出去之后只剩 68MB。
+// 那数字足以把新用户劝退，所以这里定期收一次。
+//
+// 两档：
+//   · 超过阈值（默认 200MB）→ 只压工作集（SetProcessWorkingSetSize）。几十毫秒，
+//     不动库、不影响功能，页进 standby（系统随时可拿去复用），任务管理器数字立刻回落。
+//   · 超过 4×阈值（默认 800MB）→ 顺手把日志库连接重开一次，把 SQLite 的页缓存
+//     和排序临时缓冲一起扔掉（2026-11-11 起日志库是 SQLite，只占 8MB，收益不大，
+//     留着是因为它顺带把所有库的 dirty 缓存都刷了盘）。
+// 配置：mem_guard_mb（阈值，默认 200；<=0 关闭）、mem_guard_min（间隔分钟，默认 5）。
+static void runMemoryGuard()
+{
+    const int limitMB = g_config["mem_guard_mb"].toInt(200);
+    if (limitMB <= 0) return;
+
+#ifdef Q_OS_WIN
+    PROCESS_MEMORY_COUNTERS pmc;
+    ZeroMemory(&pmc, sizeof(pmc));
+    pmc.cb = sizeof(pmc);
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return;
+
+    const qint64 wsMB = static_cast<qint64>(pmc.WorkingSetSize) / (1024 * 1024);
+    if (wsMB < limitMB) return;
+
+    // 第一档：只压工作集。绝大多数时候走这里 —— 代价只有几十毫秒的软缺页，
+    // 用户完全无感，而任务管理器里那个数字能立刻从几百 MB 掉到一百出头。
+    if (wsMB < limitMB * 4) {
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        qDebug() << "内存看门: 工作集" << wsMB << "MB ≥" << limitMB << "MB，已压工作集";
+        return;
+    }
+
+    // 第二档：堆到 4 倍阈值以上，说明库映射页也积了不少，卸载重挂真归还。
+    qDebug() << "内存看门: 工作集" << wsMB << "MB ≥" << limitMB * 4 << "MB，卸载重载日志库";
+
+    int reloaded = 0;
+    for (int i = 0; i < 5; ++i) {
+        if (!g_logdb[i]) continue;
+        // 正在后台清库就别碰：cleanDatabase 全程持 m_mutex，重载会卡主线程好几秒
+        if (g_logdb[i]->isCleaning()) continue;
+        if (g_logdb[i]->reloadAfterClean(false)) ++reloaded;   // trim 统一放到最后做一次
+    }
+    if (g_errlogdb && !g_errlogdb->isCleaning() && g_errlogdb->reloadAfterClean(false)) ++reloaded;
+
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    qDebug() << "内存看门: 已重载" << reloaded << "个库";
+#endif
+}
+
+static void scheduleMemoryGuard()
+{
+    const int minutes = qMax(1, g_config["mem_guard_min"].toInt(5));
+    QTimer::singleShot(minutes * 60 * 1000, qApp, []() {
+        runMemoryGuard();
+        scheduleMemoryGuard();
+    });
 }
 
 
@@ -1124,6 +1230,7 @@ int main(int argc, char *argv[]) {
         // ⚠ initDBs() 里某个库 open 失败时 g_logdb[i] 保持 nullptr（只 qCritical），这里必须判空
         for (const auto &db : qAsConst(g_logdb)) if (db) db->close();
         if (g_errlogdb) g_errlogdb->close();
+        if (g_subdb) g_subdb->close();     // 订阅库（SQLite）：清 WAL、放文件锁，重启时不被占着
         #ifdef _WIN32
         if(bridge)
         {

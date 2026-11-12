@@ -15,6 +15,7 @@
 #include "themecolorwidget.h"
 #include "themecolors.h"
 #include <QApplication>
+#include <vector>       // scanWorkingSetPages() 的 QueryWorkingSetEx 批量缓冲
 #ifdef Q_OS_WIN
 #ifndef _WINDOWS_
 #include <windows.h>
@@ -64,6 +65,81 @@ QString mbText(qint64 kb)
 {
     if (kb < 0) return QStringLiteral("取不到");
     return QString::number(kb / 1024.0, 'f', 1) + QStringLiteral(" MB");
+}
+
+// ── 工作集页级归因 ────────────────────────────────────────────────────────────
+// 任务管理器只给一个总数，于是所有人都在猜「到底是数据库还是缓存」。这里按页扫一遍
+// 当前工作集（QueryWorkingSetEx），把每个驻留页分成四类：
+//   · 私有页     —— 堆/栈/QString/QTextLayout 等进程自己的内存（「提交大小」里真正驻留的那部分）
+//   · 映像页     —— 本程序和系统 DLL 的代码段（每个进程都有，省不掉）
+//   · 文件映射页 —— mmap 出来的 data.mdb、QPixmap 背后的 DIBSection 位图等（可回收）
+//   · 其它共享   —— 共享内存段之类
+// 只有这个拆分能回答「日志库占多少、缓存占多少、底座占多少」。
+// ⚠ 只在「重载数据库」按钮里跑一次（十几万页，约 0.1~0.5 秒），不进主流程。
+struct WsPages {
+    qint64 privKB   = 0;
+    qint64 imageKB  = 0;
+    qint64 mappedKB = 0;
+    qint64 otherKB  = 0;
+    qint64 pages    = 0;
+    bool   ok       = false;
+};
+
+WsPages scanWorkingSetPages()
+{
+    WsPages r;
+#ifdef Q_OS_WIN
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const quintptr pageSize = si.dwPageSize ? si.dwPageSize : 4096;
+    const qint64 pageKB = static_cast<qint64>(pageSize) / 1024;
+    const HANDLE hProc = GetCurrentProcess();
+
+    const int kBatch = 2048;
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> batch(kBatch);
+
+    quintptr addr = reinterpret_cast<quintptr>(si.lpMinimumApplicationAddress);
+    const quintptr maxAddr = reinterpret_cast<quintptr>(si.lpMaximumApplicationAddress);
+
+    MEMORY_BASIC_INFORMATION mbi;
+    while (addr < maxAddr) {
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) != sizeof(mbi))
+            break;
+        const quintptr regionBase = reinterpret_cast<quintptr>(mbi.BaseAddress);
+        const quintptr regionSize = static_cast<quintptr>(mbi.RegionSize);
+        if (regionSize == 0) break;
+
+        if (mbi.State == MEM_COMMIT) {
+            const quintptr end = regionBase + regionSize;
+            quintptr p = regionBase;
+            while (p < end) {
+                int n = 0;
+                for (; n < kBatch && (p + static_cast<quintptr>(n) * pageSize) < end; ++n)
+                    batch[n].VirtualAddress = reinterpret_cast<PVOID>(p + static_cast<quintptr>(n) * pageSize);
+                if (n <= 0) break;
+                if (!QueryWorkingSetEx(hProc, batch.data(),
+                                       static_cast<DWORD>(n * sizeof(batch[0]))))
+                    break;
+                for (int i = 0; i < n; ++i) {
+                    const auto &a = batch[i].VirtualAttributes;
+                    if (!a.Valid) continue;          // 不在工作集（页被换出）
+                    ++r.pages;
+                    if (a.Shared) {
+                        if (mbi.Type == MEM_IMAGE)       r.imageKB  += pageKB;
+                        else if (mbi.Type == MEM_MAPPED) r.mappedKB += pageKB;
+                        else                             r.otherKB  += pageKB;
+                    } else {
+                        r.privKB += pageKB;
+                    }
+                }
+                p += static_cast<quintptr>(n) * pageSize;
+            }
+            r.ok = true;
+        }
+        addr = regionBase + regionSize;
+    }
+#endif
+    return r;
 }
 } // namespace
 set::set(QWidget *parent) : QWidget(parent)
@@ -724,14 +800,14 @@ void set::setupUI()
         if(configCapacity<=0) configCapacity=1000;
         QMessageBox::warning(this,"修改日志数量",
             "修改完成。下次启动后生效（启动 30 秒会自动清理一次）。\n\n"
-            "注意：LMDB 删条目不缩文件，所以要真正省内存，还要让库压一次 ——\n"
-            "在 botdb/logdb_0 ~ logdb_4、botdb/logdb_err 里各放一个空文件 compact.force，再重启。");
+            "日志库现在是 SQLite：删旧记录后会自动回收空闲页（auto_vacuum=INCREMENTAL），\n"
+            "不需要再手工放 compact.force，也不必等 3 天冷却。");
     });
 
     // 内存诊断：卸载并重新挂载全部日志库 + 清用户/群/图片缓存，前后对比弹窗
     connect(btReloadDb, &QPushButton::clicked, [this]() {
         if (QMessageBox::question(this, "重载数据库",
-                "会把所有日志库卸载再重新挂载（munmap → mmap），并清空：\n"
+                "会把所有日志库的数据库连接关掉再重新打开，并清空：\n"
                 "· 用户缓存 / 群缓存（BotDB，下次访问自动从库里重读）\n"
                 "· 头像 / 图片 / 排版缓存、Qt 全局图片缓存\n\n"
                 "日志、配置、库内容一条都不动；当前会话里的图片可能要重新加载一次。\n\n"
@@ -739,23 +815,32 @@ void set::setupUI()
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
             return;
 
+        // ⚠ 全程 reloadAfterClean(false)：不让它压工作集。
+        //   上一版在这里埋了 SetProcessWorkingSetSize，第一步就把私有页也挪进 standby，
+        //   于是「工作集掉了 953 MB」被误读成「日志库映射页」—— 而 data.mdb 一共才 223 MB，
+        //   物理上不可能是映射页。现在每一步的贡献才是真的。
         const MemSnap before = readProcMem();
+        const WsPages pagesBefore = scanWorkingSetPages();   // 未 trim 时的真实构成
 
-        // 1. 日志库：flush 缓存 → mdb_env_close（munmap，把被清理/查询摸过的文件页直接还给系统）→ 重新 mmap
+        // 1. 日志库：flush 缓存 → 关连接（扔掉 SQLite 的页缓存和临时缓冲）→ 重新打开。
+        //    2026-11-11 起日志库是 SQLite（cache_size 硬顶 8MB、不开 mmap），所以这一步
+        //    省下的内存很少；留在这里是为了让诊断按钮能如实反映「库占多少」。内存大头
+        //    现在是私有堆（Qt / Python / 插件）和图片位图，那部分只有下面的 trim 才动得了。
         int okCount = 0, total = 0;
         QStringList failed;
         for (int i = 0; i < static_cast<int>(g_logdb.size()); ++i) {
             LogDB *db = g_logdb[i].get();
             if (!db) continue;
             ++total;
-            if (db->reloadAfterClean()) ++okCount;
+            if (db->reloadAfterClean(false)) ++okCount;
             else failed << QStringLiteral("logdb_%1").arg(i);
         }
         if (g_errlogdb) {
             ++total;
-            if (g_errlogdb->reloadAfterClean()) ++okCount;
+            if (g_errlogdb->reloadAfterClean(false)) ++okCount;
             else failed << QStringLiteral("logdb_err");
         }
+        const MemSnap afterDb = readProcMem();
 
         // 2. 用户 / 群缓存（BotDB 里那两份 QHash，本来只在 4h / 24h 定时清）
         int botCount = 0;
@@ -764,6 +849,7 @@ void set::setupUI()
             db->clearAllCaches();
             ++botCount;
         }
+        const MemSnap afterBot = readProcMem();
 
         // 3. 界面缓存（头像 / 图片 / 排版 / Qt 全局图片缓存）
         if (chatPage) chatPage->resetRuntimeCaches();
@@ -780,7 +866,8 @@ void set::setupUI()
 #endif
 
         // 等 400ms 再读一次：给缺页回来的时间，这才是「压过工作集之后」的真实水位
-        QTimer::singleShot(400, this, [this, before, afterWork, okCount, total, failed, botCount]() {
+        QTimer::singleShot(400, this, [this, before, afterDb, afterBot, afterWork,
+                                      okCount, total, failed, botCount, pagesBefore]() {
             const MemSnap afterTrim = readProcMem();
 
             auto diffText = [](qint64 a, qint64 b) -> QString {
@@ -791,58 +878,74 @@ void set::setupUI()
                     .arg(QString::number(qAbs(d), 'f', 1));
             };
 
-            QString text = QStringLiteral("日志库重载：%1/%2 成功%3\n"
-                                          "已清空用户/群缓存：%4 个账号\n\n"
-                                          "工作集（任务管理器「内存」列）\n"
-                                          "    重载前：%5\n"
-                                          "    清完缓存（未压工作集）：%6 %7\n"
-                                          "    压工作集后（等 400ms）：%8\n\n"
-                                          "提交大小（私有提交，不随映射页变动）\n"
-                                          "    重载前：%9\n"
-                                          "    重载后：%10 %11\n\n")
-                .arg(okCount)
-                .arg(total)
-                .arg(failed.isEmpty() ? QString()
-                                      : QStringLiteral("（失败：") + failed.join(QStringLiteral("、")) + QStringLiteral("）"))
-                .arg(botCount)
-                .arg(mbText(before.wsKB))
-                .arg(mbText(afterWork.wsKB), diffText(before.wsKB, afterWork.wsKB))
-                .arg(mbText(afterTrim.wsKB))
-                .arg(mbText(before.commitKB))
-                .arg(mbText(afterWork.commitKB), diffText(before.commitKB, afterWork.commitKB));
+            QStringList L;
+            L << QStringLiteral("日志库重载：%1/%2 成功%3")
+                 .arg(okCount).arg(total)
+                 .arg(failed.isEmpty() ? QString()
+                                       : QStringLiteral("（失败：") + failed.join(QStringLiteral("、")) + QStringLiteral("）"));
+            L << QStringLiteral("已清空用户/群缓存：%1 个账号\n").arg(botCount);
+
+            L << QStringLiteral("工作集（任务管理器「内存」列）—— 每步都不压工作集，是真实卸载");
+            L << QStringLiteral("    起始：              %1").arg(mbText(before.wsKB));
+            L << QStringLiteral("    日志库卸载重载后：  %1 %2")
+                 .arg(mbText(afterDb.wsKB), diffText(before.wsKB, afterDb.wsKB));
+            L << QStringLiteral("    清用户/群缓存后：   %1 %2")
+                 .arg(mbText(afterBot.wsKB), diffText(afterDb.wsKB, afterBot.wsKB));
+            L << QStringLiteral("    清界面缓存后：      %1 %2")
+                 .arg(mbText(afterWork.wsKB), diffText(afterBot.wsKB, afterWork.wsKB));
+            L << QStringLiteral("    压工作集后（400ms）：%1  ← 只是把冷页挪进 standby，"
+                                "不代表真省了这么多").arg(mbText(afterTrim.wsKB));
+            L << QString();
+
+            // 起始工作集构成 —— 这一段才是「到底占在哪」的答案
+            if (pagesBefore.ok) {
+                L << QStringLiteral("起始工作集构成（按页扫描 %1 页）").arg(pagesBefore.pages);
+                L << QStringLiteral("    私有页（堆 / QString / 排版）      %1").arg(mbText(pagesBefore.privKB));
+                L << QStringLiteral("    程序与系统 DLL（代码段）          %1").arg(mbText(pagesBefore.imageKB));
+                L << QStringLiteral("    文件映射页（图片位图 / 字体等）     %1").arg(mbText(pagesBefore.mappedKB));
+                if (pagesBefore.otherKB > 0)
+                    L << QStringLiteral("    其它共享                          %1").arg(mbText(pagesBefore.otherKB));
+                L << QString();
+            }
+
+            L << QStringLiteral("提交大小（私有提交）：%1 → %2 %3")
+                 .arg(mbText(before.commitKB), mbText(afterWork.commitKB),
+                      diffText(before.commitKB, afterWork.commitKB));
+            L << QString();
 
             // 结论按数据算，不写死
             if (before.wsKB > 0 && afterWork.wsKB > 0) {
                 const double dWs = (before.wsKB - afterWork.wsKB) / 1024.0;
                 const double dCm = (before.commitKB - afterWork.commitKB) / 1024.0;
-
-                if (dWs >= 30.0) {
-                    text += QStringLiteral("· 工作集掉了 %1 MB → 这部分就是日志库 mmap 出来的文件页"
-                                           "（清理/查询时摸过的那批）。它们是可回收的，系统内存紧张时"
-                                           "本来也会被收回，不是泄漏。\n")
-                                .arg(QString::number(dWs, 'f', 1));
-                } else if (dWs < 5.0) {
-                    text += QStringLiteral("· 工作集基本没动 → 日志库映射页不是大头。\n");
-                } else {
-                    text += QStringLiteral("· 工作集掉了 %1 MB（日志库映射页为主）。\n")
-                                .arg(QString::number(dWs, 'f', 1));
+                if (dWs >= 5.0) {
+                    L << QStringLiteral("· 卸载日志库 + 清缓存，工作集掉了 %1 MB。")
+                         .arg(QString::number(dWs, 'f', 1));
                 }
-
                 if (qAbs(dCm) < 5.0) {
-                    text += QStringLiteral("· 提交大小几乎没变 → 进程自身（Qt / Python / 插件）就占这么多，"
-                                           "内存问题不在库和缓存上。");
-                } else if (dCm > 0) {
-                    text += QStringLiteral("· 提交大小降了 %1 MB → 这部分是我们自己缓存的 Message / 图片副本"
-                                           "（真正的私有内存）。")
-                                .arg(QString::number(dCm, 'f', 1));
-                } else {
-                    text += QStringLiteral("· 提交大小反而涨了 %1 MB → 重载时新分配的临时缓冲，"
-                                           "过一会儿会被回收，不用管。")
-                                .arg(QString::number(-dCm, 'f', 1));
+                    L << QStringLiteral("· 提交大小几乎没变 → 掉的都是映射页（可回收），"
+                                        "私有内存本来就没被释放。");
                 }
             }
 
-            QMessageBox::information(this, "重载完成", text);
+            if (pagesBefore.ok) {
+                const qint64 mapMB  = pagesBefore.mappedKB / 1024;
+                const qint64 privMB = pagesBefore.privKB / 1024;
+                const qint64 imgMB  = pagesBefore.imageKB / 1024;
+                if (mapMB > privMB) {
+                    L << QStringLiteral("· 起始工作集里最大的是「文件映射页」%1 MB →"
+                                        "主要是图片位图（QPixmap 在 Windows 上是 DIBSection，也算映射页）"
+                                        "和字体/资源文件。这部分是全进程最「可回收」的："
+                                        "淘汰即可，不是泄漏。")
+                         .arg(mapMB);
+                } else {
+                    L << QStringLiteral("· 起始工作集里最大的是「私有页」%1 MB → 占用在进程自己的堆上"
+                                        "（QString / 排版 / 插件 / Python），跟日志库和图片缓存无关。")
+                         .arg(privMB);
+                }
+                L << QStringLiteral("· DLL 代码段 %1 MB，是每个进程都有的底座，动不了。").arg(imgMB);
+            }
+
+            QMessageBox::information(this, "重载完成", L.join(QStringLiteral("\n")));
         });
     });
 

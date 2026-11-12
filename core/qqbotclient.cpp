@@ -534,7 +534,9 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
     QHash<QString, QString> headers;
     headers.insert("X-Union-Appid", m_info->appid);
     headers.insert("Authorization", "QQBot " + m_accessToken);
-    headers.insert("Content-Type", "application/json");
+    // 这里**不要**加 Content-Type：这是 GET、没有 body，Content-Type 描述的是 body 的类型
+    // （RFC 7231 §3.1.1.5），带上属于非标准用法，严格的网关/代理会直接判 400。
+    // NetManager::applyHeaders 对 GET 也会主动跳过它，这里不留是为了不误导后来的人。
 
     NetManager::instance()->getAsyncEx(url, headers, 10000,
         [this, calls, url](const NetReplyInfo &r) {
@@ -1582,6 +1584,11 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             ev.extra ="问题："+ o3["question"].toString()+"\n答案："+o3["answer"].toString();
         }
         ev.msg ="【有人申请加群】 群：%1(%2) 用户:%3(%4)\n%5";
+    }
+    else if (ev.msgType == "REWARDED_AD_COMPLETE") {
+        ev.type = (d.value("chat_type").toString()=="c2c")?2:0;
+        ev.subType = 5;
+        ev.msg = "用户广告完成通知";
     }
 
     else {

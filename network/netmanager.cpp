@@ -14,6 +14,76 @@
 // 回调默认丢线程池（不落主线程、不落调用方线程）
 NetManager::CallbackThread NetManager::s_cbThread = CallbackOnPoolThread;
 
+// ── 统一请求头默认值 / 协议开关 ──
+//
+// UA 默认值刻意与 qqbotclient.cpp 里 WS 握手那套"完整头"一致（同一条腾讯网关，
+// 同一个进程，两条路的客户端指纹必须是同一个），否则 WAF 做关联分析时很容易
+// 把"WS 自称浏览器、HTTP 自称空"判成异常。要换成自称（qiancao/x.y）就调
+// NetManager::setDefaultUserAgent()，传空串则完全不补 UA。
+QString NetManager::s_userAgent = QStringLiteral(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+bool NetManager::s_http2Enabled = true;
+
+// 头值是否全是 HTTP/1.1 允许的 ASCII（含水平制表符）。
+// HTTP 头的 value 名义上是 ISO-8859-1/ASCII，实际服务器绝大多数只认 ASCII；
+// 中文按 UTF-8 塞进去是裸多字节，会被严格实现直接判 400 Bad Request
+// （COS 更狠：签名把 header 算进去，直接 SignatureDoesNotMatch）。
+static bool isAsciiHeaderValue(const QByteArray &v)
+{
+    for (int i = 0; i < v.size(); ++i) {
+        const uchar c = uchar(v.at(i));
+        if (c > 0x7E || (c < 0x20 && c != '\t'))
+            return false;
+    }
+    return true;
+}
+
+void NetManager::applyHeaders(QNetworkRequest &request,
+                              const QHash<QString, QString> &headers,
+                              bool allowContentType,
+                              bool skipHost)
+{
+    bool hasUa = false;
+    bool hasAccept = false;
+
+    for (auto it = headers.begin(); it != headers.end(); ++it) {
+        const QByteArray key = it.key().toUtf8();
+        const QByteArray val = it.value().toUtf8();
+
+        // 非法头名（空 / 带空格 / 带换行）一律不发：这类东西发出去不是 400 就是
+        // 被中间层当成请求头注入（RFC 7230 §3.2.4 明确要求拒绝）。
+        if (key.isEmpty() || key.contains('\r') || key.contains('\n') || key.contains(' '))
+            continue;
+        if (val.contains('\r') || val.contains('\n') || !isAsciiHeaderValue(val))
+            continue;
+
+        // COS 内网改写自己写了 Host（签名按 Host 校验），业务头里的 Host 不能覆盖它
+        if (skipHost && qstricmp(key.constData(), "Host") == 0)
+            continue;
+
+        // 没有 body 的请求（GET 等），Content-Type 描述的是 body 的类型，
+        // 带了属于非标准用法（RFC 7231 §3.1.1.5），严格网关会当非法请求拒掉。
+        if (!allowContentType && qstricmp(key.constData(), "Content-Type") == 0)
+            continue;
+
+        if (qstricmp(key.constData(), "User-Agent") == 0)      hasUa = true;
+        else if (qstricmp(key.constData(), "Accept") == 0)     hasAccept = true;
+
+        request.setRawHeader(key, val);
+    }
+
+    // 兜底：调用方没给就补一套。Qt 不会自动加这两个头。
+    if (!hasUa && !s_userAgent.isEmpty())
+        request.setRawHeader("User-Agent", s_userAgent.toUtf8());
+    if (!hasAccept)
+        request.setRawHeader("Accept", "*/*");
+
+    // Connection / Keep-Alive / Transfer-Encoding 不在这里补：
+    // HTTP/2 下它们是禁止的伪头，由 Qt 按协议版本自己决定。
+}
+
 // 把回调交出去执行。必须在网络线程里调用。
 //
 // CallbackOnPoolThread：包成 QRunnable 丢进全局线程池。
@@ -253,10 +323,9 @@ void NetManager::postAsync(const QString& url, const QByteArray& data,
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
         request.setUrl(QUrl(url));
-        for (auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        applyHeaders(request, headers);              // POST 有 body，Content-Type 照发
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
         QNetworkReply* reply = mgr->post(request, data);
         QTimer* timer = new QTimer(reply);
         timer->setSingleShot(true);
@@ -292,11 +361,9 @@ std::future<QByteArray> NetManager::post(const QString &url, const QByteArray &j
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
         request.setUrl(QUrl(url));
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        applyHeaders(request, headers);              // POST 有 body，Content-Type 照发
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
         QNetworkReply *reply = mgr->post(request, jsonData);
         QTimer *timer = new QTimer(reply);
         timer->setSingleShot(true);
@@ -322,9 +389,13 @@ std::future<QByteArray> NetManager::post(const QString &url, const QByteArray &j
 // （如 .accelerate. → .ap-guangzhou.），Host 头保留原域名（cos 签名按 Host 校验，路由也按 Host 走）
 // ——连接时由内网 DNS 直达内网。
 // 返回 true = 已改写内网。调用方据此禁用 HTTP/2（H2 无 Host 头，:authority 取自 URL 会顶掉手动 Host）。
-// 公网（g_neiw 空）或非 cos 域名：原样直连，返回 false。业务 headers 逐一设置（跳过 Host）。
+// 公网（g_neiw 空）或非 cos 域名：原样直连，返回 false。
+//
+// 业务 headers 不在这里设：调用点随后统一走 applyHeaders(..., skipHost=true)，
+// 这样 UA/Accept 兜底、非法值过滤只有一份实现，Host 也不会被业务头顶掉。
 static bool buildCosPutRequest(const QString &url, const QHash<QString, QString> &headers, QNetworkRequest &request)
 {
+    Q_UNUSED(headers)
     QUrl originalUrl(url);
     QString originalHost = originalUrl.host();
     bool isCos = originalHost.contains(".cos.") || originalHost.contains(".myqcloud.com");
@@ -353,11 +424,6 @@ static bool buildCosPutRequest(const QString &url, const QHash<QString, QString>
     if (!rewritten)
         request.setUrl(originalUrl);
 
-    for (auto it = headers.begin(); it != headers.end(); ++it) {
-        if (it.key().toLower() != "host") {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
-    }
     return rewritten;
 }
 
@@ -375,10 +441,11 @@ std::future<QByteArray> NetManager::put(const QString &url, const QByteArray &da
 
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
-        const bool internalEp = buildCosPutRequest(url, headers, request);   // cos 内网改写 + Host 头 + 业务 headers
+        const bool internalEp = buildCosPutRequest(url, headers, request);   // cos 内网改写 + Host 头
+        applyHeaders(request, headers, true, /*skipHost=*/true);            // 业务头 + UA/Accept 兜底
 
         // 内网改写时禁用 HTTP/2：H2 无 Host 头（:authority 取自 URL 会顶掉手动 Host），HTTP/1.1 下手动 Host 必定生效
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, !internalEp);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled && !internalEp);
         QNetworkReply *reply = mgr->put(request, data);
 
         QTimer *timer = new QTimer(reply);
@@ -431,11 +498,9 @@ std::future<QByteArray> NetManager::get(const QString &url,const QHash<QString, 
         QNetworkRequest request;
 
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
         request.setUrl(QUrl(url));
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        applyHeaders(request, headers, /*allowContentType=*/false);   // GET 无 body，不发 Content-Type
 
         QNetworkReply *reply = mgr->get(request);
         QTimer *timer = new QTimer(reply);
@@ -503,9 +568,13 @@ void NetManager::downloadAsync(const QString &url, qint64 maxBytes, int timeoutM
         QNetworkRequest request;
         request.setUrl(QUrl(url));
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-        // 有些直链按 UA 拦（空 UA / 爬虫 UA 直接 403）
-        request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (qiancao)"));
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
+        // 有些直链按 UA 拦（空 UA / 爬虫 UA 直接 403）。
+        // 这里用全局默认 UA（浏览器风格），与所有 API 请求保持同一口径 ——
+        // 原来那句 "Mozilla/5.0 (qiancao)" 一眼就是爬虫，反而更招拦。
+        if (!s_userAgent.isEmpty())
+            request.setRawHeader("User-Agent", s_userAgent.toUtf8());
+        request.setRawHeader("Accept", "*/*");
 
         QNetworkReply *reply = mgr->get(request);
         auto bigFlag = std::make_shared<bool>(false);
@@ -563,11 +632,9 @@ void NetManager::getAsync(const QString &url,const QHash<QString, QString> &head
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
         request.setUrl(QUrl(url));
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        applyHeaders(request, headers, /*allowContentType=*/false);   // GET 无 body，不发 Content-Type
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
         QNetworkReply *reply = mgr->get(request);
         QTimer *timer = new QTimer(reply);
         timer->setSingleShot(true);
@@ -608,11 +675,9 @@ void NetManager::getAsyncEx(const QString &url,const QHash<QString, QString> &he
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
         request.setUrl(QUrl(url));
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        applyHeaders(request, headers, /*allowContentType=*/false);   // GET 无 body，不发 Content-Type
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
         QNetworkReply *reply = mgr->get(request);
         QTimer *timer = new QTimer(reply);
         timer->setSingleShot(true);
@@ -654,10 +719,8 @@ std::future<QByteArray> NetManager::Patch (const QString &url, const QByteArray 
         QNetworkRequest request;
         request.setUrl(QUrl(url));
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-        for(auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
+        applyHeaders(request, headers);              // PATCH 有 body，Content-Type 照发
 
         QNetworkReply *reply = mgr->sendCustomRequest(request, "PATCH", jsonData);
         QTimer *timer = new QTimer(reply);
@@ -691,10 +754,8 @@ void NetManager::Delete2(const QString &url,const QByteArray &data,
         QNetworkRequest request;
         request.setUrl(QUrl(url));
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-        for (auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
+        applyHeaders(request, headers);              // DELETE 可能带 body，Content-Type 照发
         QNetworkReply *reply = mgr->sendCustomRequest(request, "DELETE", data);
         QTimer *timer = new QTimer(reply);
         timer->setSingleShot(true);
@@ -729,10 +790,11 @@ void NetManager::putAsync(const QString& url, const QByteArray& data,
     QMetaObject::invokeMethod(mgr, [=]() {
         QNetworkRequest request;
         const bool internalEp = buildCosPutRequest(url, headers, request);
+        applyHeaders(request, headers, true, /*skipHost=*/true);   // 业务头 + UA/Accept 兜底
 
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
 
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, !internalEp);
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled && !internalEp);
 
         QNetworkReply* reply = mgr->put(request, data);
         QTimer* timer = new QTimer(reply);
@@ -773,10 +835,8 @@ std::future<QByteArray> NetManager::Delete(const QString &url,
         QNetworkRequest request;
         request.setUrl(QUrl(url));
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
-        for (auto it = headers.begin(); it != headers.end(); ++it) {
-            request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
-        }
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, s_http2Enabled);
+        applyHeaders(request, headers);              // DELETE 可能带 body，Content-Type 照发
 
         // ★★★ 关键修改：使用 sendCustomRequest 发送 DELETE 请求体和数据 ★★★
         QNetworkReply *reply = mgr->sendCustomRequest(request, "DELETE", data);
