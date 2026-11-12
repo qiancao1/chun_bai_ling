@@ -40,6 +40,9 @@ void AccountPage::recordHourlyStats() {
     int deltaReceived = curTotalReceived - m_lastTotalReceived;
     int deltaSent = curTotalSent - m_lastTotalSent;
 
+    // 每分钟跑一次，没有新增就什么都不做：不写盘、不重绘（空闲时零开销）
+    if (deltaReceived == 0 && deltaSent == 0) return;
+
     QDateTime now = QDateTime::currentDateTime();
     QDate date = now.date();
     int hour = now.time().hour();
@@ -54,7 +57,7 @@ void AccountPage::recordHourlyStats() {
     g_config["LastTotalReceived"] = m_lastTotalReceived;
     g_config["LastTotalSent"] = m_lastTotalSent;
 
-    homePage->updateChartData();
+    if (homePage) homePage->updateChartData();
     saveConfig();
 }
 
@@ -252,7 +255,12 @@ AccountPage::AccountPage(QWidget *parent)
 
     m_hourlyTimer = new QTimer(this);
     connect(m_hourlyTimer, &QTimer::timeout, this, &AccountPage::recordHourlyStats);
-    m_hourlyTimer->start(3600 * 1000);  // 每小时触发一次
+    // ⚠ 必须是「每分钟」，不能是「每小时」：
+    //   ① 每小时触发时 now.hour() 已经跨进下一个小时，这一小时的增量被记到下一格 —— 整张图错位一小时；
+    //   ② 正在进行的这一小时要等下次触发才结算，界面上那一格就一直是 0（「9 点没满所以不显示」）。
+    //   本函数按「当前累计 − 上次累计」的增量记账，提高频率不会重复计数，所以改成每分钟最省事：
+    //   增量落进当前小时格，进行中的这一小时也能实时长柱子。
+    m_hourlyTimer->start(60 * 1000);
 }
 
 AccountPage::~AccountPage() {
