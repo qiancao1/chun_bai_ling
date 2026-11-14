@@ -689,7 +689,7 @@ void processAppidTasks(int appid) {
     // ---- 线程局部限速变量 ----
     // 分钟额度只对「主动发送」（不带 msgid）生效，且只有群有：群 50 条/分钟（官方 60，留 10 条保险）。
     // ⚠ 好友**没有**分钟限制 —— 「好友 30 条/分钟」是「未认证」机器人才有的限制，这里有认证，不卡。
-    // 被动回复（带 msgid）不计入任何分钟额度，只受 paceMsgIdReply(60) 的全局 60 条/秒限制。
+    // 被动回复（带 msgid）不计入任何分钟额度，只受 paceMsgIdReply 的**本号** 60 条/秒限制
     // jiancha() 每分钟才跑一次本函数 → 群主动额度满了就 break，剩下的靠 t.groupOffset 下一分钟续传。
     const int GROUP_MIN_LIMIT = 50;
     int groupCount = 0;
@@ -825,7 +825,7 @@ void processAppidTasks(int appid) {
 
             // ---- 秒级限速（被动回复 60 条/秒；主动发送维持原来的 8 条/秒）----
             if (!msgid.isEmpty()) {
-                paceMsgIdReply(60);
+                paceMsgIdReply(60, QString::number(appid));
             } else {
                 qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
                 if (lastPrivateSendTime > 0) {
@@ -896,8 +896,8 @@ void processAppidTasks(int appid) {
                 break;   // 群主动发送额度已满，保留偏移下一分钟接着发
             }
 
-            // 被动回复不算主动发送的分钟额度，只按 60 条/秒走
-            if (!msgid.isEmpty()) paceMsgIdReply(60);
+            // 被动回复不算主动发送的分钟额度，只按本号 60 条/秒走
+            if (!msgid.isEmpty()) paceMsgIdReply(60, QString::number(appid));
 
             if (!data.isEmpty()) {
                 // 发完看回执：真失败（既不是限频，也不是空/占位响应）说明这个群已经发不了了

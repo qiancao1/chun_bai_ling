@@ -29,6 +29,7 @@
 #include "keywordpunishconfigwidget.h"
 //#include "lmdbbrowserwidget.h"
 #include "nickreviewwidget.h"
+#include "lotterypage.h"
 #include "pluginpage.h"
 #include <QGraphicsOpacityEffect>
 #include "logpage.h"
@@ -81,11 +82,15 @@
 #include <QScreen>
 
 
-#define APP_VERSION_STR "v1.5.7.193"
-#define APP_BUILD_NUMBER 193
+#define APP_VERSION_STR "v1.5.7.195"
+#define APP_BUILD_NUMBER 195
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.5.8.195  (2026-11-14)
+- 增加 内置功能 抽奖
+- 优化 首页排版
+
 ## v1.5.7.193  (2026-11-12)
 - 优化 允许自定义自动撤回 不写在 纯白铃指令 但是完整纯白铃指令有
 - 优化 日志数据库 改为sqlit lmdb 效率虽然快但是会映射内存 从任务管理器看见是占用很多状态 实际上并没有
@@ -169,6 +174,7 @@ QListWidget *configNav=nullptr;          // 高级配置页：二级竖排导航
 QStackedWidget *configStack=nullptr;     // 高级配置页：二级内容区
 NickReviewWidget *m_nickReviewWidget=nullptr;
 MaterialWidget *material_ui=nullptr;
+LotteryPage *lottery_ui=nullptr;          // 内置 → 抽奖（数据按 appid 隔离）
 
 bool 强制审核昵称=false;
 int m_currentBotIndex = -1;
@@ -206,7 +212,7 @@ namespace {
 // 画法和标题栏那套一致：16×16 坐标系、1.4px 圆头细线，Normal / hover / 选中 三态各出一张图。
 enum NavGlyph {
     NavAi, NavMenu, NavCmd, NavMedia, NavBase, NavFaq, NavButton,
-    NavBan, NavReview, NavPush, NavReplace, NavClock, NavRecall
+    NavBan, NavReview, NavPush, NavReplace, NavClock, NavRecall, NavGift
 };
 
 QPixmap navGlyphPixmap(NavGlyph glyph, const QColor &color, int px)
@@ -342,6 +348,21 @@ QPixmap navGlyphPixmap(NavGlyph glyph, const QColor &color, int px)
         tip.lineTo(3.6, 6.4);
         tip.lineTo(7.6, 8.4);
         p.drawPath(tip);
+        break;
+    }
+    case NavGift: {                      // 礼物盒（抽奖）
+        p.drawRoundedRect(QRectF(3.0, 7.4, 10.0, 6.0), 1.4, 1.4);
+        p.drawRoundedRect(QRectF(2.4, 4.6, 11.2, 2.6), 1.2, 1.2);
+        p.drawLine(QPointF(8.0, 4.6), QPointF(8.0, 13.4));
+        // 蝴蝶结：两个小弧从中间往上分出去
+        QPainterPath bowL;
+        bowL.moveTo(8.0, 4.4);
+        bowL.cubicTo(6.2, 1.8, 3.8, 2.6, 5.4, 4.4);
+        p.drawPath(bowL);
+        QPainterPath bowR;
+        bowR.moveTo(8.0, 4.4);
+        bowR.cubicTo(9.8, 1.8, 12.2, 2.6, 10.6, 4.4);
+        p.drawPath(bowR);
         break;
     }
     }
@@ -777,6 +798,7 @@ void MainWindow::setupUi()
 
 
     m_nickReviewWidget = new NickReviewWidget(this);
+    lottery_ui = new LotteryPage;        // 内置 → 抽奖（每个机器人各自一套，切号靠 setAppId）
     // 素材页：每个机器人各自一套（配额/链接/有效期都按 appid 隔离），切号时靠 setAppId 换数据
 
 
@@ -911,6 +933,7 @@ void MainWindow::setupUi()
     addConfigPage("文本替换", TextReplace, NavReplace);
     addConfigPage("订阅|定时", schedule, NavClock);
     addConfigPage("关键词撤回", keyword_Punish, NavRecall);
+    addConfigPage("抽奖", lottery_ui, NavGift);
 
 
     connect(configNav, &QListWidget::currentRowChanged, this,
@@ -1571,6 +1594,7 @@ bool MainWindow::applyConfigAppId(int appid)
 
     ui_qunguan->列表行被单击();
     m_nickReviewWidget->setAppId(g_appid);
+    lottery_ui->setAppId(g_appid);     // 抽奖按账号隔离：切账号即换一份
     material_ui->setAppId(g_appid);
     Black->setAppId(g_appid);          // 黑名单按账号隔离：切账号即换一份
 

@@ -4,8 +4,11 @@
 #include <QMessageBox>
 #include <QThreadPool>
 #include <QDateTime>
+#include <atomic>
 
-int 成功数量g=0;
+// 群批量推送的成功计数：改成异步发送后由回调线程累加，必须原子
+// （多个请求同时在飞 → 回调可能并发，普通 int 的 ++ 会丢计数）
+std::atomic<int> 成功数量g{0};
 QList<int> ts_m_friendStatus;
 QList<QString> ts_m_groupStatus;
 QString ts_m_text= QString();
@@ -175,7 +178,8 @@ public:
         int len = ts_m_friendStatus.size();
 
         // 好友**没有**分钟限制（「30 条/分钟」只是「未认证」机器人才有的，这里都是有认证的）→
-        // 只做秒级限速：被动回复走全局 60 条/秒；主动发送维持原来的 8 条/秒。
+        // 只做秒级限速：被动回复走**本号** 60 条/秒（paceMsgIdReply 按 appid 分桶）；
+        // 主动发送维持原来的 8 条/秒。
         const int maxPerSec = 8;
         const int minIntervalMs = 1000 / maxPerSec;   // 125ms
         QElapsedTimer timer;
@@ -197,7 +201,7 @@ public:
             ts_m_friendStatus[i] = 0;
 
             if (!msgid.isEmpty()) {
-                paceMsgIdReply(60);   // 被动回复：全局 60 条/秒
+                paceMsgIdReply(60, QString::number(g_appid));   // 被动回复：本号 60 条/秒
             } else {
                 qint64 elapsed = timer.elapsed();
                 if (elapsed < minIntervalMs) {
@@ -230,7 +234,7 @@ public:
         int len = ts_m_groupStatus.size();
 
         // 群硬限：只有「主动发送」（不带 msgid）才吃 50 条/分钟（官方 60，留 10 条保险）；
-        // 被动回复不占这个额度（只受 paceMsgIdReply(60) 的全局 60 条/秒限制）。
+        // 被动回复不占这个额度（只受 paceMsgIdReply 的**本号** 60 条/秒限制）。
         // 主动额度满 50 条就睡到下一个整分钟再继续，期间支持中途停止（ts_m_stopPush）。
         const int GROUP_MIN_LIMIT = 50;
         int sentThisMinute = 0;                      // 本分钟内「主动发送」条数
@@ -267,12 +271,25 @@ public:
                 }
             }
 
-            QString res = bot->send_messages(0,ts_m_groupStatus[i],pname,ts_m_text,msgid);
+            // 异步发送：立刻返回，不再把调用线程钉在 RTT 上。
+            //   原来走 send_messages（同步版）→ 每条都要等 30~100ms 的回包，8 个号的线程全堵在网络上，
+            //   实际吞吐被「线程数 ÷ RTT」卡死（8/0.05 ≈ 160 条/秒），限速器提到多少都没用。
+            //   改成带回调版后，线程只负责投递 + 睡 16ms 的时间片，真正的等待由网络线程管。
+            // 成功计数放进回调：ctx.cb 收到的是**真实回包**（api2.cpp 里 ctx.cb(resp, err)），
+            //   和同步版返回值同源，所以 contains("ROBOT") 的判定不变。
+            // ⚠ text 必须传**局部副本**：send_msgAsync 会原地改写正文（摘 #^/#$ 前缀、改插件指令名），
+            //   直接传成员 ts_m_text 会把上一轮的改写结果带进下一轮。
+            const QString gid = ts_m_groupStatus[i];
+            QString text = ts_m_text;
+            bot->send_msgAsync(0, gid, pname, text, msgid, QString(), false, 0, false,
+                               [](const QString &resp, QNetworkReply::NetworkError) {
+                                   if (resp.contains("ROBOT"))
+                                       成功数量g.fetch_add(1, std::memory_order_relaxed);
+                               });
             ts_m_groupStatus[i]=QString();
-            if(res.contains("ROBOT")) 成功数量g++;
 
-            // 带上 msgid 就是被动回复，可以走全局 60 条/秒；主动发送才吃 50 条/分钟
-            if(!msgid.isEmpty()) paceMsgIdReply(60);
+            // 带上 msgid 就是被动回复，可以走本号 60 条/秒；主动发送才吃 50 条/分钟
+            if(!msgid.isEmpty()) paceMsgIdReply(60, QString::number(g_appid));
             else ++sentThisMinute;
         }
     }

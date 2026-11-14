@@ -19,6 +19,13 @@
 #include <QList>
 #include <QPair>
 #include <algorithm>
+
+#include <QDialog>
+#include <QScrollArea>
+#include <QEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include "global.h"
 #include "themecolors.h"   // 页面自带样式表也要跟着主题走
 #include <QMutex>          // 读 BotDB 今日活跃表要加锁（m_msgMutex）
@@ -374,10 +381,11 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
         if (title == "在线账号") m_onlineAccountValue = valueLabel;
         if (title == "插件数量") m_pluginCountValue = valueLabel;
         if (title == "广告观看") m_adValue      = valueLabel;
-        if (title == "活跃数据" || title == "群/好友 增删") {
+        if (title == "活跃数据" || title == "群/好友 增删" || title == "广告观看") {
             // 一张卡里放两个以上数值：13px 一行。
             // 卡宽现在是统一的，字号再大就会把后面的数裁掉。
             // min-height 撑到和 19px 大数值一样高，否则这张卡矮一截、标题行跟别的卡错位。
+            // 「广告观看」主数值是「累计次数 / 本月金额」，同理按 13px 走。
             valueLabel->setStyleSheet("font-size: 13px; font-weight: 600; color: #17202A; min-height: 22px;");
             if (title == "活跃数据")   m_activeDataValue = valueLabel;
             if (title == "群/好友 增删") m_addDelValue  = valueLabel;
@@ -386,6 +394,17 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
 
         layout->addWidget(iconLabel);
         layout->addLayout(textLayout, 1);
+
+        // 「广告观看」整张卡可点：点开看每日明细（本月 / 上月）。
+        // QFrame 没有 clicked 信号，这里挂事件过滤器；子控件（图标/标题/数值）一律
+        // 转成鼠标透明，否则点在字上时事件被 QLabel 吃掉，卡片收不到。
+        if (title == "广告观看") {
+            m_adCard = card;
+            card->setCursor(Qt::PointingHandCursor);
+            card->installEventFilter(this);
+            for (QWidget *child : card->findChildren<QWidget *>())
+                child->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        }
 
         statsLayout->addWidget(card, 0, col);
         statsLayout->setColumnStretch(col, 1);
@@ -398,8 +417,8 @@ void HomePage::createStatCards(QGridLayout* statsLayout) {
                    "已加载的插件数量");
     createStatCard(2, "🤖", "在线账号", "0 / 0", "", "#F3E5F5",
                    "已登录 / 已配置 的账号数");
-    createStatCard(3, "📺", "广告观看", "0", "累计 0", "#FDEBE8",
-                   "本次启动以来广告看完次数（右上 = 历史累计）");
+    createStatCard(3, "📺", "广告观看", "0 / ¥0.00", "今日 0", "#FDEBE8",
+                   "累计观看次数 / 本月预计广告收入（元，未扣平台分成/服务费/税）· 点开看每日明细");
     createStatCard(4, "👥", "群/好友 增删", "0/0 0/0", "", "#EAF0FF",
                    "本次启动以来：群 加/退、好友 加/删");
 }
@@ -1132,7 +1151,8 @@ void HomePage::refreshRuntimeStats()
     qint64 runRecv = 0, runSent = 0;
     qint64 totalRecv = 0, totalSent = 0;
     int gAddRun = 0, gDelRun = 0, fAddRun = 0, fDelRun = 0;   // 启动以来 群/好友 增删
-    qint64 adRun = 0, adTotal = 0;
+    // 「广告观看」卡：左边 累计次数（落盘口径），右上角 今日次数，后面的 / 本月金额走接口
+    qint64 adTotal = 0, adToday = 0;
     qint64 activeUsers = 0, activeGroups = 0;                 // 今日活跃用户 / 群（各账号求和）
     for (const auto &account : std::as_const(m_accounts)) {
         if (!account) continue;
@@ -1149,8 +1169,8 @@ void HomePage::refreshRuntimeStats()
         gDelRun += account->退群本次;
         fAddRun += account->好友本次;
         fDelRun += account->删好友本次;
-        adRun   += account->ad_watched;
         adTotal += account->ad_watched_total;
+        adToday += account->ad_watched_day;
         // 活跃用户 / 活跃群聊：和「数据统计」指令同一个来源
         // （BotDB 里当天的用户表 / 群表，表的大小就是去重后的活跃数）
         if (auto *db = g_botdb.value(account->appid_int, nullptr)) {
@@ -1174,9 +1194,13 @@ void HomePage::refreshRuntimeStats()
         QString("用户 %1 · 群 %2").arg(formatCountShort(activeUsers), formatCountShort(activeGroups)));
     if (m_pluginCountValue)   m_pluginCountValue->setText(QString::number(m_pluginList.size()));
     if (m_onlineAccountValue) m_onlineAccountValue->setText(QString("%1 / %2").arg(onlineCount).arg(m_accounts.size()));
-    if (m_adValue)            m_adValue->setText(formatCount(adRun));
-    if (m_adSub)              m_adSub->setText(
-        QString("累计 %1").arg(formatCountShort(adTotal)));
+
+
+    m_adTotalCount = adTotal;
+    m_adTodayCount = adToday;
+    applyAdCardText();
+    fetchAdMonth(QDate::currentDate().toString("yyyyMM"));
+
     if (m_addDelValue)        m_addDelValue->setText(
         QString("%1/%2 %3/%4")
             .arg(formatCountShort(gAddRun), formatCountShort(gDelRun),
@@ -1345,4 +1369,447 @@ void HomePage::refreshPluginMessageRanking()
 void HomePage::refreshPluginList()
 {
     refreshRuntimeStats();
+}
+
+
+
+static QString adMoneyText(double yuan)
+{
+    return QStringLiteral("¥%1").arg(yuan, 0, 'f', 2);
+}
+
+static QString adRangeText(const QDate &start, const QDate &end)
+{
+    if (!start.isValid() || !end.isValid()) return QString();
+    return QString("%1 ~ %2").arg(start.toString("yyyy-MM-dd"), end.toString("yyyy-MM-dd"));
+}
+
+// 卡片文案：累计次数 / 本月金额
+void HomePage::applyAdCardText()
+{
+    if (!m_adValue && !m_adSub) return;
+
+    const QString ym = QDate::currentDate().toString("yyyyMM");
+    QString money;
+    if (m_adLoading.contains(ym)) {
+        money = QStringLiteral("¥…");                       // 正在取
+    } else if (m_adFetchedAt.contains(ym) && !m_adDaily.value(ym).isEmpty()) {
+        // 有数据就显示数据（哪怕这轮后面某个账号被拒也无所谓，已拿到的照算）
+        double sum = 0.0;
+        const QHash<QString, AdDayStat> bucket = m_adDaily.value(ym);
+        for (auto it = bucket.constBegin(); it != bucket.constEnd(); ++it)
+            sum += it.value().income;
+        money = adMoneyText(sum);
+    } else if (m_adFailDate.isValid() && m_adFailDate == QDate::currentDate()) {
+        money = QStringLiteral("—");                        // 平台明确拒绝过，当天不再请求
+    } else if (m_adFailed.contains(ym)) {
+        money = QStringLiteral("—");                        // 整轮失败（多半没登录 / 没广告权限）
+    } else {
+        money = QStringLiteral("¥…");                       // 还没取过
+    }
+
+    if (m_adValue) m_adValue->setText(QString("%1 / %2").arg(formatCount(m_adTotalCount), money));
+    if (m_adSub)   m_adSub->setText(QString("今日 %1").arg(formatCountShort(m_adTodayCount)));
+}
+
+// 按月份取数：ym = "yyyyMM"。force=true 跳过 10 分钟节流。
+void HomePage::fetchAdMonth(const QString &ym, bool force)
+{
+    if (ym.size() != 6) return;
+    const int y  = ym.left(4).toInt();
+    const int mo = ym.mid(4, 2).toInt();
+    if (y < 2000 || mo < 1 || mo > 12) return;
+
+    // 一轮一次：明细窗切月、首页 3 秒刷新都可能同一时刻来，别把队列冲掉
+    if (!m_adFetchYm.isEmpty()) return;
+
+    const QDate today = QDate::currentDate();
+
+    // ── 平台明确拒绝过（返回体带 message，比如「能力暂未开放」）→ 当天一个请求都不发 ──
+    //    和接口的其它失败不一样：这种重试一万次也是同一个结果，只会白白刷 trace_id。
+    //    日期落在 g_config 里，重启也认；到第二天自动解除（也可以手动清配置里的这项）。
+    if (!m_adFailDate.isValid()) {
+        m_adFailDate = QDate::fromString(g_config.value(QStringLiteral("ad_api_fail_date")).toString(),
+                                         QStringLiteral("yyyyMMdd"));
+    }
+    if (!force && m_adFailDate.isValid() && m_adFailDate == today) return;
+
+    QDate start(y, mo, 1);
+    QDate end = start.addMonths(1).addDays(-1);
+    if (end > today) end = today;        // 未来的日子平台肯定没数据，别白问
+    if (start > today) return;           // 还没到那个月
+
+    const QString curYm = today.toString("yyyyMM");
+    if (!force && m_adFetchedAt.contains(ym)) {
+        // 上一轮整轮失败（启动时 token 还没就绪、或该机器人没广告权限）→ 1 分钟后再试，别干等 10 分钟
+        const int gateSec = m_adFailed.contains(ym) ? 60 : 600;
+        if (ym != curYm && gateSec >= 600) return;   // 历史月份：一天就那一份数，取过就不动
+        if (m_adFetchedAt.value(ym).secsTo(QDateTime::currentDateTime()) < gateSec) return;
+    }
+
+    // 只问「已登录、client 还在」的账号：没 token 的发出去也是 401，白占一轮
+    QStringList appids;
+    for (const auto &account : std::as_const(m_accounts)) {
+        if (!account) continue;
+        if (!m_botClients.value(account->appid_int, nullptr)) continue;
+        appids << QString::number(account->appid_int);
+    }
+
+    if (appids.isEmpty()) {
+        // 没有账号可问 → 记成「已取过、无数据」，否则首页每 3 秒会重试一次
+        if (!m_adDaily.contains(ym)) m_adDaily.insert(ym, QHash<QString, AdDayStat>());
+        m_adFetchedAt.insert(ym, QDateTime::currentDateTime());
+        applyAdCardText();
+        if (m_adDialog) rebuildAdDialog();
+        return;
+    }
+
+    m_adFetchYm    = ym;
+    m_adFetchStart = start;
+    m_adFetchEnd   = end;
+    m_adFetchQueue = appids;
+    m_adDaily[ym].clear();               // 整月重算，不跟旧值叠加
+    m_adFetchOk = false;                 // 有任何一条成功就算这一轮成功（见 mergeAdRows）
+    m_adLoading.insert(ym);
+    adFetchNext();
+}
+
+// 串行问下一个账号：回调里只解析 JSON，状态改动一律回主线程
+void HomePage::adFetchNext()
+{
+    if (m_adFetchYm.isEmpty()) return;
+
+    while (!m_adFetchQueue.isEmpty()) {
+        const int appid = m_adFetchQueue.takeFirst().toInt();
+        QQBotClient *client = m_botClients.value(appid, nullptr);
+        if (!client) continue;           // 这一轮里账号被删了，跳过
+
+        const QString s = m_adFetchStart.toString("yyyyMMdd");
+        const QString e = m_adFetchEnd.toString("yyyyMMdd");
+        QPointer<HomePage> self(this);
+        client->getAdData(s, e,
+            [self, appid, s, e](const QString &resp, QNetworkReply::NetworkError err) {
+                // ⚠ 这个回调在线程池里跑：只做纯局部解析，别碰任何成员 / UI
+                QHash<QString, AdDayStat> days;
+                QString hardMsg;
+                const QJsonObject root = QJsonDocument::fromJson(resp.toUtf8()).object();
+                if (root.contains(QStringLiteral("message"))) {
+                    hardMsg = root.value(QStringLiteral("message")).toString();
+                    if (hardMsg.isEmpty()) hardMsg = QStringLiteral("平台返回了错误（无描述）");
+                }
+                if (hardMsg.isEmpty() && err == QNetworkReply::NoError) {
+                    const QJsonArray list = root.value("list").toArray();
+                    for (const QJsonValue &v : list) {
+                        const QJsonObject o = v.toObject();
+                        const QString date = o.value("date").toString();
+                        if (date.size() != 8) continue;
+                        AdDayStat st;
+                        st.exposure = static_cast<qint64>(o.value("exposure_count").toDouble());
+                        st.income   = o.value("income").toDouble();
+                        days.insert(date, st);
+                    }
+                } else if (hardMsg.isEmpty()) {
+                    qDebug() << "[广告数据] 拉取失败 appid=" << appid
+                             << " 区间=" << s << e << " 错误=" << err << resp.left(200);
+                }
+                if (!self) return;
+                QMetaObject::invokeMethod(self.data(),
+                    [self, days, ok = (err == QNetworkReply::NoError), hardMsg]() {
+                        if (!self) return;
+                        self->mergeAdRows(days, ok, hardMsg);
+                    }, Qt::QueuedConnection);
+            });
+        return;                          // 一次只发一条，回包后再发下一条
+    }
+
+    finishAdFetch();                     // 队列空了 = 这一轮结束
+}
+
+bool HomePage::eventFilter(QObject *watched, QEvent *event)
+{
+    // 「广告观看」卡片：松开鼠标就弹明细窗（子控件已设成鼠标透明，事件都能落到这里）
+    if (watched == m_adCard && event->type() == QEvent::MouseButtonRelease) {
+        showAdDetail();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void HomePage::mergeAdRows(const QHash<QString, AdDayStat> &days, bool ok, const QString &hardMsg)
+{
+    if (m_adFetchYm.isEmpty()) return;
+
+    if (!hardMsg.isEmpty()) {
+        // 平台明确拒绝：这一轮剩下的账号也不用问了，直接收摊，并且当天封盘
+        m_adHardFail = true;
+        m_adFailMsg  = hardMsg;
+        m_adFetchQueue.clear();
+        adFetchNext();                   // 队列已空 → finishAdFetch
+        return;
+    }
+
+    if (ok) m_adFetchOk = true;
+    QHash<QString, AdDayStat> &bucket = m_adDaily[m_adFetchYm];
+    for (auto it = days.constBegin(); it != days.constEnd(); ++it) {
+        AdDayStat &dst = bucket[it.key()];
+        dst.exposure += it.value().exposure;
+        dst.income   += it.value().income;
+    }
+    adFetchNext();
+}
+
+void HomePage::finishAdFetch()
+{
+    const QString ym = m_adFetchYm;
+    m_adFetchYm.clear();
+    m_adFetchStart = QDate();
+    m_adFetchEnd   = QDate();
+    if (ym.isEmpty()) return;
+
+    m_adLoading.remove(ym);
+    if (!m_adDaily.contains(ym)) m_adDaily.insert(ym, QHash<QString, AdDayStat>());
+    m_adFetchedAt.insert(ym, QDateTime::currentDateTime());
+
+    if (m_adHardFail) {
+        // 「能力暂未开放」这类：当天不再发任何请求（落盘，重启也认；到第二天自动解除）
+        m_adHardFail = false;
+        m_adFailed.insert(ym);
+        m_adFailDate = QDate::currentDate();
+        g_config[QStringLiteral("ad_api_fail_date")] = m_adFailDate.toString(QStringLiteral("yyyyMMdd"));
+        saveConfig();
+        qDebug() << "[广告数据] 平台明确拒绝，今天不再请求：" << m_adFailMsg;
+    } else if (m_adFetchOk) {
+        m_adFailed.remove(ym);
+        m_adFailMsg.clear();
+        // 之前封过盘、这次（手动「再试一次」）拿到了数据 → 解除封盘
+        if (m_adFailDate.isValid() && m_adFailDate == QDate::currentDate()) {
+            m_adFailDate = QDate();
+            g_config.remove(QStringLiteral("ad_api_fail_date"));
+            saveConfig();
+        }
+    } else {
+        m_adFailed.insert(ym);           // 整轮全失败（网络/token）→ 1 分钟后再试
+    }
+
+    applyAdCardText();
+    if (m_adDialog) rebuildAdDialog();
+
+    // 明细窗停在被排队挤掉的月份（刚才一轮在途时点过上月）→ 补一次
+    // 被平台拒绝的情况不补：当天已经封盘，fetchAdMonth 自己会挡住
+    if (m_adDialog && m_adDialogMonth != ym && !m_adFetchedAt.contains(m_adDialogMonth))
+        fetchAdMonth(m_adDialogMonth);
+}
+
+void HomePage::showAdDetail()
+{
+    if (!m_adDialog) {
+        auto *dlg = new QDialog(this);
+        dlg->setWindowTitle(QStringLiteral("广告数据"));
+        dlg->resize(560, 580);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->setStyleSheet(QStringLiteral(
+            "QDialog { background: #FFF8EF; }"
+            "QScrollArea { background: transparent; }"
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }"
+            "QScrollBar::handle:vertical { background: #EADFD2; border-radius: 4px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"));
+        auto *lay = new QVBoxLayout(dlg);
+        lay->setContentsMargins(16, 14, 16, 14);
+        lay->setSpacing(10);
+
+        m_adDialog       = dlg;
+        m_adDialogLayout = lay;
+        connect(dlg, &QObject::destroyed, this, [this]() {
+            m_adDialogLayout = nullptr;      // m_adDialog 是 QPointer，自己会置空
+        });
+    }
+
+    m_adDialogMonth = QDate::currentDate().toString("yyyyMM");
+    fetchAdMonth(m_adDialogMonth);           // 有缓存 / 在途都安全（内部节流）
+    rebuildAdDialog();
+    m_adDialog->show();
+    m_adDialog->raise();
+    m_adDialog->activateWindow();
+}
+
+void HomePage::rebuildAdDialog()
+{
+    if (!m_adDialog || !m_adDialogLayout) return;
+
+    const QDate today   = QDate::currentDate();
+    const QString curYm  = today.toString("yyyyMM");
+    const QString prevYm = today.addMonths(-1).toString("yyyyMM");
+    const QString ym     = m_adDialogMonth.isEmpty() ? curYm : m_adDialogMonth;
+
+    clearLayoutItems(m_adDialogLayout);
+
+    // ---- 标题行：标题 + 区间 + 本月/上月 ----
+    auto monthRange = [today](const QString &m6, QDate &s, QDate &e) {
+        const int y  = m6.left(4).toInt();
+        const int mo = m6.mid(4, 2).toInt();
+        s = QDate(y, mo, 1);
+        e = s.addMonths(1).addDays(-1);
+        if (e > today) e = today;
+    };
+    QDate rs, re;
+    monthRange(ym, rs, re);
+
+    auto *head = new QHBoxLayout;
+    head->setSpacing(8);
+    auto *title = new QLabel(QStringLiteral("📺 广告数据"), m_adDialog);
+    title->setStyleSheet("font-size:16px; font-weight:800; color:#17202A; background:transparent;");
+    head->addWidget(title);
+    auto *rangeLab = new QLabel(adRangeText(rs, re), m_adDialog);
+    rangeLab->setStyleSheet("color:#8A94A6; font-size:12px; background:transparent;");
+    head->addWidget(rangeLab);
+    head->addStretch();
+
+    auto makeMonthBtn = [this, ym](const QString &text, const QString &target) {
+        auto *btn = new QPushButton(text, m_adDialog);
+        const bool on = (ym == target);
+        btn->setCheckable(true);
+        btn->setChecked(on);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(on
+            ? QStringLiteral("QPushButton{background:#FF914D;color:#FFFFFF;border:none;border-radius:9px;padding:4px 12px;font-size:12px;font-weight:700;}")
+            : QStringLiteral("QPushButton{background:#FFFFFF;color:#7A8496;border:1px solid #F3E7DA;border-radius:9px;padding:4px 12px;font-size:12px;}"
+                             "QPushButton:hover{color:#FF914D;border-color:#FFD3B0;}"));
+        connect(btn, &QPushButton::clicked, this, [this, target]() {
+            m_adDialogMonth = target;
+            fetchAdMonth(target);
+            rebuildAdDialog();
+        });
+        return btn;
+    };
+    head->addWidget(makeMonthBtn(QStringLiteral("本月"), curYm));
+    head->addWidget(makeMonthBtn(QStringLiteral("上月"), prevYm));
+    m_adDialogLayout->addLayout(head);
+
+    // ---- 合计 ----
+    const QHash<QString, AdDayStat> bucket = m_adDaily.value(ym);
+    qint64 sumExposure = 0;
+    double sumIncome = 0.0, maxIncome = 0.0;
+    for (auto it = bucket.constBegin(); it != bucket.constEnd(); ++it) {
+        sumExposure += it.value().exposure;
+        sumIncome   += it.value().income;
+        if (it.value().income > maxIncome) maxIncome = it.value().income;
+    }
+
+    auto *sumRow = new QHBoxLayout;
+    sumRow->setSpacing(8);
+    auto addChip = [&](const QString &text, bool strong) {
+        auto *l = new QLabel(text, m_adDialog);
+        l->setStyleSheet(strong
+            ? QStringLiteral("background:#FDEBE8; color:#D9542B; border-radius:8px; padding:3px 9px; font-size:12px; font-weight:800;")
+            : QStringLiteral("background:#FFF4E8; color:#4A5568; border-radius:8px; padding:3px 9px; font-size:12px;"));
+        sumRow->addWidget(l);
+    };
+    addChip(QStringLiteral("预计收入 %1").arg(adMoneyText(sumIncome)), true);
+    addChip(QStringLiteral("曝光 %1 PV").arg(formatCount(sumExposure)), false);
+    addChip(QStringLiteral("有数据 %1 天").arg(bucket.size()), false);
+    sumRow->addStretch();
+    m_adDialogLayout->addLayout(sumRow);
+
+    // ---- 每日明细（日期 · 收入柱条 · 曝光 · 金额）----
+    auto *scroll = new QScrollArea(m_adDialog);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *listHost = new QWidget;
+    auto *listLay = new QVBoxLayout(listHost);
+    listLay->setContentsMargins(0, 0, 6, 0);
+    listLay->setSpacing(5);
+
+    auto addHint = [&](const QString &text) {
+        auto *h = new QLabel(text, listHost);
+        h->setAlignment(Qt::AlignCenter);
+        h->setWordWrap(true);
+        h->setStyleSheet("color:#AEB6C2; font-size:13px; padding:28px 10px; background:transparent;");
+        listLay->addWidget(h);
+    };
+
+    if (m_adLoading.contains(ym)) {
+        addHint(QStringLiteral("正在向平台查询广告数据…"));
+    } else if (bucket.isEmpty()) {
+        QString hint;
+        if (m_adFailDate.isValid() && m_adFailDate == today) {
+            // 平台明确拒绝过：这句话得说清楚，不然用户会以为是本软件没取到
+            hint = m_adFailMsg.isEmpty()
+                ? QStringLiteral("平台拒绝了广告数据请求（能力暂未开放 / 无权限）\n今天不再请求，明天会自动再试")
+                : QStringLiteral("平台返回：%1\n该能力未开放，重试也没用 —— 今天不再请求，明天会自动再试")
+                      .arg(m_adFailMsg);
+        } else if (m_adFailed.contains(ym)) {
+            hint = QStringLiteral("拉取失败：账号未登录，或网络不通\n（每分钟会自动重试一次）");
+        } else {
+            hint = QStringLiteral("这段时间没有广告曝光数据\n（本月还没人看广告，或该机器人未开通广告能力）");
+        }
+        addHint(hint);
+
+        // 被封盘时留一个手动口子：平台哪天开能力了不用等第二天，也不用去改 config.json
+        if (m_adFailDate.isValid() && m_adFailDate == today) {
+            auto *retryBtn = new QPushButton(QStringLiteral("再试一次"), listHost);
+            retryBtn->setCursor(Qt::PointingHandCursor);
+            retryBtn->setStyleSheet(QStringLiteral(
+                "QPushButton{background:#FFFFFF;color:#D9542B;border:1px solid #F3C6B4;border-radius:9px;"
+                "padding:5px 16px;font-size:12px;}"
+                "QPushButton:hover{background:#FFF1EA;}"));
+            connect(retryBtn, &QPushButton::clicked, this, [this, ym]() {
+                m_adFailDate = QDate();      // 手动放行这一次
+                m_adFailMsg.clear();
+                g_config.remove(QStringLiteral("ad_api_fail_date"));
+                fetchAdMonth(ym, true);
+                rebuildAdDialog();
+            });
+            listLay->addWidget(retryBtn, 0, Qt::AlignHCenter);
+        }
+    } else {
+        QStringList dates = bucket.keys();
+        std::sort(dates.begin(), dates.end(), [](const QString &a, const QString &b) { return a > b; });
+        for (const QString &date : dates) {
+            const AdDayStat st = bucket.value(date);
+
+            auto *row = new QWidget(listHost);
+            auto *rl = new QHBoxLayout(row);
+            rl->setContentsMargins(6, 3, 6, 3);
+            rl->setSpacing(8);
+
+            auto *dateLab = new QLabel(QString("%1-%2-%3").arg(date.left(4), date.mid(4, 2), date.mid(6, 2)), row);
+            dateLab->setStyleSheet("color:#4A5568; font-size:12px; background:transparent;");
+            dateLab->setFixedWidth(88);
+            rl->addWidget(dateLab);
+
+            auto *bar = new QProgressBar(row);
+            bar->setRange(0, 1000);
+            bar->setValue(maxIncome > 0.0 ? int(qRound(st.income * 1000.0 / maxIncome)) : 0);
+            bar->setTextVisible(false);
+            bar->setFixedHeight(6);
+            bar->setStyleSheet(QStringLiteral(
+                "QProgressBar{background:#F5ECE1;border:none;border-radius:3px;}"
+                "QProgressBar::chunk{background:#FF914D;border-radius:3px;}"));
+            rl->addWidget(bar, 1);
+
+            auto *pvLab = new QLabel(QString("%1 PV").arg(formatCount(st.exposure)), row);
+            pvLab->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            pvLab->setStyleSheet("color:#8A94A6; font-size:11px; background:transparent;");
+            pvLab->setFixedWidth(80);
+            rl->addWidget(pvLab);
+
+            auto *moneyLab = new QLabel(adMoneyText(st.income), row);
+            moneyLab->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            moneyLab->setStyleSheet("color:#17202A; font-size:12px; font-weight:700; background:transparent;");
+            moneyLab->setFixedWidth(78);
+            rl->addWidget(moneyLab);
+
+            listLay->addWidget(row);
+        }
+    }
+    listLay->addStretch();
+    scroll->setWidget(listHost);
+    m_adDialogLayout->addWidget(scroll, 1);
+
+    auto *note = new QLabel(QStringLiteral(
+        "金额为平台每日预计广告收入（元），未扣平台分成、服务费及税务成本，不是实际结算收入；"
+        "多账号已合并，曝光量与金额均为各账号之和。"), m_adDialog);
+    note->setWordWrap(true);
+    note->setStyleSheet("color:#AEB6C2; font-size:11px; background:transparent;");
+    m_adDialogLayout->addWidget(note);
 }

@@ -126,8 +126,10 @@ set(PROJECT_SOURCES_ALL
     # 日志库的存储：SQLite amalgamation（单文件，Win/Linux 同一份源码，直接编进目标，
     # 不再依赖系统的 liblmdb-dev / libsqlite3-dev，打包也少一个外部库）
     libs/sqlite/sqlite3.c
-    db/botdb.cpp db/botdb.h db/image-server.cpp db/lmdbkv.cpp db/lmdbkv.h db/logdb.cpp db/logdb.h
+    db/botdb.cpp db/botdb.h db/image-server.cpp db/kvdb.cpp db/kvdb.h db/lmdbkv.h
+    db/logdb.cpp db/logdb.h db/memkv.cpp db/memkv.h
     db/subdb.cpp db/subdb.h
+    core/lottery.cpp core/lottery.h
     ui/accountpage.cpp ui/accountpage.h ui/addaccountdialog.cpp ui/addaccountdialog.h
     ui/cardwidget.cpp ui/cardwidget.h ui/chatpage.cpp ui/chatpage.h
     ui/flowlayout.cpp ui/flowlayout.h ui/homepage.cpp ui/homepage.h
@@ -189,6 +191,7 @@ set(PROJECT_SOURCES_ALL
     ui/ui_menupanelwidget.ui
     core/apiprocessor.h core/apiprocessor.cpp
     ai/nickreviewwidget.h ai/nickreviewwidget.cpp
+    ui/lotterypage.h ui/lotterypage.cpp
     ui/materialwidget.h ui/materialwidget.cpp
     core/api2.cpp
     core/cnbuploader.cpp

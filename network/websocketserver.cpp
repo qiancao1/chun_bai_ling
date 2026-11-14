@@ -692,33 +692,55 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
             QMutexLocker locker(&chatPage->m_GMutex);
             fullGroups = chatPage->全量群;
         }
-        bool sw = g_logdb[1]->beginTransaction(true);
-        for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it) {
-            QString groupId = it.key();
-            int appid = it.value();
 
-            Message msg;
-            if(sw)
-            {
-                g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), groupId, msg);
-            }else{
-                g_logdb[1]->getLatestLog(QString::number(appid),groupId,msg);
+        // 和聊天页（ChatPage::updateAllContactLists case 0）保持同一套做法：
+        //   按 appid 分组 → 每账号一次「每会话最新 seq」（只读索引）→ 一条 IN 查询取 blob。
+        //   原来是「每个群一条 SQL（getLatestLog 的 LIMIT 5000 逐条反序列化）+ 全程只读事务」，
+        //   而事务开着期间 flushCacheToDBUnlocked 直接 return，日志一条都不落盘。
+        QHash<int, QStringList> groupsByAppid;
+        for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it)
+            groupsByAppid[it.value()].append(it.key());
 
+        for (auto git = groupsByAppid.begin(); git != groupsByAppid.end(); ++git) {
+            const int appid = git.key();
+            const QString appidStr = QString::number(appid);
 
+            const auto perConv = g_logdb[1]->getLatestSeqPerConv(appidStr);
+            QHash<QString, quint64> latestSeq;
+            latestSeq.reserve(perConv.size());
+            for (const auto &p : perConv) latestSeq.insert(p.first, p.second);
+
+            QList<LogDB::LogRef> refs;
+            refs.reserve(git.value().size());
+            for (const QString &gid : git.value()) {
+                const quint64 s = latestSeq.value(gid, 0);
+                if (s > 0) refs.append(LogDB::LogRef{appidStr, gid, s});
             }
-            QJsonObject groupObj;
-            groupObj["groupId"] = groupId;
-            groupObj["groupName"] = msg.Gname;
-            groupObj["appid"] = appid;
-            groupObj["type"] = 0;
-            if(msg.name.isEmpty())
-                 groupObj["msg"] ="无信息";
-            else
-                groupObj["msg"] = msg.name+":"+msg.msg;
+            const QHash<quint64, Message> msgs = g_logdb[1]->getMessagesBySeqs(refs);
 
-            groupList.append(groupObj);
+            for (const QString &gid : git.value()) {
+                const Message msg = msgs.value(latestSeq.value(gid, 0));
+
+                // 群名：日志里的 Gname 为空（机器人自己发的消息就是空的）时回落 BotDB 群记录
+                QString gname = msg.Gname;
+                if (gname.isEmpty() && g_botdb.contains(appid)) {
+                    GroupRecord2 rec;
+                    if (g_botdb[appid]->getGroupInfo(gid, rec)) gname = rec.name;
+                }
+
+                QJsonObject groupObj;
+                groupObj["groupId"] = gid;
+                groupObj["groupName"] = gname;
+                groupObj["appid"] = appid;
+                groupObj["type"] = 0;
+                if (msg.name.isEmpty())
+                    groupObj["msg"] = "无信息";
+                else
+                    groupObj["msg"] = msg.name + ":" + msg.msg;
+
+                groupList.append(groupObj);
+            }
         }
-        if(sw) g_logdb[1]->commitTransaction();
         break;
     }
     case 1:
@@ -727,8 +749,12 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
     case 4: {
         int bufferIdx = type;
         const QStringList keys = g_logdb[bufferIdx]->getLatestKeys(1000);
+
+        // 纯内存去重 + 每会话只留最新一条，然后一次 IN 查询把 blob 全取回来。
+        //   原来是「每个会话一条 readLog + 全程只读事务」= 1000 次 prepare/step/finalize。
         QSet<QPair<int, QString>> seen;
-        bool sw = g_logdb[bufferIdx]->beginTransaction(true);
+        QList<LogDB::LogRef> refs;
+        refs.reserve(keys.size());
         for (const QString &keyStr : keys) {
             QStringList parts = keyStr.split(':');
             if (parts.size() != 3) continue;
@@ -741,24 +767,30 @@ void WebSocketServer::handleGetGroupList(const QJsonObject &params, ClientConnec
             seen.insert(key);
 
             uint64_t seq = parts[0].toULongLong(&ok);
-            Message msg;
-            if(sw)
-            {
-                g_logdb[bufferIdx]->readLogInTxn(g_logdb[bufferIdx]->getCurrentTxn(),QString::number(appid), groupId,seq, msg);
-            }else{
-                g_logdb[bufferIdx]->readLog(QString::number(appid), groupId, seq, msg);
+            if (!ok) continue;
+            refs.append(LogDB::LogRef{QString::number(appid), groupId, seq});
+        }
 
+        const QHash<quint64, Message> msgs = g_logdb[bufferIdx]->getMessagesBySeqs(refs);
+
+        for (const auto &r : refs) {
+            const int appid = r.appid.toInt();
+            const Message msg = msgs.value(r.seq);
+
+            QString gname = msg.Gname;
+            if (gname.isEmpty() && g_botdb.contains(appid)) {
+                GroupRecord2 rec;
+                if (g_botdb[appid]->getGroupInfo(r.conv, rec)) gname = rec.name;
             }
 
             QJsonObject groupObj;
-            groupObj["groupId"] = groupId;
-            groupObj["groupName"] = msg.Gname;
+            groupObj["groupId"] = r.conv;
+            groupObj["groupName"] = gname;
             groupObj["appid"] = appid;
             groupObj["type"] = type;
-            groupObj["msg"] = msg.name+":"+msg.msg;
+            groupObj["msg"] = msg.name + ":" + msg.msg;
             groupList.append(groupObj);
         }
-        if(sw) g_logdb[bufferIdx]->commitTransaction();
         break;
     }
     case 5: {

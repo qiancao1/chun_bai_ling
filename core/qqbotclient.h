@@ -108,6 +108,7 @@ struct MessageEvent
 //     处理 = 收消息 → 进发送函数；图片上传 = 图片下载/处理/上传；发送 = 调发送接口 → 响应回来
 // 开关关掉时所有方法直接 return，一个 steady_clock::now() 都不取；addmsglog 只拼 [插件名]。
 extern bool g_msg_time_stat;   // 定义在 core/global.cpp
+
 struct MsgTimeStat
 {
     bool   on      = false;
@@ -120,7 +121,11 @@ struct MsgTimeStat
         on = g_msg_time_stat;
         if (on) { t0 = std::chrono::steady_clock::now(); tMark = t0; }
     }
-    void mark() { if (on) tMark = std::chrono::steady_clock::now(); }
+    void mark()
+    {
+        if (!on) return;
+        tMark = std::chrono::steady_clock::now();
+    }
     void addMedia()
     {
         if (!on) return;
@@ -148,7 +153,8 @@ struct MsgTimeStat
         return std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - t0).count();
     }
-    // 方括号里追加的那一截："|0.12ms|0.00ms|400.35ms"（处理|图片上传|发送，开关关掉时返回空串）
+    // 方括号里追加的那一截："|0.12ms|0.00ms|400.35ms"
+    //   （处理|图片上传|发送），开关关掉时返回空串。
     QString suffix(double handleMs) const
     {
         if (!on) return QString();
@@ -208,6 +214,11 @@ public:
     // 签到（「群管 → 签到」那段配置）：一天一次（非 py 模式）/ #python 脚本自己决定。
     // 返回 true = 已经处理并回过消息（调用方直接 return）。
     bool handleSignIn(const MessageEvent &ev);
+    // 抽奖六指令（内置功能 → 抽奖）：#参与抽奖<ID> / #我的抽奖 / #领取抽奖<ID> /
+    // #抽奖帮助（可点按钮）/ #历史抽奖 / #抽奖名单<ID>（领取凭证就是抽奖 ID，按 openid 认人）。
+    // 返回 true = 这条消息就是抽奖指令（已处理并回过消息），调用方直接 return；
+    // false = 不是抽奖指令，继续往下走（插件 / 关键词那些）。
+    bool handleLottery(const MessageEvent &ev);
     // 发送消息接口
 
     QString send_msgAsync(int type, const QString &openid, const QString &pname, QString &text,
@@ -300,6 +311,9 @@ public:
     QString updatePanel(const QString& panelId, const QJsonObject& panelData, Callback callbacks);
     QString deletePanel(const QString& panelId, Callback callbacks);
     QString updatePanelTarget(const QString& panelId, const QJsonObject& targetData, Callback callbacks);
+
+
+    QString getAdData(const QString& startDate, const QString& endDate, Callback callbacks = Callback());
 
     // ==================== 素材管理（Markdown 图片素材） ====================
     // 文档：https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html

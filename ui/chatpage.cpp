@@ -2114,11 +2114,9 @@ void ChatPage::updateAllContactLists(int index)
     seen.clear(); //过滤器
     s_wrapCache.clear(); //聊天记录缓存
     avatarCache.clear(); //头像缓存
-    bool sw=false;
 
     switch (index) {
     case 0: { // 全量群
-        sw = g_logdb[1]->beginTransaction(true);
         contactList->setUpdatesEnabled(false);
         QHash<QString,int> fullGroups;   // 先拷快照：循环里有 DB 读，避免长期持锁
         {
@@ -2126,48 +2124,75 @@ void ChatPage::updateAllContactLists(int index)
             fullGroups = 全量群;
         }
 
+        // 按 appid 分组：同一个账号只查一次库。
+        //   （以前是「每个群一条 SQL + 一次只读事务」，几千个群就是几千次 prepare/step/finalize，
+        //     而且事务开着期间 flushCacheToDBUnlocked 直接 return，日志这段时间一条都不落盘。）
+        QHash<int, QStringList> groupsByAppid;
         for (auto it = fullGroups.begin(); it != fullGroups.end(); ++it) {
-            Contact c;
-            c.id = it.key();//群id
-
-
-            int appid =it.value();
+            const int appid = it.value();
             if (m_currentBotIndex != -1) {
                 if (appid != m_accounts[m_currentBotIndex]->appid_int) continue;
             }
-            Message msg;
-            if(sw) //最近1000条不存在 就直接显示id
-            {
-                g_logdb[1]->getLatestLogInTxn(g_logdb[1]->getCurrentTxn(),QString::number(appid), c.id, msg);
-            }else{
-                g_logdb[1]->getLatestLog(QString::number(appid),c.id,msg);
+            groupsByAppid[appid].append(it.key());
+        }
 
+        for (auto git = groupsByAppid.begin(); git != groupsByAppid.end(); ++git) {
+            const int appid = git.key();
+            const QString appidStr = QString::number(appid);
+
+            // 一步拿全该账号下每个群的最新 seq（idx_logs_conv 覆盖索引，只读索引不读表）
+            const auto perConv = g_logdb[1]->getLatestSeqPerConv(appidStr);
+            QHash<QString, quint64> latestSeq;
+            latestSeq.reserve(perConv.size());
+            for (const auto &p : perConv) latestSeq.insert(p.first, p.second);
+
+            // 只取「全量群列表里这些群」的 blob（该账号下可能还有别的会话，不去读它们）
+            QList<LogDB::LogRef> refs;
+            refs.reserve(git.value().size());
+            for (const QString &gid : git.value()) {
+                const quint64 s = latestSeq.value(gid, 0);
+                if (s > 0) refs.append(LogDB::LogRef{appidStr, gid, s});
             }
+            const QHash<quint64, Message> msgs = g_logdb[1]->getMessagesBySeqs(refs);
 
-            if(msg.Gname.isEmpty()){
-                if (m_currentBotIndex == -1)
-                    c.name =getBotName(appid)+":"+ it.key();
+            for (const QString &gid : git.value()) {
+                Contact c;
+                c.id = gid;                                                  // 群id
+                const Message msg = msgs.value(latestSeq.value(gid, 0));      // 没记录 = 默认空消息
+
+                // 群名：优先用日志里的 Gname；机器人自己发的消息（core/api2.cpp 那条路径）
+                //   Gname 是空的 —— 这时回落到 BotDB 的群记录，也就是 getOrUpdateUser
+                //   回填 ev.groupname 用的同一份（有 1 个月刷新机制）。
+                //   ⚠ 别改成「没了就往前扫日志」：旧 getLatestLog 就是这么扫满 5000 条的。
+                QString gname = msg.Gname;
+                if (gname.isEmpty() && g_botdb.contains(appid)) {
+                    GroupRecord2 rec;
+                    if (g_botdb[appid]->getGroupInfo(gid, rec)) gname = rec.name;
+                }
+
+                if (gname.isEmpty()) {
+                    if (m_currentBotIndex == -1)
+                        c.name = getBotName(appid) + ":" + gid;
+                    else
+                        c.name = gid;
+                } else {
+                    if (m_currentBotIndex == -1)
+                        c.name = getBotName(appid) + ":" + gname;
+                    else
+                        c.name = gname;     // c 的和 msg无关
+                }
+
+                if (msg.name.isEmpty())
+                    c.lastMsgTime = "无信息";      // 忽略
                 else
-                    c.name = it.key();
-            }else{
-                if (m_currentBotIndex == -1)
-                    c.name =getBotName(appid)+":"+ msg.Gname;
-                else
-                    c.name = msg.Gname; //c 的和 msg无关
+                    c.lastMsgTime = msg.name + ":" + msg.msg;      // 忽略
+
+                addDataToModel(appid, c, 0);
             }
-
-            if(msg.name.isEmpty())
-                c.lastMsgTime = "无信息";      // 忽略
-            else
-                c.lastMsgTime = msg.name+":"+msg.msg;      // 忽略
-
-            addDataToModel(appid, c,0);
-
         }
 
         sortModelByAppid();          // 全部机器人时按 appid 分组，别混着排
         contactList->setUpdatesEnabled(true);
-        if(sw) g_logdb[1]->commitTransaction();
         return;
     }
     case 1: bufferIdx=1;break;// 普通群
@@ -2224,9 +2249,15 @@ void ChatPage::updateAllContactLists(int index)
 
     const QStringList list = g_logdb[bufferIdx]->getLatestKeys(1000);
     QSet<QPair<int, QString>> seen;
-    sw = g_logdb[bufferIdx]->beginTransaction(true);
     QMap<int, QSet<QString>> appidGroups;   // appid -> 去重后的群ID集合
     contactList->setUpdatesEnabled(false);
+
+    // 先纯内存解析 + 每个会话只留最新一条，再一次性批量取 blob。
+    //   以前是「每个会话一条 SQL」还套着只读事务；现在总共 2 条 SQL，
+    //   而且不开事务 → flushCacheToDBUnlocked 不会被挡住，日志照常落盘。
+    QList<LogDB::LogRef> refs;
+    refs.reserve(list.size());
+    QHash<quint64, QPair<int, QString>> refMeta;   // seq -> (appid, conv)，组装 Contact 时用
     for (const QString &keyStr : list) {
 
         QStringList parts = keyStr.split(':');
@@ -2251,14 +2282,18 @@ void ChatPage::updateAllContactLists(int index)
         seen.insert(key);
         if(bufferIdx==1)
             appidGroups[appid].insert(groupId);   // 自动去重
-        Message msg;
-        if(sw)
-        {
-            g_logdb[bufferIdx]->readLogInTxn(g_logdb[bufferIdx]->getCurrentTxn(),QString::number(appid), groupId, seq, msg);
 
-        }else{
-            g_logdb[bufferIdx]->readLog(QString::number(appid), groupId, seq, msg);
-        }
+        refs.append(LogDB::LogRef{QString::number(appid), groupId, seq});
+        refMeta.insert(seq, key);
+    }
+
+    const QHash<quint64, Message> msgs = g_logdb[bufferIdx]->getMessagesBySeqs(refs);
+
+    for (const auto &r : refs) {
+        const int appid = refMeta.value(r.seq).first;
+        const QString &groupId = r.conv;
+        const Message msg = msgs.value(r.seq);
+
         Contact c;
         c.id = groupId;
 
@@ -2269,7 +2304,13 @@ void ChatPage::updateAllContactLists(int index)
             }
             c.lastMsgTime = msg.msg;     // 最新消息内容
         } else {
-            c.name = msg.Gname;
+            // 群名：日志里的 Gname 为空时回落到 BotDB 群记录（机器人自己发的消息 Gname 是空的）
+            QString gname = msg.Gname;
+            if (gname.isEmpty() && bufferIdx == 1 && g_botdb.contains(appid)) {
+                GroupRecord2 rec;
+                if (g_botdb[appid]->getGroupInfo(groupId, rec)) gname = rec.name;
+            }
+            c.name = gname;
             if(msg.msg.isEmpty())
                 c.lastMsgTime =  "BOT: " + msg.direction;
             else
@@ -2286,11 +2327,8 @@ void ChatPage::updateAllContactLists(int index)
 
     }
 
-
-
     sortModelByAppid();              // 普通群/私聊/频道：按 appid 分组
     contactList->setUpdatesEnabled(true);
-    if(sw) g_logdb[bufferIdx]->commitTransaction();
 
 
 

@@ -26,6 +26,7 @@
 #include <QDateTime>
 
 #include "global.h"
+#include "lottery.h"
 #include <QNetworkReply>
 #include <QCoreApplication>
 #include <QFile>
@@ -38,6 +39,10 @@
 #include <QElapsedTimer>
 #include <thread>
 #include <openssl/evp.h>
+
+#ifdef Q_OS_WIN
+#  include <windows.h>
+#endif
 
 #include <qwaitcondition.h>
 #include <QFutureWatcher>
@@ -1063,6 +1068,183 @@ void appendInt(QString& out, T value) {
 static constexpr qint64 kSignDefaultPoints = 1000;        // 非 py 模式：每天 +1000
 static constexpr qint64 kSignMaxPoints     = 100000;   // 脚本返回值的上限（防手抖写成天文数字）
 
+// ════════════════════════════════════════════════════════════════════════════
+// 抽奖六指令（内置功能 → 抽奖）
+//   #参与抽奖<抽奖ID>    群里报名
+//   #我的抽奖            自己的中奖记录（带抽奖ID）
+//   #领取抽奖<抽奖ID>    私聊领这一场的奖励（ID 就是抽奖ID，按人认领）
+//   #抽奖帮助 / #抽奖     带可点按钮的操作指引（[显示](指令) → 内联命令）
+//   #历史抽奖            抽奖列表（最近 10 场，带 ID 和中奖人数）
+//   #抽奖名单<抽奖ID>    某一场的中奖名单
+// 返回 true = 这条消息就是抽奖指令（已回过消息），调用方直接 return。
+// ════════════════════════════════════════════════════════════════════════════
+bool QQBotClient::handleLottery(const MessageEvent &ev)
+{
+    if (!g_lottery) return false;
+
+    const QString msg = ev.msg.trimmed();
+    if (!msg.startsWith(QLatin1Char('#'))) return false;
+
+    // 每个机器人自己的开关（后台「启用抽奖」）：没启用就完全装作不认识这些指令 ——
+    // 不匹配、不回话、也不往下拦，别的插件/关键词照常用。
+    if (!g_lottery->isEnabled(ev.appid)) return false;
+
+    static const QString kJoin  = QStringLiteral("#参与抽奖");
+    static const QString kClaim = QStringLiteral("#领取抽奖");
+    static const QString kList  = QStringLiteral("#抽奖名单");
+    static const QString kPrize = QStringLiteral("#抽奖奖品");
+    static const QString kPrize2 = QStringLiteral("#奖品列表");
+    static const QString kMine  = QStringLiteral("#我的抽奖");
+    static const QString kHist  = QStringLiteral("#历史抽奖");
+    static const QString kHelp  = QStringLiteral("#抽奖帮助");
+    static const QString kDraw  = QStringLiteral("#开奖");
+    static const QString kDraw2 = QStringLiteral("#抽奖开奖");
+    static const QString kStop  = QStringLiteral("#停止抽奖");
+    static const QString kStop2 = QStringLiteral("#抽奖停止");
+
+    int kind = 0;                 // 1 参与 / 2 我的 / 3 领取 / 4 历史 / 5 名单 / 6 帮助 / 7 开奖 / 8 停止 / 9 奖品
+    QString arg;
+    if (msg.startsWith(kJoin))       { kind = 1; arg = msg.mid(kJoin.size()); }
+    else if (msg.startsWith(kClaim)) { kind = 3; arg = msg.mid(kClaim.size()); }
+    else if (msg.startsWith(kList))  { kind = 5; arg = msg.mid(kList.size()); }
+    else if (msg.startsWith(kPrize)) { kind = 9; arg = msg.mid(kPrize.size()); }
+    else if (msg.startsWith(kPrize2)) { kind = 9; arg = msg.mid(kPrize2.size()); }
+    else if (msg.startsWith(kDraw2)) { kind = 7; arg = msg.mid(kDraw2.size()); }
+    else if (msg.startsWith(kStop2)) { kind = 8; arg = msg.mid(kStop2.size()); }
+    else if (msg.startsWith(kDraw))  { kind = 7; arg = msg.mid(kDraw.size()); }
+    else if (msg.startsWith(kStop))  { kind = 8; arg = msg.mid(kStop.size()); }
+    else if (msg == kMine)           { kind = 2; }
+    else if (msg == kHist)           { kind = 4; }
+    else if (msg == kHelp || msg == QStringLiteral("#抽奖")) { kind = 6; }
+    else return false;            // 不是抽奖指令，往下交给插件 / 关键词
+
+    // id 里不会有空格，容忍「#参与抽奖 1234ab」这种带空格的写法（含全角空格）
+    arg.remove(QLatin1Char(' '));
+    arg.remove(QChar(0x3000));
+    arg = arg.trimmed();
+
+    auto reply = [this, &ev](const QString &text) {
+        QString t = text;          // send_msgAsync 第 4 个参数是非 const 引用
+        send_msgAsync(ev.type, ev.groupId, QStringLiteral("[抽奖]"), t, ev.msgId);
+    };
+
+    // 群白名单是**每场抽奖各自一份**（存在抽奖记录里），所以在 join / history / 名单
+    // 这些具体操作里判断，这里不做统一拦截 —— 同一台机器人的不同抽奖可以在不同群。
+
+    // 群名：这会儿 ev.groupname 还没回填（要到后面 getOrUpdateUser 才写），
+    // 白名单支持按群名填，所以这里自己查一次（BotDB 有群缓存，不慢）
+    QString gname = ev.groupname;
+    if (gname.isEmpty() && ev.type == 0) {
+        if (BotDB *db = g_botdb.value(ev.appid, nullptr)) {
+            GroupRecord2 g;
+            if (db->getGroupInfo(ev.groupId, g)) gname = g.name;
+        }
+    }
+
+    switch (kind) {
+    case 1: {
+        if (arg.isEmpty()) {
+            reply(QStringLiteral("用法：#参与抽奖<抽奖ID>（发 #历史抽奖 可以看到正在进行的抽奖）"));
+            return true;
+        }
+        QString err;
+        // 公布会话：群里 = 群号、私聊 = 对方 openid（第一个参与者决定开奖发到哪）
+        const QString conv = (ev.type == 2) ? ev.user : ev.groupId;
+        const int rc = g_lottery->join(ev.appid, arg, ev.user, ev.nickname,
+                                       ev.nickname2,     // 安全昵称（可能为空）→ 中奖名单优先显示它
+                                       ev.type, conv, ev.groupId, gname, &err);
+        if (rc != 0 && rc != 10) {       // 10 = 参与成功且已凑满人数、当场开奖
+            reply(err);
+            return true;
+        }
+        LotteryRecord rec;
+        if (g_lottery->get(ev.appid, arg, rec)) {
+            const QString when = rec.drawAt > 0
+                ? QDateTime::fromSecsSinceEpoch(rec.drawAt).toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+                : QStringLiteral("未设置");
+            if (rc == 10)
+                reply(QStringLiteral("参与成功 · 第 %1 人\n"
+                                     "> 人数已凑满，已触发开奖\n"
+                                     "> 开奖后看 [我中没中](#我的抽奖)，中了就在那里私聊领奖")
+                          .arg(rec.joinedCount()));
+            else if (rec.autoDrawCount > 0)
+                reply(QStringLiteral("参与成功 · 第 %1 人\n"
+                                     "> 满 %2 人即开 · 还差 %3 人\n"
+                                     "> 开奖后看 [我中没中](#我的抽奖)")
+                          .arg(rec.joinedCount())
+                          .arg(rec.autoDrawCount)
+                          .arg(qMax(0, rec.autoDrawCount - rec.joinedCount())));
+            else
+                reply(QStringLiteral("参与成功 · 第 %1 人\n"
+                                     "> %2 开奖 · [看奖品与名额](#抽奖奖品%3)\n"
+                                     "> 开奖后来看 [我中没中](#我的抽奖)，中了就私聊领奖")
+                          .arg(rec.joinedCount()).arg(when).arg(rec.id));
+        } else {
+            reply(QStringLiteral("参与成功！"));
+        }
+        return true;
+    }
+    case 2:
+        reply(g_lottery->myWinnersText(ev.appid, ev.user));
+        return true;
+    case 3: {
+        if (arg.isEmpty()) {
+            reply(QStringLiteral("用法：私聊发送 #领取抽奖 抽奖ID\n"
+                                 "> ID 在哪：[我的中奖记录](#我的抽奖) 每一条都写着，也能直接点「点我领奖」"));
+            return true;
+        }
+        // 群里发就让他私聊：发放内容可能是兑换码/长文本，群里刷出来不合适
+        if (ev.type != 2) {
+            reply(QStringLiteral("领奖请私聊机器人发送：#领取抽奖%1").arg(arg));
+            return true;
+        }
+        QString got, err;
+        if (g_lottery->claim(ev.appid, arg, ev.user, &got, &err)) reply(got);
+        else reply(err);
+        return true;
+    }
+    case 4:
+        reply(g_lottery->historyText(ev.appid, ev.groupId, gname));
+        return true;
+    case 5:
+        reply(g_lottery->winnerListText(ev.appid, arg, ev.groupId, gname));
+        return true;
+    case 9:
+        // 点「抽奖名」就走到这里：看这一场的奖品档位 / 名额
+        reply(g_lottery->prizeListText(ev.appid, arg, ev.groupId, gname));
+        return true;
+    case 6:
+        reply(g_lottery->helpText(ev.appid, ev.user, ev.groupId, gname));
+        return true;
+    case 7:
+    case 8: {
+        // 开奖 / 停止：只给机器人管理员（2）和超管（1）。群主、群管都不算 ——
+        // 这两种会把整场作废或把奖开掉，权限得跟后台「立即开奖 / 停止抽奖」对齐。
+        if (ev.member_role != 1 && ev.member_role != 2) {
+            reply(QStringLiteral("这个指令只有机器人管理员 / 超管能用，普通成员动不了抽奖"));
+            return true;
+        }
+        if (arg.isEmpty()) {
+            reply(kind == 7
+                ? QStringLiteral("用法：#开奖<抽奖ID>（发 #历史抽奖 可以看到 ID）")
+                : QStringLiteral("用法：#停止抽奖<抽奖ID>（停止 = 这场作废，不会再开奖）"));
+            return true;
+        }
+        QString err;
+        if (kind == 7) {
+            if (!g_lottery->draw(ev.appid, arg, true, &err)) reply(err);
+            else reply(QStringLiteral("已开奖 · ID %1\n> [看中奖名单](#抽奖名单%1) · [我的中奖记录](#我的抽奖)")
+                           .arg(arg));
+        } else {
+            if (!g_lottery->closeLottery(ev.appid, arg, &err)) reply(err);
+            else reply(QStringLiteral("已停止这场抽奖（作废，不再开奖）"));
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
 bool QQBotClient::handleSignIn(const MessageEvent &ev)
 {
     // ---- 1) 配置 ----
@@ -1426,7 +1608,7 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             }
         }
     }
-    /*
+
 
     else if (ev.msgType == "GROUP_MSG_REJECT") {
         ev.type = 4; ev.subType = 10;
@@ -1561,7 +1743,6 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.groupId = d.value("channel_id").toString();
         ev.user = d.value("user_id").toString();
     }
-    */
     else if (ev.msgType == "GROUP_MEMBER_ADD") {
         ev.type = 0; ev.subType = 2;
          ev.user = d.value("member_openid").toString();
@@ -1677,6 +1858,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         send_msgAsync(ev.type,ev.groupId,"[私有指令]",m_info->gxrz,ev.msgId);
         return ;
     }
+    // 抽奖五指令（#参与抽奖 / #我的抽奖 / #领取抽奖 / #历史抽奖 / #抽奖名单）
+    // 只有 # 开头才可能命中，不是就返回 false 继续往下走
+    if (handleLottery(ev)) return;
+
     // 签到：配置在「群管 → 签到」（普通文本 = 模板 +1000/天，或 #python 脚本自定义加多少）
     if(ev.msg=="签到") handleSignIn(ev);
 
@@ -1856,6 +2041,21 @@ bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)
     mes.name = QString("%1(%2)").arg(ev.nickname).arg(ev.user_int);
 
     ev.log = g_logdb[tabIndex] ->appendLog(m_info->appid,ev.groupId,mes);
+
+    // 被动回复 msgid 登记（2026-11-13：纯内存，不再反扫日志库）
+    //   · 群：只登记「全量群」—— fullType 就是 GROUP_MESSAGE_CREATE，代表这个群当前是全量模式；
+    //     非全量群（仅 @ 才收到）没有主动推送能力，也就用不上被动额度，不记。
+    //   · 好友私聊：批量推送好友也走「混合发送」，保留登记（窗口 1 小时）。
+    //   · 频道（1/3）不登记：批量推送不覆盖频道。
+    //   ⚠ 必须在下面把 ev.msgId 包装成 "type|seq|id" 之前登记，否则存进去的是包装串。
+    //   ⚠ 机器人自己发的消息走 api2.cpp，不经过这里 → plugin_ch 不会被当成 ch 记进去。
+    if (ev.subType == 0 && !ev.groupId.isEmpty() && !ev.msgId.isEmpty()
+        && ((ev.type == 0 && ev.fullType) || ev.type == 2))
+    {
+        g_logdb[tabIndex]->recordMsgId(m_info->appid, ev.groupId, ev.msgId,
+                                       QDateTime::currentSecsSinceEpoch());
+    }
+
     ev.msgId=  QStringLiteral("%1|%2|%3").arg(ev.type).arg(ev.log).arg(ev.msgId);
 
     mes.seq = ev.log;

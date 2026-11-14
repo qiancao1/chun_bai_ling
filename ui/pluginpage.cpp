@@ -3031,7 +3031,7 @@ int PluginPage::invokeToolCommand(const QString &pluginId, const QString &plugin
     // ---------- JS ----------
     if (p.type == 3) {
         QString jsFun;
-        for (const Rule_js &r : p.js.rules) {
+        for (const Rule_js &r : std::as_const(p.js.rules)) {
             if (r.key == key && static_cast<int>(r.type) == matchType) { jsFun = r.fun; break; }
         }
         if (!jsFun.isEmpty()) {

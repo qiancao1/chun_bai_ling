@@ -37,6 +37,7 @@
 #include <QNetworkReply>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QVarLengthArray>
 #include <QUrl>
 #include <QMutex>
 #include <QElapsedTimer>
@@ -45,6 +46,9 @@
 #include <QProcess>
 #include <QTimer>
 #include <QDir>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>   // 指纹只用一次 GetFileAttributesExW（见 calculateFileMD5AndSize）
+#endif
 #include <thread>
 #include <memory>
 #include <functional>
@@ -133,102 +137,175 @@ QString formatDuration(qint64 seconds) {
         .arg(secs, 2, 10, QChar('0'));
 }
 
+// ---------------------------------------------------------------------------
+// markdown 链接扫描器（2026-11-13）
+//
+// 语义**逐条等价**于原来那条正则的 globalMatch：
+//     QRegularExpression(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))")
+//   · `(?<!!)`        → '[' 前一个字符不能是 '!'（`![..](..)` 是图片）；没有前一个字符视为通过
+//   · `\[([^\]]*?)\]` → '[' 到**第一个** ']'（[^\]] 吃不到 ']'，懒惰/贪婪结果相同）
+//   · ']' 后面必须紧跟 '('，否则整条不成立，从 '[' 的下一位重新找（与正则回溯行为一致）
+//   · `([^\)]*?)`     → '(' 到**第一个** ')'；两个字符类都允许换行，这里 indexOf 同样允许
+//   · 命中后从 ')' 之后继续 → 各命中互不重叠，顺序一致
+//
+// 为什么不用正则：这条路径每条消息都走（纯文本回复的「图片耗时」全在这里）。
+//   3000 字、60 个 `[词](词)` 的帮助文本实测要 812k 周期（≈0.27ms），几乎全是**分配**：
+//   每个命中要 new 一个 QRegularExpressionMatch（含 2 个捕获组），再 captured(1)/captured(2)
+//   各建一个 QString，再 url.toLower() 建一个 —— 60 个链接就是近 200 次堆分配。
+//   这里改单趟字符扫描：零 match 对象、零 captured、切片用 QStringView，命中只记 4 个下标。
+// ---------------------------------------------------------------------------
+struct QcMdLink
+{
+    int start   = 0;   // 整个 "[text](url)" 的起点
+    int end     = 0;   // 终点（')' 的下一位）
+    int textPos = 0, textLen = 0;   // 方括号内的范围
+    int urlPos  = 0, urlLen  = 0;   // 圆括号内的范围
+};
+
+static void qcScanMdLinks(const QString &s, QVarLengthArray<QcMdLink, 64> &out)
+{
+    out.clear();
+    if (!s.contains(QLatin1String("]("))) return;          // 快筛：一个链接都没有
+
+    const int n = s.size();
+    int i = 0;
+    while (i < n) {
+        if (s.at(i) != QLatin1Char('[')) { ++i; continue; }
+        if (i > 0 && s.at(i - 1) == QLatin1Char('!')) { ++i; continue; }   // ![..](..) 是图片
+
+        const int j = s.indexOf(QLatin1Char(']'), i + 1);
+        if (j < 0) break;                                  // 后面再没有 ']' 了，不可能再有命中
+        if (j + 1 >= n || s.at(j + 1) != QLatin1Char('(')) { ++i; continue; }
+
+        const int k = s.indexOf(QLatin1Char(')'), j + 2);
+        if (k < 0) break;                                  // 没有 ')' 收尾
+
+        QcMdLink m;
+        m.start   = i;
+        m.end     = k + 1;
+        m.textPos = i + 1;  m.textLen = j - i - 1;
+        m.urlPos  = j + 2;  m.urlLen  = k - j - 2;
+        out.append(m);
+        i = k + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 往 output 追加一个 XML 属性值（<qqbot-cmd-input text="…" show="…"/>）
+//   只需要三处转义，**不需要 percent-encoding**（2026-11-13）：
+//     %  → %25    QQ 侧会把它当转义前缀，原文的 % 必须挡掉
+//     \  → \\
+//     "  → \"     两者都是原作者的意图，只是以前被上一行 toPercentEncoding 抢先编码成
+//                 %5C / %22 而永远走不到，等于死代码
+//   中文等非 ASCII 一律原样输出（腾讯的 md 指令语法本来就收 UTF-8 原文）。
+// 单趟扫描、零临时 QString：以前每个链接要 toPercentEncoding(1 次 QByteArray)
+// + fromUtf8(1 次 QString) + 两次 replace(可能 realloc)，60 个链接就是 200 多次分配。
+// ---------------------------------------------------------------------------
+static void qcAppendAttrEscaped(QString &out, QStringView v)
+{
+    const int n = v.size();
+    int last = 0;
+    for (int i = 0; i < n; ++i) {
+        const QChar ch = v.at(i);
+        const char *rep = nullptr;
+        if (ch == QLatin1Char('%'))       rep = "%25";
+        else if (ch == QLatin1Char('\\')) rep = "\\\\";
+        else if (ch == QLatin1Char('"'))  rep = "\\\"";
+        else continue;
+
+        if (i > last) out.append(v.mid(last, i - last));
+        out.append(QLatin1String(rep));
+        last = i + 1;
+    }
+    if (last == 0) { out.append(v); return; }        // 无特殊字符：整段一次 memcpy
+    if (last < n) out.append(v.mid(last));
+}
+
 QString convertMdLinksKeepHttp(const QString &input)
 {
-    static QRegularExpression re(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))");
-    QRegularExpressionMatchIterator it = re.globalMatch(input);
+    QVarLengthArray<QcMdLink, 64> links;
+    qcScanMdLinks(input, links);
+    if (links.isEmpty()) return input;
 
     QString output;
+    output.reserve(input.size());          // 只会变短（丢掉 "(url)"），一次分配到位
     int lastIndex = 0;
 
-    while (it.hasNext()) {
-        QRegularExpressionMatch match = it.next();
-        int start = match.capturedStart();
-        int end = match.capturedEnd();
+    for (const QcMdLink &m : qAsConst(links)) {
+        if (m.start > lastIndex)
+            output.append(QStringView(input).mid(lastIndex, m.start - lastIndex));
 
-        // 添加匹配之前的普通文本
-        output.append(QStringView(input).mid(lastIndex, start - lastIndex));
+        // 原来是 url.toLower() 再 startsWith —— 每个链接白建一份小写副本，这里直接无大小写比较
+        const QStringView url = QStringView(input).mid(m.urlPos, m.urlLen);
+        const bool isHttp = url.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+                         || url.startsWith(QLatin1String("https://"), Qt::CaseInsensitive);
 
-        QString text = match.captured(1);   // 方括号内文字
-        QString url = match.captured(2);    // 圆括号内地址
+        if (isHttp)
+            output.append(QStringView(input).mid(m.start, m.end - m.start));   // 原样保留整条
+        else
+            output.append(QStringView(input).mid(m.textPos, m.textLen));       // 只留方括号里的字
 
-        // 检查 url 是否以 http:// 或 https:// 开头（不区分大小写）
-        QString lowerUrl = url.toLower();
-        bool isHttpLink = lowerUrl.startsWith("http://") || lowerUrl.startsWith("https://");
-
-        if (isHttpLink) {
-            // 保持原样
-            output.append(match.captured(0));
-        } else {
-            // 只保留方括号内的文字
-            output.append(text);
-        }
-
-        lastIndex = end;
+        lastIndex = m.end;
     }
-
-    // 添加剩余文本
-    output.append(QStringView(input).mid(lastIndex));
+    if (lastIndex < input.size())
+        output.append(QStringView(input).mid(lastIndex));
 
     return output;
 }
 
 QString convertMarkdownLinksToXml(const QString &input)
 {
-    // 修改正则：前面不能有感叹号（排除图片格式）
-    QRegularExpression re(R"((?<!!)\[([^\]]*?)\]\(([^\)]*?)\))");
-    QRegularExpressionMatchIterator it = re.globalMatch(input);
+    QVarLengthArray<QcMdLink, 64> links;
+    qcScanMdLinks(input, links);
+    if (links.isEmpty()) return input;
 
     QString output;
+    // 一个 `[词](词)` 大约膨胀成 50~60 字节的 XML；先留出 1.5 倍 + 每个链接 48 字节，
+    // 避免 60 个链接一路 append 触发十几次 realloc（Debug 的 QString 增长是 2 倍拷贝）。
+    output.reserve(input.size() + input.size() / 2 + links.size() * 48);
     int lastIndex = 0;
 
-    while (it.hasNext()) {
-        QRegularExpressionMatch match = it.next();
-        int start = match.capturedStart();
-        int end = match.capturedEnd();
+    for (const QcMdLink &m : qAsConst(links)) {
+        if (m.start > lastIndex)
+            output.append(QStringView(input).mid(lastIndex, m.start - lastIndex));
 
-        output.append(QStringView(input).mid(lastIndex, start - lastIndex));
+        // 全部用 view 切片：不再为每个链接建 showText / url 两个 QString（2 次堆分配）
+        const QStringView showV = QStringView(input).mid(m.textPos, m.textLen);
+        const QStringView urlV  = QStringView(input).mid(m.urlPos,  m.urlLen);
 
-        QString showText = match.captured(1);
-        QString url = match.captured(2);
+        // 无大小写前缀比较（原来是 url.toLower() 再逐条 startsWith，白建 60 份副本）
+        const bool keep = urlV.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+                       || urlV.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+                       || urlV.startsWith(QLatin1String("mqqapi://"), Qt::CaseInsensitive)
+                       || urlV.startsWith(QLatin1String("tenpaysdk://"), Qt::CaseInsensitive)
+                       || urlV.startsWith(QLatin1String("qagent://"), Qt::CaseInsensitive);
 
-        QString lowerUrl = url.toLower();
-        bool shouldConvert = !(lowerUrl.startsWith("http://") ||
-                               lowerUrl.startsWith("https://") ||
-                               lowerUrl.startsWith("mqqapi://") ||
-                               lowerUrl.startsWith("tenpaysdk://") ||
-                               lowerUrl.startsWith("qagent://")) ;
-
-        if (shouldConvert) {
-            QString encodedUrl = QString::fromUtf8(QUrl::toPercentEncoding(url));
-            showText.replace("%", "%25");
-
-            encodedUrl.replace("\\","\\\\");
-            encodedUrl.replace("\"","\\\"");
-            if(encodedUrl.isEmpty())
-                encodedUrl=showText;
-            if(url.size()>95)
-            {
-                QString xmlTag = QString("[%1](qagent://aio/inlinecmd?command=%2)")
-                .arg(showText,encodedUrl);
-                //qDebug() <<xmlTag;
-                output.append(xmlTag);
-            }else{
-
-
-                QString xmlTag = QString("<qqbot-cmd-input text=\"%1\" show=\"%2\" reference=\"false\" />")
-                                 .arg(encodedUrl, showText);
-                output.append(xmlTag);
-            }
-
+        if (keep) {
+            output.append(QStringView(input).mid(m.start, m.end - m.start));
+        } else if (urlV.size() > 95) {
+            // 超长指令退回 qagent 链接 —— 这是**真 URL query**，必须 percent-encode
+            output.append(QLatin1Char('['));
+            qcAppendAttrEscaped(output, showV);
+            output.append(QLatin1String("](qagent://aio/inlinecmd?command="));
+            output.append(QString::fromUtf8(QUrl::toPercentEncoding(urlV.toString())));
+            output.append(QLatin1Char(')'));
         } else {
-            output.append(match.captured(0));
+            // 模板是**固定**的，只有两个占位符，直接拼到 output（已 reserve）：
+            //   · QString::arg 每次要建 QVarLengthArray + 扫两遍模板 + 多次拷贝，60 个链接就是 60 次
+            //   · 属性值只做 % \ " 三处转义，不再 percent-encode（见 qcAppendAttrEscaped）
+            output.append(QLatin1String("<qqbot-cmd-input text=\""));
+            // 空 url → 用方括号里的文字当指令（与原逻辑 encodedUrl.isEmpty() 时回填一致）
+            qcAppendAttrEscaped(output, urlV.isEmpty() ? showV : urlV);
+            output.append(QLatin1String("\" show=\""));
+            qcAppendAttrEscaped(output, showV);
+            output.append(QLatin1String("\" reference=\"false\" />"));
         }
 
-        lastIndex = end;
+        lastIndex = m.end;
     }
+    if (lastIndex < input.size())
+        output.append(QStringView(input).mid(lastIndex));
 
-    output.append(QStringView(input).mid(lastIndex));
     return output;
 }
 QString botlist()
@@ -319,30 +396,140 @@ QString botlist()
 //     靠「双库按日轮换」把单库压到一天的量来抵消
 // ⚠ 函数名沿用历史的 "MD5"（5 个调用点，语义都是「取缓存键」）。
 // ---------------------------------------------------------------------------
-static const int kFpCacheMax = 1024;             // 宽高内存表上限，超了整表清空
+static const int    kFpCacheMax     = 65536;  // 记忆表上限（先清过期项，还超才整表清空）
+static const qint64 kFpMemoTtlMs    = 15000;  // 「稳」文件的 stat 结果记忆多久
+static const qint64 kFpMemoSettleMs = 3000;   // mtime 距现在小于这个值 → 认为还在被写，**不记忆**
 
 struct FileFpEntry {
-    qint64 size    = 0;
-    qint64 mtimeMs = 0;
-    int    w       = -1;   // -1 = 没解析过宽高；0 = 非图片（音频/视频/文件）
-    int    h       = -1;
+    qint64 size      = 0;
+    qint64 mtime     = 0;   // Win：FILETIME 原始刻度（100ns）；其它平台：毫秒
+    qint64 checkedMs = 0;   // 这次 stat 的时刻（steady 毫秒）
+    qint64 ttlMs     = 0;   // 本条记忆的有效期；0 = 立刻过期（文件刚被写过，下次照样 stat）
+    int    w         = -1;  // -1 = 没解析过宽高；0 = 非图片（音频/视频/文件）
+    int    h         = -1;
 };
 static QMutex                      s_fpMutex;
-static QHash<QString, FileFpEntry> s_fpCache;    // key = 绝对路径
+static QHash<QString, FileFpEntry> s_fpCache;    // key = 绝对路径（清洗过）
+
+// 单调毫秒：只给 stat 记忆算 TTL 用（不受系统改时间影响）
+static inline qint64 qcSteadyMs()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+// ---------------------------------------------------------------------------
+// 本地文件指纹的取值：**一次属性查询**，不碰时区、不做路径解析。
+//
+// 为什么不用 QFileInfo（本机实测一条带 2 张图的消息「图片耗时」580μs 全在这）：
+//   · fi.size()             → GetFileAttributesEx（1 次系统调用；本机 ~85μs，过滤器驱动在拦）
+//   · fi.lastModified()     → FILETIME 先转**本地时区** QDateTime，toMSecsSinceEpoch() 又转回 UTC
+//                             每次两次时区换算，Qt5 里走全局锁 —— 满负载下就是排队点
+//   · fi.absoluteFilePath() → 又一次 GetFullPathName
+// 指纹只需要「文件变了就对不上」，用**原始 FILETIME（100ns 刻度）**最合适：零时区、零额外调用。
+// 键格式因此变了，但没影响 —— cache_db 是纯内存 MemKV，重启本来就清空。
+// ---------------------------------------------------------------------------
+#ifdef Q_OS_WIN
+static bool qcFileStatRaw(const QString &path, qint64 &fsize, qint64 &fmtime)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!::GetFileAttributesExW(reinterpret_cast<LPCWSTR>(path.utf16()),
+                                ::GetFileExInfoStandard, &fad))
+        return false;
+    fsize  = (qint64(fad.nFileSizeHigh) << 32) | qint64(fad.nFileSizeLow);
+    fmtime = (qint64(fad.ftLastWriteTime.dwHighDateTime) << 32)
+             | qint64(fad.ftLastWriteTime.dwLowDateTime);
+    return true;
+}
+#endif
+
+// 写 stat 记忆表。注意两个字段的分工：
+//   size/mtime  = 指纹本体（文件一变就对不上）
+//   checkedMs   = **这次 stat 的时刻**，只决定「多久之内还敢不再 stat」
+// 文件还在被写（mtime 距今不足 kFpMemoSettleMs）时，checkedMs 直接写成已过期：
+//   stat 每次照做（正确），但之前解析出的宽高照样复用（省一次 QImageReader）。
+static void rememberFileFp(const QString &absPath, qint64 size, qint64 mtime,
+                           int w, int h, qint64 nowMs)
+{
+#ifdef Q_OS_WIN
+    const qint64 fileUnixMs = mtime / 10000 - 11644473600000LL;   // FILETIME(1601) → Unix 毫秒
+#else
+    const qint64 fileUnixMs = mtime;
+#endif
+    const bool settled = (QDateTime::currentMSecsSinceEpoch() - fileUnixMs) > kFpMemoSettleMs;
+
+    QMutexLocker lock(&s_fpMutex);
+    // 调用方没解析宽高（w<0）时别把之前存下来的宽高冲掉
+    auto old = s_fpCache.find(absPath);
+    if (w < 0 && old != s_fpCache.end() && old->size == size && old->mtime == mtime) {
+        w = old->w;
+        h = old->h;
+    }
+    if (s_fpCache.size() >= kFpCacheMax) {
+        for (auto it = s_fpCache.begin(); it != s_fpCache.end(); ) {
+            if (nowMs - it->checkedMs > it->ttlMs) it = s_fpCache.erase(it);
+            else                                   ++it;
+        }
+        if (s_fpCache.size() >= kFpCacheMax) s_fpCache.clear();
+    }
+    FileFpEntry e;
+    e.size      = size;
+    e.mtime     = mtime;
+    e.checkedMs = nowMs;
+    e.ttlMs     = settled ? kFpMemoTtlMs : 0;   // 不稳的文件：ttl=0，下次照样 stat
+    e.w         = w;
+    e.h         = h;
+    s_fpCache.insert(absPath, e);
+}
 
 bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, int &height)
 {
     if (filePath.isEmpty()) return false;
 
-    const QFileInfo fi(filePath);
-    const qint64 fsize = fi.size();
-    if (fsize <= 0) {
-        //qWarning() << "文件为空或读取失败:" << filePath;
-        return false;
+    const bool   wantSize = (width == 0 && height == 0);   // 调用方没给宽高才需要解析
+    const qint64 nowMs    = qcSteadyMs();
+
+    // 绝对路径只做纯字符串清洗（零系统调用）；相对路径才真去取一次绝对路径
+    const QString absPath = QDir::isAbsolutePath(filePath)
+                                ? QDir::cleanPath(filePath)
+                                : QDir(filePath).absolutePath();
+
+    // ── 先查 stat 记忆表：TTL 内同一路径**一次系统调用都不做** ──
+    //   本机一次 GetFileAttributesEx ≈ 100~200μs（过滤器驱动），一条带 2 张图的消息
+    //   光这一项就是 0.43ms。asset 图（插件自带、几天都不变）以前每条消息都白付这份钱。
+    qint64 fsize = 0, fmtime = 0;
+    int    wHit = -1, hHit = -1;
+    bool   fresh = false;
+    {
+        QMutexLocker lock(&s_fpMutex);
+        auto it = s_fpCache.constFind(absPath);
+        if (it != s_fpCache.constEnd() && it->ttlMs > 0
+                && nowMs - it->checkedMs <= it->ttlMs) {
+            fsize = it->size;
+            fmtime = it->mtime;
+            wHit  = it->w;
+            hHit  = it->h;
+            fresh = true;
+        }
     }
-    const qint64  fmtime  = fi.lastModified().toMSecsSinceEpoch();
-    const QString absPath = fi.absoluteFilePath();
-    const bool    wantSize = (width == 0 && height == 0);   // 调用方没给宽高才需要解析
+
+    if (!fresh) {
+        bool ok = false;
+#ifdef Q_OS_WIN
+        ok = qcFileStatRaw(absPath, fsize, fmtime);
+#else
+        const QFileInfo fi0(absPath);
+        fsize = fi0.size();
+        if (fsize > 0) {
+            fmtime = fi0.lastModified().toMSecsSinceEpoch();
+            ok = true;
+        }
+#endif
+        if (!ok || fsize <= 0) {
+            //qWarning() << "文件为空或读取失败:" << filePath;
+            return false;
+        }
+    }
 
     // ① 指纹 = 绝对路径 + '|' + 大小 + '|' + mtime，**原样拼接，不做任何哈希**
     //   · Windows 文件名不允许 '|'，分隔无歧义；纯可打印字符，写日志/JSON 也干净
@@ -351,33 +538,36 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
     md5 = absPath + QLatin1Char('|') + QString::number(fsize)
                 + QLatin1Char('|') + QString::number(fmtime);
 
-    if (!wantSize) return true;
+    if (!wantSize) {
+        if (!fresh) rememberFileFp(absPath, fsize, fmtime, -1, -1, nowMs);
+        return true;
+    }
 
-    // ② 宽高：内存表命中就直接返回 —— 这是整条链上唯一还要真开文件的地方
+    // ② 宽高也在记忆里 → 整条链零系统调用、零开文件
+    if (fresh && wHit >= 0) {
+        width  = wHit;
+        height = hHit;
+        return true;
+    }
+
+    // ③ 记忆过期时 stat 已经做过了：宽高表按 size+mtime 复用，免掉 QImageReader 再开一次文件
     {
         QMutexLocker lock(&s_fpMutex);
-        auto it = s_fpCache.constFind(absPath);
-        if (it != s_fpCache.constEnd() && it->size == fsize && it->mtimeMs == fmtime
-                && it->w >= 0) {
+        auto it = s_fpCache.find(absPath);
+        if (it != s_fpCache.end() && it->size == fsize && it->mtime == fmtime && it->w >= 0) {
             width  = it->w;
             height = it->h;
+            it->checkedMs = nowMs;   // 文件确实没变 → 重新给满 TTL
             return true;
         }
     }
 
-    auto remember = [&](int w, int h) {
-        QMutexLocker lock(&s_fpMutex);
-        if (s_fpCache.size() >= kFpCacheMax) s_fpCache.clear();
-        FileFpEntry e; e.size = fsize; e.mtimeMs = fmtime; e.w = w; e.h = h;
-        s_fpCache.insert(absPath, e);
-    };
-
-    // ③ 只有没缓存过才真解析图片头（QImageReader 自己只拉头部那几 KB）
-    QImageReader reader(filePath);
+    // ④ 只有真没缓存过才解析图片头（QImageReader 自己只拉头部那几 KB）
+    QImageReader reader(absPath);
     if (!reader.canRead()) {
         //qWarning() << "无法识别图片格式:" << filePath;
         // 非图片（音频/视频/文件）→ 宽高留 0，并记住，免得每次都再来撞一次
-        remember(0, 0);
+        rememberFileFp(absPath, fsize, fmtime, 0, 0, nowMs);
         return true;
     }
     const QSize size = reader.size();
@@ -387,9 +577,109 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
     }
     width  = size.width();
     height = size.height();
-    remember(width, height);
+    rememberFileFp(absPath, fsize, fmtime, width, height, nowMs);
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// 把指纹串（calculateFileMD5AndSize 的输出）拆成「纯路径」+「版本号」。
+//
+// 为什么要拆：缓存 key 里带指纹 = **每改一次文件就多一个 key**。
+//   插件如果是覆盖式写同一个路径（每次重画 tmp/case.png 再发），一条消息一个 key，
+//   旧 key 要躺到过期（1430 分钟）才被清 —— 一天下来能堆到 MemKV 的 10 万条上限。
+//   key 里只留路径 → 一个文件永远只有一条记录，覆盖后新版本直接写回同一个 key。
+//   版本号挪进**值**里做校验（见 cachedValueIfFreshVer），文件真变了照样会 miss 重传。
+//
+// 切法：Windows 文件名不允许 '|'，所以「从右数两个 '|'」一定切得开。
+//   · 指纹     "C:/a/b.png|12345|133000000000000000"  → path="C:/a/b.png" ver="12345|1330…"
+//   · 外链 md5 "9f2c…"（32 位十六进制，没有 '|'）    → path=整串      ver=""（= 不校验，老行为）
+// 外链本来就是「URL 即内容」，不会覆盖，不需要拆分。
+// ---------------------------------------------------------------------------
+static void splitFileFp(const QString &fp, QString &absPath, QString &ver)
+{
+    absPath.clear();
+    ver.clear();
+    if (fp.isEmpty()) return;
+
+    const int b = fp.lastIndexOf(QLatin1Char('|'));
+    if (b <= 0) { absPath = fp; return; }                  // 没有分隔符 → 外链 md5，整串当 key
+    const int a = fp.lastIndexOf(QLatin1Char('|'), b - 1);
+    if (a <= 0) { absPath = fp; return; }                  // 只有一个分隔符 → 不是指纹格式，原样当 key
+    absPath = fp.left(a);
+    ver     = fp.mid(a + 1);                               // "<size>|<mtime>"
+}
+
+// ---------------------------------------------------------------------------
+// 临时产物**不写上传缓存**（2026-11-13）
+//
+// 典型形态：插件用相对路径写 tmp/image/out.png、tmp/voice.m4a，而且多半每次重写
+// （有的还带随机名 / 时间戳 / uuid）。这种路径永不重复 → 命中率恒为 0，写进缓存只会：
+//   · 白占内存（一条 0.5~1.5KB，十万条就是几十上百 MB，32 位版尤其紧张）
+//   · 把 MemKV 顶到条目上限，触发分片淘汰 —— 连**真能命中**的固定素材一起被挤掉
+//   · 每条消息多一次 QHash 插入（分片锁竞争）
+// 所以这类路径只上传、不缓存：下次同路径再来就照常重传（本来也不会命中）。
+//
+// 判据（三层，且**只认程序工作目录下的 tmp/ 与 temp/**）：
+//   ① 路径里必须真的含 "/tmp/" 或 "/temp/" 段 —— 硬保险，前缀表算错也绝不会全挡
+//   ② 绝对路径落在 <cwd>/tmp/ 或 <cwd>/temp/ 之下
+//   ③ 文件名主干是 32/40/64 位十六进制（内容哈希寻址）→ **照常缓存**
+//      tmp/ 下混着程序自己的图缓存：tmp/image/15d4cc…png、tmp/image/ai/a553a6….jpg、
+//      tmp/聊天图片/448034….png —— 同名必同内容，缓存真能命中，挡掉就是全部重传。
+//
+// ⚠ 绝不能把「系统临时目录」算进来：QQ 收到的图全下载在 %TEMP% 下（QQ_1794…png、
+//   <uuid>.png），一挡就变成「所有图都不缓存」，2026-11-13 踩过一次。
+// ⚠ plugin: 键（appid:plugin:名字）不经过这里 —— 插件显式命名的缓存是「作品」不是产物。
+// ---------------------------------------------------------------------------
+
+// 文件名主干是不是 32/40/64 位十六进制（= 内容哈希寻址）。零分配、纯字符扫描。
+static bool qcIsHashLikeStem(const QString &stem)
+{
+    const int n = stem.size();
+    if (n != 32 && n != 40 && n != 64) return false;
+    for (int i = 0; i < n; ++i) {
+        const ushort c = stem.at(i).unicode();
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+            continue;
+        return false;
+    }
+    return true;
+}
+
+static bool isEphemeralMediaPath(const QString &absPath)
+{
+    if (absPath.isEmpty()) return false;
+
+    // ① 硬保险：必须先出现 tmp/temp 段。
+    if (!absPath.contains(QLatin1String("/tmp/"), Qt::CaseInsensitive)
+        && !absPath.contains(QLatin1String("/temp/"), Qt::CaseInsensitive))
+        return false;
+
+    // ② 必须在工作目录的 tmp/ 或 temp/ 之下（不碰系统临时目录）。
+    static const QStringList kPrefixes = []() {
+        QStringList r;
+        QString cwd = QDir::cleanPath(QDir::currentPath());
+        if (cwd.endsWith(QLatin1Char('/'))) cwd.chop(1);   // 盘根 "C:/" → "C:"，否则拼出 "C://tmp/"
+        if (!cwd.isEmpty()) {
+            r << cwd + QLatin1String("/tmp/")
+              << cwd + QLatin1String("/temp/");
+        }
+        return r;
+    }();
+    if (kPrefixes.isEmpty()) return false;
+
+    bool inTmp = false;
+    for (const QString &p : kPrefixes) {
+        if (absPath.startsWith(p, Qt::CaseInsensitive)) { inTmp = true; break; }
+    }
+    if (!inTmp) return false;
+
+    // ③ 内容哈希命名的（程序自己的图缓存）照常缓存，其余才挡。
+    const int slash = absPath.lastIndexOf(QLatin1Char('/'));
+    QString stem = absPath.mid(slash + 1);
+    const int dot = stem.lastIndexOf(QLatin1Char('.'));
+    if (dot > 0) stem.truncate(dot);
+    return !qcIsHashLikeStem(stem);
 }
 
 // ---------------------------------------------------------------------------
@@ -397,14 +687,14 @@ bool calculateFileMD5AndSize(const QString &filePath, QString &md5, int &width, 
 //   本库缓存值统一是 "<过期秒>||||<内容>"，图片是 <url>、媒体是裸 file_info 列表；
 //   早期媒体缓存还可能是 "[<类型>,path=…,md5=…,Time=<过期秒>]"。
 //
-//   ★ 只读不删（2026-10-20）：
-//     缓存库现在是**双库按日轮换**（main.cpp 的 ensureCacheDb），每天换库并把旧库整目录删掉，
-//     过期条目活不过当天 24 点，所以这里**不需要**再 remove —— 读缓存因此永远是「一次纯读」：
-//        · 一次 mdb_get（微秒级，B-tree 查找，跟库里有多少条无关）
-//        · 不拿写事务、不写 WAL、不触发 map 扩容、不阻塞别的线程的写
-//     命中但已过期 → 直接当未命中返回空，让调用方重新上传；重传成功后 put 覆盖同一 key，
+//   ★ 只读不删（2026-10-20，2026-11-13 更新）：
+//     cache_db 现在是**纯内存**（db/memkv.h），过期条目由 main.cpp 里每分钟一次的
+//     sweepExpired() 统一回收，所以这里**不需要**再 remove —— 读缓存永远是「一次纯读」：
+//       · 一次 QHash 查找（64 片各一把锁，无竞争约 100ns，跟库里有多少条无关）
+//       · 不拿全局数据库锁、不碰磁盘、不阻塞别的线程的上传写入
+//     命中但已过期 → MemKV::get 直接返回空，让调用方重新上传；重传成功后 put 覆盖同一 key，
 //     不会堆垃圾条目。
-//   早期为了兜住「LMDB 没有 TTL、过期条目永不消失」才顺手删，那个问题已由换库解决。
+//   早期为了兜住「没有 TTL、过期条目永不消失」才顺手删，那个问题已由定时清理解决。
 // ---------------------------------------------------------------------------
 static QString cachedValueIfFresh(const QString &key)
 {
@@ -439,6 +729,54 @@ static QString cachedValueIfFresh(const QString &key)
         }
     }
     return v;
+}
+
+// ---------------------------------------------------------------------------
+// 带「文件版本」校验的读：key 里只有路径，指纹挪进了值里（见 splitFileFp 的说明）。
+//
+//   值格式（新）："<过期秒>||||ver=<size>|<mtime>||||<payload>"
+//   值格式（旧/plugin 键）："<过期秒>||||<payload>"      ← 没有 ver 段
+//
+// 版本不一致 = 这个路径已经被覆盖写过 → 当**未命中**，调用方重新上传、写回同一条 key。
+// 这样「一个文件永远只有一条缓存」，覆盖式写入也不会堆 key。
+// 返回值已经**剥掉 ver 段**，下游解析函数（mediaCachedInfos / lastIndexOf 那套）一行都不用改。
+// ---------------------------------------------------------------------------
+static QString cachedValueIfFreshVer(const QString &key, const QString &ver)
+{
+    const QString v = cachedValueIfFresh(key);     // 已在里面判过过期
+    if (v.isEmpty() || ver.isEmpty()) return v;    // 无版本可比（外链 md5 / plugin 键）→ 老行为
+
+    const int b1 = v.indexOf(QStringLiteral("||||"));
+    if (b1 <= 0) return v;
+    const int b2 = v.indexOf(QStringLiteral("||||"), b1 + 4);
+    if (b2 < 0) return v;
+    const QString seg = v.mid(b1 + 4, b2 - b1 - 4);          // 固定位置，不会误命中 payload 里的 "ver="
+    if (!seg.startsWith(QLatin1String("ver="))) return v;    // 这一段不是版本 → 老格式，放行
+    if (seg.mid(4) != ver) return QString();                 // 文件被覆盖过 → 未命中
+
+    QString r = v;
+    // 只删「ver=…||||」这一段，**第一个 "||||" 必须留着** —— 它是「过期秒」和 payload 的分隔符。
+    // ⚠ 2026-11-13 这里原来写的是 r.remove(b1, b2 + 4 - b1)，从 b1 开始删 → 连分隔符一起删掉，
+    //   还原成 "1794538001https://…"（没有 "||||"），调用方 lastIndexOf("||||") 得 -1 →
+    //   cacheValid 永远 false，图片每条消息都重传（写进去、读不出来，就是这个 bug）。
+    r.remove(b1 + 4, b2 - b1);                                // 删 [b1+4, b2+4) = "ver=…||||"
+    return r;
+}
+
+// 写一条单值缓存（图片 URL / 单条 file_info 都走它）。
+//   ver 非空 → 写成 "<过期秒>||||ver=<size>|<mtime>||||<值>"，读的时候按版本比对；
+//   ver 为空 → 老格式，与历史条目完全一致（plugin: 键永远走这条）。
+//   pathHint = 这条缓存对应的本地文件路径（外链 md5 也照传，判据不会命中它）：
+//              落在工作目录 tmp/ 下的临时产物就**一律不写**，见 isEphemeralMediaPath。
+static void putValueCacheVer(const QString &key, const QString &value, qint64 expire,
+                             const QString &ver, const QString &pathHint)
+{
+    if (!cache_db || key.isEmpty() || value.isEmpty() || expire <= 0) return;
+    if (isEphemeralMediaPath(pathHint)) return;        // tmp/ 下的临时产物：只上传、不缓存
+    if (ver.isEmpty())
+        cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(value));
+    else
+        cache_db->put(key, QStringLiteral("%1||||ver=%2||||%3").arg(expire).arg(ver, value));
 }
 
 // 「<过期秒>||||<url>」格式的缓存 → 新鲜时返回 url；缺失 / 过期 / 不是这个格式一律空。
@@ -477,6 +815,20 @@ static QStringList cachedMediaInfosIfFresh(const QString &key)
     const QStringList infos = mediaCachedInfos(cachedValueIfFresh(key));
     // 值可能是「md 图片」（type==1）存进来的 URL —— 同一个 plugin 名字被两种用途共用时会出现。
     // URL 不是 file_info，拿去 send_Media 必失败，所以这里当未命中，让调用方重新上传。
+    if (infos.size() == 1
+        && (infos.first().startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+            || infos.first().startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+            || infos.first().startsWith(QLatin1String("qqbot-media://"), Qt::CaseInsensitive)))
+        return {};
+    return infos;
+}
+
+
+// 与 cachedMediaInfosIfFresh 同，但 key 里只有路径、指纹在值里（见 cachedValueIfFreshVer）。
+//   ver 为空时行为完全等同于 cachedMediaInfosIfFresh（外链 md5 / 没指纹的调用）。
+static QStringList cachedMediaInfosIfFreshVer(const QString &key, const QString &ver)
+{
+    const QStringList infos = mediaCachedInfos(cachedValueIfFreshVer(key, ver));
     if (infos.size() == 1
         && (infos.first().startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
             || infos.first().startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
@@ -1221,7 +1573,13 @@ void get_ref(QString &text,QString &message_reference)
             text.remove(refStart, refEnd - refStart + 1);
             // 「引用」必须带正文，只剩引用平台直接报错。正文被这个标记吃空（AI 单发了 <seq:N>、
             // 插件只拼了 [ref,msg_idx=N]）时就不带引用了，让上层按「内容为空」正常处理。
-            if (text.trimmed().isEmpty()) {
+            // ⚠ 别用 text.trimmed().isEmpty()：trimmed() 会给整条正文再拷一份（正文里常带
+            //   1.3k 的 REFIDX msgid，等于每条消息多一次 3.5KB 分配），这里扫一遍零分配。
+            bool blank = true;
+            for (const QChar ch : qAsConst(text)) {
+                if (!ch.isSpace()) { blank = false; break; }
+            }
+            if (blank) {
                 message_reference.clear();
                 text.clear();
             }
@@ -1325,7 +1683,10 @@ static QString padImageAltForMarkdown(const QString &alt)
 // 放在真正扫描本地图片之前跑，避免两套下标互相打架。
 static void normalizePassThroughImageSizes(QString &text)
 {
-    if (!text.contains(QLatin1String("]("))) return;          // 快筛：没有 markdown 链接
+    // 快筛：正则必须以 "![" 开头，没有它一个都匹配不上 ——
+    //   原来这里是按 "](" 筛的（正文里 markdown **链接**也含 "]("），
+    //   于是每条带按钮的纯文本回复都白跑一趟 globalMatch（正则里还有 (?:https?:|qqbot-media:)）。
+    if (!text.contains(QLatin1String("!["))) return;          // 没有 markdown 图片
 
     static const QRegularExpression re(R"(!\[([^\]]*)\]\((\s*(?:https?:|qqbot-media:)[^)]*)\))",
                                        QRegularExpression::CaseInsensitiveOption);
@@ -1366,6 +1727,19 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 {
     if (pluginErr) pluginErr->clear();
     get_ref(text, message_reference);
+    // ---------- 纯文本快路（与 processImageTagsAsync 同一判据）----------
+    //   正文里既没有旧标签 `[image`、也没有 markdown 图 `![` → 一个要上传/补尺寸的东西都没有，
+    //   整条链只剩「markdown 链接转换」，和下面第 4 步的 allTags.isEmpty() 分支逐字节一致。
+    //   以前这里照样要跑：normalizePassThroughImageSizes 的 globalMatch + mdImgRe.globalMatch
+    //   两趟全局正则（60 个 `[词](词)` 时实测 800k 周期 ≈ 0.27ms），扫完才发现 allTags 是空的。
+    if (!text.contains(QLatin1String("[image"), Qt::CaseInsensitive)
+        && !text.contains(QLatin1String("!["))) {
+        if (type == 0 || type == 2)
+            text = convertMdLinksKeepHttp(text);
+        else
+            text = convertMarkdownLinksToXml(text);
+        return text;
+    }
     // md 消息里放行的图（http / qqbot-media）先补齐尺寸；纯文本 / ark 不涉及 markdown，跳过
     if (type == 1) normalizePassThroughImageSizes(text);
     const QRegularExpression &mdImgRe = mdImageRegexFor(type);
@@ -1625,15 +1999,19 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 QString fileMd5;
                 // 本地文件不存在（或不是文件）→ 用运行目录下的默认图「图片不存在.webp」顶上，
                 // 否则下面的 calculateFileMD5AndSize 会失败、这个标签就原样残留在正文里
-                if (!QFileInfo(newUrl).isFile()) {
+                // ⚠ 别再「先 QFileInfo(newUrl).isFile() 再调指纹函数」——那是每条消息每张图
+                //   **两次 stat**。本机实测一次 stat ≈ 85μs（过滤器驱动，连 kernel32.dll 都要 96μs），
+                //   一张图 170μs、两张图 340μs，全部压在「图片耗时」这一列上。
+                //   这里合并成一次：指纹函数自己就 stat，失败（不存在/空/目录）才换默认图重试。
+                if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height)) {
                     const QString placeholder = missingImagePlaceholderPath();
                     if (placeholder.isEmpty())
                         continue;                       // 连默认图都没有 → 保持原行为
                     newUrl = placeholder;
                     tag.url = placeholder;              // 回退路径也指向默认图
+                    if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
+                        continue;
                 }
-                if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
-                    continue;
 
                 if (tag.isMdImg && tag.hasUserSize) {
                     tag.width = tag.userWidth;
@@ -1642,11 +2020,15 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
                 // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
                 // ⚠ plugin: 键带路径时（写法②）跳过 imageB_ 缓存：每次都上传一遍覆盖缓存。
-                QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
+                // ⚠ key 只带路径，指纹在值里校验（见 splitFileFp / cachedValueIfFreshVer）：
+                //   覆盖式改写同一个文件不会再多造 key，版本对不上照样重传。
+                QString ck, cver;
+                splitFileFp(fileMd5, ck, cver);
+                QString cacheKey = m_info->appid + ":imageB_" + ck;
                 bool cacheValid = false;
                 QString cachedUrl;
-                if (pluginCacheKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
-                    QString cached = cachedValueIfFresh(cacheKey);
+                if (pluginCacheKey.isEmpty() && cache_db && !ck.isEmpty()) {
+                    QString cached = cachedValueIfFreshVer(cacheKey, cver);
                     if (!cached.isEmpty()) {
                         int sepIdx = cached.lastIndexOf("||||");
                         if (sepIdx != -1) {
@@ -1744,8 +2126,9 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     if (!pluginKey.isEmpty())
                         cache_db->put(pluginKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
                     QString fileMd5 = replacements[replaceIdx].fileMd5;
-                    QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
-                    cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
+                    QString ck2, cver2;
+                    splitFileFp(fileMd5, ck2, cver2);
+                    putValueCacheVer(m_info->appid + ":imageB_" + ck2, uploadedUrl, expire, cver2, ck2);
                 }
             } else {
                 // 上传失败，保留原路径
@@ -1838,16 +2221,18 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                 newUrl = pluginLocal;
             // 本地文件不存在（或不是文件）→ 用运行目录下的默认图「图片不存在.webp」顶上，
             // 否则下面的 calculateFileMD5AndSize 会失败、这个标签就原样残留在正文里
-            if (!QFileInfo(newUrl).isFile()) {
+            // 一次 stat 搞定：指纹函数自己 stat，失败（不存在/空/目录）才换默认图重试
+            // （以前是先 isFile() 再调它 = 每张图两次 stat，本机一次 85μs）
+            if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height)) {
                 const QString placeholder = missingImagePlaceholderPath();
                 if (placeholder.isEmpty())
                     continue;                           // 连默认图都没有 → 保持原行为
                 newUrl = placeholder;
                 tag.url = placeholder;                  // 回退路径也指向默认图
+                // 计算 MD5 并获取文件实际宽高（会写入 tag.width / tag.height）
+                if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
+                    continue;
             }
-            // 计算 MD5 并获取文件实际宽高（会写入 tag.width / tag.height）
-            if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
-                continue;
 
             // 如果是 Markdown 图片且用户指定了尺寸，则恢复为用户指定的值
             if (tag.isMdImg && tag.hasUserSize) {
@@ -1863,10 +2248,14 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
 
                     // 写法②（带路径）= 插件明确要求「用这张新图覆盖」→ 跳过缓存，一定重传
                     const bool forceUpload = (!pluginKey.isEmpty() && !pluginLocal.isEmpty());
-                    // 缓存 key：plugin 键优先（插件自己命名）；否则沿用文件指纹 imageA_
-                    const QString cacheKey = pluginKey.isEmpty()
-                                                 ? m_info->appid + ":imageA_" + fileMd5
-                                                 : pluginKey;
+                    // 缓存 key：plugin 键优先（插件自己命名）；否则走 imageA_ + **纯路径**
+                    // （指纹在值里校验，见 splitFileFp —— 覆盖式改写不再堆 key）
+                    QString ckA, cverA;
+                    splitFileFp(fileMd5, ckA, cverA);
+                    const bool usePluginKey = !pluginKey.isEmpty();
+                    const QString cacheKey = usePluginKey
+                                                 ? pluginKey
+                                                 : m_info->appid + ":imageA_" + ckA;
                     bool cacheValid = false;
                     QString cachedUrl;
 
@@ -1874,7 +2263,9 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                     // ⚠ type==0 的缓存值是**裸 file_info**（不是 URL），所以走 media 那套解析，
                     //   不能用 cachedUrlIfFresh（那个只认 http/qqbot-media 开头的值）。
                     if (!forceUpload && cache_db && !cacheKey.isEmpty()) {
-                        const QStringList infos = cachedMediaInfosIfFresh(cacheKey);
+                        const QStringList infos = usePluginKey
+                                                      ? cachedMediaInfosIfFresh(cacheKey)
+                                                      : cachedMediaInfosIfFreshVer(cacheKey, cverA);
                         if (!infos.isEmpty()) {
                             cachedUrl = infos.first();
                             cacheValid = true;
@@ -1899,8 +2290,7 @@ QString QQBotClient::processImageTags(QString &text, int type, QString &info,
                                 // plugin: 键优先写（同一张图下次只给名字就能直接复用）
                                 if (!pluginKey.isEmpty())
                                     cache_db->put(pluginKey, QString("%1||||%2").arg(expire).arg(newUrl));
-                                QString fileCacheKey = m_info->appid + ":imageA_" + fileMd5;
-                                cache_db->put(fileCacheKey, QString("%1||||%2").arg(expire).arg(newUrl));
+                                putValueCacheVer(m_info->appid + ":imageA_" + ckA, newUrl, expire, cverA, ckA);
                             }
                         } else {
                             newUrl = tag.url;
@@ -2085,6 +2475,26 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
     if (!onDone) return;
     const int appid = m_info->appid_int;
 
+    // ---------- 纯文本快路（所有 type 通吃）----------
+    //   正文里既没有旧标签 `[image`、也没有 markdown 图 `![` → 一个要上传的东西都没有，
+    //   整条链只剩「摘掉 [ref,msg_idx=…] + markdown 链接转换」，全是纯 CPU 的几微秒。
+    //   以前这条路照样要：make_shared<AsyncState>（内含 QMutex/QList/QString 一次堆分配）
+    //   + 两趟全局正则扫 + convertMarkdownLinksToXml；type 0/2 更是 std::thread(...).detach()
+    //   建一个线程再立刻销毁 —— 纯文本回复的「图片耗时」就是这么来的。
+    //   这里直接收尾，行为与同步版 processImageTags 的「无标签分支」逐字节一致：
+    //     type 0/2 → convertMdLinksKeepHttp；其余 → convertMarkdownLinksToXml。
+    //   ⚠ 有标签才继续往下（type 0/2 的上传是阻塞的，必须离开调用线程）。
+    if (!textIn.contains(QLatin1String("[image"), Qt::CaseInsensitive)
+        && !textIn.contains(QLatin1String("!["))) {
+        QString text = textIn;
+        QString message_reference;
+        get_ref(text, message_reference);
+        text = (type == 0 || type == 2) ? convertMdLinksKeepHttp(text)
+                                        : convertMarkdownLinksToXml(text);
+        onDone(text, QString(), message_reference, QString());
+        return;
+    }
+
     // ---------- type 0/2：上传是阻塞型，保留单线程包装 ----------
     if (type != 1) {
         std::thread([this, appid, textIn, type, targetType, openid, onDone]() mutable {
@@ -2228,8 +2638,9 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                                 // plugin: 键优先写（上传成功后覆盖旧链接）
                                 if (!ri.pluginCacheKey.isEmpty())
                                     cache_db->put(ri.pluginCacheKey, QString("%1||||%2").arg(expire).arg(url));
-                                QString cacheKey = c2->m_info->appid + ":imageB_" + ri.fileMd5;
-                                cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(url));
+                                QString ck, cver;
+                                splitFileFp(ri.fileMd5, ck, cver);
+                                putValueCacheVer(c2->m_info->appid + ":imageB_" + ck, url, expire, cver, ck);
                             }
                         } else {
                             ri.newUrl = ri.originalUrl;
@@ -2251,8 +2662,9 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
                     // plugin: 键优先写（上传成功后覆盖旧链接）
                     if (!ri.pluginCacheKey.isEmpty())
                         cache_db->put(ri.pluginCacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
-                    QString cacheKey = c->m_info->appid + ":imageB_" + ri.fileMd5;
-                    cache_db->put(cacheKey, QString("%1||||%2").arg(expire).arg(uploadedUrl));
+                    QString ck, cver;
+                    splitFileFp(ri.fileMd5, ck, cver);
+                    putValueCacheVer(c->m_info->appid + ":imageB_" + ck, uploadedUrl, expire, cver, ck);
                 }
             } else {
                 // 上传失败，保留原路径
@@ -2462,16 +2874,17 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
 
         if (!isPassThrough && !newUrl.isEmpty()) {
             QString fileMd5;
-            // 与堵塞版一致：本地文件不存在 → 换成运行目录下的默认图「图片不存在.webp」
-            if (!QFileInfo(newUrl).isFile()) {
+            // 一次 stat 搞定（以前 isFile() + 指纹函数 = 每张图两次）
+            if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height)) {
+                // 与堵塞版一致：本地文件不存在 → 换成运行目录下的默认图「图片不存在.webp」
                 const QString placeholder = missingImagePlaceholderPath();
                 if (placeholder.isEmpty())
                     continue;                       // 连默认图都没有 → 保持原行为
                 newUrl = placeholder;
                 tag.url = placeholder;
+                if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
+                    continue;
             }
-            if (!calculateFileMD5AndSize(newUrl, fileMd5, tag.width, tag.height))
-                continue;
 
             if (tag.isMdImg && tag.hasUserSize) {
                 tag.width = tag.userWidth;
@@ -2481,11 +2894,14 @@ void QQBotClient::processImageTagsAsync(const QString &textIn, int type, int tar
             // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
             // ⚠ plugin: 键带路径时（写法②）**跳过 imageB_ 缓存**：每次都上传一遍覆盖缓存，
             //   否则「改了同名文件但指纹没变」拿到的还是旧链接（写法②的语义就是覆盖）。
-            QString cacheKey = m_info->appid + ":imageB_" + fileMd5;
+            // ⚠ key 只带路径，指纹在值里校验（见 splitFileFp / cachedValueIfFreshVer）。
+            QString ck, cver;
+            splitFileFp(fileMd5, ck, cver);
+            QString cacheKey = m_info->appid + ":imageB_" + ck;
             bool cacheValid = false;
             QString cachedUrl;
-            if (pluginCacheKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
-                QString cached = cachedValueIfFresh(cacheKey);
+            if (pluginCacheKey.isEmpty() && cache_db && !ck.isEmpty()) {
+                QString cached = cachedValueIfFreshVer(cacheKey, cver);
                 if (!cached.isEmpty()) {
                     int sepIdx = cached.lastIndexOf("||||");
                     if (sepIdx != -1) {
@@ -4425,18 +4841,32 @@ static void putMediaUploadCache(const QString &appid, const QString &mediaType, 
                                 const QStringList &infos, qint64 expire, bool allOk)
 {
     if (!cache_db || fileMd5.isEmpty() || !allOk || infos.isEmpty() || expire <= 0) return;
-    // 用 + 拼接，避免 arg 二次解析 '%'
-    const QString key = appid + QLatin1Char(':') + mediaType + QLatin1Char('_') + fileMd5;
-    cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
+    // key 只留**路径**，把 size|mtime 挪进值里（见 splitFileFp）——
+    // 覆盖式写同名文件的插件以前每条消息都造一个新 key，一天能把 MemKV 顶到 10 万条上限。
+    QString ck, ver;
+    splitFileFp(fileMd5, ck, ver);
+    if (isEphemeralMediaPath(ck)) return;    // tmp/ 下的临时产物：只上传、不缓存（见该函数说明）
+    const QString key = appid + QLatin1Char(':') + mediaType + QLatin1Char('_') + ck;
+    if (ver.isEmpty())
+        cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
+    else
+        cache_db->put(key, QStringLiteral("%1||||ver=%2||||%3")
+                               .arg(expire).arg(ver, infos.join(QStringLiteral("||"))));
 }
 
 // 按「现成的 key」写一条同样格式（"过期秒||||info1||info2||…"）的媒体缓存。
 // 给 plugin: 键用 —— 插件自己命名（appid:plugin:名字），跟文件指纹无关，所以要能指定 key。
 // 条件与 putMediaUploadCache 完全一致：有段失败 / 没 ttl / 没内容一律不写。
-static void putMediaCacheRaw(const QString &key, const QStringList &infos, qint64 expire, bool allOk)
+//   ver 非空时多插一段 "ver=<size>|<mtime>"（本地文件路径缓存用，见 splitFileFp）。
+static void putMediaCacheRaw(const QString &key, const QStringList &infos, qint64 expire, bool allOk,
+                             const QString &ver = QString())
 {
     if (!cache_db || key.isEmpty() || !allOk || infos.isEmpty() || expire <= 0) return;
-    cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(infos.join(QStringLiteral("||"))));
+    const QString payload = infos.join(QStringLiteral("||"));
+    if (ver.isEmpty())
+        cache_db->put(key, QStringLiteral("%1||||%2").arg(expire).arg(payload));
+    else
+        cache_db->put(key, QStringLiteral("%1||||ver=%2||||%3").arg(expire).arg(ver, payload));
 }
 
 // 复制一份 ctx 但**去掉回调**。
@@ -4483,6 +4913,13 @@ struct QQBotClient::MediaTagCtx {
 // 整条链的状态
 struct QQBotClient::MediaSendChain {
     int                  appid = 0;  // ⚠ 按值存下来：回调里靠它反查全局表，绝不回头解引用 this
+    // 上传缓存 key 的账号前缀，**与图片/插件链路同一个来源**（AccountInfo::appid 字符串）。
+    // 必须按值存：回调里不能解引用 this。用它拼 key 而不是 QString::number(appid)，
+    // 是为了让「文字链路的 imageA_/imageB_/plugin:」和「媒体链路的 <类型>_/plugin:」
+    // 永远落在同一套前缀上 —— 否则 appid 字符串一旦与 appid_int 的十进制写法不一致
+    // （例如添加账号时末尾混进空白，addaccountdialog 未 trim），同一份文件会在两条路上
+    // 各存一份缓存、永远互不命中。
+    QString              appidStr;
     std::function<void(const QString &, const QString &)> onDone;
     QString              text;      // 逐条摘掉媒体标签后的文本
     QList<MediaTagMatch> matches;
@@ -4582,7 +5019,7 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
     {
         QString pluginName, pluginLocal;
         if (parsePluginImageTag(pathArg, &pluginName, &pluginLocal)) {
-            tc->pluginCacheKey = QString::number(st->appid) + QStringLiteral(":plugin:") + pluginName;
+            tc->pluginCacheKey = st->appidStr + QStringLiteral(":plugin:") + pluginName;
             if (pluginLocal.isEmpty()) {
                 tc->cachedInfos = cachedMediaInfosIfFresh(tc->pluginCacheKey);
                 if (!tc->cachedInfos.isEmpty()) {
@@ -4614,11 +5051,15 @@ void QQBotClient::mediaChainStep(std::shared_ptr<MediaSendChain> st)
     }
     // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
     // ⚠ plugin 写法②（带路径）= 插件要求「用这个新文件覆盖」→ 跳过指纹缓存，一定重传
+    // ⚠ key 只带路径（外链是 URL 的 md5，splitFileFp 原样放行），指纹在值里校验：
+    //   覆盖式改写同一个文件不会再多造 key，版本对不上照样重传。
     if (tc->pluginCacheKey.isEmpty() && cache_db && !tc->fileMd5.isEmpty()) {
         // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效（见 putMediaUploadCache 注释）
-        const QString cacheKey = QString::number(st->appid) + QLatin1Char(':') + mediaType + QLatin1Char('_') + tc->fileMd5;
+        QString ck, cver;
+        splitFileFp(tc->fileMd5, ck, cver);
+        const QString cacheKey = st->appidStr + QLatin1Char(':') + mediaType + QLatin1Char('_') + ck;
         // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-        tc->cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
+        tc->cachedInfos = mediaCachedInfos(cachedValueIfFreshVer(cacheKey, cver));
 
         if (!tc->cachedInfos.isEmpty())
             tc->needUpload = false;
@@ -4744,7 +5185,7 @@ void QQBotClient::mediaChainSegLoop(std::shared_ptr<MediaSendChain> st, std::sha
     if (!clientAlive(this, st->appid)) return;
     if (job->idx >= job->paths.size()) {
         // 全部段处理完 → 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
-        putMediaUploadCache(QString::number(st->appid), tc->mediaType, tc->fileMd5, tc->segInfos, tc->segExpire, tc->segAllOk);
+        putMediaUploadCache(st->appidStr, tc->mediaType, tc->fileMd5, tc->segInfos, tc->segExpire, tc->segAllOk);
         // 插件命名的那份（path=plugin:名字|本地路径 上传成功后覆盖）
         putMediaCacheRaw(tc->pluginCacheKey, tc->segInfos, tc->segExpire, tc->segAllOk);
         mediaChainFinishTag(st, tc);
@@ -4931,6 +5372,7 @@ void QQBotClient::sendOneMediaAsync(int type, const QString &openid, const QStri
 
     auto st = std::make_shared<MediaSendChain>();
     st->appid    = m_info->appid_int;
+    st->appidStr = m_info->appid;          // 缓存 key 前缀：与文字/插件链路同一个来源
     st->onDone   = onDone;
     st->text     = text;
     st->type     = type;
@@ -5042,7 +5484,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             QString pluginName, pluginLocal;
             if (parsePluginImageTag(filePath, &pluginName, &pluginLocal)) {
                 // ⚠ 带账号：file_info 跟着上传它的机器人走，跨号复用必失效（与异步链同一口径）
-                pluginKey = QString::number(m_info->appid_int) + QStringLiteral(":plugin:") + pluginName;
+                pluginKey = m_info->appid + QStringLiteral(":plugin:") + pluginName;
                 if (pluginLocal.isEmpty()) {
                     cachedInfos = cachedMediaInfosIfFresh(pluginKey);
                     if (!cachedInfos.isEmpty()) {
@@ -5071,12 +5513,16 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
         }
         // 缓存检查（纯读一次；过期就当未命中，不删 —— 见 cachedValueIfFresh）
         // ⚠ plugin 键（写法①已在上面的分支里查过并 return/命中；写法②要每次覆盖）→ 这里跳过指纹缓存
+        // ⚠ key 只带路径，指纹在值里校验（见 splitFileFp / cachedValueIfFreshVer）
         if (pluginKey.isEmpty() && cache_db && !fileMd5.isEmpty()) {
             // ⚠ 带账号：<file_info> 跟着上传它的机器人走，跨号复用必失效
-            //   账号标识与异步链同一口径（appid_int），否则同一文件走同步/异步两条路会各存一份、互不命中
-            QString cacheKey = QString::number(m_info->appid_int) + QLatin1Char(':') + mediaType + QLatin1Char('_') + fileMd5;
+            //   账号标识统一用 m_info->appid（与图片/插件链路同一来源），否则同一文件
+            //   走同步/异步两条路会各存一份、互不命中
+            QString ck, cver;
+            splitFileFp(fileMd5, ck, cver);
+            QString cacheKey = m_info->appid + QLatin1Char(':') + mediaType + QLatin1Char('_') + ck;
             // 命中可能是 1 条（整文件/单段），也可能是切好的 N 段（见 mediaCachedInfos）
-            cachedInfos = mediaCachedInfos(cachedValueIfFresh(cacheKey));
+            cachedInfos = mediaCachedInfos(cachedValueIfFreshVer(cacheKey, cver));
             if (!cachedInfos.isEmpty())
                 needUpload = false;
         }
@@ -5262,7 +5708,7 @@ QString QQBotClient::sendOneMedia(int type, const QString &openid,const QString 
             }
 
             // 写缓存：整文件/单段存 1 条、真多段存 N 条，同一格式 "过期秒||||info1||info2||…"
-            putMediaUploadCache(QString::number(m_info->appid_int), mediaType, fileMd5, segInfos, segExpire, segAllOk);
+            putMediaUploadCache(m_info->appid, mediaType, fileMd5, segInfos, segExpire, segAllOk);
             // 插件命名的那份（path=plugin:名字|本地路径 上传成功后覆盖）
             putMediaCacheRaw(pluginKey, segInfos, segExpire, segAllOk);
         }else{
@@ -5337,11 +5783,13 @@ QJsonObject parseLabelsToKeyboard(const QString &labelsText) {
     QJsonArray rowsArray;
 
     //qDebug() << labelsText;
+    // ⚠ 正则提到循环外 + static：以前每行都重新 PCRE 编译一次（按钮越多越慢），
+    //   而 bianl() 是**每条消息**都会走的路径。正则无状态，复用完全等价。
+    static const QRegularExpression reRow(R"(\[([^\]]*)\])");
     const QStringList lines = labelsText.split('\r', Qt::SkipEmptyParts);
     for (const QString &line : lines) {
 
-        QRegularExpression re(R"(\[([^\]]*)\])");
-        QRegularExpressionMatchIterator it = re.globalMatch(line);
+        QRegularExpressionMatchIterator it = reRow.globalMatch(line);
 
         QJsonArray buttonsArray;
         while (it.hasNext()) {
@@ -5434,7 +5882,14 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
 
     Message log2;
     g_logdb[index]->readLog(m_info->appid,openid,log,log2);
-    const QList<mdbtn> &bts = m_info->mdbtnlist;
+    // ⚠ 必须是**值拷贝**，不能拿引用。
+    // 这份列表由 UI 线程（BotRuleConfigWidget::oninitbot → account->mdbtnlist.clear()）重建，
+    // 而本函数跑在消息线程上。原来拿的是 `const QList<mdbtn>&`，一旦 clear() 插进遍历中间，
+    // 后面每个 bt、以及 bt.hxc[idx] 全都是「已析构的 QString」——
+    // 把它赋给 QJsonValue 时 QString 会 d->ref.ref()，往那块已被别的模块（比如 LMDB 的脏页）
+    // 复用走的堆块头上写 4 字节，于是数据库结构里就混进了按钮 JSON，几秒后崩在 mdb_put 里。
+    // 拷一份之后遍历的是自己的副本：QList 隐式共享，ref++ 是原子的，与原列表脱钩。
+    const QList<mdbtn> bts = m_info->mdbtnlist;
     for (const mdbtn &bt : bts)
     {
 
@@ -5518,7 +5973,8 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
     }
     //小尾巴
 
-    const QList<zdywb> &wb= m_info->zdywblist;
+    // 同上：值拷贝。zdywblist 由 TextReplaceConfigWidget::oninitbot 在 UI 线程 clear()+append() 重建。
+    const QList<zdywb> wb= m_info->zdywblist;
     for (const zdywb &w : wb)
     {
         bool isok=false;

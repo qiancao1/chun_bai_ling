@@ -81,29 +81,6 @@ static const int LOGDB_BUSY_MS    = 5000;      // 撞锁最多等 5 秒（单连
 // 每次回收空闲页的上限（页数）：一次还太多会把清理拖到几秒，分批更稳
 static const int LOGDB_VACUUM_PAGES = 2000;
 
-// "yyyy-MM-dd hh:mm:ss"（入站消息）与 "yyyy-MM-dd HH:mm:ss"（出站/日志）两种写法都吃
-static qint64 parseLogTimeString(const QString &ts)
-{
-    if (ts.isEmpty()) return 0;
-    QDateTime dt = QDateTime::fromString(ts, "yyyy-MM-dd HH:mm:ss");
-    if (!dt.isValid()) dt = QDateTime::fromString(ts, "yyyy-MM-dd hh:mm:ss");
-    if (!dt.isValid()) dt = QDateTime::fromString(ts, Qt::ISODate);
-    return dt.isValid() ? dt.toSecsSinceEpoch() : 0;
-}
-
-// 只读出记录的前 4 个字段（user / msg / isSelf / timestamp）拿时间戳。
-// 扫描时每条都要判一次时间，全量 deserializeMessage 太贵，这里只取到 timestamp 就止步。
-static qint64 logBlobTimeSecs(const QByteArray &blob)
-{
-    QDataStream stream(blob);
-    stream.setVersion(QDataStream::Qt_5_15);
-    QString user, msg, ts;
-    bool isSelf = false;
-    stream >> user >> msg >> isSelf >> ts;
-    if (stream.status() != QDataStream::Ok) return 0;   // 旧格式/坏记录 → 0=未知
-    return parseLogTimeString(ts);
-}
-
 // 静默执行一条 SQL（失败只返回 false，不打印）
 static bool execQuiet(sqlite3 *db, const char *sql)
 {
@@ -512,7 +489,7 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
     return result;
 }
 
-// ================= 被动回复 msgid（2026-10-11）=================
+// ================= 被动回复 msgid（2026-10-11 起，2026-11-13 改纯内存）=================
 //
 // 背景：发送分两种，频率限制互不占用 ——
 //   ① 被动回复（携带 msg_id，即 Message.ch 保存的那条消息 id）：群 100 条/秒、好友 60 条/秒，
@@ -520,27 +497,58 @@ QList<Message> LogDB::getRecentLogs(const QString &appid, const QString &groupId
 //   ② 主动发送（不携带 msg_id）：群 60 条/分钟、好友 30 条/分钟。
 // 所以 plts（批量推送）/ scheduleconfigwidget（定时）先来这里要 msgid，做成「混合发送」：
 // 拿到 msgid 就用 msgid 发（走被动额度，不吃主动的分钟频率），拿不到才退回主动发送。
-// 被动那条路统一走 paceMsgIdReply(60) 的全局 60 条/秒（比群 100 更保守，好友也刚好卡住）。
+// 被动那条路统一走 paceMsgIdReply 的**每号** 60 条/秒（按 appid 分桶；比群 100 更保守）。
 //
-// ⚠ 数据来源是「收到的消息」的 Message.ch（core/qqbotclient.cpp 里
-//   Message mes{ev.user, ev.msg, false, tiems, "", ev.replyTo, ev.msgId} 的第 7 个参数）
-//   —— ch 才是「用户发来的消息 id」，只有它才能当被动回复用；它可能是空的，跳过即可。
+// ⚠ 数据来源是「收到的消息」的 Message.ch，由 recordMsgId() 在 qqbotclient 收到消息时登记。
+//   —— ch 才是「用户发来的消息 id」，只有它才能当被动回复用。
 // ⚠⚠ 机器人自己发出去的消息 id 存在 Message.plugin_ch（core/api2.cpp: msg.plugin_ch = deleteid），
-//   那个只能拿去做撤回（delete_messages），绝不能用它来发送！所以 isSelf==true 或
-//   plugin_ch 非空的一律过滤掉。
+//   那个只能拿去做撤回（delete_messages），绝不能用它来发送！所以登记点只覆盖「收消息」路径，
+//   机器人自己发消息（api2.cpp）根本不经过 recordMsgId。
+void LogDB::recordMsgId(const QString &appid, const QString &conv, const QString &msgId,
+                        qint64 tsSecs)
+{
+    if (appid.isEmpty() || conv.isEmpty() || msgId.isEmpty()) return;
+
+    const qint64 now = tsSecs > 0 ? tsSecs : QDateTime::currentSecsSinceEpoch();
+
+    QMutexLocker locker(&m_mutex);
+
+    // 过期清理：最多 5 分钟扫一次全表。条目数 = 会话数（每会话只留一条，天然有界），
+    // 这里只是为了把「退群 / 再也不说话」的会话吐出去，正常规模根本走不到。
+    if (now - m_msgIdSweptAt >= 300) {
+        m_msgIdSweptAt = now;
+        const qint64 cutoff = now - FRIEND_MSGID_WINDOW_SECS;
+        for (auto bit = m_msgIds.begin(); bit != m_msgIds.end(); ) {
+            QHash<QString, MsgIdEntry> &bucket = bit.value();
+            for (auto it = bucket.begin(); it != bucket.end(); ) {
+                if (it.value().ts < cutoff) it = bucket.erase(it);
+                else ++it;
+            }
+            if (bucket.isEmpty()) bit = m_msgIds.erase(bit);
+            else ++bit;
+        }
+    }
+
+    MsgIdEntry &e = m_msgIds[appid][conv];
+    e.msgId = msgId;
+    e.ts = now;
+}
+
 QStringList LogDB::getRecentMsgIds(const QString &appid, const QString &groupId, bool isGroup,
                                    int maxCount) const
 {
     QStringList result;
     if (groupId.isEmpty() || maxCount <= 0) return result;
 
-    const qint64 windowSecs = isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS;
-    QHash<QString, QStringList> map;
+    const qint64 cutoff = QDateTime::currentSecsSinceEpoch()
+                        - (isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS);
+
     QMutexLocker locker(&m_mutex);
-    collectRecentMsgIds(appid, groupId, QDateTime::currentSecsSinceEpoch() - windowSecs,
-                        maxCount, map);
-    auto it = map.constFind(groupId);
-    if (it != map.constEnd()) result = it.value();
+    auto ait = m_msgIds.constFind(appid);
+    if (ait == m_msgIds.constEnd()) return result;
+    auto cit = ait.value().constFind(groupId);
+    if (cit == ait.value().constEnd()) return result;
+    if (cit.value().ts >= cutoff) result.append(cit.value().msgId);
     return result;
 }
 
@@ -550,84 +558,121 @@ QHash<QString, QStringList> LogDB::getRecentMsgIdMap(const QString &appid, bool 
     QHash<QString, QStringList> map;
     if (appid.isEmpty() || maxCountPerConv <= 0) return map;
 
-    const qint64 windowSecs = isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS;
+    const qint64 cutoff = QDateTime::currentSecsSinceEpoch()
+                        - (isGroup ? GROUP_MSGID_WINDOW_SECS : FRIEND_MSGID_WINDOW_SECS);
+
     QMutexLocker locker(&m_mutex);
-    collectRecentMsgIds(appid, QString(), QDateTime::currentSecsSinceEpoch() - windowSecs,
-                        maxCountPerConv, map);
+    auto ait = m_msgIds.constFind(appid);
+    if (ait == m_msgIds.constEnd()) return map;
+
+    const QHash<QString, MsgIdEntry> &bucket = ait.value();
+    for (auto it = bucket.cbegin(); it != bucket.cend(); ++it) {
+        if (it.value().ts < cutoff) continue;      // 超出时间窗 → 带了也发不出去
+        map.insert(it.key(), QStringList() << it.value().msgId);
+    }
     return map;
 }
 
-void LogDB::collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,
-                                int maxPerConv, QHash<QString, QStringList> &out, int scanLimit) const
+// ========== 会话列表批量读（2026-11-13）==========
+// 以前聊天页刷新会话列表是「每会话一条 SQL」，1000 个会话就是 1000 次
+// prepare/step/finalize，还套在只读事务里把刷库堵死。这两步把它压成 2~3 条 SQL。
+QList<QPair<QString, quint64>> LogDB::getLatestSeqPerConv(const QString &appid) const
 {
-    if (!m_db || appid.isEmpty() || maxPerConv <= 0) return;
+    QList<QPair<QString, quint64>> out;
+    if (appid.isEmpty()) return out;
 
-    QSet<QString> seen;                 // 缓存/库里同一条消息去重（msgid 全局唯一）
-    QHash<QString, int> convCount;      // 每个会话已经收了多少个
+    QMutexLocker locker(&m_mutex);
+    if (!m_db) return out;
 
-    // 1) 内存缓存优先：刚收到、还没落盘（最多 5 秒窗口）的消息也要算
+    QHash<QString, quint64> latest;   // conv -> 该会话最大 seq
+
+    // 1) 内存缓存优先：刚收到、还没落盘（最多 5 秒窗口）的消息，库里还查不到
     for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
         const CacheEntry &e = it.value();
         if (e.appid != appid) continue;
-        const QString &conv = e.conv;
-        if (!onlyConv.isEmpty() && conv != onlyConv) continue;
-        if (convCount.value(conv) >= maxPerConv) continue;
-
-        const Message &m = e.msg;
-        // ch = 用户发来的消息 id（被动回复用它）；plugin_ch = 机器人发出去的（只能撤回，不能发送）
-        if (m.isSelf || !m.plugin_ch.isEmpty() || m.ch.isEmpty() || seen.contains(m.ch)) continue;
-        if (parseLogTimeString(m.timestamp) < cutoffSecs) continue;
-
-        seen.insert(m.ch);
-        out[conv].append(m.ch);
-        convCount[conv] = convCount.value(conv) + 1;
+        auto l = latest.find(e.conv);
+        if (l == latest.end()) latest.insert(e.conv, e.seq);
+        else if (e.seq > l.value()) l.value() = e.seq;
     }
 
-    // 2) 数据库：按会话（有索引）从新到旧扫；撞到比时间窗还早的记录就停（seq 递增 ≈ 时间递增）
-    QByteArray sql = "SELECT conv, blob FROM logs WHERE appid=?";
-    if (!onlyConv.isEmpty()) sql += " AND conv=?";
-    sql += " ORDER BY seq DESC LIMIT ?";
-
+    // 2) 数据库：GROUP BY conv 走 idx_logs_conv(appid, conv, seq) 覆盖索引 —— 只读索引、不读表
+    static const char *kSql = "SELECT conv, MAX(seq) FROM logs WHERE appid=? GROUP BY conv";
     sqlite3_stmt *st = nullptr;
-    if (sqlite3_prepare_v2(m_db, sql.constData(), -1, &st, nullptr) != SQLITE_OK) {
-        qWarning() << "LogDB: collectRecentMsgIds prepare 失败" << sqlite3_errmsg(m_db);
-        return;
-    }
-    const QByteArray a = appid.toUtf8();
-    sqlite3_bind_text(st, 1, a.constData(), a.size(), SQLITE_TRANSIENT);
-    int idx = 2;
-    QByteArray c;
-    if (!onlyConv.isEmpty()) {
-        c = onlyConv.toUtf8();
-        sqlite3_bind_text(st, idx++, c.constData(), c.size(), SQLITE_TRANSIENT);
-    }
-    sqlite3_bind_int(st, idx, scanLimit);
-
-    int scanned = 0;
-    while (sqlite3_step(st) == SQLITE_ROW && scanned < scanLimit) {
-        ++scanned;
-
-        const void *p = sqlite3_column_blob(st, 1);
-        const int len = sqlite3_column_bytes(st, 1);
-        if (!p || len <= 0) continue;
-        const QByteArray blob(static_cast<const char *>(p), len);
-
-        const qint64 ts = logBlobTimeSecs(blob);
-        if (ts > 0 && ts < cutoffSecs) break;    // 0=时间未知（旧格式）→ 不据此提前结束
-
-        const char *convText = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
-        const QString conv = QString::fromUtf8(convText);
-        if (convCount.value(conv) >= maxPerConv) continue;
-
-        Message m;
-        if (deserializeMessage(blob, m) && !m.isSelf && m.plugin_ch.isEmpty()
-            && !m.ch.isEmpty() && !seen.contains(m.ch)) {
-            seen.insert(m.ch);
-            out[conv].append(m.ch);
-            convCount[conv] = convCount.value(conv) + 1;
+    if (sqlite3_prepare_v2(m_db, kSql, -1, &st, nullptr) == SQLITE_OK) {
+        const QByteArray a = appid.toUtf8();
+        sqlite3_bind_text(st, 1, a.constData(), a.size(), SQLITE_TRANSIENT);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const char *c = reinterpret_cast<const char *>(sqlite3_column_text(st, 0));
+            if (!c) continue;
+            const QString conv = QString::fromUtf8(c);
+            const quint64 seq = static_cast<quint64>(sqlite3_column_int64(st, 1));
+            auto l = latest.find(conv);
+            if (l == latest.end()) latest.insert(conv, seq);
+            else if (seq > l.value()) l.value() = seq;
         }
+        sqlite3_finalize(st);
+    } else {
+        qWarning() << "LogDB: getLatestSeqPerConv prepare 失败" << sqlite3_errmsg(m_db);
     }
-    sqlite3_finalize(st);
+
+    out.reserve(latest.size());
+    for (auto it = latest.cbegin(); it != latest.cend(); ++it)
+        out.append(qMakePair(it.key(), it.value()));
+    return out;
+}
+
+QHash<quint64, Message> LogDB::getMessagesBySeqs(const QList<LogRef> &refs) const
+{
+    QHash<quint64, Message> out;
+    if (refs.isEmpty()) return out;
+
+    QMutexLocker locker(&m_mutex);
+    if (!m_db) return out;
+
+    QList<quint64> miss;
+    miss.reserve(refs.size());
+    for (const LogRef &r : refs) {
+        if (out.contains(r.seq)) continue;
+        // 未落盘的先在内存缓存里拿（key 就是 makeKey 拼出来的那串）
+        auto it = m_cache.constFind(makeKey(r.appid, r.conv, r.seq));
+        if (it != m_cache.constEnd()) {
+            out.insert(r.seq, it->msg);
+            continue;
+        }
+        miss.append(r.seq);
+    }
+    if (miss.isEmpty()) return out;
+
+    // IN 查询分批：SQLite 参数上限默认 999（3.32+ 是 32766），500 一批最稳
+    const int kBatch = 500;
+    for (int start = 0; start < miss.size(); start += kBatch) {
+        const int n = qMin(kBatch, miss.size() - start);
+        QByteArray sql("SELECT seq, blob FROM logs WHERE seq IN (");
+        for (int i = 0; i < n; ++i) sql += (i == 0 ? "?" : ",?");
+        sql += ')';
+
+        sqlite3_stmt *st = nullptr;
+        if (sqlite3_prepare_v2(m_db, sql.constData(), -1, &st, nullptr) != SQLITE_OK) {
+            qWarning() << "LogDB: getMessagesBySeqs prepare 失败" << sqlite3_errmsg(m_db);
+            continue;
+        }
+        for (int i = 0; i < n; ++i)
+            sqlite3_bind_int64(st, i + 1, static_cast<sqlite3_int64>(miss.at(start + i)));
+
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const quint64 seq = static_cast<quint64>(sqlite3_column_int64(st, 0));
+            const void *p = sqlite3_column_blob(st, 1);
+            const int len = sqlite3_column_bytes(st, 1);
+            if (!p || len <= 0) continue;
+            Message m;
+            if (deserializeMessage(QByteArray(static_cast<const char *>(p), len), m)) {
+                m.seq = static_cast<int>(seq);
+                out.insert(seq, m);
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    return out;
 }
 
 // ========== key 列表 ==========

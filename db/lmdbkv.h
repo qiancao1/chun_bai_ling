@@ -21,54 +21,23 @@
 #ifndef LMDBKV_H
 #define LMDBKV_H
 
-#include <QObject>
-#include <QString>
-#include <QByteArray>
-#include <QMutex>
-#include <lmdb.h>
+// ─────────────────────────────────────────────────────────────────────────────
+// 兼容头。LmdbKV 的实现已经在 2026-11-13 从 LMDB 换成 SQLite（见 db/kvdb.h）。
+//
+// 保留这个名字，是为了让下面这些地方一行都不用改：
+//   core/global.h（`extern LmdbKV *aidb / dsdb / accdb`）
+//   main.cpp、ai/ailog.h、ai/nickreviewwidget.cpp
+// 以及全部 `LmdbKV *p` / `new LmdbKV(path)` / `p->put/get/remove/close` 调用。
+//
+// ⚠ cache_db 已经不在这一族里了（2026-11-13）：上传缓存换成纯内存的 MemKV
+//   （db/memkv.h），类型是 `MemKV *`，不再走 KV 库。见 core/global.h 的声明处。
+//
+// 现在这个头**不再拉 lmdb.h** —— 用 LMDB 的只剩 db/botdb.*、db/vectormemory.h。
+// 如果哪天想彻底删掉 LMDB，把 db/kvdb.cpp 末尾那段「旧 data.mdb 迁移」一起删掉即可。
+// ─────────────────────────────────────────────────────────────────────────────
 
-class LmdbKV : public QObject
-{
-    Q_OBJECT
-public:
-    explicit LmdbKV(const QString &dbPath, QObject *parent = nullptr);
-    ~LmdbKV();
+#include "kvdb.h"
 
-    bool put(const QString &key, const QString &value);
-    bool put(const QByteArray &key, const QByteArray &value);
-
-    QString get(const QString &key) const;
-    QByteArray get(const QByteArray &key) const;
-
-    bool remove(const QString &key);
-    bool remove(const QByteArray &key);
-    QList<QByteArray> getAllKeysByteArray() const;
-    QStringList getAllKeys() const;
-    bool removeBatch(const QList<QByteArray>& keys);
-    // 扫描全库，删掉**值已过期**的条目（本库缓存统一是 "<过期秒>||||<内容>" 的前缀惯例，
-    // 兼容早期媒体缓存的 "[…,Time=<过期秒>]"）。认不出格式的值一律不动。
-    // 返回删除条数；-1 = 事务失败 / 库没打开。
-    int removeExpired(qint64 nowSec);
-    // 幂等关闭底层 env：关掉之后 get/put/remove 全部变成**安全空操作**（直接返回空/false）。
-    // 用途是「双库按日轮换」：Windows 下 env 还映射着 data.mdb 就删不掉目录，
-    // 所以必须先把库关掉才能删文件；而旧 LmdbKV 对象又**不能立刻 delete**
-    // （api.cpp 里有 std::thread 上传路径，可能还有线程攥着旧指针），
-    // 关掉后不用 delete 也不会崩 —— 残留调用只会落到空操作上。析构里重复调用无害。
-    void close();
-    size_t   m_currentMapSize;
-     bool increaseMapSize();
-
-private:
-    MDB_env *m_env;
-    MDB_dbi  m_dbi;
-    QString  m_dbPath;
-
-    mutable QMutex m_mutex;
-
-    bool putInternal(const QByteArray &key, const QByteArray &value);
-    QByteArray getInternal(const QByteArray &key) const;
-    bool removeInternal(const QByteArray &key);
-
-};
+using LmdbKV = KvDB;
 
 #endif // LMDBKV_H

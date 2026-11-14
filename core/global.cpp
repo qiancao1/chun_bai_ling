@@ -42,22 +42,10 @@ int miaomiao=0;
 QString wuqx= "机器人需要是管理员才能执行当前命令呢\n请将机器人添加到管理员列表后再试试\n如果已经是管理员 请艾特一次机器人后在试试\n**注意：得开启机器人接收全部信息,艾特机器人才有效果**\n\n---\n\n具体教程：1.点击机器人头像\n2.点击右上角设置\n3.机器人可获得群聊信息 改为 获取全部信息\n注意本操作只能群主设置 并且QQ版本不能过低";
 
 QString g_neiw;
-// 上传时算不算整文件 md5/sha1/md5_10m（upload_prepare 的可选参数）。默认关：这三个参数不传也能传。
-// 腾讯不采信我们传的 md5（它自己算），所以小视频快传的 part_finish md5 也一起省。
-// ⚠ 以后要恢复老行为只改这里。
 bool g_upload_calc_hash = true;
-// 商店货币名：默认「铃铛」。改这一处 = 整套商店的指令词与文案单位一起变。
 QString g_currency_name = QStringLiteral("铃铛");
-// 看一次广告给多少积分（商店定价基准：price 一般取它的整数倍）。广告系统接进来后读这个值。
 qint64 g_points_per_ad = 1000;
-// ── 发送耗时统计总开关（诊断用，默认关）──
-// 前缀统一在 addmsglog（core/api2.cpp）里拼，pname 传「插件名」就行：
-//     [插件名|处理耗时|图片上传耗时|发送耗时]内容
-//     如 [测试插件|0.12ms|0.00ms|400.35ms]测试文本
-//     处理 = 收消息 → 进发送函数（原 %1）；图片上传 = 图片下载/处理/上传；发送 = 调接口 → 响应回来
-//   老的 "[插件名|%1ms]" 传法照旧吃，%1 那段改成这里算出的处理耗时。
-// 关掉后：一个 steady_clock::now() 都不取，前缀就是干净的 [插件名]（老写法里的 "|%1ms" 一并去掉）。
-// ⚠ 改成 true 就是「默认就统计」，别处不用动。
+
 bool g_msg_time_stat = false;
 Global::Global() {}
 
@@ -288,23 +276,40 @@ int pluginTestInterceptedCount()
     return g_pluginTest.total;
 }
 
-// 被动回复（带 msgid）全局限速：所有调用线程共用一个「时间片队列」，
-// 所以 plts 的好友线程 + 群线程、schedule 的多账号任务加起来也是约 perSec 条/秒。
-// 锁只用来「预订一个发送时间片」，睡眠在锁外做，不会互相堵住。
-void paceMsgIdReply(int perSec)
+// 被动回复（带 msgid）限速：**按 bucket（= appid）分桶**，每桶一条独立的时间片队列。
+//   · 桶内串行、跨桶完全并行 —— 腾讯的额度是按机器人号算的，10 个号本该有 10 份 60 条/秒，
+//     合成一个全局队列等于把总量焊死在 60 条/秒（批量推送 1000 个群要 16 秒，怎么加线程都没用）。
+//   · 单桶仍按 perSec 串行：总量受限后，任何单个群也不可能超 100 条/秒（官方上限），不会撞频控。
+//   · 锁只用来「预订一个时间片」，睡眠在锁外做，不会互相堵住。
+//   · bucket 传空 = 兼容旧行为（所有调用共用 "" 这个桶）。
+void paceMsgIdReply(int perSec, const QString &bucket)
 {
     static QMutex paceMutex;
-    static qint64 paceNextMs = 0;      // 下一个可用时间片（毫秒时间戳）
+    static QHash<QString, qint64> paceNextMs;   // 桶 → 下一个可用时间片（毫秒时间戳）
+    static qint64 paceSweptAt = 0;              // 上次清理闲置桶的时间
 
     if (perSec <= 0) perSec = 60;
-    const qint64 stepMs = 1000 / perSec;
+    const qint64 stepMs = qMax<qint64>(1, 1000 / perSec);
 
     qint64 waitMs = 0;
     {
         QMutexLocker locker(&paceMutex);
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        const qint64 slotMs = qMax(nowMs, paceNextMs);
-        paceNextMs = slotMs + stepMs;
+
+        // 顺手清理长期不用的桶（换号/重连会带来新的 appid），避免 QHash 无界增长。
+        // 一分钟才扫一次，且只在锁内做一次线性遍历（桶数量 = 账号数，几十个，可忽略）。
+        if (nowMs - paceSweptAt > 60000) {
+            paceSweptAt = nowMs;
+            for (auto it = paceNextMs.begin(); it != paceNextMs.end(); ) {
+                // nextMs 是「未来时间」表示还有人在排队 → 负数差值，不会误删
+                if (nowMs - it.value() > 60000) it = paceNextMs.erase(it);
+                else ++it;
+            }
+        }
+
+        qint64 &nextMs = paceNextMs[bucket];    // 没有就是 0 → qMax 取 nowMs，立刻可发
+        const qint64 slotMs = qMax(nowMs, nextMs);
+        nextMs = slotMs + stepMs;
         waitMs = slotMs - nowMs;
     }
     if (waitMs > 0) QThread::msleep(static_cast<unsigned long>(waitMs));

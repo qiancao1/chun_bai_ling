@@ -59,20 +59,40 @@ public:
     // 获取指定 appid:groupId 最近 N 条（按序号从大到小，即最新在前）
     QList<Message> getRecentLogs(const QString &appid, const QString &groupId, int seq, int N,bool daoxu=false) const;
 
-    // ===== 被动回复用的 msgid（2026-10-11）=====
-    // 取指定会话「还能用来被动回复」的 msgid 列表（新 → 旧，最多 maxCount 个）
-    //   isGroup = true  → 群：只认最近 5 分钟内收到的消息
+    // ===== 被动回复用的 msgid（2026-11-13：改为纯内存）=====
+    // 收到消息时登记一条，批量/定时任务直接内存取 —— 不再反扫日志库（旧实现一次扫 2 万条
+    // 并逐条 deserializeMessage，几十毫秒且全程持 m_mutex）。
+    //   isGroup = true  → 群：只认最近 5 分钟内登记的
     //   isGroup = false → 好友/单聊：最近 1 小时
-    // ⚠ 只取「收到的消息」的 Message.ch（isSelf==false 且 plugin_ch 为空）——
-    //   ch 是用户发来的消息 id（被动回复用它，群 100 条/秒、好友 60 条/秒，无分钟限制）；
-    //   plugin_ch 是机器人自己发出去的，只能拿来撤回，绝不能用于发送。ch 可能为空，跳过。
-    //   拿不到就返回空表，调用方此时应传空 msgid 走主动发送（群 60 条/分钟、好友 30 条/分钟）。
+    // ⚠ 只登记「用户发来的消息 id」；机器人自己发出去的 id（plugin_ch）绝不能用于发送。
+    //   拿不到就返回空表，调用方传空 msgid 走主动发送（群 60 条/分钟、好友 30 条/分钟）。
     QStringList getRecentMsgIds(const QString &appid, const QString &groupId, bool isGroup,
                                 int maxCount = 5) const;
-    // 一次扫描拿到多个会话的 msgid（批量推送用：避免逐个 target 重扫全库）
-    //   返回 <会话id, msgid 列表>；isGroup 决定时间窗（群 5 分钟 / 好友 1 小时），每会话取最新一条即可
+    // 一次取该 appid 下所有会话的 msgid（批量推送用）
+    //   返回 <会话id, msgid 列表>；isGroup 决定时间窗（群 5 分钟 / 好友 1 小时）
     QHash<QString, QStringList> getRecentMsgIdMap(const QString &appid, bool isGroup,
                                                   int maxCountPerConv = 5) const;
+    // 登记一条可用于被动回复的 msgid（收消息时调，见 qqbotclient.cpp）
+    // ⚠ 只有「全量群」的群消息才需要登记：非全量群没有主动推送能力，也就用不上被动额度。
+    //   同一会话只保留最新一条（调用方只取 value(0)）→ 10 万群约占 10MB。
+    //   tsSecs <= 0 = 用当前时间。
+    void recordMsgId(const QString &appid, const QString &conv, const QString &msgId,
+                     qint64 tsSecs = 0);
+
+    // ===== 会话列表批量读（2026-11-13）=====
+    // 聊天页刷新列表原来是「每个会话一条 SQL」（1000 个会话 = 1000 次 prepare/step/finalize），
+    // 而且套在只读事务里 —— 事务开着期间 flushCacheToDBUnlocked 直接 return，日志停止落盘。
+    // 现在拆成两步：先取每会话最新 seq（只读索引），再一条 IN 查询把 blob 全取回来。
+    struct LogRef {
+        QString appid;
+        QString conv;
+        quint64 seq = 0;
+    };
+    // 某 appid 下每个会话的最新 seq（合并 m_cache 里未落盘的），走 idx_logs_conv 覆盖索引
+    QList<QPair<QString, quint64>> getLatestSeqPerConv(const QString &appid) const;
+    // 按 (appid, conv, seq) 批量取消息：先查 m_cache，miss 的合并成一条 IN 查询
+    //   返回 seq -> Message（库里没有的 seq 不出现）
+    QHash<quint64, Message> getMessagesBySeqs(const QList<LogRef> &refs) const;
 
     // 获取所有 key（格式 "appid:groupId:序号"）的列表
     QStringList getAllKeys() const;
@@ -287,11 +307,15 @@ private:
     void ensureRuntime();
     // 缓存积压兜底：超过上限就丢最旧的那批（调用方需已持 m_mutex）
     void trimCacheIfTooLarge();
-    // 反向扫描最近日志收集 <会话id, msgid 列表>（调用方需已持有 m_mutex；只读，可 const）
-    //   onlyConv 非空 = 只收这一个会话；cutoffSecs 之前的记录直接停（seq 递增≈时间递增）
-    void collectRecentMsgIds(const QString &appid, const QString &onlyConv, qint64 cutoffSecs,
-                             int maxPerConv, QHash<QString, QStringList> &out,
-                             int scanLimit = 20000) const;
+    // ---- 被动回复 msgid 内存表（2026-11-13）----
+    // 原来是反扫日志库 + 每行 deserializeMessage，现在改成收消息时直接登记。
+    //   appid -> conv -> {msgId, ts}；每会话只留最新一条（调用方只取 value(0)）
+    struct MsgIdEntry {
+        QString msgId;
+        qint64  ts = 0;      // 登记时间（Unix 秒）
+    };
+    mutable QHash<QString, QHash<QString, MsgIdEntry>> m_msgIds;
+    qint64 m_msgIdSweptAt = 0;   // 上次做过期清理的时间（避免每条消息都全表扫）
     // 禁用拷贝
     LogDB(const LogDB&) = delete;
     LogDB& operator=(const LogDB&) = delete;

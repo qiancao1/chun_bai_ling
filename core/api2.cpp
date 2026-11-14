@@ -883,7 +883,7 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
 
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-    QString url = get_url(type,openid, "messages");
+     QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);
@@ -1537,4 +1537,30 @@ void QQBotClient::mediaImageStepComplete(std::shared_ptr<MediaImageJob> job)
         }
         job->done(true, o, QString());
     });
+}
+
+
+
+QString QQBotClient::getAdData(const QString &startDate, const QString &endDate, Callback callbacks)
+{
+    auto isYmd = [](const QString &s) {
+        if (s.size() != 8) return false;
+        for (const QChar c : s) {
+            if (c < QLatin1Char('0') || c > QLatin1Char('9')) return false;
+        }
+        return true;
+    };
+    if (!isYmd(startDate) || !isYmd(endDate)) {
+        QJsonObject err;
+        err["code"]    = -1;
+        err["message"] = QStringLiteral("位数字日期（YYYYMMDD） 错误");
+        const QString body = QString::fromUtf8(QJsonDocument(err).toJson(QJsonDocument::Compact));
+        if (callbacks) {
+            callbacks(body, QNetworkReply::ProtocolInvalidOperationError);
+            return QString();
+        }
+        return body;
+    }
+    return "暂时无接口";
+
 }

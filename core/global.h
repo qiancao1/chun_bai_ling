@@ -55,6 +55,7 @@
 #include "qqbotclient.h"
 #include "botdb.h"
 #include "lmdbkv.h"
+#include "memkv.h"
 #include <QPointer>
 
 #include "set.h"
@@ -128,15 +129,9 @@ extern QStackedWidget *stackedWidget;
 extern ForbiddenWordPage *forbidden;
 extern int m_currentBotIndex;
 extern QString g_neiw;
-// 商店货币名（默认「铃铛」）。整套商店系统里**只有这里**写货币名：
-//   · 列表指令 = <货币名>商店（默认「铃铛商店」）
-//   · 回复文案里的单位 / 兑换记录都用它
-// ⚠ 预留的全局变量：以后接腾讯广告系统、或让用户自己改货币名，只动这一处（记得同步改默认值兜底）。
+
 extern QString g_currency_name;
-// 积分兑率：**看 1 次广告 = 多少积分**（默认 1000）。这是整套积分/商店的定价基准：
-//   插件在 get_plugin_info 的 "shop" 里写 price 时，先想「这商品值几次广告」，再乘这个数
-//   （所以 price 一般取它的整数倍）；商店列表会把它翻成「约 N 次广告」显示给用户。
-// ⚠ 广告回调（腾讯广告系统）那边发放积分时也用这个值，别在别处再写死 1000。
+
 extern qint64 g_points_per_ad;
 extern int g_EventLogs_index;
 extern int g_channelLogs_index_index;
@@ -149,7 +144,10 @@ extern int Color_1;//默认
 extern ScheduleConfigWidget *schedule;
 extern int miaomiao32;
 extern int miaomiao;
-extern LmdbKV *cache_db;
+// 上传缓存：纯内存（db/memkv.h）。原来挂的是缓存 KV 库（SQLite），
+// 命中一条也要拿全局 m_mutex + 过一遍 B-tree，实测 0.7ms → 多线程全卡在这把锁上。
+// 存的内容只有「上传后的 COS 链接 / file_info」，值里自带 1430 分钟过期，重启丢失只是重传一次。
+extern MemKV *cache_db;
 // 上传富媒体（语音 / 视频 / 文件）时，是否计算整文件 md5 / sha1 / md5_10m —— 即
 // upload_prepare 请求里的那三个参数。
 //   · false（默认）：**这三个参数不传也能正常上传**（平台只拿它们做秒传/去重提示），
@@ -227,10 +225,14 @@ QString normalizeNewlinesToCR(const QString &input);//处理换行符
 // （框架自带指令 + 插件注册的生效命令词，模糊匹配取前 kHintMaxCount = 9，见 global.cpp 的 hint* 那组函数）。
 // 用户输入直接从日志库按 msgid 里的 seq 读回（LogDB::readLog 先查内存缓存，等于零 I/O）。
 void botnomsg(int appid, int type, const QString &openid, const QString &msgid, int addint=0);
-// 被动回复（带 msgid 的发送）全局限速：跨线程共享，平均约 perSec 条/秒，会阻塞调用线程。
-// 主动推送有频率限制，被动回复基本没有（官方 100 条/秒）→ 保险起见默认按 60 条/秒发。
+// 被动回复（带 msgid 的发送）限速：**按 bucket 分桶**，每桶平均约 perSec 条/秒，会阻塞调用线程。
+// 主动推送有频率限制，被动回复基本没有（官方是**每个群** 100 条/秒）→ 保险起见每桶默认按 60 条/秒发。
+// bucket 传 appid：腾讯的额度是按机器人号算的，不同号之间不共享，
+//   所以「10 个号 × 60 条/秒 = 600 条/秒」是合法的；合成一个全局桶反而把总量焊死在 60。
+// bucket 传空 = 退回旧的「所有调用共用一个桶」行为（仅为兼容，别在新代码里用）。
+// ⚠ 同一个桶里仍然串行 —— 这是故意的：单桶总量受限后，任何单个群也不可能超 100 条/秒。
 // 只有「真的带上了 msgid」的发送才需要调它；msgid 为空（主动推送）不要调。
-void paceMsgIdReply(int perSec = 60);
+void paceMsgIdReply(int perSec = 60, const QString &bucket = QString());
 
 // ================== AI 插件工具调用：发送拦截 ==================
 // 背景：AI 把插件的某条指令当工具调时，Python（return 文本）/ 原生库（onMessagev3 返回值）
