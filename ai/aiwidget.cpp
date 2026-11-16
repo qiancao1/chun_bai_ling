@@ -282,6 +282,13 @@ void AiWidget::setupUi()
     hboxChecks2->addWidget(lblDelayReply, 4, 4);
     hboxChecks2->addWidget(editDelayReply, 4, 5, 1, 3);
 
+    // 8 列 = 4 组「标签 + 输入框」交替（偶数列标签、奇数列控件）。
+    // QGridLayout 默认把多余宽度平均分给所有列 → 标签列白占一半，输入框被挤得很窄。
+    // 这里让标签列只取内容宽度（stretch 0），控件列吃掉全部多余空间（stretch 1），
+    // 数字框 / 下拉框就都能拉长了。
+    for (int c = 0; c < 8; ++c)
+        hboxChecks2->setColumnStretch(c, (c % 2 == 1) ? 1 : 0);
+
     rightLayout->addLayout(hboxChecks2);
 
     QHBoxLayout *hboxSettings = new QHBoxLayout();

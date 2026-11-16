@@ -886,12 +886,10 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
         }
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-    QString url = get_url(type,openid, "messages");
+     QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
-        QString response = PostSync(url, json,QString(), 30000);
-        // 同步分支不在这里记日志（外层 send_messages 收尾统一 addmsglog，撤回也在那里登记）
-        return response;
+        return  PostSync(url, json,QString(), 30000);
     }
     QList<CosPutPoolEntry> cosPending = takeCosPutPending();   // 异步：pending 转交回调，HTTP 真正完成后才回池
     PostAsync(url, json, "", 30000,
@@ -1565,4 +1563,5 @@ QString QQBotClient::getAdData(const QString &startDate, const QString &endDate,
         return body;
     }
     return "暂时无接口";
+
 }

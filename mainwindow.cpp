@@ -80,6 +80,7 @@
 #include <QPushButton>
 #include <QTextBrowser>     // ⚠ 不能用 QTextEdit：本 TU 里被 #define 成 PlaceholderTextEdit
 #include <QScreen>
+#include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
 #define APP_VERSION_STR "v1.5.7.195"
@@ -394,6 +395,22 @@ QIcon navGlyphIcon(NavGlyph glyph, const QColor &normal,
 // 所以给 central 外面套一层透明根、内缩 kShadowMargin：这一圈既画柔和阴影，也正好拿来当热区。
 constexpr int kShadowMargin = 8;
 
+// 窗口主体的圆角半径：centralRoot 的 border-radius 与阴影层用同一个常量，
+// 改一处就够（两边对不上时，四角会漏出一小块阴影，看着像毛边）。
+constexpr int kFrameRadius = 6;
+
+// ── 窗口描边色：每次启动换一个 ──
+// 底色是米色 #FFF8EF，所以随机色不能直接摇 RGB（会摇出脏灰 / 荧光绿刺眼），
+// 只在 HSL 上摇色相、饱和与亮度钉在「浅而清」的区间里，随便怎么摇都是能压住米色的浅亮色。
+QString randomFrameBorderColor()
+{
+    QRandomGenerator *rng = QRandomGenerator::global();   // 全局实例是非 const，bounded() 也不是 const 成员
+    const int h = rng->bounded(360);       // 色相：全轮盘
+    const int s = 140 + rng->bounded(50);  // 饱和：55% ~ 74%
+    const int l = 160 + rng->bounded(30);  // 亮度：63% ~ 74%
+    return QColor::fromHsl(h, s, l).name();   // "#rrggbb"
+}
+
 class WindowShadowRoot : public QWidget
 {
 public:
@@ -430,7 +447,7 @@ protected:
         for (int i = m_margin; i >= 1; --i) {
             const qreal t = 1.0 - qreal(i - 1) / qreal(m_margin);      // 0（最外）→ 1（最内）
             p.setBrush(QColor(0, 0, 0, int(1 + 7 * t * t)));           // 平方衰减：外圈几乎透明
-            p.drawRoundedRect(inner.adjusted(-i, -i, i, i), 10 + i, 10 + i);
+            p.drawRoundedRect(inner.adjusted(-i, -i, i, i), kFrameRadius + i, kFrameRadius + i);
         }
     }
 
@@ -1122,12 +1139,15 @@ void MainWindow::setupUi()
     central->setObjectName("centralRoot");
     central->setLayout(totalLayout);
 
+    // 描边色每次启动随机一个（见 randomFrameBorderColor）；圆角与阴影层共用 kFrameRadius
     central->setStyleSheet(
-        "QWidget#centralRoot {"
-        "   background: #FFF8EF;"
-        "   border-radius: 10px;"
-        "   border: 1px solid #A176C2;"      // 您可以根据喜好调整
-        "}"
+        QStringLiteral(
+            "QWidget#centralRoot {"
+            "   background: #FFF8EF;"
+            "   border-radius: %1px;"
+            "   border: 1px solid %2;"
+            "}"
+            ).arg(kFrameRadius).arg(randomFrameBorderColor())
         );
 
     // 外面再套一层透明根：central 内缩 kShadowMargin，
@@ -1345,11 +1365,11 @@ void MainWindow::createTitleBar()
     connect(restartBtn, &QToolButton::clicked, this, [](){ restartFramework(); });
 
     // 图标全部自绘，风格统一（见文件上方 titleGlyphIcon）
-    const QColor glyphColor("#3D3D3D");
-    const QColor glyphHover("#E2681F");
+    const QColor glyphColor(0x3D3D3D);
+    const QColor glyphHover(0xE2681F);
     minBtn->setIcon(titleGlyphIcon(GlyphMinimize, glyphColor, glyphHover));
     maxBtn->setIcon(titleGlyphIcon(GlyphMaximize, glyphColor, glyphHover));
-    closeBtn->setIcon(titleGlyphIcon(GlyphClose, glyphColor, QColor("#D83B32")));
+    closeBtn->setIcon(titleGlyphIcon(GlyphClose, glyphColor, QColor(0xD83B32)));
     restartBtn->setIcon(titleGlyphIcon(GlyphRestart, glyphColor, glyphHover));
 
     const int iconSize = 16;
@@ -1672,8 +1692,8 @@ void MainWindow::changeEvent(QEvent *event)
         if (maxed) applyEdgeCursor(Qt::Edges());
 
         // 图标同样是自绘的（见 titleGlyphIcon），不用系统 standardIcon
-        const QColor glyphColor("#3D3D3D");
-        const QColor glyphHover("#E2681F");
+        const QColor glyphColor(0x3D3D3D);
+        const QColor glyphHover(0xE2681F);
         if (isMaximized()) {
             maxBtn->setIcon(titleGlyphIcon(GlyphRestore, glyphColor, glyphHover));
             maxBtn->setToolTip("还原");
@@ -2184,7 +2204,7 @@ void MainWindow::applyStyleSheet()
         }
         QWidget#centralRoot {
             background: #FFF8EF;
-            border-radius: 10px;
+            border-radius: 6px;
         }
         QWidget {
             color: #263241;

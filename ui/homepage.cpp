@@ -1412,7 +1412,7 @@ void HomePage::applyAdCardText()
     const QHash<QString, AdDayStat> bucket = adDays(ym);      // 卡片永远看「全部账号」
     QString money;
     if (m_adLoading.contains(ym)) {
-        money = QStringLiteral("¥…");                       // 正在取
+        money = QStringLiteral("¥0");                       // 正在取
     } else if (!bucket.isEmpty()) {
         // 有数据就显示数据（哪怕这轮后面某个账号被拒也无所谓，已拿到的照算）
         double sum = 0.0;
@@ -1420,11 +1420,11 @@ void HomePage::applyAdCardText()
             sum += it.value().income;
         money = adMoneyText(sum);
     } else if (m_adFailDate.isValid() && m_adFailDate == QDate::currentDate()) {
-        money = QStringLiteral("—");                        // 平台明确拒绝过，当天不再请求
+        money = QStringLiteral("¥0");                        // 平台明确拒绝过，当天不再请求
     } else if (m_adFailed.contains(ym)) {
-        money = QStringLiteral("—");                        // 整轮失败（多半没登录 / 没广告权限）
+        money = QStringLiteral("¥0");                        // 整轮失败（多半没登录 / 没广告权限）
     } else {
-        money = QStringLiteral("¥…");                       // 还没取过
+        money = QStringLiteral("¥0");                       // 还没取过
     }
 
     if (m_adValue) m_adValue->setText(QString("%1 / %2").arg(formatCount(m_adTotalCount), money));

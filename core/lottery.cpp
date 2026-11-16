@@ -638,7 +638,7 @@ int LotteryMgr::join(int appid, const QString &id, const QString &openid, const 
             if (errMsg) *errMsg = QStringLiteral("这个群不在本场抽奖的白名单里");
             return 7;
         }
-        for (const LotteryPlayer &p : rec.players) {
+        for (const LotteryPlayer &p : std::as_const(rec.players)) {
             if (p.openid == openid) {
                 if (errMsg) *errMsg = QStringLiteral("你已经参与过了，当前 %1 人参与").arg(rec.players.size());
                 return 4;
@@ -884,7 +884,7 @@ QString LotteryMgr::myWinnersText(int appid, const QString &openid)
 
     QStringList lines;
     int n = 0;
-    for (const LotteryRecord &rec : all) {
+    for (const LotteryRecord &rec : std::as_const(all)) {
         for (const LotteryWinner &w : rec.winners) {
             if (w.openid != openid) continue;
             ++n;
