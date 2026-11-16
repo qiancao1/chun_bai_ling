@@ -851,39 +851,42 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
     json["msg_type"] = 2;
     json["markdown"] = QJsonObject{{"content", markdown}};
     json["noref"] = noref;
-    if (keyboard.isArray()) {
-        QJsonArray arr = keyboard.toArray();
-        if(arr.size()!=0){
-            json["keyboard"] = QJsonObject{
-                {"content", QJsonObject{{"rows", arr}}}
+    bool reward = (is_wakeup.size()==32);
+    if(!reward){
+        if (keyboard.isArray()) {
+            QJsonArray arr = keyboard.toArray();
+            if(arr.size()!=0){
+                json["keyboard"] = QJsonObject{
+                    {"content", QJsonObject{{"rows", arr}}}
 
-            };
+                };
 
-        }
-    }
-
-    else if (keyboard.isObject()) {
-        QJsonObject obj = keyboard.toObject();
-        if (obj.contains("keyboard")) {
-            json["keyboard"] = obj["keyboard"];
-        } else if (obj.contains("content")) {
-            json["keyboard"] = obj;
-        } else if (obj.contains("rows")) {
-            json["keyboard"] = QJsonObject{{"content", obj}};
-        } else if (obj.contains("buttons")) {
-
-
-            json["keyboard"] = QJsonObject{
-                {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
-            };
-        } else {
-
-            json["keyboard"] = obj;
+            }
         }
 
+        else if (keyboard.isObject()) {
+            QJsonObject obj = keyboard.toObject();
+            if (obj.contains("keyboard")) {
+                json["keyboard"] = obj["keyboard"];
+            } else if (obj.contains("content")) {
+                json["keyboard"] = obj;
+            } else if (obj.contains("rows")) {
+                json["keyboard"] = QJsonObject{{"content", obj}};
+            } else if (obj.contains("buttons")) {
+
+
+                json["keyboard"] = QJsonObject{
+                    {"content", QJsonObject{{"rows", QJsonArray() << obj}}}
+                };
+            } else {
+
+                json["keyboard"] = obj;
+            }
+
+        }
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-     QString url = get_url(type,openid, "messages");
+    QString url = get_url(type,openid, "messages");
 
     if(ctx.openid.isEmpty()) {
         QString response = PostSync(url, json,QString(), 30000);
@@ -1562,5 +1565,4 @@ QString QQBotClient::getAdData(const QString &startDate, const QString &endDate,
         return body;
     }
     return "暂时无接口";
-
 }

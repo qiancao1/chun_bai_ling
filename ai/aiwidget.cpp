@@ -217,6 +217,14 @@ void AiWidget::setupUi()
     lblContext = new QLabel("上下文：", tab1);
     editContext = new QLineEdit(tab1);
     combo_xiangliang = new QComboBox(tab1);
+    // 群决策单独用的模型：第一项「（同主模型）」= 不单独指定（老行为）。
+    // 它自己带接口列表，所以决策请求会走这个模型的接口；接口是 chat 还是 systemone
+    // 由第一次决策时探测、并永久记进 data/model_config.json。
+    comboJueceModel = new QComboBox(tab1);
+    comboJueceModel->setToolTip("群决策用哪个模型判断「要不要接话」。\n"
+                                "（同主模型）= 跟上面的模型一致。\n"
+                                "接口格式（chat/completions 还是 /systemone）在第一次发决策时自动探测，\n"
+                                "探测结果永久保存在 data/model_config.json，下次直接用记下的格式。");
     //========================
     lblModel = new QLabel("模型：", tab1);
     comboModel = new QComboBox(tab1);
@@ -233,12 +241,14 @@ void AiWidget::setupUi()
     lblDelayReply = new QLabel("延迟回复(秒)", tab1);
     editDelayReply = new QLineEdit(tab1);
 
+    // 加了「决策模型」这一组之后表格变成 8 列：其它行只排到第 6 列，
+    // 所以把它们的最后一个控件跨到第 8 列，右边界才能和上面两行对齐（否则右侧空出一截）
     hboxChecks2->addWidget(lblRobotName, 0, 0);
     hboxChecks2->addWidget(editRobotName, 0, 1);
     hboxChecks2->addWidget(lblContext, 0, 2);
     hboxChecks2->addWidget(editContext, 0, 3);
     hboxChecks2->addWidget(new QLabel("向量模型", tab1), 0, 4);
-    hboxChecks2->addWidget(combo_xiangliang, 0, 5);
+    hboxChecks2->addWidget(combo_xiangliang, 0, 5, 1, 3);
 
 
     hboxChecks2->addWidget(lblModel, 1, 0);
@@ -247,27 +257,30 @@ void AiWidget::setupUi()
     hboxChecks2->addWidget(comboSetting, 1, 3);
     hboxChecks2->addWidget(lblPplx, 1, 4);
     hboxChecks2->addWidget(comboPplx, 1, 5);
+    // 决策模型挤在「匹配类型」右边：这一行本来就只有三组，标签都短，加一组不会把行撑高
+    hboxChecks2->addWidget(new QLabel("决策模型", tab1), 1, 6);
+    hboxChecks2->addWidget(comboJueceModel, 1, 7);
 
     hboxChecks2->addWidget(feibaimd,2,0);
     hboxChecks2->addWidget(set_qy,2,1);
     hboxChecks2->addWidget(new QLabel("设置白名单", tab1),2,2);
     hboxChecks2->addWidget(set_zl,2,3);
     hboxChecks2->addWidget(new QLabel("删除白名单", tab1),2,4);
-    hboxChecks2->addWidget(set_sc,2,5);
+    hboxChecks2->addWidget(set_sc,2,5,1,3);
 
     hboxChecks2->addWidget(new QLabel("随机回复", tab1),3,0);
     hboxChecks2->addWidget(set_sjhf,3,1);
     hboxChecks2->addWidget(new QLabel("递增概率", tab1),3,2);
     hboxChecks2->addWidget(set_递增概率,3,3);
     hboxChecks2->addWidget(new QLabel("固定条数", tab1),3,4);
-    hboxChecks2->addWidget(set_固定条数,3,5);
+    hboxChecks2->addWidget(set_固定条数,3,5,1,3);
 
     hboxChecks2->addWidget(lblNoReplySeconds, 4, 0);
     hboxChecks2->addWidget(editNoReplySeconds, 4, 1);
     hboxChecks2->addWidget(lblNoReplyMinutes,4, 2);
     hboxChecks2->addWidget(editNoReplyMinutes, 4, 3);
     hboxChecks2->addWidget(lblDelayReply, 4, 4);
-    hboxChecks2->addWidget(editDelayReply, 4, 5);
+    hboxChecks2->addWidget(editDelayReply, 4, 5, 1, 3);
 
     rightLayout->addLayout(hboxChecks2);
 
@@ -747,6 +760,22 @@ void AiWidget::addtoui(const std::shared_ptr<AccountInfo> acc)
         combo_xiangliang->setCurrentIndex(-1);
     else
         combo_xiangliang->setCurrentText(acc->Embed_model);
+    // 决策模型：第 0 项 data 是空串 = 用主模型（老配置没有这个字段时就落到这一项）
+    {
+        // 下拉是「模型配置」页被改过才会填 —— 首次进界面时自己补一遍，
+        // 否则 findData 找不到会把用户存好的决策模型静默清掉
+        if (comboJueceModel->count() == 0) {
+            comboJueceModel->addItem("（同主模型）", QString());
+            for (const auto &m : std::as_const(modelList))
+                comboJueceModel->addItem(m.name, m.name);
+        }
+        int jm = comboJueceModel->findData(acc->juece_model);
+        if (jm < 0 && !acc->juece_model.isEmpty()) {      // 配了但列表里没有：照样显示出来，别丢
+            comboJueceModel->addItem(acc->juece_model, acc->juece_model);
+            jm = comboJueceModel->count() - 1;
+        }
+        comboJueceModel->setCurrentIndex(jm >= 0 ? jm : 0);
+    }
     comboPplx->setCurrentIndex(acc->pplx);
 
     int idx = comboSetting->findText(acc->setting);
@@ -780,13 +809,18 @@ void AiWidget::刷新模型()
     emit modelListUpdated(); // 发出通知！告诉所有新开窗口刷新
 
     QString currentText = comboModel->currentText();  // 假设 comboModel 是 QComboBox*
+    const QString currentJuece = comboJueceModel->currentData().toString();
     comboModel->clear();
     combo_xiangliang->clear();
+    // 决策模型：第 0 项固定是「（同主模型）」，data 为空串 —— 保存时就是 acc->juece_model 空
+    comboJueceModel->clear();
+    comboJueceModel->addItem("（同主模型）", QString());
     m_nickReviewWidget->m_aimode->clear();
     for (const auto &m : std::as_const(modelList))
     {
         combo_xiangliang->addItem(m.name);
         comboModel->addItem(m.name);
+        comboJueceModel->addItem(m.name, m.name);
         m_nickReviewWidget->m_aimode->addItem(m.name);
     }
     int index = comboModel->findText(currentText);
@@ -796,6 +830,9 @@ void AiWidget::刷新模型()
     index = combo_xiangliang->findText(currentText);
     if (index != -1)
         combo_xiangliang->setCurrentIndex(index);
+
+    index = comboJueceModel->findData(currentJuece);
+    comboJueceModel->setCurrentIndex(index >= 0 ? index : 0);
 
 }
 
@@ -869,6 +906,7 @@ void AiWidget::on_btnSaveRobot_clicked()
         if(acc->appid_int != g_appid) continue;
         acc->Ai_nickname = editRobotName->text().trimmed();
         acc->model = comboModel->currentText();
+        acc->juece_model = comboJueceModel->currentData().toString();
         acc->Embed_model = combo_xiangliang->currentText();
         acc->pplx = comboPplx->currentIndex();
         acc->setting = comboSetting->currentText();
@@ -1899,6 +1937,9 @@ void AiWidget::saveToFile2() {
 
         ifaceObj["remark"] = iface.remark;
         ifaceObj["url"] = iface.url;
+        // 决策时探测出来的调用格式（0 未探测 / 1 chat / 2 systemone）—— 探测一次就永久记住
+        if (iface.apiKind != 0)
+            ifaceObj["apiKind"] = iface.apiKind;
 
         QJsonArray keysArray;
         for (const KeyData &key : iface.keys) {
@@ -1959,6 +2000,7 @@ void AiWidget::loadFromFile3() {
         InterfaceData iface;
         iface.remark = ifaceObj["remark"].toString();
         iface.url = ifaceObj["url"].toString();
+        iface.apiKind = ifaceObj["apiKind"].toInt();   // 老配置没这个键 → 0（未探测）
         const QJsonArray keysArray = ifaceObj["keys"].toArray();
         for (const QJsonValue &keyVal : keysArray) {
             QJsonObject keyObj = keyVal.toObject();

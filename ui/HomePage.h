@@ -117,7 +117,9 @@ private:
     QFrame *m_adCard = nullptr;                             // 装了事件过滤器的卡片本体
     qint64 m_adTotalCount = 0;                              // 累计观看次数（所有账号求和）
     qint64 m_adTodayCount = 0;                              // 今日观看次数（右上角副值）
-    QHash<QString, QHash<QString, AdDayStat>> m_adDaily;    // yyyyMM →（yyyyMMdd → 明细），多账号求和
+    // 广告数据按「账号」分开存：appid → yyyyMM →（yyyyMMdd → 明细）
+    // 卡片显示的是各账号之和，明细窗可以选「全部」或某一只机器人
+    QHash<int, QHash<QString, QHash<QString, AdDayStat>>> m_adDaily;
     QHash<QString, QDateTime> m_adFetchedAt;                // yyyyMM → 上次取数成功时间（节流用）
     QSet<QString> m_adFailed;                               // 整轮全失败的月份（1 分钟后就重试，别等 10 分钟）
     bool m_adFetchOk = true;                                // 这一轮里有没有账号真正回了数据
@@ -131,11 +133,14 @@ private:
     QPointer<QDialog> m_adDialog;                           // 明细窗（关掉即销毁）
     QVBoxLayout *m_adDialogLayout = nullptr;                // 明细窗根布局（整块重建）
     QString m_adDialogMonth;                                // 明细窗当前月份 yyyyMM
+    int m_adDialogAppid = 0;                                // 明细窗选中的机器人 appid；0 = 全部合并
 
+    // 某个月、某个账号的每日明细；appid <= 0 = 所有账号按天求和
+    QHash<QString, AdDayStat> adDays(const QString &ym, int appid = 0) const;
     void applyAdCardText();                                 // 卡片文案（次数 / 本月金额）
     void fetchAdMonth(const QString &ym, bool force = false); // 按月份取数（节流 + 单轮在途）
     void adFetchNext();                                     // 串行问下一个账号
-    void mergeAdRows(const QHash<QString, AdDayStat> &days, bool ok, const QString &hardMsg); // 合并一个账号的返回 + 继续下一个
+    void mergeAdRows(int appid, const QHash<QString, AdDayStat> &days, bool ok, const QString &hardMsg);
     void finishAdFetch();                                   // 一轮结束：落缓存、刷 UI
     void showAdDetail();                                    // 弹明细窗（本月 / 上月）
     void rebuildAdDialog();                                 // 重画明细窗内容

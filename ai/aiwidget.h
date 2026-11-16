@@ -42,6 +42,12 @@ struct InterfaceData {
     int key_index=0;
     QString remark;
     QString url;
+    // 这个接口认哪种调用格式。第一次用它发决策时探测一次，结果永久写进 data/model_config.json，
+    // 下次直接按记下来的格式走，不再试探（省一次请求、也避免每次都白等超时）。
+    //   0 = 还没探测过（先试 systemone，失败自动退回 chat 并记成 1）
+    //   1 = OpenAI 兼容 /chat/completions
+    //   2 = 咸鱼 AI 结构化决策 /systemone（见 https://allgpt.apifox.cn/528549547e0）
+    int apiKind = 0;
     QList<KeyData> keys;
 };
 
@@ -57,6 +63,14 @@ struct FunctionData {
 struct PendingMessage {
     QString text;
     QStringList imagePaths; // 本地缓存图片路径（绝对路径）
+};
+
+// 群决策：一次 systemone 结构化决策的结果（文档 https://allgpt.apifox.cn/528549547e0）
+struct JueceSystemoneResult {
+    bool ok = false;           // 拿到了结构化 answers
+    bool shouldReply = false;  // ok 时有效：choice == reply（该接话）
+    bool unsupported = false;  // 接口明确不认 systemone（调用方应把它永久记成 chat 格式）
+    QString desc;              // 给日志看的一句话
 };
 struct Ai_Fun {
 
@@ -252,7 +266,7 @@ private:
     QLabel *lblNoReplySeconds, *lblNoReplyMinutes, *lblDelayReply,*lblPplx;
     PlaceholderLineEdit *editRobotName, *editContext, *editNoReplySeconds, *editNoReplyMinutes, *editDelayReply;
     PlaceholderLineEdit *set_zl, *set_sc,*set_qy,*set_sjhf,*set_递增概率,*set_固定条数;
-    QComboBox *comboModel, *comboSetting,*comboPplx,*combo_xiangliang;
+    QComboBox *comboModel, *comboSetting,*comboPplx,*combo_xiangliang,*comboJueceModel;
 
     QListWidget *settingListWidget;    // 全局设定列表
     QTextEdit *settingTextEdit;
@@ -394,6 +408,15 @@ private:
                                   QJsonObject baseContext,
                                   bool juecejg, const QString &fh,
                                   const QList<PendingMessage> &pendings, const MessageEvent &ev);
+
+    // ===== 群决策：可选的独立决策模型 + 接口格式探测 =====
+    // 用咸鱼 AI 的 /v1/systemone 结构化决策接口问一次「这段对话要不要接话」。
+    // 异步（回调在线程池线程），cb 一定被调用一次
+    void jueceSystemoneAsync(int modelIndex, const QJsonObject &context,
+                             std::function<void(const JueceSystemoneResult &)> cb);
+    // 把接口格式标记（InterfaceData::apiKind）永久写回 data/model_config.json。
+    // 决策跑在线程池线程，这里投回 GUI 线程改数据 + 落盘，避免两边同时动 modelList/globalInterfaces。
+    void markInterfaceApiKind(int ifaceIndex, int kind);
 
     // 一次 AI 响应的解析结果
     //  Ok            → obj 可用，继续判断 choices / 工具调用

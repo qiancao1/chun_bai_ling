@@ -11,6 +11,8 @@
 #include <memory>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QUrl>
+#include <QDebug>
 
 extern bqbgl *ai_bqbgl;
 
@@ -631,7 +633,7 @@ static void fixImgPath(QString &text, const QString &appid)
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
         const QString p = m.captured(1).trimmed();
-        out += text.mid(last, m.capturedStart() - last);
+        out += text.midRef(last, m.capturedStart() - last);
         const bool hasDir = p.contains(QLatin1Char('/')) || p.contains(QLatin1Char('\\'));
         out += QStringLiteral("![img](")
                + (hasDir ? p : QStringLiteral("image/") + appid + QLatin1Char('/') + p)
@@ -1137,6 +1139,311 @@ void AiWidget::Ai_postsAsyncCore(const MessageEvent &ev, int model_index,
 
     step->fn(step, 0, 0);
 }
+// ================= 群决策：可选的独立决策模型 + 接口格式探测 =================
+// 咸鱼 AI 的结构化决策接口（文档 https://allgpt.apifox.cn/528549547e0）：
+//   POST <base>/v1/systemone
+//   { "model": "...", "state": "当前情况文本",
+//     "questions": { "reply": { "type":"choice", "instructions":"...",
+//                               "criteria": { "reply":"...", "skip":"..." } } } }
+//   → { "answers": { "reply": { "type":"choice", "choice":"reply|skip",
+//                               "confidence":0.82, ... } } }
+//
+// 同一个接口可能只支持 OpenAI 兼容的 chat/completions，也可能支持这个 systemone。
+// 所以在接口配置里存一个 apiKind（0 未探测 / 1 只会 chat / 2 认 systemone）：
+// 第一次拿这个接口发决策时探一次，结果写进 data/model_config.json，之后直接按记下的格式走。
+
+// 接口地址本身就是 .../systemone → 这条接口是「决策专用」的，chat/completions
+// 根本走不了它（发过去只会被回一句 "does not accept the request field messages"）。
+// 判断「能不能走 chat」和「要不要发 systemone」都得先看这个，别只看 apiKind ——
+// apiKind 是历史探测留下的标记，接口地址一改它就过期了。
+static bool isSystemoneUrl(const QString &url)
+{
+    const QUrl u(url.trimmed());
+    if (!u.isValid() || u.host().isEmpty())
+        return false;
+    static const QRegularExpression sysTail(QStringLiteral("(?:^|/)systemone/?$"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    return sysTail.match(u.path()).hasMatch();
+}
+
+// 决策地址就取「模型绑定的那个接口」的地址，不另外指定、也不自己猜：
+//   · 已经是 .../systemone 的 → 原样用（接口里绑的就是决策链接）
+//   · 是 .../chat/completions 的 → 同层换成 .../systemone（老配置自动适配）
+//   · 其它形状 → 也原样发，不拼 /v1、不生成第二候选
+//     （以前会补一个 /v1/systemone 再试一发，等于替用户瞎改地址，
+//       试错了还可能把好接口记成「只认 chat」）
+static QString systemoneUrlFor(const QString &ifaceUrl)
+{
+    const QUrl u(ifaceUrl.trimmed());
+    if (!u.isValid() || u.host().isEmpty())
+        return QString();
+
+    const QString path = u.path();
+
+    static const QRegularExpression sysTail(QStringLiteral("(?:^|/)systemone/?$"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    if (sysTail.match(path).hasMatch())
+        return u.toString();                    // 就是决策链接，一个字都不动
+
+    static const QRegularExpression chatTail(QStringLiteral("(?:^|/)chat/completions?/?$"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    if (!chatTail.match(path).hasMatch())
+        return u.toString();                    // 不是标准 chat 地址，同样原样发
+
+    QString base = path;
+    base.remove(chatTail);
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+
+    QUrl m(u);
+    m.setPath(base + QStringLiteral("/systemone"));
+    m.setQuery(QString());
+    m.setFragment(QString());
+    return m.toString();
+}
+
+// state 留多少字。注意这里不是「请求体 1MiB」的限制（1MiB ≈ 30 万汉字，永远撞不到），
+// 真正卡人的是上游「决策小模型」（文档示例 NeoHorse-Jev-4B）的上下文窗口：
+// 20000 字中文 ≈ 一两万 token，小模型直接吃不下 → 站点只回一句
+// {"detail":"Task request failed"}（看着像"任务失败"，其实上游模型已经挂了）。
+// 判断「有没有人叫我」只要最近几百字，留 4000 已经很宽裕。
+static const int kJueceStateMaxLen = 4000;
+
+// 决策提示词末尾「下面是用户给你的角色设定：」这个分隔标记，两处共用：
+// 拼提示词的地方（flushPendingMessages）和摊平 state 的地方（jueceStateText）必须一致，
+// 否则 systemone 那边摘不出设定、会当成纯提示词整条丢掉。
+static const QString kJueceSettingMark = QStringLiteral("下面是用户给你的角色设定：");
+
+// 把上下文摊平成 systemone 的 state 文本（它只吃一段纯文本，没有 messages 数组）
+static QString jueceStateText(const QJsonObject &context, int maxLen)
+{
+    QStringList lines;
+    QString settingLine;      // 角色设定单独存：它不能跟着 maxLen 一起被「留最近的」裁掉
+    const QJsonArray msgs = context.value(QStringLiteral("messages")).toArray();
+    for (const QJsonValue &v : msgs) {
+        const QJsonObject m = v.toObject();
+        const QString role = m.value(QStringLiteral("role")).toString();
+        QString text;
+        const QJsonValue c = m.value(QStringLiteral("content"));
+        if (c.isString()) {
+            text = c.toString();
+        } else if (c.isArray()) {
+            for (const QJsonValue &pv : c.toArray()) {
+                const QJsonObject po = pv.toObject();
+                if (po.value(QStringLiteral("type")).toString() == QLatin1String("image_url"))
+                    text += QStringLiteral("[图片]");
+                else
+                    text += po.value(QStringLiteral("text")).toString();
+            }
+        }
+        if (role == QLatin1String("system")) {
+            // 「你是群聊对话中决策AI…回复【提到】」那整段提示词对 systemone 没用：
+            // 要不要接话的判断标准已经写在 questions.reply.criteria 里了，模型只需要看对话。
+            // 只把提示词末尾附的「角色设定」摘出来（criteria 里有「和我的设定相关」这条，
+            // 设定丢了就没法判断），而且设定本身也只要前 800 字。
+            const int at = text.indexOf(kJueceSettingMark);
+            if (at < 0) continue;                       // 纯提示词，整条丢掉
+            const QString setting = text.mid(at + kJueceSettingMark.size()).trimmed();
+            if (setting.isEmpty()) continue;
+            settingLine = QStringLiteral("角色设定: ") + setting.left(800);
+            continue;
+        }
+        lines << role + QStringLiteral(": ") + text;
+    }
+
+    QString s = lines.join(QLatin1Char('\n'));
+    if (maxLen > 0 && s.size() > maxLen)
+        s = s.right(maxLen);                // 超长留最近的
+    if (!settingLine.isEmpty())
+        s = settingLine + QLatin1Char('\n') + s;
+    return s;
+}
+
+// 接口报错里出现这些词 → 说明它根本不认 systemone（而不是限流/网络抖）
+static bool systemoneLooksUnsupported(const QString &errMsg)
+{
+    const QString m = errMsg.toLower();
+    static const char *kWords[] = { "not found", "404", "does not exist", "unsupported",
+                                    "unknown", "no route", "method not allowed", "405",
+                                    "invalid", "无效", "不支持", "没有" };
+    for (const char *w : kWords) {
+        if (m.contains(QString::fromUtf8(w)))
+            return true;
+    }
+    return false;
+}
+
+// 解析一次 systemone 响应：有 answers.reply → ok；合法 JSON 但没有 answers → 接口不认；
+// 空 / 非 JSON（网络失败、超时）→ 临时失败，别动接口的格式标记。
+static JueceSystemoneResult parseSystemoneResponse(const QByteArray &resp)
+{
+    JueceSystemoneResult r;
+    if (resp.isEmpty()) {
+        r.desc = QStringLiteral("决策接口没返回内容");
+        return r;
+    }
+
+    QJsonParseError pe{};
+    const QJsonDocument doc = QJsonDocument::fromJson(resp, &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+        r.desc = QStringLiteral("决策接口返回的不是 JSON：") + QString::fromUtf8(resp.left(160));
+        return r;
+    }
+
+    const QJsonObject obj = doc.object();
+    const QJsonObject ans = obj.value(QStringLiteral("answers")).toObject();
+    if (!ans.isEmpty()) {
+        const QJsonObject a = ans.value(QStringLiteral("reply")).toObject();
+        const QString choice = a.value(QStringLiteral("choice")).toString();
+        const double conf = a.value(QStringLiteral("confidence")).toDouble();
+        r.ok = true;
+        r.shouldReply = (choice == QLatin1String("reply"));
+        r.desc = QStringLiteral("systemone %1（置信 %2）")
+                     .arg(r.shouldReply ? QStringLiteral("接话") : QStringLiteral("不接"))
+                     .arg(conf, 0, 'f', 2);
+        return r;
+    }
+
+    // 没有 answers：把接口自己的报错原样带出来
+    QString em;
+    const QJsonValue ev = obj.value(QStringLiteral("error"));
+    if (ev.isString())              em = ev.toString();
+    else if (ev.isObject())         em = ev.toObject().value(QStringLiteral("message")).toString();
+    // FastAPI 风格：{"detail": "..."}，参数校验失败时是 [{"msg": "..."}]
+    const QJsonValue dv = obj.value(QStringLiteral("detail"));
+    if (em.isEmpty()) {
+        if (dv.isString()) {
+            em = dv.toString();
+        } else if (dv.isArray() && !dv.toArray().isEmpty()) {
+            const QJsonValue d0 = dv.toArray().at(0);
+            em = d0.isString() ? d0.toString()
+                               : d0.toObject().value(QStringLiteral("msg")).toString();
+        }
+    }
+    if (em.isEmpty())               em = obj.value(QStringLiteral("message")).toString();
+
+    // 返回的是 chat/completions 的形状 → 这站只认 chat
+    const bool looksChat = obj.value(QStringLiteral("choices")).isArray();
+    if (em.isEmpty())               em = QString::fromUtf8(resp.left(200));
+
+    r.desc = QStringLiteral("决策接口不可用：") + em;
+    if (em.contains(QStringLiteral("task request failed"), Qt::CaseInsensitive)) {
+        // 站点把上游的错全糊成这一句，按经验只有两个来源，直接把方向写进日志
+        r.desc += QStringLiteral("（站点没给出原因，多为：model 名不是它支持决策的模型，"
+                                 "或 state 超出了决策模型的上下文）");
+    }
+    r.unsupported = looksChat || systemoneLooksUnsupported(em);
+    return r;
+}
+
+void AiWidget::markInterfaceApiKind(int ifaceIndex, int kind)
+{
+    if (ifaceIndex < 0) return;
+    // 决策链跑在线程池线程，改数据和落盘都投回 GUI 线程做
+    QMetaObject::invokeMethod(this, [this, ifaceIndex, kind]() {
+        if (m_shuttingDown) return;
+        if (ifaceIndex < 0 || ifaceIndex >= globalInterfaces.size()) return;
+        if (globalInterfaces[ifaceIndex].apiKind == kind) return;
+        globalInterfaces[ifaceIndex].apiKind = kind;
+        saveToFile2();          // 探测一次 = 永久记住（data/model_config.json）
+    }, Qt::AutoConnection);
+}
+
+void AiWidget::jueceSystemoneAsync(int modelIndex, const QJsonObject &context,
+                                   std::function<void(const JueceSystemoneResult &)> cb)
+{
+    auto done = [cb](const JueceSystemoneResult &r) { if (cb) cb(r); };
+
+    JueceSystemoneResult bad;
+    if (modelIndex < 0 || modelIndex >= modelList.size()) {
+        bad.desc = QStringLiteral("决策模型不存在");
+        done(bad);
+        return;
+    }
+
+    // 接口就是「模型自己绑定的那个」：按绑定的先后顺序，取第一个有 key 的。
+    // 只跳过已经被探测成「只认 chat」的（apiKind==1，再发也是白发），
+    // 不再按 apiKind 重排优先级 —— 那样等于替用户挑接口。
+    // ⚠ 地址本身就是 /systemone 的接口不算「只认 chat」：apiKind 可能是以前探错的，
+    //   地址才是事实（这种接口 chat 根本发不了，只能走 systemone）。
+    int ifaceIndex = -1;
+    for (int i : modelList.at(modelIndex).enabledInterfaceIndices) {
+        if (i < 0 || i >= globalInterfaces.size()) continue;
+        if (globalInterfaces.at(i).keys.isEmpty()) continue;
+        if (globalInterfaces.at(i).apiKind == 1 && !isSystemoneUrl(globalInterfaces.at(i).url))
+            continue;
+        ifaceIndex = i;
+        break;
+    }
+    if (ifaceIndex < 0) {
+        bad.desc = QStringLiteral("模型没有可试 systemone 的接口");
+        done(bad);
+        return;
+    }
+
+    InterfaceData &iface = globalInterfaces[ifaceIndex];
+    // 决策地址已经是 /systemone 的，格式必然是 2（别让 finish 又把它标成 1）
+    const int kindBefore = isSystemoneUrl(iface.url) ? 2 : iface.apiKind;
+    const QString key = iface.keys.at((iface.key_index++) % iface.keys.size()).key;
+    // 用接口里配的地址本身，不再推导/拼候选
+    const QString url = systemoneUrlFor(iface.url);
+    if (url.isEmpty()) {
+        bad.desc = QStringLiteral("决策接口地址不合法：") + iface.url;
+        done(bad);
+        return;
+    }
+
+    // 结果过一道手：探测出来的格式当场永久记下（成功 = 这接口认 systemone，
+    // 明确不支持 = 只认 chat；网络抖动这种临时失败不动标记，下次还有机会）
+    auto finish = [this, ifaceIndex, kindBefore, done](const JueceSystemoneResult &r) {
+        if (r.ok) {
+            if (kindBefore != 2) markInterfaceApiKind(ifaceIndex, 2);
+        } else if (r.unsupported && kindBefore == 0) {
+            markInterfaceApiKind(ifaceIndex, 1);
+        }
+        done(r);
+    };
+
+    QJsonObject replyQ;
+    replyQ[QStringLiteral("type")] = QStringLiteral("choice");
+    replyQ[QStringLiteral("instructions")] =
+        QStringLiteral("这段对话是否有人叫我、提到我，或者内容与我的角色设定相关，需要我接话？");
+    QJsonObject criteria;
+    criteria[QStringLiteral("reply")] = QStringLiteral("有人叫我、提到我，或内容与我的设定相关，应该接话");
+    criteria[QStringLiteral("skip")]  = QStringLiteral("只是别人在聊别的事，不需要我回复");
+    replyQ[QStringLiteral("criteria")] = criteria;
+
+    QJsonObject questions;
+    questions[QStringLiteral("reply")] = replyQ;
+
+    QJsonObject body;
+    body[QStringLiteral("model")] = modelList.at(modelIndex).name;
+    body[QStringLiteral("state")] = jueceStateText(context, kJueceStateMaxLen);
+    body[QStringLiteral("questions")] = questions;
+
+    // 排障用：把真正发出去的请求体和接口原始返回都打出来
+    const QByteArray bodyBytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    // qDebug().noquote() << "[systemone] POST" << url
+    //                    << "iface=" << ifaceIndex << iface.remark
+    //                    << "model=" << body.value(QStringLiteral("model")).toString()
+    //                    << "stateLen=" << body.value(QStringLiteral("state")).toString().size()
+    //                    << "bodyBytes=" << bodyBytes.size()
+    //                    << "(服务端硬限 1MiB)";
+    // qDebug().noquote() << "[systemone] req =" << QString::fromUtf8(bodyBytes);
+
+    // 只发这一发，地址就是接口里配的那个，不再换候选
+    Ai_post3Async(url, key, body, 60000,
+        [finish](const QByteArray &resp) {
+            //qDebug().noquote() << "[systemone] resp =" << QString::fromUtf8(resp);
+            finish(parseSystemoneResponse(resp));
+        });
+
+    // 地址就是 /systemone 却带着 apiKind==1（以前探错留下的），顺手改回 2。
+    // 放在发出去之后做：这函数跑在线程池线程，改数据要投回 GUI 线程，
+    // 别让它在上面读 iface.remark / iface.url 的时候插进来。
+    if (isSystemoneUrl(iface.url) && iface.apiKind != 2)
+        markInterfaceApiKind(ifaceIndex, 2);
+}
+
 void AiWidget::flushPendingMessages(const QString &openid,bool send)
 {
     if (m_shuttingDown) return;   // 正在析构，别再碰任何成员
@@ -1222,7 +1529,7 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
             sysTxt += "10.看到有人在打广告 就可以撤回：<del:seq>（seq 用对话里那条的 seq，例如 <del:12>），"
                       "别回复；需要禁言就用 <mt:id,秒>。这些标签不影响你返回【提到】与否 你也可以直接返回 【提到】 让另一个Ai处理 并且回复\n当你看见有这段文本时代表你有管理员权限\n";
         sysTxt += "如果提到了 请回复'【提到】+理由'文本 我会判定 你返回的内容有没有这个字符\n"
-                  "下面是用户给你的角色设定：\n" + setting;
+                  + kJueceSettingMark + QLatin1String("\n") + setting;
         systemMsg["content"] = sysTxt;
         msgs[0] = systemMsg;
         QJsonObject systemMsg2;
@@ -1237,14 +1544,73 @@ void AiWidget::flushPendingMessages(const QString &openid,bool send)
         trimContextImages(juece_mode, 0);//处理图片
         juece_mode.remove("tools");
 
+        // ---- 决策用哪个模型 / 哪种接口格式 ----
+        // juece_model 空 = 跟主模型一样（老行为）；非空就用它自己的接口列表
+        int jm_index = model_index;
+        if (!info->juece_model.isEmpty()) {
+            for (int i = 0; i < modelList.size(); ++i) {
+                if (modelList[i].name == info->juece_model) { jm_index = i; break; }
+            }
+        }
+        // 有没有值得试 systemone 的接口：没被探测成「只认 chat」（1）的就算值得试
+        // （2 = 已确认认 systemone，0 = 没探测过、这一发顺便探测），
+        // 另外**地址本身就是 /systemone 的接口无条件算**（apiKind 可能是探错的，
+        // 这种接口 chat 根本发不了，只能走 systemone）。
+        // 全被探测成 chat 就不必再白试一发，直接走老链路。
+        bool trySystemone = false;
+        bool jmHasChatIface = false;      // 决策模型自己有没有能走 chat 的接口
+        if (jm_index >= 0 && jm_index < modelList.size()) {
+            for (int i : std::as_const(modelList[jm_index].enabledInterfaceIndices)) {
+                if (i < 0 || i >= globalInterfaces.size()) continue;
+                if (globalInterfaces[i].keys.isEmpty()) continue;
+                const int k = globalInterfaces[i].apiKind;
+                const bool sysUrl = isSystemoneUrl(globalInterfaces[i].url);
+                if (sysUrl || k == 2 || k == 0) trySystemone = true;
+                if (!sysUrl && k != 2) jmHasChatIface = true;
+            }
+        }
+
+        // chat 回退用哪个模型的接口：决策模型要是指望不上（它绑的全是 /systemone 接口），
+        // 拿它发 chat 请求只会被回 "does not accept the request field messages"，
+        // 所以退回用主模型（model_index）问一遍。
+        const int chatJueceIndex = jmHasChatIface ? jm_index : model_index;
+
+        // 老链路：chat/completions + 提示词，回复里有【提到】就当成「要接话」
+        auto runChatJuece = [this, openid, info, model_index, chatJueceIndex, juece_mode, baseContext, pendings, ev]() {
+            setSessionProcessing(openid, true);
+            Ai_postsAsync(MessageEvent(), chatJueceIndex, juece_mode, 180000,
+                [this, openid, info, model_index, baseContext, pendings, ev](const QString &fh) {
+                //qDebug() << "ai决策："<<fh << "|"<<ev.msg;
+                    flushPendingMessagesTail(openid, info, model_index, baseContext,
+                                             fh.contains("【提到】"), fh, pendings, ev);
+                });
+        };
+
+        // 已经探测过、这接口只认 chat → 不用再试 systemone
+        if (!trySystemone) {
+            runChatJuece();
+            return;
+        }
+
         // 决策请求异步发出，本函数立即返回（不再占着线程池的 worker 干等）
         // 先占住 isProcessing，避免回调回来之前定时器又触发一轮
         setSessionProcessing(openid, true);
-        Ai_postsAsync(MessageEvent(), model_index, juece_mode, 180000,
-            [this, openid, info, model_index, baseContext, pendings, ev](const QString &fh) {
-            //qDebug() << "ai决策："<<fh << "|"<<ev.msg;
-                flushPendingMessagesTail(openid, info, model_index, baseContext,
-                                         fh.contains("【提到】"), fh, pendings, ev);
+        // 接口是「已确认认 systemone」还是「第一次用、这一发就是探测」由 jueceSystemoneAsync 自己挑，
+        // 探测结果也在它里面永久记下（成功记 2 / 明确不支持记 1）
+        jueceSystemoneAsync(jm_index, juece_mode,
+            [this, openid, info, model_index, baseContext, pendings, ev,
+             runChatJuece](const JueceSystemoneResult &r) {
+                if (m_shuttingDown) return;
+                if (r.ok) {
+                    // 注意：这里传的还是主模型的 model_index —— 决策只决定「回不回」，
+                    // 真回复照旧用主模型
+                    flushPendingMessagesTail(openid, info, model_index, baseContext,
+                                             r.shouldReply, r.desc, pendings, ev);
+                    return;
+                }
+                QString msg = QString("%1(%2) 决策回退 chat：%3").arg(info->Ai_nickname, openid, r.desc);
+                AppendEventLog(msg,0xff);
+                runChatJuece();
             });
         return;
     }

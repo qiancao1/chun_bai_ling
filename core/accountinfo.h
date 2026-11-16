@@ -181,12 +181,22 @@ struct AccountInfo {
     QString ldsd;//看完广告提示词
     QString gxrz;//更新日志
     QString qiandao;//签到（普通文本 = 回复模板，+1000/天；#python 开头 = 脚本，返回值决定加多少铃铛）
+    // 「默认按钮」：JSON 文本（群管 → 默认按钮，WebUI 同名字段 default_buttons）。
+    // 作用：机器人发消息时，如果这条消息**自己没带按钮**（既没有 #b:#{...}#b:#、也没命中
+    // 「md 按钮规则」），就用这里的按钮兜底。留空 = 不启用。
+    // 存的是原始文本（可能是 {"keyboard":{...}} / {"content":{...}} / {"rows":[...]} /
+    // 数组 / 整段 #b:#{...}#b:#），真正往消息里塞的是 defaultButtonKeyboard()。
+    QString default_buttons;
     //=========AI
     QString Ai_nickname;           // 机器人名（显示在左侧列表）
     QList<QString> tools;
     QList<QString> fujia;
     QString model;              // 模型名称
     QString Embed_model;
+    // 群决策单独用的模型（空 = 跟 model 一致，旧行为）。
+    // 它自己带一套接口，所以「用哪个模型的接口发决策」由它决定；
+    // 接口是 chat 格式还是 systemone 结构化格式，记在 InterfaceData::apiKind 里（探测一次就永久记住）。
+    QString juece_model;
     QString setting;            // 选中的全局设定名
     int context_len=128;            // 上下文
     int nSecondsNoReply = 0;    // N秒没回复
@@ -217,6 +227,18 @@ struct AccountInfo {
     QString toJson() const;
     static void fromJson(const QJsonObject &obj,AccountInfo &info);
 
+    // 「默认按钮」的解析结果（可直接塞进消息的 keyboard 字段）。
+    // 带缓存：只有 default_buttons 这段文本变了才会重新 QJsonDocument::fromJson，
+    // 其余时候每条消息都是纯比较 + 命中缓存（按钮是每条消息都要走的热路径）。
+    // 未配置 / 写错了 → 返回 Undefined（发送端当「没有默认按钮」处理）。
+    QJsonValue defaultButtonKeyboard() const;
+
+    // ↓ 解析缓存（不落盘，fromJson 里会预热一次）
+    mutable QMutex btnCacheMutex;
+    mutable QString btnCacheSrc;
+    mutable QJsonValue btnCacheVal;
+    mutable bool btnCacheReady = false;
+
     // 跨天清零：「今日」相关计数器（今日收发 / 今日加群退群 / 今日好友 / 今日频道）
     // 到新的一天就归零。用儒略日比较（完整日期，不是几号），跨月、跨年都准。
     // 三处都会调：读取配置时、定时任务每分钟、首页刷新时 —— 程序连跑几天也能自己清零。
@@ -227,6 +249,11 @@ struct AccountInfo {
 
 // 签到配置的默认内容（新机器人 / 配置为空时填这段 py 示例；群管「签到」的 placeholder 也用它）
 QString defaultQiandaoTemplate();
+
+// 「默认按钮」输入 → 真正要解析的 JSON 文本：
+// 允许整段粘消息里那套写法 #b:#{...}#b:#（只写开头一个标记也认），顺手去掉 BOM 和首尾空白。
+// 只做整理、不做校验（空串 = 没配）。
+QString defaultButtonJsonText(const QString &raw);
 
 struct RoleSetting {
     QString name;

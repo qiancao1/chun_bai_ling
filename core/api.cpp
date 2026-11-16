@@ -5971,6 +5971,17 @@ void QQBotClient::bianl(int type,int log, QString &text,QJsonValue  &keyboard,QJ
                 keyboard = parseLabelsToKeyboard(keyboard_data);
         }
     }
+
+    // 这条消息自己一个按钮都没带（既没有 #b:#{...}#b:#、也没命中「md 按钮规则」）
+    // → 用账号配置的「默认按钮」兜底（群管 → 默认按钮 / WebUI 的 default_buttons）。
+    // 解析结果缓存在 AccountInfo 里：文本没变就一直命中，每条消息零解析。
+    // ⚠ 只有 markdown 消息（msg_type=2）才能真正挂键盘；普通文本那条通道本来就不带 keyboard，
+    //    这里填了也不会被发出去（send_messages 的签名里根本没有 keyboard）。
+    const bool kbEmpty = keyboard.isUndefined() || keyboard.isNull()
+                      || (keyboard.isObject() && keyboard.toObject().isEmpty())
+                      || (keyboard.isArray()  && keyboard.toArray().isEmpty());
+    if (kbEmpty)
+        keyboard = m_info->defaultButtonKeyboard();
     //小尾巴
 
     // 同上：值拷贝。zdywblist 由 TextReplaceConfigWidget::oninitbot 在 UI 线程 clear()+append() 重建。

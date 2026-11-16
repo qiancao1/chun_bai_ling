@@ -9,6 +9,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <utility>
 
 int accinfo(int appid);
@@ -163,6 +165,35 @@ private:
     QPushButton *m_okBtn = nullptr;
 };
 
+// 「默认按钮」的输入校验（保存前跑一次）。
+// 空 = 不启用（合法）；非空必须是 JSON 对象或数组。
+// 整理规则与发送端完全一致（defaultButtonJsonText：允许整段 #b:#{...}#b:#、去 BOM/空白），
+// 否则会出现「界面能存、运行时解析不出来」这种最难查的配置错误。
+bool checkDefaultButtonsJson(QWidget *parent, const QString &raw)
+{
+    const QString json = defaultButtonJsonText(raw);
+    if (json.isEmpty()) return true;
+
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError) {
+        QMessageBox::warning(parent, "默认按钮",
+            QString("默认按钮不是合法的 JSON，本次没有保存。\n\n第 %1 个字符附近出错：%2\n\n"
+                    "可以写 {\"keyboard\":{...}} / {\"content\":{...}} / {\"rows\":[...]}，"
+                    "也可以整段粘消息里那套 #b:#{...}#b:#。\n"
+                    "想关掉这个功能就把文本框清空。")
+                .arg(err.offset).arg(err.errorString()));
+        return false;
+    }
+    if (!doc.isObject() && !doc.isArray()) {
+        QMessageBox::warning(parent, "默认按钮",
+            "默认按钮必须是一个 JSON 对象（{...}）或数组（[...]），\n"
+            "现在这段是单独一个值。想关掉这个功能就把文本框清空。");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 qunguan::qunguan(QWidget *parent)
     : QWidget(parent)
@@ -191,6 +222,7 @@ QString getFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& f
     if (fieldName == "ldsd") return info->ldsd;
     if (fieldName == "gxrz") return info->gxrz;
     if (fieldName == "qiandao") return info->qiandao;   // 空 = 静默签到，示例只放在 placeholder
+    if (fieldName == "defaultButtons") return info->default_buttons;
     return QString();
 }
 void qunguan::refreshList() {
@@ -214,6 +246,7 @@ void qunguan::refreshList() {
         {"用户退群", "tqhy"},
         {"加群验证", "jojnyz"},
         {"信息尾巴", "xxwb"},
+        {"默认按钮", "defaultButtons"},
         {"广告完成", "ldsd"},
         {"签到", "qiandao"},
         {"更新日志", "gxrz"},
@@ -268,6 +301,7 @@ void setFieldValue(const std::shared_ptr<AccountInfo>& info, const QString& fiel
     else if (fieldName == "ldsd") info->ldsd = value;
     else if (fieldName == "gxrz") info->gxrz = value;
     else if (fieldName == "qiandao") info->qiandao = value;
+    else if (fieldName == "defaultButtons") info->default_buttons = value;
 }
 
 
@@ -282,8 +316,11 @@ void qunguan::onItemClicked(QListWidgetItem *item) {
     QString content = item->data(Qt::UserRole).toString();
     QString fieldName = item->data(Qt::UserRole+1).toString();
     // 签到是 py 代码：必须走 setPlainText，否则源码里的 `<` 会被 setText 当 HTML 标签吃掉
-    if (fieldName == "qiandao") ui->textEdit->setPlainText(content);
-    else                        ui->textEdit->setText(content);
+    // 默认按钮是 JSON：同理走 setPlainText（按钮文案 / 链接里可能出现 `<` `&`，被当 HTML 会吃掉）
+    if (fieldName == "qiandao" || fieldName == "defaultButtons")
+        ui->textEdit->setPlainText(content);
+    else
+        ui->textEdit->setText(content);
     if(fieldName=="rqhy")
     {
         ui->textEdit->setPlaceholderText(R"(用户加群时#python开头为 py代码
@@ -381,7 +418,18 @@ __result__ = "返回的内容"
     {
         ui->textEdit->setPlaceholderText(R"(机器人被邀请加群时#python开头为python代码 有msg事件)");
     }
-    else if(fieldName=="apply")
+    else if(fieldName=="defaultButtons")
+    {
+        // 这里给的是「最完整的一种写法」；发送端各种形态都能摆平，写简单点也行
+        ui->textEdit->setPlaceholderText(R"(默认按钮(JSON)：机器人发消息时，如果这条消息**自己没带按钮**，就用这里的按钮补上
+· 只有 markdown 消息能挂按钮；消息自带 #b:#{...}#b:# 或命中「md 按钮规则」时不会被替换
+· 留空 = 不启用；保存时会校验 JSON，写错了不让存
+· 下面任一种写法都行（发送时自动整理成 QQ 要的 keyboard 结构）
+{"keyboard":{"content":{"rows":[{"buttons":[{"id":"1","render_data":{"label":"点我","visited_label":"已点击","style":1},"action":{"type":2,"data":"帮助","enter":true,"permission":{"type":2},"unsupport_tips":"不支持"}}]}]}}
+也可以只写 {"content":{"rows":[...]}} 或 {"rows":[...]} 或 [{"buttons":[...]}]，或整段粘 #b:#{...}#b:#
+)");
+    }
+    else if(fieldName=="fallbackReply")
     {
         ui->textEdit->setPlaceholderText(R"(有个变量 [匹配指令] 他是 当用户输入指令时 匹配相关指令)");
     }
@@ -422,6 +470,11 @@ void qunguan::on_pushButton_clicked() {
         return;
     }
     auto &info = m_accounts[index];
+
+    // 「默认按钮」是 JSON：写错了先拦下来（其它字段也一起不写，免得半保存）
+    if (m_currentField == "defaultButtons"
+        && !checkDefaultButtonsJson(this, ui->textEdit->toPlainText()))
+        return;
 
     // ---- 1. 保存原本的独立控件（times, tiaoshu, 复选框等） ----
     info->times = ui->time_Edit->text().toInt();
@@ -488,6 +541,10 @@ void qunguan::batchSaveCurrentField()
 
     const QString pageName = currentPageName();
     const QString content  = ui->textEdit->toPlainText();
+
+    // 批量写「默认按钮」时同样先校验：写错的 JSON 不该被复制到一堆机器人身上
+    if (m_currentField == "defaultButtons" && !checkDefaultButtonsJson(this, content))
+        return;
 
     BatchTargetDialog dlg(pageName, this);
     for (const auto &info : std::as_const(m_accounts)) {

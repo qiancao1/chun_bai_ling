@@ -65,6 +65,7 @@ QString AccountInfo::toJson() const {
     obj["wsIntents"] = wsIntents;
     obj["Ainickname"] = Ai_nickname;
     obj["model"] = model;
+    obj["juece_model"] = juece_model;
     obj["setting"] = setting;
     obj["context"] = context_len;
     obj["nSecondsNoReply"] = nSecondsNoReply;
@@ -100,6 +101,7 @@ QString AccountInfo::toJson() const {
     obj["ldsd"]=ldsd;
     obj["gxrz"]=gxrz;
     obj["qiandao"]=qiandao;
+    obj["default_buttons"]=default_buttons;
     obj["tiaoshu"]=tiaoshu;
     obj["pbbot"]=pbbot;
     obj["admin"]=admin;
@@ -146,6 +148,50 @@ def on_sign(msg, signed_today, total, streak, points):
 #   → msg / 次数 / 余额只能从参数拿，顶层没有这些名字；顶层定义的全局变量会跨调用保留
 )");
 }
+
+// 「默认按钮」输入整理：允许整段粘消息里那套 #b:#{...}#b:#，顺手去掉 BOM 和首尾空白。
+// 只整理不校验 —— 校验分两处：UI 保存时给用户报错、解析时（defaultButtonKeyboard）写错就当没配。
+QString defaultButtonJsonText(const QString &raw)
+{
+    QString s = raw;
+    s.remove(QChar(0xFEFF));                 // 从网页 / 记事本复制常带 BOM
+    const int a = s.indexOf("#b:#");
+    if (a >= 0) {
+        // 结尾标记取「最后一个」：按钮文案里万一也写了 #b:# 时不会被提前截断
+        const int b = s.lastIndexOf("#b:#");
+        s = (b > a) ? s.mid(a + 4, b - a - 4)      // 完整的 #b:#...#b:#
+                    : s.mid(a + 4);                // 只写了开头一个标记也认
+    }
+    return s.trimmed();
+}
+
+QJsonValue AccountInfo::defaultButtonKeyboard() const
+{
+    QMutexLocker locker(&btnCacheMutex);
+    // 文本没变 = 直接吃缓存（按钮是每条消息都要走的热路径，不能每次 fromJson）
+    if (btnCacheReady && btnCacheSrc == default_buttons)
+        return btnCacheVal;
+
+    btnCacheSrc   = default_buttons;
+    btnCacheReady = true;
+    btnCacheVal   = QJsonValue(QJsonValue::Undefined);
+
+    const QString src = defaultButtonJsonText(default_buttons);
+    if (src.isEmpty())
+        return btnCacheVal;
+
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(src.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError)
+        return btnCacheVal;                  // 写错了就当没配（发送端按「无默认按钮」处理）
+
+    // 各种写法都收：{"keyboard":{...}} / {"content":{...}} / {"rows":[...]} /
+    // {"buttons":[...]} / 直接一个数组 —— 具体怎么摆平由 send_messages_markdown / _mb 负责。
+    if (doc.isObject())     btnCacheVal = doc.object();
+    else if (doc.isArray()) btnCacheVal = doc.array();
+    return btnCacheVal;
+}
+
 
 void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
 
@@ -229,6 +275,9 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     // 签到配置：空就是空（= 静默签到：一天一次 +1000，不回复任何消息）。
     // 示例不写进配置，只作为「群管 → 签到」输入框的灰色 placeholder 展示。
     info.qiandao = obj["qiandao"].toString();
+    // 默认按钮：存原文本，这里是配置唯一入口 → 顺手把解析缓存预热掉（之后每条消息都走缓存）
+    info.default_buttons = obj["default_buttons"].toString();
+    info.defaultButtonKeyboard();
     // 「今日」计数器跨天清零（今日收发 / 今日加群退群 / 今日好友 / 今日频道）
     info.checkDailyReset();
     info.fallbackReply = obj["fallbackReply"].toString();
@@ -237,6 +286,7 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.Ai_nickname = obj["Ainickname"].toString();
     info.niren = obj["niren"].toBool();
     info.model = obj["model"].toString();
+    info.juece_model = obj["juece_model"].toString();
     info.setting = obj["setting"].toString();
     info.context_len = obj["context"].toInt();
     if(info.context_len<5)

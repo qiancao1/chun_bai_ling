@@ -22,6 +22,7 @@
 
 #include <QDialog>
 #include <QScrollArea>
+#include <QComboBox>
 #include <QEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1384,19 +1385,37 @@ static QString adRangeText(const QDate &start, const QDate &end)
     return QString("%1 ~ %2").arg(start.toString("yyyy-MM-dd"), end.toString("yyyy-MM-dd"));
 }
 
+// 某个月、某个账号的每日明细；appid <= 0 = 所有账号按天求和。
+// 卡片和明细窗的「全部」都走这里，选了具体账号就只取那一只的。
+QHash<QString, AdDayStat> HomePage::adDays(const QString &ym, int appid) const
+{
+    if (appid > 0) return m_adDaily.value(appid).value(ym);
+
+    QHash<QString, AdDayStat> out;
+    for (auto acc = m_adDaily.constBegin(); acc != m_adDaily.constEnd(); ++acc) {
+        const QHash<QString, AdDayStat> days = acc.value().value(ym);
+        for (auto d = days.constBegin(); d != days.constEnd(); ++d) {
+            AdDayStat &dst = out[d.key()];
+            dst.exposure += d.value().exposure;
+            dst.income   += d.value().income;
+        }
+    }
+    return out;
+}
+
 // 卡片文案：累计次数 / 本月金额
 void HomePage::applyAdCardText()
 {
     if (!m_adValue && !m_adSub) return;
 
     const QString ym = QDate::currentDate().toString("yyyyMM");
+    const QHash<QString, AdDayStat> bucket = adDays(ym);      // 卡片永远看「全部账号」
     QString money;
     if (m_adLoading.contains(ym)) {
         money = QStringLiteral("¥…");                       // 正在取
-    } else if (m_adFetchedAt.contains(ym) && !m_adDaily.value(ym).isEmpty()) {
+    } else if (!bucket.isEmpty()) {
         // 有数据就显示数据（哪怕这轮后面某个账号被拒也无所谓，已拿到的照算）
         double sum = 0.0;
-        const QHash<QString, AdDayStat> bucket = m_adDaily.value(ym);
         for (auto it = bucket.constBegin(); it != bucket.constEnd(); ++it)
             sum += it.value().income;
         money = adMoneyText(sum);
@@ -1456,9 +1475,9 @@ void HomePage::fetchAdMonth(const QString &ym, bool force)
     }
 
     if (appids.isEmpty()) {
-        // 没有账号可问 → 记成「已取过、无数据」，否则首页每 3 秒会重试一次
-        if (!m_adDaily.contains(ym)) m_adDaily.insert(ym, QHash<QString, AdDayStat>());
+        // 没有账号可问（一个都没登录 / client 已经没了）→ 记一笔，别让首页每 3 秒重试
         m_adFetchedAt.insert(ym, QDateTime::currentDateTime());
+        m_adFailed.insert(ym);
         applyAdCardText();
         if (m_adDialog) rebuildAdDialog();
         return;
@@ -1468,7 +1487,9 @@ void HomePage::fetchAdMonth(const QString &ym, bool force)
     m_adFetchStart = start;
     m_adFetchEnd   = end;
     m_adFetchQueue = appids;
-    m_adDaily[ym].clear();               // 整月重算，不跟旧值叠加
+    // 整月重算：先把这一轮要问的账号的旧桶清掉，不跟旧值叠加
+    for (const QString &id : std::as_const(appids))
+        m_adDaily[id.toInt()].remove(ym);
     m_adFetchOk = false;                 // 有任何一条成功就算这一轮成功（见 mergeAdRows）
     m_adLoading.insert(ym);
     adFetchNext();
@@ -1514,9 +1535,9 @@ void HomePage::adFetchNext()
                 }
                 if (!self) return;
                 QMetaObject::invokeMethod(self.data(),
-                    [self, days, ok = (err == QNetworkReply::NoError), hardMsg]() {
+                    [self, appid, days, ok = (err == QNetworkReply::NoError), hardMsg]() {
                         if (!self) return;
-                        self->mergeAdRows(days, ok, hardMsg);
+                        self->mergeAdRows(appid, days, ok, hardMsg);
                     }, Qt::QueuedConnection);
             });
         return;                          // 一次只发一条，回包后再发下一条
@@ -1535,7 +1556,7 @@ bool HomePage::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
-void HomePage::mergeAdRows(const QHash<QString, AdDayStat> &days, bool ok, const QString &hardMsg)
+void HomePage::mergeAdRows(int appid, const QHash<QString, AdDayStat> &days, bool ok, const QString &hardMsg)
 {
     if (m_adFetchYm.isEmpty()) return;
 
@@ -1549,7 +1570,8 @@ void HomePage::mergeAdRows(const QHash<QString, AdDayStat> &days, bool ok, const
     }
 
     if (ok) m_adFetchOk = true;
-    QHash<QString, AdDayStat> &bucket = m_adDaily[m_adFetchYm];
+    // 按账号分开存：明细窗可以单选某一只机器人看它自己的收益
+    QHash<QString, AdDayStat> &bucket = m_adDaily[appid][m_adFetchYm];
     for (auto it = days.constBegin(); it != days.constEnd(); ++it) {
         AdDayStat &dst = bucket[it.key()];
         dst.exposure += it.value().exposure;
@@ -1567,7 +1589,6 @@ void HomePage::finishAdFetch()
     if (ym.isEmpty()) return;
 
     m_adLoading.remove(ym);
-    if (!m_adDaily.contains(ym)) m_adDaily.insert(ym, QHash<QString, AdDayStat>());
     m_adFetchedAt.insert(ym, QDateTime::currentDateTime());
 
     if (m_adHardFail) {
@@ -1605,7 +1626,7 @@ void HomePage::showAdDetail()
     if (!m_adDialog) {
         auto *dlg = new QDialog(this);
         dlg->setWindowTitle(QStringLiteral("广告数据"));
-        dlg->resize(560, 580);
+        dlg->resize(620, 600);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->setStyleSheet(QStringLiteral(
             "QDialog { background: #FFF8EF; }"
@@ -1685,8 +1706,8 @@ void HomePage::rebuildAdDialog()
     head->addWidget(makeMonthBtn(QStringLiteral("上月"), prevYm));
     m_adDialogLayout->addLayout(head);
 
-    // ---- 合计 ----
-    const QHash<QString, AdDayStat> bucket = m_adDaily.value(ym);
+    // ---- 合计（选了具体机器人就只统计它）----
+    const QHash<QString, AdDayStat> bucket = adDays(ym, m_adDialogAppid);
     qint64 sumExposure = 0;
     double sumIncome = 0.0, maxIncome = 0.0;
     for (auto it = bucket.constBegin(); it != bucket.constEnd(); ++it) {
@@ -1697,6 +1718,37 @@ void HomePage::rebuildAdDialog()
 
     auto *sumRow = new QHBoxLayout;
     sumRow->setSpacing(8);
+
+    // 机器人下拉：全部（求和）/ 某一只（只看它自己的收益）
+    auto *accBox = new QComboBox(m_adDialog);
+    accBox->addItem(QStringLiteral("全部机器人"), 0);
+    for (const auto &acc : std::as_const(m_accounts)) {
+        if (!acc) continue;
+        const QString name = acc->nickname.isEmpty() ? QString::number(acc->appid_int) : acc->nickname;
+        accBox->addItem(QStringLiteral("%1 · %2").arg(name, QString::number(acc->appid_int)), acc->appid_int);
+    }
+    int selIdx = 0;                        // 原来选的账号被删了 → 回落「全部」
+    for (int i = 0; i < accBox->count(); ++i) {
+        if (accBox->itemData(i).toInt() == m_adDialogAppid) { selIdx = i; break; }
+    }
+    accBox->setCurrentIndex(selIdx);
+    m_adDialogAppid = accBox->itemData(selIdx).toInt();
+    accBox->setMinimumWidth(170);
+    accBox->setCursor(Qt::PointingHandCursor);
+    accBox->setStyleSheet(QStringLiteral(
+        "QComboBox{background:#FFFFFF;border:1px solid #F3E7DA;border-radius:9px;padding:3px 8px;font-size:12px;color:#17202A;}"
+        "QComboBox:hover{border-color:#FFD3B0;}"
+        "QComboBox::drop-down{border:none;width:16px;}"
+        "QComboBox QAbstractItemView{background:#FFFFFF;border:1px solid #F3E7DA;outline:none;"
+        "selection-background-color:#FFF1E6;selection-color:#D9542B;}"));
+    // ⚠ 这里重建会把 accBox 自己（以及它的弹窗）删掉，所以只用 deleteLater，见 clearLayoutItems
+    connect(accBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, accBox](int idx) {
+                m_adDialogAppid = accBox->itemData(idx).toInt();
+                rebuildAdDialog();
+            });
+    sumRow->addWidget(accBox);
+
     auto addChip = [&](const QString &text, bool strong) {
         auto *l = new QLabel(text, m_adDialog);
         l->setStyleSheet(strong
