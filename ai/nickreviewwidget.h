@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QStringList>
 #include <qpushbutton.h>
 #include "botdb.h"
@@ -81,6 +82,10 @@ private:
     void submitPluginReview(bool approved);           // 投递 {"状态":同意/拒绝,"data":[{id,name,id2}]} 给 submit_review
     QString pluginCallInts(int pluginIndex, int start, int count, int state);     // 调插件 get_review_list（加载时已取好地址）
     QString pluginCallStr(int pluginIndex, const QString &argJson);              // 调插件 submit_review（加载时已取好地址）
+    // ⚠ type 2（32 位 / 易语言）：本进程里没有它的符号，也**不需要插件声明函数值** ——
+    //   宿主在 32 位进程里按名字取 get_review_list / submit_review（和 get_config_list 一样），
+    //   框架只发 {"type":14|15,"uuid":..}；调用转给 PluginPage::reviewList32 / reviewSubmit32
+    //   （共享内存目标槽 1 + reqid + 宿主 _post 回吐）。插件没实现时宿主回空串，不报错。
 
     enum class Mode { Application, BatchUser, Plugin };
     Mode m_mode = Mode::Application;
@@ -95,7 +100,8 @@ private:
     QLineEdit *m_ss;
     // 批量模式的分页
     int m_currentPage = 0;
-    int m_pageSize = 500;
+    int m_pageSize = 500;          // 每页加载条数（顶部「数量」输入框可改，存 g_config["reviewPageSize"]）
+    QSpinBox *m_pageSizeSpin = nullptr;
     int m_totalCount = 0;
     bool m_onlyNameEmpty = true;  // true: 显示 name 为空, false: 显示 name 非空
 

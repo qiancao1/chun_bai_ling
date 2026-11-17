@@ -5452,7 +5452,13 @@ void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
 QString PluginPage::sendData32Wait(const QJsonObject &req, int timeoutMs)
 {
 #ifdef _WIN32
-    if (!bridge) return QString();
+    // 别静默返回空串：桥没起来 = 命令**根本没发出去**（不是「32 位没回」），这两种情况
+    // 在界面上看起来一模一样，必须留一行日志区分开。
+    if (!bridge) {
+        qWarning() << "共享内存: 桥没启动（程序目录缺 纯白铃32.exe？），命令未发送 type ="
+                   << req.value("type").toInt();
+        return QString();
+    }
 
     if (QThread::currentThread() == qApp->thread()) {
         struct WaitCtx { QEventLoop loop; QString ret; bool got = false; };
@@ -5483,6 +5489,55 @@ QString PluginPage::sendData32Wait(const QJsonObject &req, int timeoutMs)
     Q_UNUSED(req); Q_UNUSED(timeoutMs);
     return QString();
 #endif
+}
+
+// ==================== 昵称审核：32 位插件（type 2）====================
+// 和 type 12/13（get_config_list / set_config_value）**同一条通道**：
+// 任务槽目标 1（窗口线程 `_标签1_反馈事件` 按 type 分派）+ reqid 回吐。
+// 命令号与宿主写死对齐：
+//   14 = get_review_list   帧 {"type":14,"uuid":..,"start":0,"length":500,"status":1,"reqid":N}
+//   15 = submit_review     帧 {"type":15,"uuid":..,"data":"<提交报文>","reqid":N}
+// ⚠ 键名是 **length / status**（宿主读 json.取整数("length") / ("status")），不是 count / state。
+// ⚠ **帧里不带任何函数地址**：宿主在 32 位进程里按名字取 plugins[i].get_review_list /
+//   submit_review（和 get_config_list 一模一样）。插件也不用在 get_plugin_info 里声明它们。
+// ⚠ 回吐内容 = **插件返回的 JSON 原文**（不是商店那条路的 "1"/"0" 成败）。插件没实现那两个
+//   函数时宿主回**空串**（不是超时）—— 所以空串 = 没数据/没实现，不当错误处理。
+static constexpr int kReviewCmdList   = 14;   // get_review_list
+static constexpr int kReviewCmdSubmit = 15;   // submit_review
+
+static QJsonObject buildReview32Frame(const PluginInfo &info, int cmdType,
+                                      const QJsonObject &args, int appid)
+{
+    QJsonObject req;
+    req["type"] = cmdType;                    // 14 / 15
+    req["uuid"] = info.uuid;
+    if (appid > 0) req["appid"] = appid;      // 备用（审核函数签名里没有 appid，宿主可忽略）
+    for (auto it = args.constBegin(); it != args.constEnd(); ++it)
+        req.insert(it.key(), it.value());
+    return req;
+}
+
+// 取一页审核数据：与 get_review_list(开始位置, 数量, 状态) 同样的三个参数
+QString PluginPage::reviewList32(const PluginInfo &info, int start, int count, int state, int appid)
+{
+    if (info.type != 2) return QString();
+    QJsonObject args;
+    args["start"]  = start;
+    args["length"] = count;                   // ⚠ 键名 length
+    args["status"] = state;                   // ⚠ 键名 status（1 = 待审核 / 2 = 已审核）
+    // 目标槽 1 = 窗口线程通道（与 type 12/13 同一条路，宿主在那条 if 链里按 type 分流）
+    return sendData32Wait(buildReview32Frame(info, kReviewCmdList, args, appid),
+                          kData32TimeoutMs);
+}
+
+// 投递审核结果：argJson = {"op":true/false,"data":[{"id","name","id2"}...]}，由插件自己解释
+QString PluginPage::reviewSubmit32(const PluginInfo &info, const QString &argJson, int appid)
+{
+    if (info.type != 2) return QString();
+    QJsonObject args;
+    args["data"] = argJson;                   // 宿主：调用子程序 (…submit_review, , , json.取文本("data"))
+    return sendData32Wait(buildReview32Frame(info, kReviewCmdSubmit, args, appid),
+                          kData32TimeoutMs);
 }
 
 QString PluginPage::sendData32(int type,PluginInfo &info,const QString &appidlist)
@@ -5631,6 +5686,11 @@ QString PluginPage::LoadPlugin_DLL32(PluginInfo &info)
         if (goods.price < 0) goods.price = 0;
         info.DLL.shop.append(goods);
     }
+    // ---- 昵称审核：框架这边**不需要任何字段** ----
+    //   32 位插件的 get_review_list / submit_review 由宿主在 32 位进程里按名字解析
+    //   （plugins[i].xxx，和 get_config_list 完全一个机制），插件也不必在 get_plugin_info
+    //   里声明它们。框架只发 {"type":14|15,"uuid":..}，一个地址都不解析、不存。
+    //   是否真的支持审核 → 靠「扫描审核插件」真调一次看有没有数据（空串 = 没实现/没数据）。
     applySavedRuleConfig(info);   // 套用「编辑指令」里存下的启停 / 重命名
     return QString();   // 成功
 }

@@ -4,6 +4,12 @@
 #include <QMessageBox>
 #include <QThreadPool>
 #include <QDateTime>
+#include <QFileDialog>
+#include <QFile>
+#include <QDir>
+#include <QPushButton>
+#include <QStandardPaths>
+#include <QSet>
 #include <atomic>
 
 // 群批量推送的成功计数：改成异步发送后由回调线程累加，必须原子
@@ -139,6 +145,205 @@ void plts::on_sctswj_2_clicked()
     if(保存()) QMessageBox::warning(this,"生成完成","点击开始推送进行推送吧 注意 群 只选了 全量群 其他群没主动能力也不行");
     else QMessageBox::warning(this,"生成失败","写出到文件失败");
 }
+
+// ==================== 导入好友（CSV/TXT 的 union_openid 列）====================
+namespace {
+
+// 拆一行 CSV：支持 "..." 包裹（字段内可含逗号）、"" 转义
+QStringList splitCsvLine(const QString &line)
+{
+    QStringList out;
+    QString cur;
+    bool inQuote = false;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line.at(i);
+        if (inQuote) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < line.size() && line.at(i + 1) == QLatin1Char('"')) { cur.append(QLatin1Char('"')); ++i; }
+                else inQuote = false;
+            } else {
+                cur.append(c);
+            }
+        } else {
+            if (c == QLatin1Char('"'))      inQuote = true;
+            else if (c == QLatin1Char(',')) { out.append(cur); cur.clear(); }
+            else                            cur.append(c);
+        }
+    }
+    out.append(cur);
+    return out;
+}
+
+// openid 只认 32 位十六进制（= 16 字节），与 BotDB 里的 key 口径一致
+bool isOpenidHex(const QString &s)
+{
+    if (s.size() != 32) return false;
+    for (const QChar &c : s) {
+        const ushort u = c.unicode();
+        const bool hex = (u >= '0' && u <= '9') || (u >= 'a' && u <= 'f') || (u >= 'A' && u <= 'F');
+        if (!hex) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+void plts::on_drhy_clicked()
+{
+    if(ts_m_stopPush)
+    {
+        QMessageBox::warning(this,"已经在运行","正在群发中，先停止推送再导入");
+        return;
+    }
+    if(!g_botdb.contains(g_appid))
+    {
+        QMessageBox::warning(this,"导入失败","请登录账号 自动打开数据库后再试试");
+        return;
+    }
+
+    // ---- 当前账号是谁（必须让用户看清楚：导错账号不好删）----
+    QString accName = QString("AppID %1").arg(g_appid);
+    QString accDetail;
+    for (const auto &acc : std::as_const(m_accounts)) {
+        if (!acc) continue;
+        if (acc->appid_int != g_appid) continue;
+        accName = acc->nickname.isEmpty() ? acc->appid : acc->nickname;
+        accDetail = QString("AppID：%1").arg(acc->appid);
+        if (!acc->botqq.isEmpty()) accDetail += QString("    机器人QQ：%1").arg(acc->botqq);
+        break;
+    }
+
+    // ---- 选文件 ----
+    QString defDir = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+    if (defDir.isEmpty()) defDir = QDir::homePath();
+    const QString path = QFileDialog::getOpenFileName(this, "选择要导入的好友文件（CSV/TXT）",
+                                                      defDir,
+                                                      "文本 / CSV (*.txt *.csv);;所有文件 (*.*)");
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this,"导入失败","文件打不开：\n" + path);
+        return;
+    }
+    QString content = QString::fromUtf8(f.readAll());
+    f.close();
+    if (content.isEmpty()) {
+        QMessageBox::warning(this,"导入失败","文件是空的");
+        return;
+    }
+
+    // ---- 切行（吃掉 BOM / CR）----
+    QStringList lines = content.split(QLatin1Char('\n'));
+    for (QString &l : lines) {
+        if (l.endsWith(QLatin1Char('\r'))) l.chop(1);
+    }
+    if (!lines.isEmpty() && lines.first().startsWith(QChar(0xFEFF)))
+        lines[0].remove(0, 1);
+
+    // ---- 找 union_openid 列：先按表头找，没有表头就从右往左猜一个十六进制列 ----
+    int col = -1;
+    int startLine = 0;
+    for (int i = 0; i < qMin(lines.size(), 5) && col < 0; ++i) {
+        const QStringList fields = splitCsvLine(lines.at(i));
+        for (int c = 0; c < fields.size(); ++c) {
+            if (fields.at(c).trimmed().toLower() == "union_openid") {
+                col = c;
+                startLine = i + 1;   // 表头下面才是数据
+                break;
+            }
+        }
+    }
+    if (col < 0) {
+        // 没有表头：取第一个非空行里**最靠右**的十六进制列
+        // （openid,union_openid 两列内容一样时优先拿 union_openid 那一列）
+        for (int i = 0; i < lines.size(); ++i) {
+            if (lines.at(i).trimmed().isEmpty()) continue;
+            const QStringList fields = splitCsvLine(lines.at(i));
+            for (int c = fields.size() - 1; c >= 0; --c) {
+                if (isOpenidHex(fields.at(c).trimmed())) { col = c; break; }
+            }
+            if (col >= 0) { startLine = i; break; }
+        }
+    }
+    if (col < 0) {
+        QMessageBox::warning(this,"导入失败","没找到 union_openid 列（文件里没有任何 32 位十六进制的 ID）");
+        return;
+    }
+
+    // ---- 收集 openid（去重、跳过无效行）----
+    QStringList ids;
+    QStringList invalidSamples;
+    QSet<QString> seen;
+    int dataRows = 0;
+    int dupRows = 0;
+    for (int i = startLine; i < lines.size(); ++i) {
+        if (lines.at(i).trimmed().isEmpty()) continue;
+        ++dataRows;
+        const QStringList fields = splitCsvLine(lines.at(i));
+        const QString id = (col < fields.size()) ? fields.at(col).trimmed().toUpper() : QString();
+        if (!isOpenidHex(id)) {
+            if (invalidSamples.size() < 5)
+                invalidSamples.append(QString("第 %1 行：%2").arg(i + 1).arg(lines.at(i).trimmed().left(60)));
+            continue;
+        }
+        if (seen.contains(id)) { ++dupRows; continue; }
+        seen.insert(id);
+        ids.append(id);
+    }
+
+    if (ids.isEmpty()) {
+        QMessageBox::warning(this,"导入失败",
+            QString("没有一条有效 union_openid\n（共 %1 行数据，全部无效或为空）").arg(dataRows));
+        return;
+    }
+
+    // ---- 二次确认：账号 + 数量 + 不可撤销提示，默认按钮是「取消」----
+    QString info = QString("%1\n%2\n\n"
+                           "文件：%3\n"
+                           "有效 union_openid：%4 条（原始 %5 行，重复 %6 行）")
+                       .arg(accName, accDetail.isEmpty() ? QString() : accDetail)
+                       .arg(QDir::toNativeSeparators(path))
+                       .arg(ids.size()).arg(dataRows).arg(dupRows);
+    if (!invalidSamples.isEmpty()) {
+        info += "\n\n以下行没有导入（不是 32 位十六进制）：\n" + invalidSamples.join('\n');
+        if (dataRows > ids.size() + dupRows)
+            info += "\n……共 " + QString::number(dataRows - ids.size() - dupRows) + " 行无效";
+    }
+    info += "\n\n⚠ 导入后会直接写进这个账号的好友库，**不好单独删掉**。\n"
+            "请再核对一次上面的 AppID / 账号是否就是要导入的那个。";
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle("确认导入好友");
+    box.setText("即将导入好友到：" + accName);
+    box.setInformativeText(info);
+    QPushButton *okBtn = box.addButton("确认导入到该账号", QMessageBox::AcceptRole);
+    QPushButton *noBtn = box.addButton("取消", QMessageBox::RejectRole);
+    box.setDefaultButton(noBtn);      // 默认落在「取消」，防手滑回车
+    box.exec();
+    if (box.clickedButton() != okBtn) return;
+
+    // ---- 真正写库（整批一个事务：要么全进，要么全不进）----
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    int newCount = 0, alreadyCount = 0;
+    QStringList invalid;
+    const int ret = g_botdb[g_appid]->batchImportFriends(ids, BotDB::nowMinutes(),
+                                                         &newCount, &alreadyCount, &invalid);
+    QApplication::restoreOverrideCursor();
+
+    if (ret < 0) {
+        QMessageBox::critical(this,"导入失败",
+            "写数据库失败了（整批已回滚，一条都没进去）。\n请确认账号已登录后重试。");
+        return;
+    }
+
+    QString done = QString("导入完成\n\n新增好友：%1\n已经是好友（跳过）：%2").arg(newCount).arg(alreadyCount);
+    if (!invalid.isEmpty()) done += QString("\n无效 openid：%1").arg(invalid.size());
+    done += "\n\n下一步：勾选「推送私聊」→ 点「生成推送文件」→ 再点「开始推送」。";
+    QMessageBox::information(this, "导入完成", done);
+}
+
 void plts::on_sctswj_clicked(bool checked)
 {
     if(ts_m_stopPush)

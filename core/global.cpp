@@ -406,8 +406,7 @@ static double hintSimilarityLow(const QString &a, int aLen, const QString &b, in
         if (a.startsWith(b)) return 0.90;                         // "签到一下"
         if (a.contains(b))   return 0.80;                         // "我想签到"
     }
-    // 用户只打了 1 个字（"开"）：必须在这儿特判 —— 3 字以上的指令根本走不到编辑距离
-    // （"开" vs "开启签到" 差 3 步，> maxDist 1 → 直接 0 分），不特判就一条都命中不了。
+
     if (aLen == 1) {
         if (b.startsWith(a)) return 0.62;                         // "开" → 开启签到 / 开局
         if (b.contains(a))   return 0.55;                         // 字在中间的："打开宝箱"
@@ -783,14 +782,7 @@ QString python_code3(const QString &py_code,const MessageEvent &msg)
     }
     return "代码执行完成 未返回数据";
 }
-// ==================== 签到：#python 代码执行器 ====================
-// 约定见 global.h 的声明。这里只做三件事：注入变量 → 找函数并调用 → 把返回值折成铃铛数。
-// ⚠ 和 python_code3 **不一样**：签到脚本只编译、只执行顶层一次，之后一直复用同一份
-//   globals 和同一个函数对象，每次调用只把参数传进去（省掉每次 1~5ms 的重新编译）。
-//   所以 globals 里**不放任何会变的东西** —— msg / 次数 / 余额全部走函数参数，
-//   只放 __builtins__ + qq_api 的导出名 + 全进程共用的 api 实例。
-//   代价：脚本顶层代码只跑一次（插件式脚本本来就该这样），顶层也拿不到 msg。
-// ⚠ 返回值里的 bool **不当数量**（`return True` 很容易被误写成 1 铃铛，宁可当 0 + 记日志）。
+
 static qint64 signPyToNumber(const py::object &o, bool *okOut)
 {
     if (okOut) *okOut = false;

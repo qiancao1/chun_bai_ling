@@ -114,10 +114,11 @@ typedef int (*ShopFunc)(const char*,qint64,const char*);
 typedef void (*OnFunc0)();
 
 // ---- 昵称审核接口（插件可选实现，加进昵称审核窗口的下拉框后生效）----
-// 函数名定死，Python 与原生库插件同名：
+// 函数名定死，Python / 原生库 / 32 位插件同名：
 //   get_review_list(开始位置:int, 数量:int, 状态:int) -> JSON 文本 {"总数量":xx,"data":[{"id":整数,"name":"..","id2":".."}]}
 //       状态（第 3 个参数）：1=待审核  2=已审核
-//   submit_review(JSON文本) -> 任意文本  入参 {"状态":"同意"/"拒绝","data":[...]}
+//   submit_review(JSON文本) -> 任意文本  入参 {"op":true/false,"data":[...]}（true = 同意）
+// 32 位（易语言）没有可解析的导出符号 → 由宿主在 32 位进程里按名字取（插件不用声明）
 constexpr const char *kPluginFuncGetReviewList = "get_review_list";
 constexpr const char *kPluginFuncSubmitReview  = "submit_review";
 typedef const char* (*ReviewFetchFunc)(int, int, int);   // get_review_list(开始位置, 数量, 状态)
@@ -344,6 +345,10 @@ struct DLLPluginobj {
     OnFunc0 onSet;
     ReviewFetchFunc getReviewList = nullptr;    // 昵称审核：get_review_list(开始位置,数量,状态)
     ReviewSubmitFunc submitReview = nullptr;    // 昵称审核：submit_review(JSON文本)
+    // ⚠ 昵称审核（type 2 / 32 位）**这里没有对应的函数地址字段**：32 位插件不是被 LoadLibrary
+    //   加载的，64 位进程里根本没有它的符号。函数值由宿主在 32 位进程里按名字解析
+    //   （plugins[i].get_review_list —— 和 get_config_list / set_config_value 完全同一个机制），
+    //   框架只发 {"type":14|15,"uuid":..}，一个地址都不碰。
     ShopFunc onShop = nullptr;  // 铃铛商店：可选导出 onShop(json, fun, cmd)；有它时 fun 只当 id 用
     QList<Rule_Dll> rules;      // 所有规则列表（替代原来的 equals hash）
     QList<ShopItem_Dll> shop;   // 铃铛商店：出售的商品（type 1 = 可购买；type 2 易语言 = 只上架）
@@ -468,6 +473,23 @@ public:
     //   msg   = 本条消息事件（用户 openid / 群 / appid / msgId 都从这里取）。
     // 返回 true = 这条消息是商店指令、**已经自己回过消息了**（调用方别再往下派发，也别让 AI 兜底）。
     bool handleShopCommand(const QString &frame, MessageEvent &msg);
+
+    // ==================== 昵称审核：32 位插件（type 2 / 易语言）====================
+    // 32 位插件没有可解析的导出符号（只有固定入口 + 共享内存帧协议），所以审核调用走
+    // **type 12/13（get_config_list / set_config_value）同一条通道**：任务槽目标 1
+    // （窗口线程按 type 分派）+ reqid 回吐 —— 宿主调完用 `_post4(1831501026, reqid, "", 结果)` 回给框架。
+    // 命令号（与宿主 if 链写死对齐）：
+    //   14 = get_review_list  → {"type":14,"uuid":..,"start":0,"length":500,"status":1,"reqid":N}
+    //   15 = submit_review    → {"type":15,"uuid":..,"data":"<提交报文>","reqid":N}
+    // ⚠ 键名是 **length / status**（宿主读 json.取整数("length") / ("status")），不是 count / state。
+    // ⚠ **插件不用在 get_plugin_info 里报函数值**：宿主自己按名字取
+    //   plugins[i].get_review_list / submit_review（与 get_config_list 一致）。框架只透传 uuid。
+    // ⚠ 回吐的是**插件返回的 JSON 原文**（不是商店那种 "1"/"0" 成败）；插件没实现那两个函数时
+    //   宿主回**空串**（不是超时），所以「空串」在这里 = 没数据，不是出错。
+    // 返回：插件给的文本（空串 = 没实现 / 没数据 / 超时 / 桥不可用），语义与 Python / 原生库一致。
+    // 非 Windows 平台没有桥 → 直接返回空串。
+    QString reviewList32(const PluginInfo &info, int start, int count, int state, int appid = 0);
+    QString reviewSubmit32(const PluginInfo &info, const QString &argJson, int appid = 0);
 
     // ---- 异步端（JS / 32 位易语言）的待结算订单：建单 / 销单 / 结算 / 超时丢单 ----
     // 线程说明：建单发生在**工作线程**（dispatch_message），结算发生在**主线程**（回执回调 / 定时器）
@@ -620,7 +642,7 @@ private:
     // 插件加载完成（rules 已解析）后套用已保存的指令配置（启停 / 重命名 / regex 重建）
     void applySavedRuleConfig(PluginInfo &info);
 
-    // 32 位命令的**同步外壳**（给上面那两个 sendData32 用）：
+    // 32 位命令的**同步外壳**（给上面那两个 sendData32 / 昵称审核用）：
     //   GUI 线程 → 局部事件循环驱动 100ms 轮询（界面照常重绘，其它定时器/网络也照跑）；
     //   ⚠ 等待期间不派发用户输入（按钮点击排队，等这次做完再处理），否则连点两下会撞上
     //     「同一时间只允许一个命令在飞」的桥接约束；

@@ -94,6 +94,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="drhy">
+       <property name="text">
+        <string>导入好友</string>
+       </property>
+       <property name="toolTip">
+        <string>从 CSV/TXT 里按 union_openid 列导入好友到当前账号（慎用：导入后不好删）</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="sctswj_2">
        <property name="text">
         <string>生成推送文件</string>

@@ -25,6 +25,9 @@ private slots:
 
     void on_sctswj_2_clicked();
 
+    // 导入好友（CSV/TXT 的 union_openid 列 → 当前账号好友库）
+    void on_drhy_clicked();
+
 
 
 private:

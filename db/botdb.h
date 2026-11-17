@@ -100,14 +100,10 @@ inline QDataStream &operator>>(QDataStream &in, BinKey &key) {
 
 
 
-// 签到记录（子库 "signs" 的值，12 字节 POD × 3 个 quint32）
-//   day    = 上次签到的**本地日期**（QDate::toJulianDay()），跨天判定只看它
-//   total  = 总签到次数
-//   streak = 当前连续签到次数（昨天签过 → +1，否则从 1 重新算）
 struct SignRecord {
-    quint32 day    = 0;
-    quint32 total  = 0;
-    quint32 streak = 0;
+    quint32 day    = 0; //  上次签到的**本地日期**（QDate::toJulianDay()），跨天判定只看它
+    quint32 total  = 0; //  总签到次数
+    quint32 streak = 0; //  当前连续签到次数（昨天签过 → +1；断签 → 扣 3 天，扣没了才从 1 重算，不清零）
 };
 
 class BotDB : public QObject {
@@ -184,6 +180,18 @@ public:
     bool removeFriend(uint32_t userSeqId);
     bool isFriend(uint32_t userSeqId);
     QList<int> getFriendList();
+    // ==================== 批量导入好友（CSV 导入 union_openid 用）====================
+    // 入参是 openid 的 **32 位十六进制字符串**（QQ 的 union_openid / member_openid 就是这个形态）。
+    // 流程：users 子库里没有这个 openid → 分配一个新 seq_id 建档（users + seq_to_openid），
+    //       再写 friends 子库。整批**一个写事务**（1054 条也就毫秒级，不留半截数据）。
+    // 已经是好友的**不覆盖**原来的 add_time。
+    //   outNew     = 本次新加进好友表的人数（含新建档的）
+    //   outAlready = 本来就是好友、这次跳过的人数
+    //   outInvalid = 无效行（不是 32 位十六进制）
+    // 返回实际新增的好友数；返回 -1 表示整批失败（事务回滚）。
+    int batchImportFriends(const QStringList &openidHexList, uint32_t addTimeMinutes,
+                           int *outNew = nullptr, int *outAlready = nullptr,
+                           QStringList *outInvalid = nullptr);
 
     // ==================== 积分（商店货币）系统 ====================
     // 每个用户一个 **8 字节有符号整数**（qint64）余额，独立存 LMDB 子库 "points"：

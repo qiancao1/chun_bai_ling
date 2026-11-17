@@ -85,6 +85,10 @@ QQBotClient::QQBotClient(AccountInfo *info, QObject *parent)
     m_handshakeTimer.setSingleShot(true);
     connect(&m_handshakeTimer, &QTimer::timeout, this, &QQBotClient::onHandshakeTimeout);
 
+    // 签到聚合：待结算期间每 500ms 一跳（只在有「签到」在收的时候才转，见 signAggArmTimer）。
+    m_signAggTimer.setSingleShot(true);
+    connect(&m_signAggTimer, &QTimer::timeout, this, &QQBotClient::onSignAggTimeout);
+
     // 自动撤回：把自己登记进**全局**撤回表 —— 全进程只有一个 1 秒定时器（recallTickAll），
     // 每个机器人不再各自挂一个定时器。定时器在第一次登记撤回时才启动，全部清空后停。
     // 这里不加锁：QQBotClient 只在主线程创建（CardWidget::getOrCreateClient）和销毁
@@ -182,7 +186,7 @@ void QQBotClient::recallTickAll()
     s_recallStarted.store(false, std::memory_order_release);
 
     bool again = false;
-    for (QQBotClient *c : s_recallClients) {
+    for (QQBotClient *c : std::as_const(s_recallClients)) {
         if (c->m_recallPending.load(std::memory_order_relaxed) > 0) { again = true; break; }
     }
     if (again) {
@@ -513,21 +517,7 @@ void QQBotClient::stop()
     AppendEventLog(QString("机器人 %1 已停止").arg(m_info->appid),0xff);
 }
 
-// ---------- 网络请求 ----------
-// 拉 WebSocket 网关地址。
-//
-// ⚠ 2026-11-01 改（原实现的问题）：
-//   ① 只看 JSON 解析结果，网络错误 / HTTP 状态码 / 响应体全被丢掉 —— 腾讯网关在
-//      401/429/5xx 时经常返回**空 body**，QJsonDocument 对空串固定报 "illegal value"，
-//      于是所有失败都变成同一句「获取登录Ws错误: illegal value」，真正原因无从查起。
-//   ② 服务端已经把 token 作废时，本地 m_tokenExpireTime 还没到，不清 token，
-//      下一次重连还是拿同一个死 token 去撞 —— 撞满 5 次就永久停连（重启才好）。
-//
-// 现在按三类分别处理，并让日志能自证：
-//   · 没收到任何 HTTP 响应（status=0）→ 网络不通，报 errorString；
-//   · 401/403 → token 已失效，直接作废本地 token，下一轮 start() 必然重新取；
-//   · 其它非 2xx / 非 JSON → 退避重试；连续 3 次还不行也作废本地 token 换一条路走。
-// 注意：回调在 NetManager 的线程池线程里，所有状态改动都投回主线程执行。
+
 void QQBotClient::fetchGatewayUrl(Callback calls)
 {
     QString url;
@@ -566,11 +556,7 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
                     AppendEventLog(QString("%1 连续 %2 次拿不到网关地址，已作废本地 token，下一轮重新获取")
                                        .arg(m_info->nickname).arg(m_gatewayFailStreak), 0xff);
                 }
-                // 连 HTTP 响应都没有（连接被重置 / TLS 断 / 超时）或者收到空 body：
-                // QNAM 池里那条 keep-alive / h2 连接可能已经废了，后面每个请求都复用它。
-                // 不清掉的话换多少 token 都是同一个结果（这也是"重启程序就好"的原因）。
-                //   第 1 次：只断空闲连接（轻）；
-                //   第 2 次起：整套 QNAM 换掉 —— 等价于重启那一步，但不重启程序。
+
                 if (r.httpStatus == 0 || r.body.trimmed().isEmpty()) {
                     if (m_gatewayFailStreak >= 2)
                         NetManager::instance()->resetHostPool(url);
@@ -588,19 +574,12 @@ void QQBotClient::fetchGatewayUrl(Callback calls)
                 calls(QString(), QNetworkReply::NetworkError(QNetworkReply::ProtocolFailure));
             };
 
-            // ① 鉴权被拒：401/403。**这里其实是两种完全不同的原因**，只能看 body 里的错误码分开：
-            //     · code 11298「接口访问源IP不在白名单」→ token 是好的！重试一万次也不会通，
-            //       必须用户去开放平台控制台把本机公网 IP 加进白名单。这种如果按"token 失效"
-            //       处理，会不停作废 token、重新取 token，把真正的提示淹没掉（也是"第一次用必定
-            //       这样、点登录也没用"的典型现场）。
-            //     · 其它 401 → 真·token 失效，作废重取。
             if (r.httpStatus == 401 || r.httpStatus == 403) {
                 const bool ipBlocked = r.body.contains("白名单") || r.body.contains("11298");
                 if (ipBlocked) {
                     fail("获取登录Ws失败: 本机公网 IP 不在开放平台 IP 白名单(code 11298)"
                          "，请到开放平台控制台把本机公网 IP 加进白名单", false);
-                    // 这是 IP 白名单问题，跟 token 一点关系都没有：把连续计数清零，
-                    // 免得 fail() 里那条"连续 3 次拿不到网关就作废 token"跟着乱清 token。
+
                     m_gatewayFailStreak = 0;
                     probePublicIpOnce();   // 顺手把公网 IP 打进日志，省得用户自己查
                 } else {
@@ -771,16 +750,6 @@ void QQBotClient::onDisconnected()
         tip = " | 被服务端限流";
         break;
 
-    // ---- 网关层错误（不在官方 4001~4014 / 4900~4915 表里，属于接入层/WAF 拦的）----
-    // 4030「connection blocked by security policy」= 连接被网关的安全策略挡掉。
-    // 常见触发（都不是"改代码就能连上"的类型，但处理方法一样）：
-    //   ① 同一个 appid 同时存在多条连接 —— 另一台机器/另一个实例/上次没退干净的进程；
-    //      网关只认一条，多出来的会被安全策略直接掐。
-    //   ② 短时间内建连太频繁（重连风暴）——之前"3 秒一次、不限次数"就会撞上，
-    //      被拦后惩罚窗口通常有几分钟，越贴着撞恢复越慢。
-    //   ③ IP 变了 / 不在控制台的 IP 白名单里（家用宽带拨号换 IP 就会触发）。
-    // 处理：作废本地 token（换一份鉴权上下文）+ 清会话 + 重置该 host 的整套连接池
-    //      （等价于"重启程序"那步，但不用重启）+ **放慢到 60 秒起**，别贴着撞。
     case 4030:
     case 4031: { // 同属安全策略拦截（429/封 IP 类）。花括号必须加：里面有局部变量，
                  // 否则 MSVC 报 C2360「case 标签跳过初始化」
@@ -862,11 +831,7 @@ void QQBotClient::onDisconnected()
         stopAutoReconnect("对端明确拒绝（机器人下架/被封禁），重试无效");
         return;
     }
-    // 「在线至少 30 秒」才算这条连接真的稳定过：
-    //   · 稳定过（≥30s）→ 例行被踢/正常断开，3 秒就回来，保持原有节奏；
-    //   · 没稳定过（刚连上就被掐、甚至从没连上）→ 说明是同一个错误在反复（401 / 4030 /
-    //     握手被拒）。这种 3~10 秒一次不但连不上，还会把自己刷成更明显的异常客户端、
-    //     并把日志刷满，所以**至少等 30 秒**再试。
+
     if (aliveSec >= 30)
         scheduleReconnect(waitSec);
     else
@@ -897,12 +862,7 @@ void QQBotClient::closeSocketSilently()
     QTimer::singleShot(0, this, [this]() { m_suppressDisconnect = false; });
 }
 
-// 明确不可恢复的错误 → 停掉自动重连（不再排定时器）。
-//
-// 与 stop() 的区别：stop() 是"用户手动下线"，会关连接、清会话、清计数；
-// 这里只处理"再试也没用"的判定错误（appid/secret 无效、机器人下架/封禁），
-// 连接反正已经断了/连不上，唯一要做的是**不要再无限重试**。
-// 故意不动 m_info->autoConnect（那是持久化设置）：用户改好配置点一次登录就能重新开始。
+
 void QQBotClient::stopAutoReconnect(const QString &why)
 {
     m_userWantsOnline = false;
@@ -1067,6 +1027,9 @@ void appendInt(QString& out, T value) {
 
 static constexpr qint64 kSignDefaultPoints = 1000;        // 非 py 模式：每天 +1000
 static constexpr qint64 kSignMaxPoints     = 100000;   // 脚本返回值的上限（防手抖写成天文数字）
+// 断签惩罚（2026-11-17 用户口径）：断一天**不再把连续天数清零**，只从原连续天数里扣 3 天；
+// 扣成 0/负 才从 1 重新算。断几天都只扣一次 3 天，不按断签天数累乘。
+static constexpr quint32 kSignBreakPenalty = 3;
 
 // ════════════════════════════════════════════════════════════════════════════
 // 抽奖六指令（内置功能 → 抽奖）
@@ -1250,8 +1213,7 @@ bool QQBotClient::handleSignIn(const MessageEvent &ev)
     // ---- 1) 配置 ----
     QString cfg = m_info->qiandao;
     const bool isPy = cfg.trimmed().startsWith(QLatin1String("#python"));
-    // 空配置 = 静默模式：一天一次 +1000，但**一个字都不回**（连"今天已经签过"也不回）。
-    // 要说话就在群管「签到」里填文案，或写 #python 脚本。
+
     const bool silent = cfg.trimmed().isEmpty();
 
     // ---- 2) openid → 16 字节（长度不对就别签，免得给错人加分）----
@@ -1312,7 +1274,19 @@ bool QQBotClient::handleSignIn(const MessageEvent &ev)
             const bool cont = (rec.day + 1u == quint32(today));   // 昨天签过 = 连续
             rec.day    = quint32(today);
             rec.total  = rec.total + 1;
-            rec.streak = cont ? rec.streak + 1 : 1;
+            // 连续天数（2026-11-17 改）：昨天签过 → +1；
+            //   断签 → **不清零**，只从原连续天数里扣 kSignBreakPenalty(3) 天，
+            //          扣没了（<=3）才从 1 重新算。
+            //   · 断 1 天：10 天 → 7 天（再签一天就是 8）
+            //   · 断 N 天：一样只扣 3 天（不按断签天数累乘，绝不倒欠）
+            //   · 从没签过（day=0/total=0）→ 走这里也自然落到 1
+            if (cont) {
+                rec.streak = rec.streak + 1;
+            } else if (rec.streak > kSignBreakPenalty) {
+                rec.streak = rec.streak - kSignBreakPenalty;
+            } else {
+                rec.streak = 1;
+            }
             db->putSignRecord(openidBin, rec);
         }
     }
@@ -1331,8 +1305,139 @@ bool QQBotClient::handleSignIn(const MessageEvent &ev)
     text.replace("[余额]",     QString::number(balance));   // 总铃铛数
     text.replace("{余额}",     QString::number(balance));
 
+    text.replace("[总签到]",     QString::number(rec.total));   // 总铃铛数
+    text.replace("{总签到}",     QString::number(rec.total));
+
+    text.replace("[连续签到]",     QString::number(rec.streak));   // 总铃铛数
+    text.replace("{连续签到}",     QString::number(rec.streak));
     send_msgAsync(ev.type, ev.groupId, "[签到]", text, ev.msgId);
     return true;
+}
+
+// ==================== 签到聚合 ====================
+// 完整说明见 qqbotclient.h 里 signAggBegin() 上方那段注释。
+// 一句话：签到这一个事件里，插件们说的话先扣下来，3 秒后拼成一条「#签到结果」。
+
+// "|S12|0|123|xxxx" → 12；不是本机制（包括正常包装 "0|123|xxxx"）→ 0
+int QQBotClient::signAggTokenFromMsgId(const QString &msgid)
+{
+    if (!msgid.startsWith(QLatin1String("|S"))) return 0;
+    const int bar = msgid.indexOf(QLatin1Char('|'), 2);
+    if (bar <= 2) return 0;
+    bool ok = false;
+    const int token = msgid.mid(2, bar - 2).toInt(&ok);
+    return (ok && token > 0) ? token : 0;
+}
+
+// 收到「签到」时调：领一个 token（调用方把 msgId 改成 "|S<token>|<真实msgid>" 再交给插件）
+int QQBotClient::signAggBegin(int type, const QString &openid, const QString &msgId)
+{
+    if (msgId.isEmpty()) return 0;
+    int token = 0;
+    {
+        QMutexLocker lk(&m_signAggMutex);
+        token = ++m_signAggNext;
+        SignAgg a;
+        a.type    = type;
+        a.openid  = openid;
+        a.msgId   = msgId;
+        a.startMs = QDateTime::currentMSecsSinceEpoch();
+        a.dueMs   = a.startMs + kSignAggWaitMs;
+        m_signAggs.insert(token, a);
+    }
+    signAggArmTimer();          // 一个插件都没回也要到点清表
+    return token;
+}
+
+// 发送入口调：命中就收下正文并返回 true（调用方当发送成功，别真发）。
+bool QQBotClient::signAggIntercept(int token, const QString &fromUuid, const QString &text)
+{
+    if (token <= 0) return false;
+    const QString body = text.trimmed();
+    if (body.isEmpty()) return false;          // 空/纯空白 → 让它自己走发送（日志里至少留痕）
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker lk(&m_signAggMutex);
+        auto it = m_signAggs.find(token);
+        if (it == m_signAggs.end()) return false;   // 已结算 / 早超时 → 照常发，不吞
+        SignAgg &a = it.value();
+
+        // 插件名：pname 是**裸 uuid** → 借 pluginPnameText() 还原成 "[插件名|%1ms]" 再切掉方括号。
+        // 查不到（插件刚被卸载/改名）就原样用 uuid，至少还能看出是谁。
+        QString name = fromUuid;
+        const QString label = pluginPnameText(fromUuid);
+        if (!label.isEmpty()) {
+            const int bar = label.indexOf(QLatin1Char('|'));
+            name = (bar > 1) ? label.mid(1, bar - 1) : label;   // 有 '|' 就切到 '|' 前
+            if (name.startsWith(QLatin1Char('['))) name.remove(0, 1);
+            if (name.endsWith(QLatin1Char(']')))    name.chop(1);   // 没有 '|' 的兜底
+        }
+        SignAggItem item;
+        item.name = name;
+        item.text = body;
+        a.items.append(item);
+
+        // 有新回执 → 结算时间往后推，但整轮最长 kSignAggMaxMs（插件卡死也不能无限等）
+        qint64 due = now + kSignAggWaitMs;
+        if (due > a.startMs + kSignAggMaxMs) due = a.startMs + kSignAggMaxMs;
+        if (due > a.dueMs) a.dueMs = due;
+    }
+    signAggArmTimer();
+    return true;
+}
+
+// QTimer 只能在它所属线程 start；回执可能来自插件的工作线程（JS/Python/32 位桥）→ 投递到主线程。
+void QQBotClient::signAggArmTimer()
+{
+    if (QThread::currentThread() == thread()) {
+        m_signAggTimer.start(kSignAggTickMs);
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this] { m_signAggTimer.start(kSignAggTickMs); },
+                              Qt::QueuedConnection);
+}
+
+void QQBotClient::onSignAggTimeout()
+{
+    QList<SignAgg> due;
+    bool left = false;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker lk(&m_signAggMutex);
+        for (auto it = m_signAggs.begin(); it != m_signAggs.end(); ) {
+            if (now >= it.value().dueMs) {
+                due.append(it.value());
+                it = m_signAggs.erase(it);
+            } else {
+                left = true;
+                ++it;
+            }
+        }
+    }
+    // 发送放到锁外面（send_msgAsync 里会再进来 signAggTokenFromMsgId，锁可重入但没必要套着）
+    for (const SignAgg &a : std::as_const(due)) sendSignAggOne(a);
+    if (left) m_signAggTimer.start(kSignAggTickMs);
+}
+
+void QQBotClient::sendSignAggOne(const SignAgg &a)
+{
+    if (a.items.isEmpty()) return;      // 这轮没有任何插件回话 → 一个字都不发
+
+    QString text = QStringLiteral("#签到结果");
+    for (const SignAggItem &item : a.items) {
+        QString name = item.name.trimmed();
+        if (name.isEmpty()) name = QStringLiteral("插件");
+        text += QStringLiteral("\n**%1**").arg(name);
+        const QStringList lines = item.text.split(QLatin1Char('\n'));
+        for (const QString &ln : lines) {
+            const QString t = ln.trimmed();
+            if (t.isEmpty()) continue;   // 空行塞进去在 QQ 里就是断开了引用块
+            text += QStringLiteral("\n>%1").arg(t);
+        }
+    }
+    // pname 用 "[签到结果]"（带方括号 = 框架自己的话），否则会被自己的拦截再吞一次。
+    send_msgAsync(a.type, a.openid, QStringLiteral("[签到结果]"), text, a.msgId);
 }
 
 //在编译状态下 每次执行 耗时0.1ms 100us 测试包括上一级解析耗时 所以当你卡顿时 真的不是这里原因 理论秒 1w次
@@ -1866,7 +1971,14 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
     if (handleLottery(ev)) return;
 
     // 签到：配置在「群管 → 签到」（普通文本 = 模板 +1000/天，或 #python 脚本自定义加多少）
-    if(ev.msg=="签到") handleSignIn(ev);
+    // 顺手领一个「签到聚合」token：本事件交给**插件**的 msgid 等会儿会被打成 "|S<token>|<真实msgid>"，
+    // 插件照着回传时发送入口把正文扣下来，3 秒后统一拼成一条「#签到结果」（见 signAggBegin）。
+    int signAggTok = 0;
+    if(ev.msg=="签到")
+    {
+        handleSignIn(ev);                       // 先用自己的（干净的）msgid 回那条签到结果
+        signAggTok = signAggBegin(ev.type, ev.groupId, ev.msgId);
+    }
 
     if(ev.msg=="菜单" && !m_info->caidan.isEmpty())
     {
@@ -1900,6 +2012,15 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
             }
         }
     }
+
+    // 签到聚合：从这里开始，事件里的 msgid 变成 "|S<token>|<真实msgid>" ——
+    //   交给插件的 d["id"] / ev.msgId 都是这个串，插件原样回传时发送入口就认得出来，
+    //   把正文扣下（绝不真发），3 秒后拼成一条「#签到结果」。
+    //   ⚠ 一定要放在 handleSignIn 之后：框架自己那条签到结果要用**干净**的 msgid 立刻发。
+    //   splitWrappedMsgId 对这种标记解析出 index = -1（第 1 段 "S12" 不是数字）→
+    //   所有「按 index 改日志 / 并进入站那条」的分支自动跳过，而真实 msgid 仍在第二个 '|' 之后。
+    if(signAggTok > 0)
+        ev.msgId = QStringLiteral("|S%1|%2").arg(signAggTok).arg(ev.msgId);
 
     d["content"] = ev.msg;
     d["id"] = ev.msgId;

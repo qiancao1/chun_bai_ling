@@ -23,10 +23,16 @@
 // 插件侧函数名与地址都在 ui/pluginpage.h + PluginInfo 里定死，加载插件时就取好了：
 //   get_review_list(开始位置:int, 数量:int, 状态:int) -> JSON 文本 {"总数量":xx,"data":[{"id":整数,"name":"..","id2":".."}]}
 //       状态（第 3 个参数）：1=待审核  2=已审核（复用批量审核的「加载待审核/加载已审核」按钮切换）
-//   submit_review(JSON文本) -> 任意文本    入参 {"状态":"同意"/"拒绝","data":[...]}
+//   submit_review(JSON文本) -> 任意文本    入参 {"op":true/false,"data":[...]}（true = 同意）
 //   Python  → PythonPluginobj::getReviewList / submitReview（py::object，加载时为 py::object() 表示未实现）
 //   原生库  → DLLPluginobj::getReviewList / submitReview（空指针表示未实现）
-// 这里调用时直接用缓存的地址，不再按名字查模块/符号。
+//   32 位   → 这个进程里**没有它的符号**，也不需要插件声明函数值：宿主在 32 位进程里按名字
+//             取 plugins[i].get_review_list / submit_review（和 get_config_list 完全一样），
+//             框架只发 {"type":14|15,"uuid":..}，走共享内存（与 type 12/13 同一条通道：
+//             任务槽目标 1 + reqid），宿主处理完用 `_post4(1831501026, reqid, "", 结果)` 回吐
+//             （见 PluginPage::reviewList32）。插件没实现这两个函数时宿主回空串，不报错。
+// 这里调用时直接用缓存的地址（32 位走 PluginPage::reviewList32 / reviewSubmit32），
+// 不再按名字查模块/符号。
 
 // 判断 py::object 是否是「可用的可调用对象」
 // 注意：pybind11 的 is_none() 实现是 ptr()==Py_None，对**空句柄**(m_ptr==nullptr)返回 false，
@@ -106,11 +112,7 @@ static QByteArray makeKey(uint32_t appId, uint32_t userSeqId) {
     return key;
 }
 
-// 插件是否真的带昵称审核功能（点「扫描审核插件」时按这个挑）
-//   Python → get_review_list 句柄存在且可调用（空句柄判空不需要 GIL，但 is_none/PyCallable_Check 要持）
-//   原生库 → 导出的函数指针非空
-// ⚠ 这一步只是「结构上像」，SDK 基类普遍都实现了 get_review_list（返回空表），
-//   所以真正算不算还得靠 pluginProbeReview() 真调一次看有没有数据。
+
 static bool pluginHasReview(const PluginInfo &info)
 {
     if (!info.enabled) return false;
@@ -121,6 +123,8 @@ static bool pluginHasReview(const PluginInfo &info)
         return pyObjectCallable(fn);
     }
     if (info.type == 1) return info.DLL.getReviewList != nullptr;
+
+    if (info.type == 2) return true;
     return false;
 }
 
@@ -153,9 +157,7 @@ static bool reviewJsonHasData(const QString &json)
 NickReviewWidget::NickReviewWidget(QWidget *parent)
     : QWidget(parent), m_model(new QStandardItemModel(this))
 {
-    // 审核插件名单 = 上次点「扫描审核插件」扫到的（存配置里，不再跟插件列表同步）
-    // ⚠ 用 value() 不用 operator[]：后者可能在 key 不存在时插一个 Undefined，
-    //   让 showEvent 里「配置里还没有这份名单 → 自动扫一次」的判断永远为假。
+
     const QJsonArray saved = g_config.value("reviewPlugins").toArray();
     for (const auto &v : saved) {
         const QString n = v.toString();
@@ -181,8 +183,7 @@ void NickReviewWidget::setupUI() {
     m_modeCombo = new QComboBox;
     m_modeCombo->addItem("申请审核", (int)Mode::Application);
     m_modeCombo->addItem("批量审核", (int)Mode::BatchUser);
-    // 插件审核：只填「扫描名单」里的插件（data = -(下标+1) 标记为插件模式）。
-    // 从没扫过 → 下拉框里就只有申请/批量两项，点右边的「扫描审核插件」扫一次才会出现插件项。
+
     m_modeCombo->blockSignals(true);
     fillPluginItems();
     m_modeCombo->setCurrentIndex(0);
@@ -193,6 +194,35 @@ void NickReviewWidget::setupUI() {
     m_btnScanPlugins->setToolTip("扫描已启用的插件，把实现了 get_review_list / submit_review 的加进左边的下拉框并记住。\n"
                                  "下拉框只认这份名单，之后不会再跟着插件列表自动变化。");
     connect(m_btnScanPlugins, &QPushButton::clicked, this, &NickReviewWidget::onScanPlugins);
+
+    // 每页加载条数（原来写死 500）。改完存配置，下次启动照旧。
+    // 只影响「批量审核 / 插件审核」这两种分页模式（申请审核是一整张表，不分页）。
+    int savedPageSize = 500;
+    if (g_config.contains("reviewPageSize")) {
+        const int v = g_config.value("reviewPageSize").toInt();
+        if (v > 0) savedPageSize = v;
+    }
+    m_pageSize = qBound(1, savedPageSize, 100000);
+    m_pageSizeSpin = new QSpinBox;
+    m_pageSizeSpin->setRange(1, 100000);
+    m_pageSizeSpin->setSingleStep(50);
+    m_pageSizeSpin->setValue(m_pageSize);
+    m_pageSizeSpin->setPrefix("数量 ");          // 顶部空间紧，用前缀代替单独一行标签
+    m_pageSizeSpin->setFixedWidth(108);
+    m_pageSizeSpin->setToolTip("每次向插件 / 本地库加载多少条（默认 500）。\n"
+                               "改完会记住，并回到第一页重新加载。");
+    m_pageSizeSpin->setKeyboardTracking(false);  // 边打字边 valueChanged 会一直重载，敲回车/失焦才生效
+    connect(m_pageSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this](int v){
+        m_pageSize = qMax(1, v);
+        g_config["reviewPageSize"] = m_pageSize;
+        saveConfig();
+        m_currentPage = 0;                       // 每页条数变了，页码跟着回第一页
+        if (m_mode == Mode::BatchUser || m_mode == Mode::Plugin)
+            refresh();                           // 申请模式不分页，别去动它的表（可能正在勾选）
+        else
+            updatePageLabel();
+    });
 
     connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &NickReviewWidget::onModeChanged);
@@ -227,6 +257,7 @@ void NickReviewWidget::setupUI() {
     topLayout->addWidget(titleLabel);
     topLayout->addWidget(m_modeCombo);
     topLayout->addWidget(m_btnScanPlugins);   // 紧挨下拉框：「扫描审核插件」
+    topLayout->addWidget(m_pageSizeSpin);     // 每页加载条数（原写死 500）
     topLayout->addWidget(m_aimode);
     topLayout->addWidget(btnAis);
     //topLayout->addWidget(m_ss);
@@ -468,9 +499,9 @@ void NickReviewWidget::scanReviewPlugins(bool showTip)
 
     const QString skippedNote = noData.isEmpty()
         ? QString()
-        : QString("\n\n另有 %1 个插件带 %2 但取不到数据（SDK 默认空实现就是这种），已跳过：\n%3")
+        : QString("\n\n另有 %1 个插件取不到审核数据（没实现 / 返回空表 / 32 位宿主还没支持"
+                  " type 14），已跳过：\n%2")
               .arg(noData.size())
-              .arg(QString::fromUtf8(kPluginFuncGetReviewList))
               .arg(noData.join("\n"));
 
     if (found.isEmpty()) {
@@ -508,7 +539,10 @@ void NickReviewWidget::loadFromPluginPage(int start, int count, int state) {
         return;
     }
     QJsonObject obj = doc.object();
-    m_totalCount = (int)obj.value("total").toDouble();
+    // total / 总数量 都认，数字或字符串都认（与 reviewJsonHasData 同口径）
+    int total = jsonIntLoose(obj.value("total"));
+    if (total <= 0) total = jsonIntLoose(obj.value("总数量"));
+    m_totalCount = total;
     updatePageLabel();
 
     QStringList headers;
@@ -543,9 +577,13 @@ void NickReviewWidget::submitPluginReview(bool approved) {
         return;
     }
     const PluginInfo &pi = m_pluginList[m_pluginIndex];
-    // 先确认插件实现了 submit_review（空句柄/空指针判空都不需要 GIL）
-    bool impl = (pi.type == 0) ? bool(pi.python.submitReview)
-                               : (pi.type == 1 && pi.DLL.submitReview != nullptr);
+    // 先确认插件实现了 submit_review（空句柄/空指针判空都不需要 GIL）。
+    // 32 位没法在结构上判断：函数由宿主在 32 位进程里按名字取，没实现时宿主会回空串
+    // （不会卡住），所以这里直接放行，让宿主自己去判断。
+    bool impl = false;
+    if (pi.type == 0)      impl = bool(pi.python.submitReview);
+    else if (pi.type == 1) impl = (pi.DLL.submitReview != nullptr);
+    else if (pi.type == 2) impl = true;
     if (!impl) {
         QMessageBox::warning(this, "提示",
             QString("插件「%1」未实现 %2(data)")
@@ -572,12 +610,22 @@ void NickReviewWidget::submitPluginReview(bool approved) {
     QString json = QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 
     QString ret = pluginCallStr(m_pluginIndex, json);
+    const QString opName = approved ? QStringLiteral("同意") : QStringLiteral("拒绝");
 
-    if (ret.isEmpty())
+    if (ret.isEmpty()) {
+        // 32 位是共享内存投递 + reqid 回执：宿主调完 submit_review 后会回吐（插件没返回值
+        // 就是空串 —— 正常现象），所以空返回不代表失败。真没回执时这里会先等满 5 秒。
+        const QString extra = (pi.type == 2)
+            ? QStringLiteral("\n（32 位插件不回传文本属正常；若刚才界面停顿了 5 秒，"
+                             "说明宿主没回执，实际是否处理以「加载已审核」为准）")
+            : QString();
         QMessageBox::information(this, "投递完成",
-            QString("已投递给插件「%1」：%2").arg(pi.name, obj["状态"].toString()));
-    else
-        QMessageBox::information(this, "投递完成", "插件返回：" + ret);
+            QString("已投递给插件「%1」：%2，共 %3 项%4")
+                .arg(pi.name, opName).arg(arr.size()).arg(extra));
+    } else {
+        QMessageBox::information(this, "投递完成",
+            QString("插件「%1」返回（%2）：%3").arg(pi.name, opName, ret));
+    }
     refresh();
 }
 
@@ -619,6 +667,13 @@ QString NickReviewWidget::pluginCallInts(int idx, int start, int count, int stat
         }
         const char *r = info.DLL.getReviewList(start, count, state);
         return r ? QString::fromUtf8(r) : QString();
+    }
+    if (info.type == 2) {                       // 32 位 / 易语言：共享内存 type 14 + reqid
+        if (!pluginPage) {
+            qWarning() << "NickReviewWidget: 32 位插件审核需要 PluginPage（共享内存桥的持有者）";
+            return QString();
+        }
+        return pluginPage->reviewList32(info, start, count, state, (int)m_appid);
     }
     qWarning() << "NickReviewWidget: 该插件类型不支持审核调用 type=" << info.type;
     return QString();
@@ -663,6 +718,13 @@ QString NickReviewWidget::pluginCallStr(int idx, const QString &argJson) {
         QByteArray utf8 = argJson.toUtf8();
         const char *r = info.DLL.submitReview(utf8.constData());
         return r ? QString::fromUtf8(r) : QString();
+    }
+    if (info.type == 2) {                       // 32 位 / 易语言：共享内存 type 15 + reqid
+        if (!pluginPage) {
+            qWarning() << "NickReviewWidget: 32 位插件审核需要 PluginPage（共享内存桥的持有者）";
+            return QString();
+        }
+        return pluginPage->reviewSubmit32(info, argJson, (int)m_appid);
     }
     qWarning() << "NickReviewWidget: 该插件类型不支持审核调用 type=" << info.type;
     return QString();

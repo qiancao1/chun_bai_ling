@@ -6162,6 +6162,24 @@ QString QQBotClient::send_msgAsync(int type, const QString &openid,const QString
     if(recallSec==1) recallSec=2;
     if(type<0 || type >3 ) return R"({"msg":"发送类型错误 不在0-3之间"})";
 
+    // ── 签到聚合（2026-11-17）──
+    //   用户发一句「签到」，几个插件各回各的会刷屏 → 改成一整条「#签到结果」发出去。
+    //   收消息时（qqbotclient.cpp 的 parseMessageEvent）已经把交给插件的 msgid 打成了
+    //   "|S<token>|<真实msgid>"；插件照着回传时在这里认出 token，正文**扣下来**、当发送成功返回。
+    //   · 只收**插件发的**：插件侧 pname 是**裸 uuid**，框架自己的回复一律以 '[' 开头（"[签到]"、
+    //     "[私有指令]"…）→ 那些照常立刻发，一个字都不改；本机制自己拼的合并消息 pname 是
+    //     "[签到结果]"（也带 '['）→ 不会被自己二次吞。
+    //   · 3 秒后由 QQBotClient 的定时器统一拼发（见 qqbotclient.h 的 signAggBegin）。
+    //   · token 过期 / 已结算 → signAggIntercept 返回 false → 消息照常发出去（绝不吞消息）。
+    if (msgid.contains(QLatin1Char('|')) && !pname.startsWith(QLatin1Char('['))) {
+        const int signAggTok = QQBotClient::signAggTokenFromMsgId(msgid);
+        if (signAggTok > 0 && signAggIntercept(signAggTok, pname, text)) {
+            // Python / JS 的 *_async 在等回执：给一个和真发送成功一样的 "{}"，别让协程挂到超时。
+            if (cb) cb(QStringLiteral("{}"), QNetworkReply::NoError);
+            return QStringLiteral("{}");
+        }
+    }
+
     // #^ / #$ 前缀（摘掉标签 + 强制本次的发送方式）；没写前缀的话 mode/sendType 原样
     stripSendPrefix(text, mode, sendType);
 

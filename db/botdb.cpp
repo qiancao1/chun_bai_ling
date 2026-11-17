@@ -2489,3 +2489,96 @@ bool BotDB::batchAddFriends(const QList<uint32_t>& userSeqIds, uint32_t addTimeM
         return MDB_SUCCESS;
     });
 }
+
+// ==================== 批量导入好友（CSV 导入 union_openid）====================
+// 好友表（friends）的 key 是 **seq_id**，而外部数据只有 openid →
+// 必须先保证 users 子库里存在这条 openid 记录（顺带写 seq_to_openid），才算「这个人存在」。
+// 整批塞进一个写事务：中途任何一次 mdb 报错都整批回滚，不会出现「导了一半」的脏数据
+//（用户反馈「导入进库就不好删」，所以宁可全失败也不要半成功）。
+int BotDB::batchImportFriends(const QStringList &openidHexList, uint32_t addTimeMinutes,
+                              int *outNew, int *outAlready, QStringList *outInvalid)
+{
+    int newCount = 0;
+    int alreadyCount = 0;
+    QStringList invalid;
+    if (outNew) *outNew = 0;
+    if (outAlready) *outAlready = 0;
+    if (outInvalid) outInvalid->clear();
+    if (openidHexList.isEmpty() || !m_env) return 0;
+
+    bool ok = retryWrite([&](MDB_txn *txn) -> int {
+        // writeFunc 在 MAP_FULL 扩容后会被重新调用 → 计数必须每次重来
+        newCount = 0;
+        alreadyCount = 0;
+        invalid.clear();
+
+        for (const QString &raw : openidHexList) {
+            const QString hex = raw.trimmed().toUpper();
+            QByteArray keyData = QByteArray::fromHex(hex.toUtf8());
+            // 只认 32 位十六进制（= 16 字节 openid）；其余当无效行丢掉，不打断整批
+            if (hex.size() != 32 || keyData.size() != 16) {
+                invalid.append(raw.trimmed());
+                continue;
+            }
+
+            // ---- 1. 用户档案：有就取 seq_id，没有就分配一个新号建档 ----
+            uint32_t seq = 0;
+            UserRecord rec{};
+            int readRc = MDB_NOTFOUND;
+            if (getRecord(txn, m_dbi_users, keyData, &rec, sizeof(rec), &readRc)) {
+                seq = rec.seq_id;
+            } else if (readRc != MDB_NOTFOUND) {
+                return readRc;                 // 读失败 ≠ 不存在，整批放弃
+            } else {
+                const uint32_t newSeq = getNextSeqId(txn);
+                if (newSeq == 0) return -1;
+                rec = UserRecord{};
+                rec.seq_id = newSeq;
+                rec.record_time = nowMinutes();
+                rec.invited_group_count = 0;
+                rec.nickname[0] = '\0';        // 导入时没有昵称，等用户下次说话自动补
+                rec.name[0] = '\0';
+                int rc = putRecord(txn, m_dbi_users, keyData, &rec, sizeof(rec));
+                if (rc != MDB_SUCCESS) return rc;
+                if (!saveSeqToOpenId(txn, newSeq, keyData)) return -1;
+                seq = newSeq;
+            }
+            if (seq == 0) {                    // 档案里的 seq_id 是坏的（0），不能用
+                invalid.append(hex);
+                continue;
+            }
+
+            // 老记录可能只有 users 没有 seq_to_openid（历史遗留）→ 补一条，否则推送时取不到 openid
+            {
+                QByteArray mapped;
+                if (!getOpenIdBySeq(txn, seq, mapped)) {
+                    if (!saveSeqToOpenId(txn, seq, keyData)) return -1;
+                }
+            }
+
+            // ---- 2. 好友表：key = seq_id，value = addTimeMinutes ----
+            const QByteArray fkey(reinterpret_cast<const char*>(&seq), sizeof(seq));
+            MDB_val k, v;
+            k.mv_data = const_cast<char*>(fkey.constData());
+            k.mv_size = fkey.size();
+            int frc = mdb_get(txn, m_dbi_friends, &k, &v);
+            if (frc == MDB_NOTFOUND) {
+                frc = putRecord(txn, m_dbi_friends, fkey, &addTimeMinutes, sizeof(addTimeMinutes));
+                if (frc != MDB_SUCCESS) return frc;
+                ++newCount;
+            } else if (frc != MDB_SUCCESS) {
+                return frc;
+            } else {
+                ++alreadyCount;                // 已经是好友：保留原来的 add_time，不覆盖
+            }
+        }
+        return MDB_SUCCESS;
+    });
+
+    if (!ok) return -1;
+
+    if (outNew) *outNew = newCount;
+    if (outAlready) *outAlready = alreadyCount;
+    if (outInvalid) *outInvalid = invalid;
+    return newCount;
+}

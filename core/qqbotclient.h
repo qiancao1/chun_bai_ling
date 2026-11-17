@@ -214,6 +214,23 @@ public:
     // 签到（「群管 → 签到」那段配置）：一天一次（非 py 模式）/ #python 脚本自己决定。
     // 返回 true = 已经处理并回过消息（调用方直接 return）。
     bool handleSignIn(const MessageEvent &ev);
+
+    // ── 签到聚合（2026-11-17）──
+    // 背景：用户发一句「签到」，好几个插件各回各的（签到成功+100 / 领到鱼饵x3 …），一串消息刷屏。
+    // 做法：
+    //   1) 收到「签到」时 signAggBegin() 领一个 token，把**交给插件的 msgid** 打成 "|S<token>|<真实msgid>"；
+    //   2) 插件照着把 msgid 回传时，发送入口 send_msgAsync 用 signAggTokenFromMsgId() 认出 token
+    //      → signAggIntercept() 把正文**扣下来**、当发送成功返回（不 POST、不写日志、一个字都不出）；
+    //   3) 3 秒后（最后一条回执再往后 3 秒，总上限 10 秒）由主线程定时器拼成一条发出去：
+    //        #签到结果
+    //        **插件名**
+    //        >插件返回内容
+    //     （有几条回执就几个 "**插件名** + >正文" 块）
+    // 只收**插件发的**（pname 是裸 uuid）；框架自己的回复 pname 一律以 '[' 开头（如 "[签到]"），
+    // 照常立刻发，不参与聚合。token 过期/已结算 → 拦截返回 false，消息照常发出（绝不吞消息）。
+    int  signAggBegin(int type, const QString &openid, const QString &msgId);
+    bool signAggIntercept(int token, const QString &fromUuid, const QString &text);  // 任意线程可调
+    static int signAggTokenFromMsgId(const QString &msgid);   // "|S12|…" → 12（不是本机制 = 0）
     // 抽奖六指令（内置功能 → 抽奖）：#参与抽奖<ID> / #我的抽奖 / #领取抽奖<ID> /
     // #抽奖帮助（可点按钮）/ #历史抽奖 / #抽奖名单<ID>（领取凭证就是抽奖 ID，按 openid 认人）。
     // 返回 true = 这条消息就是抽奖指令（已处理并回过消息），调用方直接 return；
@@ -616,6 +633,30 @@ private:
     static std::atomic<bool> s_recallStarted;      // 定时器是否已启动（避免重复投递）
     static std::atomic<bool> s_recallPosted;       // 是否已投递过「去主线程启动」
     void freeRecallChunks();    // 析构时统一释放所有块
+
+    // ── 签到聚合（见上面 signAggBegin 的说明）──
+    struct SignAggItem {
+        QString name;      // 插件显示名（"纯白世界"），已去掉方括号
+        QString text;      // 插件想发的那段正文（原样，未做 []() 重定向）
+    };
+    struct SignAgg {
+        int     type   = 0;      // 发送用的 type（0 群 / 2 私聊 …）
+        QString openid;
+        QString msgId;           // **真实** msgid —— 被动回复要用它
+        qint64  startMs = 0;     // 这轮签到的时刻
+        qint64  dueMs   = 0;     // 结算时刻（新回执会往后推，但不超过 startMs + kSignAggMaxMs）
+        QList<SignAggItem> items;
+    };
+    QMutex            m_signAggMutex;   // 回执可能来自插件的工作线程 → 表要加锁
+    QHash<int, SignAgg> m_signAggs;
+    int               m_signAggNext = 0;
+    QTimer            m_signAggTimer;   // 主线程（构造里 connect），待结算期间 500ms 一跳
+    void signAggArmTimer();             // 拉起定时器（跨线程会投递到主线程）
+    void onSignAggTimeout();            // 定时器到点：把到期的拼成一条发掉
+    void sendSignAggOne(const SignAgg &a);
+    static constexpr int kSignAggWaitMs = 3000;    // 起始等待
+    static constexpr int kSignAggMaxMs  = 10000;   // 总上限（插件太慢就不再等了）
+    static constexpr int kSignAggTickMs = 500;     // 定时器粒度
 
     QString m_accessToken,m_accessToken2;              // 运行时 token
     qint64 m_tokenExpireTime;           // 过期时间戳（秒）
