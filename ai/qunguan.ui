@@ -164,7 +164,30 @@
           </size>
          </property>
          <property name="toolTip">
-          <string>机器人发出去的消息多少秒后自动撤回（0=不撤，上限110秒）。按群生效：群里发「开自动撤回」后才撤。</string>
+          <string>机器人发出去的消息多少秒后自动撤回（0=不撤，上限110秒）。按群生效：群设了撤回挡位以群为准，群没设置就按右边「概率撤回(%)」随机撤。</string>
+         </property>
+         <property name="placeholderText">
+          <string>0</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_8">
+         <property name="text">
+          <string>概率撤回(%)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="lineEdit_6">
+         <property name="maximumSize">
+          <size>
+           <width>90</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="toolTip">
+          <string>0=不撤，100=全部撤回。群没单独设置撤回挡位时按这个百分比随机撤（群设了挡位则以群为准）。</string>
          </property>
          <property name="placeholderText">
           <string>0</string>

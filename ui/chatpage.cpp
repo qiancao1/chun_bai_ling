@@ -1920,7 +1920,11 @@ static QString formatGroupStateSwitches(int appid, const QString &groupId)
     t += QString("　　自动同意加群：%1（代管 %2/20）\n")
              .arg(sw(bm & BIT_AUTO_JOJN)).arg(tuoguan);
     t += QString("　　违禁词检测：%1\n").arg(sw(bm & BIT_PUNISH));
-    t += QString("　　自动撤回：%1").arg(sw(bm & BIT_AUTO_RECALL));
+    // 自动撤回是「两位挡位」（0=未设置 1=全部 2=75% 3=50%），不能只显示开关
+    const int reclv = recallLevelFromBitmap(bm);
+    t += QString("　　自动撤回：%1").arg(
+             reclv > 0 ? QString("✅ %1%").arg(recallLevelPercent(reclv))
+                       : QStringLiteral("❌ 关"));
     return t;
 }
 

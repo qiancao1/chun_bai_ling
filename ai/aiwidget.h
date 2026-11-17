@@ -145,7 +145,7 @@ class AiWidget : public QWidget
 public:
     explicit AiWidget(QWidget *parent = nullptr);
     ~AiWidget();
-    QString Ai_post(AccountInfo *info, const MessageEvent &ev);
+    QString Ai_post(AccountInfo *info, const MessageEvent &ev, int index2);
 
     QString Ai_post(const QString &model, const QString &msg, int type);
     // 异步版 Ai_post(model,msg,timeout)：按模型名解析接口/key，结果一次性回调。

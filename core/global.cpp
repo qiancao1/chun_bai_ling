@@ -556,7 +556,7 @@ void botnomsg(int appid,int type,const QString &openid,const QString &msgid,int 
     auto [index, realMsgId] = splitWrappedMsgId(msgid, type);
     if(index<0) return;
     int n = g_logdb [tabIndex]->incrementBufferStatus2(index,addint+1); //32位额外+1
-    if(n >= 250) return; //255代表被处理了
+    if(n >= 200) return; //255代表被处理了
     if(n >= 3)
     {
         // 正文从日志库里取（msgid 里的编号 = 这条消息在 g_logdb[tabIndex] 里的 seq）
@@ -1940,7 +1940,7 @@ QString admin_zl(AccountInfo *info,MessageEvent &ev)
                     "[开自动同意加群]() | [关自动同意加群]()\n>"
                     "[设置自动同意加群答案]()\n>"
                     "[开刷屏检测](设置刷屏检测) | [关刷屏检测](取消刷屏检测)\n>"
-                    "[开自动撤回]() | [关自动撤回]() 本群发出去的秒数撤回(秒数在电脑端设)\n>"
+                    "[开自动撤回]() | [开自动撤回75]() | [开自动撤回50]() | [关自动撤回]() 本群发出去的消息撤回(秒数在电脑端设，群没设置就按账号的概率撤回)\n>"
                     "[开入群提示](设置入群提示) | [关入群提示](取消入群提示)\n>[开退群提示](设置退群提示) | [关退群提示](取消退群提示)\n\n---\n\n需要群主或者管理才能触发指令";
         }
         return QString();
@@ -2378,7 +2378,8 @@ void Messages(AccountInfo *info,MessageEvent &ev) {
             if(index<0) return;
             int n = g_logdb [ev.type+1]->getBufferStatus(index);
             if(n >= 250) return; //255代表被处理了
-            ret = ai_ui->Ai_post(info,ev);
+
+            ret = ai_ui->Ai_post(info,ev,index);
         }
     }
     if(ret=="*") return;
@@ -2727,6 +2728,9 @@ static bool isGroupManageCmd(const QString &rawMsg)
         return hasMention(s) || kId32.match(s).hasMatch();
     };
 
+    if (msg.startsWith(QStringLiteral("开自动撤回"))) {    // 开自动撤回[75|50]，不带数字 = 全部撤回
+        return true;
+    }
     if (msg.startsWith(QStringLiteral("禁言"))) {          // 禁言 <@id> [秒/分钟/月]
         return hasTarget(msg);
     }
@@ -2867,8 +2871,12 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                 text.append("入群验证\n>");
                 text.append(ev.bitmap & BIT_AUTO_JOJN_KG ? "✅" : "❌");
                 text.append("入群申请提示\n>");
-                text.append(ev.bitmap & BIT_AUTO_RECALL ? "✅" : "❌");
-                text.append("自动撤回\n>");
+                // 自动撤回是「两位挡位」：0=未设置 1=全部 2=75% 3=50%，所以不能只显示 ✅/❌
+                const int reclv = recallLevelFromBitmap(ev.bitmap);
+                text.append(reclv ? "✅" : "❌");
+                text.append("自动撤回");
+                if (reclv > 0) text.append(QString("(%1%)").arg(recallLevelPercent(reclv)));
+                text.append("\n>");
 
 
 
@@ -3259,27 +3267,36 @@ QString ruqunhy(AccountInfo *info, const MessageEvent &ev)
                     return QString("[撤回] 撤回完成，但可能未达到指定数量（已撤回 %1 条）").arg(deleted);
                 }
             }
-            // 自动撤回：群级开关（bitmap 位），真正撤多少秒看电脑端「机器人管理 → 自动撤回(秒)」
+            // 自动撤回：群级挡位（bitmap 两位组合），真正撤多少秒看电脑端「机器人管理 → 自动撤回(秒)」
+            //   挡位：1 = 全部撤回(100%)、2 = 75%、3 = 50%；群里没设置(0) 时回落到账号的「概率撤回(%)」
+            //   指令：开自动撤回 / 开自动撤回75 / 开自动撤回50（数字后面带 % 也认）
             // ⚠ 故意不判 ev.bot_admin：撤的是机器人自己发的消息，不需要机器人是管理员
-            if (ev.msg == "开自动撤回") {
-                if (ev.bitmap & BIT_AUTO_RECALL)  return "本群已经开启 自动撤回";
+            if (ev.msg.startsWith("开自动撤回")) {
+                int lv = 1;                                    // 不带数字 = 老行为 = 全部撤回
+                if (ev.msg.contains("75"))      lv = 2;
+                else if (ev.msg.contains("50")) lv = 3;
                 auto git = g_botdb.find(info->appid_int);
                 if (git == g_botdb.end() || !git.value()) return "开启失败：本地没有该机器人的群数据库";
                 auto *db = git.value();
                 GroupRecord2 gid;
                 db->getGroupInfo(ev.groupId, gid);
-                gid.bitmap |= BIT_AUTO_RECALL;
+                if (recallLevelFromBitmap(gid.bitmap) == lv)
+                    return QString("本群已经开启 自动撤回（%1%）").arg(recallLevelPercent(lv));
+                gid.bitmap &= ~(BIT_AUTO_RECALL | BIT_AUTO_RECALL_LV);
+                if (lv & 1) gid.bitmap |= BIT_AUTO_RECALL;
+                if (lv & 2) gid.bitmap |= BIT_AUTO_RECALL_LV;
                 db->addGroup(ev.groupId, gid);
-                return "开启自动撤回成功 撤回秒数在电脑端 机器人管理 页的「自动撤回(秒)」设置";
+                return QString("开启自动撤回成功（%1%） 撤回秒数在电脑端 机器人管理 页的「自动撤回(秒)」设置")
+                        .arg(recallLevelPercent(lv));
             }
             if (ev.msg == "关自动撤回") {
-                if (!(ev.bitmap & BIT_AUTO_RECALL))  return "本群已经关闭 自动撤回";
+                if (recallLevelFromBitmap(ev.bitmap) == 0)  return "本群已经关闭 自动撤回";
                 auto git = g_botdb.find(info->appid_int);
                 if (git == g_botdb.end() || !git.value()) return "关闭失败：本地没有该机器人的群数据库";
                 auto *db = git.value();
                 GroupRecord2 gid;
                 db->getGroupInfo(ev.groupId, gid);
-                gid.bitmap &= ~BIT_AUTO_RECALL;
+                gid.bitmap &= ~(BIT_AUTO_RECALL | BIT_AUTO_RECALL_LV);
                 db->addGroup(ev.groupId, gid);
                 return "关闭自动撤回成功";
             }

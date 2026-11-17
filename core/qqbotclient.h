@@ -279,6 +279,8 @@ public:
     QString get_groups_list(const QString &cursor, Callback callbacks=Callback());
 
     QString get_users_list(const QString &cursor, Callback callbacks=Callback());
+    // 获取用户基本信息：GET /v2/users/{user_openid}/info（10 QPS），返回 username / avatar 等
+    QString get_user_info(const QString &userOpenid, Callback callbacks=Callback());
     //回应回调
     QString respond_interaction(const QString &interaction_id, int code, const QString &data = QString(), Callback callbacks = Callback());
     QString get_groups_info(const QString& group,Callback callbacks=Callback());
@@ -334,7 +336,7 @@ public:
     void uploadMediaImage(const QString &filePath, MediaImageDone onDone);
 void parseMessageEvent(QJsonObject &payload,const QString &text);
 
-void countRewardedAd();
+
 
 public slots:
     void onTextMessageReceived(const QString &message);

@@ -83,15 +83,17 @@
 #include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
-#define APP_VERSION_STR "v1.5.7.195"
-#define APP_BUILD_NUMBER 195
+#define APP_VERSION_STR "v1.5.8.198"
+#define APP_BUILD_NUMBER 198
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.8.195  (2026-11-14)
+## v1.5.8.198  (2026-11-17)
 - 增加 内置功能 抽奖
 - 优化 首页排版 增加新的统计
 - 增加 ai决策明显 之前一种是用自身
+- 优化 缓存数据库 蓝字标签转换
+- 修复 ai私聊 开了指令无响应 不可用问题
 
 ## v1.5.7.193  (2026-11-12)
 - 优化 允许自定义自动撤回 不写在 纯白铃指令 但是完整纯白铃指令有

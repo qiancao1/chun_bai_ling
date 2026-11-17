@@ -1588,10 +1588,14 @@ const AcctField kBasicFields[] = {
     { "tq_lq", "退群提醒 CD(秒)", "int", "delay", "同一个人退群提醒的最小间隔", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.tq_lq); },
       [](AccountInfo &a, const QJsonValue &v) { a.tq_lq = jsonToInt(v); } },
-    // 自动撤回：0 = 不撤；只在该群 bitmap 开了 BIT_AUTO_RECALL（群里发「开自动撤回」）时生效
-    { "auto_recall", "自动撤回(秒)", "int", "delay", "机器人发出去的消息多少秒后自动撤回（0=不撤，上限110）；群里开了「自动撤回」才生效", nullptr,
+    // 自动撤回：0 = 不撤。撤不撤由「群挡位优先、账号概率兜底」决定（见 api2.cpp addmsglog）
+    { "auto_recall", "自动撤回(秒)", "int", "delay", "机器人发出去的消息多少秒后自动撤回（0=不撤，上限110）；还要通过下面「概率撤回」的百分比判定", nullptr,
       [](const AccountInfo &a) { return QJsonValue(a.auto_recall); },
       [](AccountInfo &a, const QJsonValue &v) { a.auto_recall = jsonToInt(v); } },
+    // 概率撤回：只在「群没设置撤回挡位」时生效；群设了挡位（全撤/75%/50%）以群为准
+    { "recall_prob", "概率撤回(%)", "int", "delay", "0=不撤，100=全部撤回。群没单独设置撤回挡位时按这个百分比随机撤；群设了挡位就以群为准", nullptr,
+      [](const AccountInfo &a) { return QJsonValue(a.recall_prob); },
+      [](AccountInfo &a, const QJsonValue &v) { a.recall_prob = qBound(0, jsonToInt(v), 100); } },
 
     // 开关
     { "autoht", "自动回应回调", "bool", "switch", "收到需要回调的事件时自动回应", nullptr,

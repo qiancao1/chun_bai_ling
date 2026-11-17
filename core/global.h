@@ -77,8 +77,31 @@ enum BitMask {
     BIT_ADMIN= 1<<7,  //机器人是否管理员
     BIT_PUNISH = 1<<8, //违禁词检测
     BIT_RUQUN_YZ = 1<<9,  //入群验证
-    BIT_AUTO_RECALL = 1<<10  //本群开启自动撤回（配合账号设置里的「自动撤回(秒)」，addmsglog 查这一位）
+    BIT_AUTO_RECALL = 1<<10,  //本群开启自动撤回（配合账号设置里的「自动撤回(秒)」，addmsglog 查这一位）
+    BIT_AUTO_RECALL_LV = 1<<11 //自动撤回挡位的第 2 位（和 BIT_AUTO_RECALL 组合成 0~3，见 recallLevelFromBitmap）
 };
+
+// 群「自动撤回」挡位 = BIT_AUTO_RECALL(低位) + BIT_AUTO_RECALL_LV(高位) 两位组合：
+//   0 = 群没设置     → 回落到账号设置里的「概率撤回(%)」
+//   1 = 撤回全部 100%
+//   2 = 撤回 75%
+//   3 = 撤回 50%
+// ⚠ 不是自然编码（3 不是 100+75），是历史兼容：BIT_AUTO_RECALL 单独开 = 以前的行为 = 全撤。
+inline int recallLevelFromBitmap(int bitmap)
+{
+    return ((bitmap & BIT_AUTO_RECALL) ? 1 : 0) | ((bitmap & BIT_AUTO_RECALL_LV) ? 2 : 0);
+}
+
+// 挡位 → 撤回概率百分比（0 = 不撤）
+inline int recallLevelPercent(int level)
+{
+    switch (level) {
+    case 1:  return 100;
+    case 2:  return 75;
+    case 3:  return 50;
+    default: return 0;
+    }
+}
 
 struct dblog
 {

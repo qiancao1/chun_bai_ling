@@ -3245,7 +3245,7 @@ QJsonObject AiWidget::buildBaseContext(AccountInfo* info,const QString &Gid, con
 
 // ========== 入口函数（只做检查，发射信号到主线程） ==========
 QPair<int, QString> splitWrappedMsgId(const QString &wrapped, int expectType); // 定义在 core/api2.cpp
-QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
+QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev,int index2)
 {
 
 
@@ -3342,6 +3342,13 @@ QString AiWidget::Ai_post(AccountInfo *info, const MessageEvent &ev)
         return "触发AI:" + info->Ai_nickname + " 但是设置的模型【" + info->model + "】 在模型列表不存在";
     if (modelList[index].enabledInterfaceIndices.isEmpty())
         return "触发AI:" + info->Ai_nickname + " 但是设置的模型【" + info->model + "】 未设置接口";
+
+    if(ev.type==2 || ev.type==3)
+    {
+        bool ok=false;
+        if(index2>0)  g_logdb [ev.type+1]->setBuffer_200(index2,ok); //私聊模式下 必定触发ai
+
+    }
 
     // 发射信号到主线程处理（确保定时器安全）
     emit newMessageArrived(info, ev,false,false);

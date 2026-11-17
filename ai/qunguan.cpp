@@ -488,6 +488,9 @@ void qunguan::on_pushButton_clicked() {
     // 自动撤回(秒)：0 = 不撤；上限跟插件那条通道一致（kRecallMaxSec = 110），超了按 110 存
     info->auto_recall = qBound(0, ui->lineEdit_5->text().toInt(), 110);
     ui->lineEdit_5->setText(QString::number(info->auto_recall));
+    // 概率撤回(%)：0 = 不撤，100 = 全部；只在群没设置撤回挡位时生效
+    info->recall_prob = qBound(0, ui->lineEdit_6->text().toInt(), 100);
+    ui->lineEdit_6->setText(QString::number(info->recall_prob));
     info->cbl = ui->checkBox->isChecked();
     info->ychfwcl = ui->checkBox_3->isChecked();
     info->action_button = ui->checkBox_4->isChecked();
@@ -509,11 +512,12 @@ void qunguan::on_pushButton_clicked() {
     // ---- 4. 持久化 ----
     accountPage->saveAccounts(info.get());
 
-    // 自动撤回是「账号秒数 + 群开关」两段式：光设秒数不会撤，提醒一句免得以为没生效
-    if (info->auto_recall > 0)
+    // 自动撤回是「账号秒数 + 概率」两段式：光设秒数不一定撤，提醒一句免得以为没生效
+    if (info->auto_recall > 0 && info->recall_prob <= 0)
         QMessageBox::information(this, "成功",
-            QString("保存成功\n\n自动撤回已设为 %1 秒，但它是按群生效的：\n"
-                    "群里发「开自动撤回」才会撤，「关自动撤回」关闭。").arg(info->auto_recall));
+            QString("保存成功\n\n自动撤回已设为 %1 秒，但「概率撤回」是 0：\n"
+                    "群没单独设置撤回挡位时不会撤（群里发「开自动撤回」设为全部/75%/50%）。")
+                .arg(info->auto_recall));
     else
         QMessageBox::information(this, "成功", "保存成功");
 }
@@ -599,6 +603,7 @@ void qunguan::列表行被单击()
         ui->lineEdit_3->setText(QString::number(info->tq_ychf));
         ui->lineEdit_4->setText(QString::number(info->tq_lq));
         ui->lineEdit_5->setText(QString::number(info->auto_recall));
+        ui->lineEdit_6->setText(QString::number(info->recall_prob));
 
         refreshList();
 

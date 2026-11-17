@@ -1774,7 +1774,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
         ev.type = (d.value("chat_type").toString()=="c2c")?2:0;
         ev.subType = 5;
         ev.msg = "用户广告完成通知";
-        countRewardedAd();
+        //不加锁 这个统计无所谓
+        m_info->ad_watched_total++;
+        m_info->ad_watched++;
+        m_info->ad_watched_day++;
     }
 
     else {
@@ -1926,14 +1929,10 @@ void QQBotClient::parseMessageEvent(QJsonObject &payload,const QString &text)
 }
 
 
-void QQBotClient::countRewardedAd()
-{
-    //大概统计就不加锁了
-    if (!m_info) return;
-    m_info->ad_watched_total++;
-    m_info->ad_watched++;
-    m_info->ad_watched_day++;
-}
+
+
+
+
 
 
 bool QQBotClient::neizev(const QJsonObject &d,MessageEvent &ev)

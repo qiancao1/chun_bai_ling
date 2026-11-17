@@ -147,8 +147,11 @@ struct AccountInfo {
     int tq_lq=0 ;
 
     int rq_ychf=0, rq_lq=0;
-    // 发送后自动撤回(秒)：0 = 不撤。只在该群 bitmap 开了 BIT_AUTO_RECALL 时才由 addmsglog 登记
+    // 发送后自动撤回(秒)：0 = 不撤。真正撤不撤由 addmsglog 按「群挡位 → 本配置的概率」决定
     int auto_recall=0;
+    // 概率撤回(%): 0 = 不撤，100 = 全部撤。**只在群没设置撤回挡位（bitmap 两位都是 0）时生效**；
+    //   群一旦用「开自动撤回」设了挡位（100%/75%/50%），以群为准。
+    int recall_prob=0;
     bool ychfwcl=false; //延迟回应未处理
     bool autoht=true;
     bool pbbot=true;

@@ -57,15 +57,22 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     //   deleteid 非空 = 平台确实收下了这条（真发出去才有 id），没发出去的失败响应不会进缓冲。
     // ── 这里再加一层「强制自动撤回」（账号设置 → 机器人管理 → 自动撤回(秒)）──
     //   插件自己传了秒数（recallSec > 0）就以插件的为准；插件没传才回落到账号配置。
-    //   账号配置只在「本群 bitmap 开了 BIT_AUTO_RECALL」时生效 —— 群里发「开自动撤回」才撤。
+    //   账号配置生效的前提是「这条消息真的要被撤回」，概率按下面的优先级算：
+    //     ① 群设了挡位（bitmap 两位组合 1=全撤 / 2=75% / 3=50%）→ 用群的挡位，群说了算；
+    //     ② 群没设挡位(0) → 用账号设置里的「概率撤回(%)」，0 就不撤。
     //   私聊 / 查不到群记录 = bitmap 读不到 → 不撤（自动撤回是群功能）。
     int effRecallSec = recallSec;
     if (effRecallSec <= 0 && m_info && m_info->auto_recall > 0) {
         auto git = g_botdb.find(m_info->appid_int);
         if (git != g_botdb.end() && git.value()) {
             GroupRecord2 gr;                       // getGroupInfo 先查内存缓存，不每条都打 LMDB
-            if (git.value()->getGroupInfo(openid, gr) && (gr.bitmap & BIT_AUTO_RECALL))
-                effRecallSec = qBound(0, m_info->auto_recall, QQBotClient::kRecallMaxSec);
+            if (git.value()->getGroupInfo(openid, gr)) {
+                int prob = recallLevelPercent(recallLevelFromBitmap(gr.bitmap));
+                if (prob <= 0) prob = qBound(0, m_info->recall_prob, 100);   // 群没设置 → 用账号配置兜底
+                // 100% 不用摇号；其余按百分比随机。同一条消息只掷一次骰子（否则多段媒体会被拆成有的撤有的不撤）。
+                if (prob >= 100 || (prob > 0 && QRandomGenerator::global()->bounded(100) < prob))
+                    effRecallSec = qBound(0, m_info->auto_recall, QQBotClient::kRecallMaxSec);
+            }
         }
     }
     if (effRecallSec > 0 && !deleteid.isEmpty())
@@ -886,7 +893,8 @@ QString QQBotClient::send_messages_markdown(int type, const QString &openid,cons
         }
     }
     initjgt(json,prompt_keyboard,message_reference,msgid,is_wakeup,seq_index,ctx.index);
-     QString url = get_url(type,openid, "messages");
+    QString url = get_url(type,openid, "messages");
+
 
     if(ctx.openid.isEmpty()) {
         return  PostSync(url, json,QString(), 30000);
@@ -1091,6 +1099,29 @@ QString QQBotClient::get_users_list(const QString & cursor,Callback callbacks)
 
     QString url="https://api.bot.qq.com/users/@me/users?cursor="+cursor;
     return Get(url,"", 10000,callbacks);
+}
+
+//获取用户基本信息（昵称 / 头像 / 是否接收主动推送）
+//  文档：https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2/users_user_openid_info.get.html
+//  GET /v2/users/{user_openid}/info，接口频率限制 10 QPS
+//  返回体平铺，字段：union_openid / username / avatar / allow_proactive_msg
+//  ⚠ 错误码 40184001 = 用户与机器人无好友关系（这种用户查不到，也发不了私聊）
+//  主要用途：私聊(ev.type==2)的事件里平台只给 openid、不给昵称，靠它把 username 补回来。
+QString QQBotClient::get_user_info(const QString &userOpenid,Callback callbacks)
+{
+    if (userOpenid.isEmpty()) {
+        QJsonObject err;
+        err["code"]    = -1;
+        err["message"] = QStringLiteral("user_openid 为空");
+        const QString body = QString::fromUtf8(QJsonDocument(err).toJson(QJsonDocument::Compact));
+        if (callbacks) {
+            callbacks(body, QNetworkReply::ProtocolInvalidOperationError);
+            return QString();
+        }
+        return body;
+    }
+    // get_url(type=2, …) = https://api.bot.qq.com/v2/users/<openid>，再接 "/info"
+    return Get(get_url(2, userOpenid, "info"), QString(), 10000, callbacks);
 }
 QString QQBotClient::get_groups_members(const QString& group,const QString &user,Callback callbacks)
 {
