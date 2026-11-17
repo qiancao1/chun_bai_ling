@@ -139,6 +139,11 @@ struct AccountInfo {
 
     int 日计时变量=0;          // 上次清零那天的「儒略日」(QDate::toJulianDay)，不是几号
 
+    // 今日签到人数（文案变量 [今日签到]）：有人签到成功就 +1，跟着账号配置一起落盘（saveAccounts）。
+    // 跨天靠「签到今日日期」比对自动归零 —— 不依赖 checkDailyReset 有没有被及时调用。
+    int 签到今日人数=0;
+    int 签到今日日期=0;        // 上面那个数属于哪天（儒略日）
+
 
     int times =5;//检测时间
     int tiaoshu=5; //刷屏条数

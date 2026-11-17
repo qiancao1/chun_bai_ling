@@ -395,20 +395,9 @@ QIcon navGlyphIcon(NavGlyph glyph, const QColor &normal,
     return icon;
 }
 
-// ── 窗口外圈的「阴影带」──
-// 系统窗口的拖边热区其实不在内容里：它在窗口自带的不可见边框 / DWM 阴影上
-// （那圈东西位于窗口矩形内部、可见内容之外）。FramelessWindowHint 窗口默认没有这圈，
-// 热区只能往内容里挤，手感就是「得进到窗口里面才拖得动」。
-// 所以给 central 外面套一层透明根、内缩 kShadowMargin：这一圈既画柔和阴影，也正好拿来当热区。
 constexpr int kShadowMargin = 8;
-
-// 窗口主体的圆角半径：centralRoot 的 border-radius 与阴影层用同一个常量，
-// 改一处就够（两边对不上时，四角会漏出一小块阴影，看着像毛边）。
 constexpr int kFrameRadius = 6;
 
-// ── 窗口描边色：每次启动换一个 ──
-// 底色是米色 #FFF8EF，所以随机色不能直接摇 RGB（会摇出脏灰 / 荧光绿刺眼），
-// 只在 HSL 上摇色相、饱和与亮度钉在「浅而清」的区间里，随便怎么摇都是能压住米色的浅亮色。
 QString randomFrameBorderColor()
 {
     QRandomGenerator *rng = QRandomGenerator::global();   // 全局实例是非 const，bounded() 也不是 const 成员
@@ -447,9 +436,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(Qt::NoPen);
 
-        // 从外到内叠几层半透明圆角矩形，近似 box-shadow：越靠内容层数越多、越浓。
-        // 注意这些层是叠加的：最内侧会被全部 m_margin 层覆盖，所以单层 alpha 必须很小，
-        // 峰值实际是各层之和（这里约 30/255 ≈ 12%），否则会糊成一圈死黑。
+
         const QRectF inner = QRectF(rect()).adjusted(m_margin, m_margin, -m_margin, -m_margin);
         for (int i = m_margin; i >= 1; --i) {
             const qreal t = 1.0 - qreal(i - 1) / qreal(m_margin);      // 0（最外）→ 1（最内）
@@ -485,7 +472,6 @@ MainWindow::MainWindow(QWidget *parent): QMainWindow(parent), resizing(false), e
 
     // 界面配色（高级设置 → 基础设置）改一个色就重新套一遍样式表
     ThemeColors::setApplyHook([this]() { applyStyleSheet(); });
-
 
 
     // 默认选中首页
@@ -574,10 +560,7 @@ void MainWindow::xr()
     m_kantoumusume->setAttribute(Qt::WA_TransparentForMouseEvents);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  弹窗 2 的正文 —— 第三方组件与许可
-//  （内容长，单独一个可滚动窗口装，见下面的 showThirdPartyLicenseDialog）
-// ══════════════════════════════════════════════════════════════════════════
+
 static QString thirdPartyLicenseHtml()
 {
     // --- 根据平台选择 OpenSSL 许可证文本 ---
@@ -641,11 +624,7 @@ static QString thirdPartyLicenseHtml()
         );
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  弹窗 2：第三方组件与许可 —— 可滚动 / 可点链接 / 可选中复制
-//  用 QTextBrowser 而不是 QMessageBox，是因为 QMessageBox 的高度会被屏幕
-//  「挤」住：这一大段以前全塞在一个 QMessageBox 里，小屏直接显示不全且不能滚动。
-// ══════════════════════════════════════════════════════════════════════════
+
 static void showThirdPartyLicenseDialog()
 {
     QDialog dlg;
@@ -685,10 +664,6 @@ static void showThirdPartyLicenseDialog()
     dlg.exec();
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  弹窗 1：关于（短）—— 项目主体 + 插件合规 + 其他资源
-//  底部多一个「第三方组件许可」按钮，点了才弹上面那个长窗口
-// ══════════════════════════════════════════════════════════════════════════
 void showClickableLicenseInfo()
 {
     QMessageBox msgBox;

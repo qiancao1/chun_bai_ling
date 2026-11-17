@@ -59,6 +59,8 @@ QString AccountInfo::toJson() const {
     obj["f_add"]=今日好友数量;
     obj["f_sub"]=今日删除好友数量;
     obj["r_jis"]=日计时变量;
+    obj["sign_today"]=签到今日人数;   // 今日签到人数（跨天由 sign_day 判定归零）
+    obj["sign_day"]=签到今日日期;     // 上面那个数属于哪天（儒略日）
     obj["c_add"]=今日频道数量;
     obj["c_sub"]=今日退出频道数量;
     obj["fallbackReply"] = fallbackReply;
@@ -147,7 +149,8 @@ def on_sign(msg, signed_today, total, streak, points):
 # 不想用函数、只写顶层常量也行：__sign_points__ = 1000  /  __result__ = "固定文案"
 # 脚本只编译、只执行顶层一次，之后每次只调用函数（所以很快）：
 #   → msg / 次数 / 余额只能从参数拿，顶层没有这些名字；顶层定义的全局变量会跨调用保留
-# 可用变量 [总签到] [连续签到] [获得余额] [余额] <-非py代码也可用
+# 可用变量 [总签到] [连续签到] [今日签到] [获得余额] [余额] <-非py代码也可用
+#   [今日签到] = 今天已签到的人数（含本次）
 )");
 }
 
@@ -283,6 +286,16 @@ void AccountInfo::fromJson(const QJsonObject &obj,AccountInfo &info) {
     info.defaultButtonKeyboard();
     // 「今日」计数器跨天清零（今日收发 / 今日加群退群 / 今日好友 / 今日频道）
     info.checkDailyReset();
+    // 今日签到人数：自己的日期字段判（checkDailyReset 里也清，但程序常驻跨天不一定跑得到那里）
+    info.签到今日人数 = obj["sign_today"].toInt();
+    info.签到今日日期 = obj["sign_day"].toInt();
+    {
+        const int todayJ = QDate::currentDate().toJulianDay();
+        if (info.签到今日日期 != todayJ) {   // 换天了 / 老配置没这个字段 → 从 0 重新数
+            info.签到今日日期 = todayJ;
+            info.签到今日人数 = 0;
+        }
+    }
     info.fallbackReply = obj["fallbackReply"].toString();
     info.wsIntents = obj["wsIntents"].toInt();
     info.dyindex = obj["dyindex"].toInt();
@@ -344,5 +357,7 @@ bool AccountInfo::checkDailyReset()
     received_day = 0;      // 今日接收
     sent_day = 0;          // 今日发送
     ad_watched_day = 0;    // 今日广告看完次数
+    签到今日人数 = 0;      // 今日签到人数（下一次签到会重新 +1）
+    签到今日日期 = today;
     return true;
 }

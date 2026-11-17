@@ -211,9 +211,8 @@ public:
     int m_reconnectAttempts;
     QString onTextMessage(const QString &message);
     QString onTextMessage(const QByteArray &message);
-    // 签到（「群管 → 签到」那段配置）：一天一次（非 py 模式）/ #python 脚本自己决定。
-    // 返回 true = 已经处理并回过消息（调用方直接 return）。
-    bool handleSignIn(const MessageEvent &ev);
+
+    bool handleSignIn(const MessageEvent &ev, int aggToken = 0);
 
     // ── 签到聚合（2026-11-17）──
     // 背景：用户发一句「签到」，好几个插件各回各的（签到成功+100 / 领到鱼饵x3 …），一串消息刷屏。
@@ -231,6 +230,9 @@ public:
     int  signAggBegin(int type, const QString &openid, const QString &msgId);
     bool signAggIntercept(int token, const QString &fromUuid, const QString &text);  // 任意线程可调
     static int signAggTokenFromMsgId(const QString &msgid);   // "|S12|…" → 12（不是本机制 = 0）
+    // 内置签到那条（"签到成功：+1000 …"）也并进同一条「#签到结果」：token 有效 → 塞进去返回 true
+    // （调用方**别再自己发**）；token 失效/已结算 → 返回 false（调用方照常自己发）。
+    bool signAggAppendBuiltin(int token, const QString &text);
     // 抽奖六指令（内置功能 → 抽奖）：#参与抽奖<ID> / #我的抽奖 / #领取抽奖<ID> /
     // #抽奖帮助（可点按钮）/ #历史抽奖 / #抽奖名单<ID>（领取凭证就是抽奖 ID，按 openid 认人）。
     // 返回 true = 这条消息就是抽奖指令（已处理并回过消息），调用方直接 return；
@@ -651,6 +653,8 @@ private:
     QHash<int, SignAgg> m_signAggs;
     int               m_signAggNext = 0;
     QTimer            m_signAggTimer;   // 主线程（构造里 connect），待结算期间 500ms 一跳
+    // 把一块正文塞进聚合表（内置签到和插件回执共用的唯一落点）。命中 true = 已收下、别真发。
+    bool signAggPush(int token, const QString &name, const QString &text);
     void signAggArmTimer();             // 拉起定时器（跨线程会投递到主线程）
     void onSignAggTimeout();            // 定时器到点：把到期的拼成一条发掉
     void sendSignAggOne(const SignAgg &a);
