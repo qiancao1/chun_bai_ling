@@ -575,10 +575,6 @@ static void applySeqTag(QString &text, const MessageEvent &ev)
     text = segs.join(QStringLiteral("|#|#|"));
 }
 
-// 短段并到下一段时补一个逗号，不然两句直接粘成一句（「好」+「那就这样吧」→「好，那就这样吧」）。
-// ⚠ 富媒体/引用标签（[audio,path=…]、![img](…)、[ref,msg_idx=…]、<qqbot-at-user …/>）不算正文：
-//    整段只有标签 → 直接拼（`[audio,path=…]给`），逗号绝不能塞到标签和正文之间（正文会变成「，给」）；
-//    末尾带标签的（「给[audio,…]」）→ 逗号插在标签**前面**，跟着正文走。
 static QString joinShortSeg(const QString &a, const QString &b)
 {
     static const QString punc = QStringLiteral("，。！？；：、,.!?;:…～~）)」》\"'");
@@ -703,7 +699,7 @@ bool AiWidget::beginAiStep(const QJsonObject &obj, const MessageEvent &ev, QJson
                     {
                         text.remove("<@"+uid+">");
                     }else
-                        text.replace("<@"+uid+">","<qqbot-at-user id=\""+user+"\" />") ;
+                        text.replace("<@"+uid+">","<@"+user+">") ;
                 }
             }
 
@@ -1792,7 +1788,7 @@ void AiWidget::flushPendingMessagesTail(const QString &openid, AccountInfo *info
                     {
                         reply.remove("<@"+uid+">");
                     }else
-                        reply.replace("<@"+uid+">","<qqbot-at-user id=\""+user+"\" />") ;
+                        reply.replace("<@"+uid+">","<@"+user+">") ;
                 }
             }
 

@@ -315,8 +315,7 @@ void qunguan::onItemClicked(QListWidgetItem *item) {
     // 显示内容
     QString content = item->data(Qt::UserRole).toString();
     QString fieldName = item->data(Qt::UserRole+1).toString();
-    // 签到是 py 代码：必须走 setPlainText，否则源码里的 `<` 会被 setText 当 HTML 标签吃掉
-    // 默认按钮是 JSON：同理走 setPlainText（按钮文案 / 链接里可能出现 `<` `&`，被当 HTML 会吃掉）
+
     if (fieldName == "qiandao" || fieldName == "defaultButtons")
         ui->textEdit->setPlainText(content);
     else

@@ -450,7 +450,7 @@ QString ForbiddenWordPage::filterText(const QString &input) const
     QVector<QPair<int, int>> filtered;
     filtered.reserve(intervals.size());
 
-    for (const auto &iv : intervals) {
+    for (const auto &iv : std::as_const(intervals)) {
         bool skip = false;
         for (const auto &sr : skipIntervals) {
             // 有重叠则跳过该敏感词匹配

@@ -52,15 +52,7 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     QJsonObject obj2 =obj["ext_info"].toObject();
     QString ref = obj2["ref_idx"].toString();
 
-    // ── 自动撤回的唯一登记点 ──
-    //   所有发送路径收尾都要过这里，所以发送函数只把秒数带进来就行，不用各自判断。
-    //   deleteid 非空 = 平台确实收下了这条（真发出去才有 id），没发出去的失败响应不会进缓冲。
-    // ── 这里再加一层「强制自动撤回」（账号设置 → 机器人管理 → 自动撤回(秒)）──
-    //   插件自己传了秒数（recallSec > 0）就以插件的为准；插件没传才回落到账号配置。
-    //   账号配置生效的前提是「这条消息真的要被撤回」，概率按下面的优先级算：
-    //     ① 群设了挡位（bitmap 两位组合 1=全撤 / 2=75% / 3=50%）→ 用群的挡位，群说了算；
-    //     ② 群没设挡位(0) → 用账号设置里的「概率撤回(%)」，0 就不撤。
-    //   私聊 / 查不到群记录 = bitmap 读不到 → 不撤（自动撤回是群功能）。
+
     int effRecallSec = recallSec;
     if (effRecallSec <= 0 && m_info && m_info->auto_recall > 0) {
         auto git = g_botdb.find(m_info->appid_int);
@@ -78,18 +70,6 @@ void QQBotClient::addmsglog(const QString &response,int index,QString pname,cons
     if (effRecallSec > 0 && !deleteid.isEmpty())
         scheduleAutoRecall(type, openid, deleteid, effRecallSec);
 
-    // ── 「发送错误」独立库（g_errlogdb）的唯一写入点 ──
-    //   就是「把这条失败的 Message 原样复制一份到另一个库」：
-    //   下面两处把 msg.Color_0 改成 0xff0000（= 平台没回 id、真没发出去）的地方各调一次，
-    //   传进去的 msg 里 direction 已经拼好了平台响应，一个字都不用另造。
-    //   ⚠ 原来的逻辑（拼 direction / 标红 / updateLog / findRowBySeq / 广播）完全不动，两份并存。
-    //   recordErr=false 只给「媒体上传失败时补记的那条 [image,path=…]」用 —— 它本身不是一次发送，
-    //   真正的报错紧接着还会再走一次 send_*，避免同一次失败在错误库里留两条。
-    // ── 「发送内容」列显示什么？= 用户发来的原文（触发这次回复的那条）──
-    //   不是插件要回的内容 —— 插件回的那段在「平台回应」列（direction = prefix + text …）。
-    //   ok 分支：msg 本身是 readLog 把那条入站消息读回来的，msg.msg 已经是用户原文，不用管。
-    //   非 ok 分支（主动发送 / seq 丢了）：msg 是现造的、msg 字段为空 →
-    //   到主日志里反查本会话最近一条带文本的记录补上（顺带补发送人），否则那列一片空白。
     auto fillUserText = [&](Message &m) {
         if (!m.msg.isEmpty()) return;
         const QString &appidStr = m_info->appid;
@@ -229,9 +209,7 @@ QString QQBotClient::uploadRichMediaA(int targetType, const QString& openid,int 
         info = uploadRichMedia(targetType,openid,fileType,filePath,expireTime,md5,ok,url);
     }
     if(!ok) return info;
-    // 成功：直接返回裸 file_info —— 整条链（send_Media / 上传缓存 / UI）现在都只认它。
-    //   以前那层 "[<类型>,path=<info>,md5=<md5>,Time=<time>]" 是纯冗余：md5、过期时间调用方
-    //   本来就能从出参拿到，类型只有日志用得上，而且入库时还得再拆一次。
+
     return info;
 }
 QString QQBotClient::uploadRichMediaB(int targetType, const QString& openid,int fileType, const QByteArray& data,const QString &filename, bool &ok)
@@ -327,9 +305,7 @@ QString QQBotClient::uploadRichMedia(int targetType, const QString& openid,int f
     qint64 fileSize = data.size();
     ok=false;
 
-    // 2. 计算哈希值（upload_prepare 的 md5/sha1/md5_10m 是可选参数，不传也能正常上传）
-    //    → 由全局开关 g_upload_calc_hash 控制，默认关：语音/文件/视频全都省掉整文件扫描
-    //    （腾讯并不校验/不采信我们传上去的 md5，它只当秒传提示用，算它纯属白烧 CPU）
+
     QString sha1, md5_10m;
     if (g_upload_calc_hash) {
         QCryptographicHash md5Hash(QCryptographicHash::Md5);
@@ -1101,12 +1077,7 @@ QString QQBotClient::get_users_list(const QString & cursor,Callback callbacks)
     return Get(url,"", 10000,callbacks);
 }
 
-//获取用户基本信息（昵称 / 头像 / 是否接收主动推送）
-//  文档：https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2/users_user_openid_info.get.html
-//  GET /v2/users/{user_openid}/info，接口频率限制 10 QPS
-//  返回体平铺，字段：union_openid / username / avatar / allow_proactive_msg
-//  ⚠ 错误码 40184001 = 用户与机器人无好友关系（这种用户查不到，也发不了私聊）
-//  主要用途：私聊(ev.type==2)的事件里平台只给 openid、不给昵称，靠它把 username 补回来。
+
 QString QQBotClient::get_user_info(const QString &userOpenid,Callback callbacks)
 {
     if (userOpenid.isEmpty()) {
