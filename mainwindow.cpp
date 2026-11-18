@@ -83,16 +83,17 @@
 #include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
-#define APP_VERSION_STR "v1.5.8.198"
-#define APP_BUILD_NUMBER 198
+#define APP_VERSION_STR "v1.5.9.203"
+#define APP_BUILD_NUMBER 203
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.5.9.198  (2026-11-17)
+## v1.5.9.203  (2026-11-18)
 - 整合 指令 签到
 - 修复 32位不能使用昵称审核问题
 - 优化 昵称审核 运行自定义加载条数了
-
+- 修复 32位不能使用昵称审核问题
+- 修复 注册式 参数乱码问题
 
 ## v1.5.8.198  (2026-11-17)
 - 增加 内置功能 抽奖
