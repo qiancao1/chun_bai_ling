@@ -152,12 +152,7 @@ static QNetworkAccessManager *getNetworkManager() {
 // 记录正在下载的媒体 URL 和对应的临时文件路径
 static QMap<QString, QString> mediaDownloadingMap; // url -> tempFilePath
 static QSet<QString> mediaDownloadingSet; // 避免重复下载
-// ---------- Markdown 图片识别 ----------
-// QQ 官方 markdown 的图片写成 `[Img #1200px #1476px](url)`（**没有感叹号**），
-// 本框架发送侧 core/api.cpp 生成的是 `![alt #Wpx #Hpx](url)`，两种都要认出来渲染成图片。
-// 它跟普通链接 `[文字](http://...)` 形状完全一样，所以只认两种特征：
-//   ① 前面有 `!`；② alt 里带 `#数字px` 尺寸标记 或 以 `Img` 开头。
-// 不这样区分就会把任何带链接的文字误判成图片。
+
 struct MdImageSpan {
     int start;   // 片段起点（含前面的 '!'）
     int end;     // 片段终点（含 ')'）
@@ -2398,7 +2393,7 @@ void ChatPage::addDataToModel(int appid, const Contact& c, int type)
     // 原来用 fromHsl(hash%360, 200, 150)：饱和度拉满，红黄绿紫一片刺眼。
     // 换成一组低饱和的莫兰迪色，跟米色主题合得来。
     static const QColor kFallbackPalette[] = {
-        QColor("#E0A276"), QColor("#C99AA6"), QColor("#8FB4A6"),
+        QColor(0xE0A276), QColor(0xC99AA6), QColor("#8FB4A6"),
         QColor("#9AA9CB"), QColor("#7FA6BE"), QColor("#C3B183"),
         QColor("#AE93B6"), QColor("#8CA787"),
     };
@@ -2415,13 +2410,6 @@ void ChatPage::addDataToModel(int appid, const Contact& c, int type)
     m_model->appendRow(item);
 }
 
-// 列表加载完统一按机器人 appid 分组：同一机器人的会话聚在一起，
-// 组内保持日志原本的先后顺序。
-// ⚠ 绝对不要手动 takeItem(0) + appendRow 重排：那样会逐行发出 rowsRemoved / rowsInserted，
-//   视图在模型改动的过程中会重入 currentChanged 槽（切会话 → 读库 → 清消息模型），
-//   很容易把正在使用的行/item 弄成悬空，直接崩在底层（连 VCH 都抓不到，因为已经踩坏堆）。
-//   用 QStandardItemModel 自带的 sort()：它内部走 layoutAboutToBeChanged/layoutChanged，
-//   视图只需要重排索引、不会触发选中项变化。
 void ChatPage::sortModelByAppid()
 {
     if (m_model->rowCount() < 2) return;
@@ -2882,6 +2870,8 @@ void ChatPage::onSendmsg(QString &text)
         return;
     }
     chatPage->inputEdit->setText("正在发送...请勿输入内容会被清空");
+
+
     QString resp = client->send_msgAsync(msgType,currentContactId,"[聊天室]", text, m_msgid,"false",true ,聊天发送模式,false,[this,client,msgType,text](const QString &resp,auto){
         if(resp.contains("\"id\""))
         {

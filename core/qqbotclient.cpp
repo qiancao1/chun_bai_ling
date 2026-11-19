@@ -1276,7 +1276,7 @@ int QQBotClient::signAggTokenFromMsgId(const QString &msgid)
     const int bar = msgid.indexOf(QLatin1Char('|'), 2);
     if (bar <= 2) return 0;
     bool ok = false;
-    const int token = msgid.mid(2, bar - 2).toInt(&ok);
+    const int token = msgid.midRef(2, bar - 2).toInt(&ok);
     return (ok && token > 0) ? token : 0;
 }
 
@@ -1392,7 +1392,10 @@ void QQBotClient::sendSignAggOne(const SignAgg &a)
     for (const SignAggItem &item : a.items) {
         QString name = item.name.trimmed();
         if (name.isEmpty()) name = QStringLiteral("插件");
-        text += QStringLiteral("\n**%1**").arg(name);
+        // ⚠ 空行不能省：上一块的 `>内容` 后面直接跟 `**名字**`，会被 QQ 的 markdown
+        //   当成引用块的续行吸进去（名字跟着一起变引用，看着像没分段）。
+        //   块与块之间（以及标题后第一块前）都留一个空行。
+        text += QStringLiteral("\n\n**%1**").arg(name);
         const QStringList lines = item.text.split(QLatin1Char('\n'));
         for (const QString &ln : lines) {
             const QString t = ln.trimmed();

@@ -1046,14 +1046,9 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
         }
         const QString reqId = (_7 == nullptr) ? QString() : toQString(_7);
         const QString pn = (strcmp(uuid, g_keyuuid2) != 0) ? toQString(uuid) : pname;
-        // ── _8 = 发送后自动撤回秒数 ──
-        //   0 / 空 / 负数 = 不撤回；超过上限（110）一律按上限算。
-        //   真正落地在 QQBotClient 的 120 槽环形缓冲里（见 qqbotclient.cpp 的 scheduleAutoRecall）。
+
         const int recallSec = qBound(0, toInt(_8), QQBotClient::kRecallMaxSec);
-        // ── AI 插件工具调用：插件要「说」的话在这里被扣下，交给 AI 决定发不发 ──
-        // 调插件前框架把 msgid 打成了 "|-<token>|<真实msgid>"（见 core/global.h）；
-        // 这里认出 token 就直接当发送成功返回 —— 不 POST、不写日志，一个字都不出这台机器。
-        // token 查不到（插件延迟发送、工具调用早结束了）→ 照常发出去，不吞消息。
+
         {
             const int gateTok = toolGateTokenFromMsgId(msgid);
             if (gateTok > 0 && toolGateIntercept(gateTok, text)) {
@@ -1092,9 +1087,7 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
         QJsonObject ark = toJsonObject(_3);
         QString msgid = toQString(_4);
         QString is_wakeup = toQString(_5);
-        // _7 = 异步回执标识（Python SDK 的 send_ark_async 才传）。
-        // 非空 → 传一个带 cb 且 openid 非空的 ctx，send_messages_ark 便走 PostAsync 分支。
-        // _8 = 自动撤回秒数，跟着 ctx 沉下去，由 addmsglog 统一登记。
+
         MessageLogContext ctx;
         ctx.recallSec = qBound(0, toInt(_8), QQBotClient::kRecallMaxSec);
         if (Callback cb = pluginAsyncCb(_7)) { ctx.cb = cb; ctx.openid = openid; }

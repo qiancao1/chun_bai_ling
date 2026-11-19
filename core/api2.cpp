@@ -19,10 +19,7 @@ QList<CosPutPoolEntry> takeCosPutPending();
 void QQBotClient::addmsglog(const QString &response,int index,QString pname,const QString &text,qint64 now_us, int type,const QString &openid,
                             std::shared_ptr<MsgTimeStat> tstat, bool recordErr, int recallSec)
 {
-    // ── 先把 pname 归一成「标签本体」（不含方括号）──
-    //   两种传法都吃：
-    //     · 裸插件名 / 裸 uuid（新写法）→ 方括号、耗时全在下面现拼；
-    //     · 老的 "[插件名|%1ms]" / "[关键词匹配]" → 剥掉方括号当标签，%1 仍按处理耗时填。
+
     QString label = pname;
     if (!label.startsWith(QLatin1Char('['))) {
         const QString t = pluginPnameText(label);              // 裸 uuid → "[插件名|%1ms]"
