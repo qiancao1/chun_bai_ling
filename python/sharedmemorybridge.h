@@ -120,7 +120,12 @@ private:
     // 上限是「防雪崩」用的，不是正常水位：500 条基本够一波消息突发（每条帧通常 1~2KB）。
     static constexpr int kPendingMaxCount = 500;
     static constexpr int kPendingMaxBytes = 16 * 1024 * 1024;   // 光看条数不够，长帧也能吃满内存
-    static constexpr int kFlushIntervalMs = 20;                 // 补发轮询（比 100ms 的槽扫描快，但别太频繁）
+    static constexpr int kFlushIntervalMs = 20;                 // 补发 / 催取的轮询间隔
+    // 响应事件是**自动重置**的：一次突发里写 N 帧就 SetEvent N 次，这些信号会被合并成 1 个 →
+    // 32 位客户端只醒来一次、只取走一两帧，剩下的槽就永远躺在状态 2 上（通道假死）。
+    // 对策：只要还有槽没被取走，就按下面的节奏反复 SetEvent 逼它继续来取。
+    static constexpr int kTaskNudgeMs    = 50;                  // 催取节奏（别太密，免得对方空转）
+    static constexpr int kTaskNudgeMaxMs = 30000;               // 催这么久还没人取 → 停手并报一次
 
     static char *slotAt(char *base, int index) { return base + static_cast<size_t>(index) * kSlotSize; }
 
@@ -166,8 +171,9 @@ private:
     // ---- 任务投递 / 待发队列 ----
     bool writeTaskSlotLocked(int type, const QByteArray &payload);   // 调用者需持 m_taskMutex
     bool enqueuePendingLocked(int type, const QByteArray &payload);  // 调用者需持 m_taskMutex
+    int  countOccupiedTaskSlotsLocked() const;                       // 调用者需持 m_taskMutex
     void scheduleFlush();                    // 线程安全：不在桥的线程上就投递过去
-    void flushPendingTasks();                // 定时器：把队列里的补进空槽（本线程执行）
+    void pumpTaskSlots();                    // 定时器：补发队列 + 催客户端把已写的槽取走
     void parseRequestBody(const char *data, quint32 len, RequestData &req) const;
     void deliverCommandResult(const RequestData &req);
 
@@ -210,6 +216,11 @@ private:
     int          m_queuedTasks  = 0;      // 因槽满而排队的次数
     int          m_droppedTasks = 0;      // 连队列都满了、真丢掉的次数
     int          m_slotFullHits = 0;      // 撞上「50 槽全满」的次数（含排队的）
+    // 催客户端取槽（自动重置事件的信号合并问题，见 kTaskNudgeMs 注释）
+    qint64       m_outstandingSince = 0;  // 第一次发现有槽没被取走的时间（ms epoch），0 = 没积压
+    qint64       m_lastNudgeMs      = 0;  // 上次催的时间
+    int          m_nudgeCount       = 0;
+    bool         m_nudgeWarned      = false;
     QMutex       m_procMutex;        // 保护 m_hYiProcess / m_yiPid
     Callback     m_callback;
 

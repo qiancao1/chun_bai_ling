@@ -3275,8 +3275,12 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
     dlgRaw->setModal(true);       // 模态但走 show()：代码继续跑，界面照常重绘
     QPointer<QDialog> dlg(dlgRaw);
 
-    // 收异步回复的窗口：单条 2 秒、全测 3 秒（本工程其它等待同样是 3 秒硬上限）
-    const int waitMs = single ? 2000 : 3000;
+    // 收异步回复的窗口：同步插件（Python / 原生 / JS）单条 2 秒、全测 3 秒足够。
+    // ⚠ 32 位（type 2）不一样：帧走共享内存交给易语言，由它自己的线程逐帧取、逐条跑插件，
+    //   比同步插件慢一个量级。全测十几条时 3 秒根本收不齐 —— 现象就是「前几条有回复，
+    //   后面全停在『已投递』」，而且每次收到的条数随机（纯看赶不赶得上）。
+    const int waitMs = (p.type == 2) ? (single ? 4000 : 10000)
+                                     : (single ? 2000 : 3000);
 
     QVBoxLayout *lay = new QVBoxLayout(dlgRaw);
     QLabel *titleLab = new QLabel(single
@@ -3528,10 +3532,13 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
 
     // ---- 到点汇总（异步回复的窗口；单条 2 秒、全测 3 秒）----
     QTimer::singleShot(waitMs, this, [this, dlgPtr = dlg, logPtr, titlePtr = QPointer<QLabel>(titleLab),
-                                      rows, pname, version, probe, ptype = p.type, single, cfgLabel]() mutable {
+                                      rows, pname, version, probe, ptype = p.type, single, cfgLabel,
+                                      waitMs]() mutable {
         // 先把异步落进来的正文并进各条（按序号取，取完清）
         for (int i = 0; i < rows.size(); ++i)
             rows[i].replies += pluginTestTakeTexts(i);
+        // 没带 "|T<序号>|" 的回复会落到 -1（不知道是哪条指令的）→ 至少报出来，别静默吞掉
+        const QStringList orphanReplies = pluginTestTakeTexts(-1);
         pluginTestEnd();
         if (!logPtr) return;                 // 用户提前把窗口关了：该收的尾已经收了
 
@@ -3566,6 +3573,12 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
                    .arg(rows.size()).arg(hit).arg(replied).arg(echoed)
                    .arg(skipCount > 0 ? QStringLiteral(" · 跳过(等于) %1").arg(skipCount) : QString());
         out << QStringLiteral("测试正文 = 指令 + 「%1」；只对 开头是/结尾是/包含 判复读。").arg(probe);
+        if (!orphanReplies.isEmpty()) {
+            out << QStringLiteral("⚠ 另有 %1 条回复没带测试序号（没法认出是哪条指令的）：")
+                       .arg(orphanReplies.size());
+            for (const QString &t : orphanReplies)
+                out << QStringLiteral("   · %1").arg(clip(t));
+        }
         out << QString();
 
         // 1) 复读（重点）
@@ -3607,9 +3620,16 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
             for (const Row &r : std::as_const(rows)) {
                 if (!r.replies.isEmpty()) continue;            // 有回复的在上面两段已经列过
                 if (r.skippedEquals) { eqSkipped << r.cmd; continue; }
+                QString why = r.note;
+                // 32 位这一条：投递成功、只是窗口内没收到回复 —— 别让人误以为「没执行」。
+                if (ptype == 2 && r.matched &&
+                    why == QStringLiteral("已投递 32 位（异步，回复可能晚到/串台）")) {
+                    why = QStringLiteral("已投递，但 %1 秒内没等到它的回复（不代表没执行，去主日志看）")
+                              .arg(waitMs / 1000);
+                }
                 out << QStringLiteral("%1. [%2] %3 —— %4")
                            .arg(++n).arg(pluginTestMatchTypeName(r.type), r.cmd,
-                                r.note.isEmpty() ? QStringLiteral("命中但没回话") : r.note);
+                                why.isEmpty() ? QStringLiteral("命中但没回话") : why);
             }
             if (n == 0) out << QStringLiteral("（无）");
             if (!eqSkipped.isEmpty()) {

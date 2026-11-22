@@ -101,6 +101,7 @@
 #include <QUuid>
 #include <QFile>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QTimer>
 #include <QDebug>
 #include <QByteArray>
@@ -179,7 +180,7 @@ SharedMemoryBridge::SharedMemoryBridge(QObject *parent) : QObject(parent)
     // m_pending 里塞，再由 scheduleFlush() 把「启表」这个动作投到主线程做。
     m_flushTimer = new QTimer(this);
     m_flushTimer->setInterval(kFlushIntervalMs);
-    connect(m_flushTimer, &QTimer::timeout, this, &SharedMemoryBridge::flushPendingTasks);
+    connect(m_flushTimer, &QTimer::timeout, this, &SharedMemoryBridge::pumpTaskSlots);
 }
 
 SharedMemoryBridge::~SharedMemoryBridge()
@@ -249,6 +250,10 @@ void SharedMemoryBridge::stopServer()
         m_pending.clear();
         m_pendingBytes = 0;
         m_queuedTasks = m_droppedTasks = m_slotFullHits = 0;
+        m_outstandingSince = 0;
+        m_lastNudgeMs = 0;
+        m_nudgeCount  = 0;
+        m_nudgeWarned = false;
     }
 
     {
@@ -738,7 +743,6 @@ bool SharedMemoryBridge::writeResponseToBlock(int type, const char *text)
         payload = R"({"error":"推送数据超过 100KB 上限"})";
 
     bool ok = false;
-    bool needFlush = false;
     {
         QMutexLocker lk(&m_taskMutex);
 
@@ -759,11 +763,11 @@ bool SharedMemoryBridge::writeResponseToBlock(int type, const char *text)
             }
             ok = enqueuePendingLocked(type, payload);
         }
-
-        needFlush = !m_pending.isEmpty();
     }   // ← 必须先放锁：scheduleFlush 可能把调用投到别的线程
 
-    if (ok && needFlush)
+    // ⚠ 成功就要起泵（不只是有积压时）：泵还有个职责是「催客户端来把槽取走」，
+    //   见 pumpTaskSlots 里那段关于自动重置事件的说明。
+    if (ok)
         scheduleFlush();
     return ok;
 }
@@ -787,35 +791,90 @@ void SharedMemoryBridge::scheduleFlush()
     QMetaObject::invokeMethod(this, [this]() { scheduleFlush(); }, Qt::QueuedConnection);
 }
 
-// 定时器回调（桥自己的线程 = 主线程）：把队列里的任务按顺序补进空槽，槽一满就停手等下一跳。
-void SharedMemoryBridge::flushPendingTasks()
+// 定时器回调（桥自己的线程 = 主线程）：
+//   ① 把待发队列里的任务按顺序补进空槽；
+//   ② **催客户端来取**：只要还有槽没被取走（状态 != 0），就隔一会儿再敲一次响应事件。
+void SharedMemoryBridge::pumpTaskSlots()
 {
     if (!m_pMem) {                 // 已经 stopServer / 重启中
         if (m_flushTimer) m_flushTimer->stop();
+        m_outstandingSince = 0;
         return;
     }
 
-    QMutexLocker lk(&m_taskMutex);
+    int occupied = 0;
+    int queued   = 0;
+    {
+        QMutexLocker lk(&m_taskMutex);
 
-    while (!m_pending.isEmpty()) {
-        const PendingTask &head = m_pending.head();
-        if (!writeTaskSlotLocked(head.type, head.payload))
-            break;                 // 又满了：下一跳再来（定时器是重复触发的）
-        m_pendingBytes -= head.payload.size();
-        m_pending.dequeue();
+        while (!m_pending.isEmpty()) {
+            const PendingTask &head = m_pending.head();
+            if (!writeTaskSlotLocked(head.type, head.payload))
+                break;                 // 又满了：下一跳再来（定时器是重复触发的）
+            m_pendingBytes -= head.payload.size();
+            m_pending.dequeue();
+        }
+
+        occupied = countOccupiedTaskSlotsLocked();
+        queued   = m_pending.size();
     }
 
-    if (!m_pending.isEmpty())
+    // 彻底没活了 → 停表 + 报一次本次数据
+    if (occupied == 0 && queued == 0) {
+        m_flushTimer->stop();
+        const int nudges = m_nudgeCount, flushed = m_queuedTasks,
+                  dropped = m_droppedTasks, full = m_slotFullHits;
+        m_nudgeCount = 0;
+        m_queuedTasks = 0;
+        m_droppedTasks = 0;
+        m_slotFullHits = 0;
+        m_outstandingSince = 0;
+        m_nudgeWarned = false;
+        // 只有「排过队 / 丢过 / 催了不止一下」才值得刷日志；正常一发一取只有 0～1 次催
+        if (flushed > 0 || dropped > 0 || nudges >= 3) {
+            qDebug() << "共享内存: 任务槽已全部被取走（本次排队" << flushed << "条、丢弃" << dropped
+                     << "条、槽满" << full << "次、催取" << nudges << "次）";
+        }
         return;
-
-    m_flushTimer->stop();
-    if (m_queuedTasks > 0) {
-        qDebug() << "共享内存: 任务槽积压已清空（本次排队" << m_queuedTasks
-                 << "条、丢弃" << m_droppedTasks << "条、槽满" << m_slotFullHits << "次）";
     }
-    m_queuedTasks  = 0;
-    m_droppedTasks = 0;
-    m_slotFullHits = 0;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_outstandingSince == 0)
+        m_outstandingSince = now;
+
+    // ⚠⚠ 自动重置事件的信号合并 —— 「一次投递十几条只有零星几条有反应」的真凶：
+    //   writeResponseToBlock 每写一帧就 SetEvent，但突发里连写 N 帧时这些信号会被合并成 1 个，
+    //   32 位客户端只醒来一次、只取走一两帧，剩下的槽永远躺在状态 2 上没人来取
+    //   （再叠加「写满 50 个就开始排队」，整个通道就假死了）。
+    //   所以只要还有槽没被取走，就按 kTaskNudgeMs 的节奏反复敲，逼它继续来取。
+    if (now - m_outstandingSince > kTaskNudgeMaxMs) {
+        if (!m_nudgeWarned) {
+            qWarning() << "共享内存: 任务槽有" << occupied << "个超过"
+                       << kTaskNudgeMaxMs / 1000 << "秒没被取走，停止催取"
+                       << "（32 位客户端是不是卡住了？残槽会一直占着名额）";
+            m_nudgeWarned = true;
+        }
+        return;                    // 停手：别再敲了，但槽保持原样（不擅自回收，怕重复执行）
+    }
+
+    if (now - m_lastNudgeMs >= kTaskNudgeMs) {
+        m_lastNudgeMs = now;
+        if (m_hRespEvent) SetEvent(m_hRespEvent);
+        ++m_nudgeCount;
+    }
+}
+
+// 有多少个任务槽还被占着（状态 != 0）—— 也就是「写进去了但客户端还没取走」。
+int SharedMemoryBridge::countOccupiedTaskSlotsLocked() const
+{
+    if (!m_pMem) return 0;
+    const char *base = m_pMem + kTaskBase;
+    int n = 0;
+    for (int i = 0; i < kSlotCount; ++i) {
+        if (getSlotState(base + static_cast<size_t>(i) * kSlotSize) != SLOT_STATE_EMPTY)
+            ++n;
+    }
+    return n;
 }
 
 // ---------------------------- 命令返回值等待（多路，2026-10-09 二版） ----------------------------
