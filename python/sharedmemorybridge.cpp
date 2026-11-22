@@ -173,6 +173,13 @@ SharedMemoryBridge::SharedMemoryBridge(QObject *parent) : QObject(parent)
 {
     m_pool.setMaxThreadCount(4);            // 桥接专用池：stopServer 时能安全 waitForDone
     m_pool.setExpiryTimeout(30000);
+
+    // 待发队列的补发定时器。桥是在 main() 的主线程里 new 的（main.cpp:1057），
+    // 所以这里建的 QTimer 也归主线程 —— 别的线程（机器人线程 / 桥的线程池）只能往
+    // m_pending 里塞，再由 scheduleFlush() 把「启表」这个动作投到主线程做。
+    m_flushTimer = new QTimer(this);
+    m_flushTimer->setInterval(kFlushIntervalMs);
+    connect(m_flushTimer, &QTimer::timeout, this, &SharedMemoryBridge::flushPendingTasks);
 }
 
 SharedMemoryBridge::~SharedMemoryBridge()
@@ -234,6 +241,15 @@ void SharedMemoryBridge::stopServer()
 
     // 顺手把 32 位宿主也收掉：Qt 一走，它就成了任务管理器里清不掉的孤儿进程
     closeYiProcessHandle(true, "停止桥接");
+
+    // 待发队列一并清掉：共享内存都释放了，补发也没地方可写
+    if (m_flushTimer) m_flushTimer->stop();
+    {
+        QMutexLocker lk(&m_taskMutex);
+        m_pending.clear();
+        m_pendingBytes = 0;
+        m_queuedTasks = m_droppedTasks = m_slotFullHits = 0;
+    }
 
     {
         QMutexLocker lk(&m_cmdMutex);
@@ -313,6 +329,20 @@ bool SharedMemoryBridge::createIpc()
 
     // ⚠ 必须自己清零：易语言那边 OpenFileMapping 成功就不清零，残留数据会被当成有效槽
     memset(m_pMem, 0, static_cast<size_t>(kShmSize));
+
+    // 重启路径（restartYiProcess → createIpc）会走到这里：上一轮攒下的待发任务是给**旧进程**的，
+    // 补发过去只会塞一堆过期命令，直接丢掉。
+    {
+        int stale = 0;
+        {
+            QMutexLocker lk(&m_taskMutex);
+            stale = m_pending.size();
+            m_pending.clear();
+            m_pendingBytes = 0;
+        }
+        if (stale > 0)
+            qWarning() << "共享内存: 重建共享内存，丢弃" << stale << "条待发任务（属于上一个客户端进程）";
+    }
 
     const QByteArray reqName = m_reqEventName.toLocal8Bit();
     const QByteArray rspName = m_respEventName.toLocal8Bit();
@@ -642,6 +672,58 @@ void SharedMemoryBridge::deliverCommandResult(const RequestData &req)
 }
 
 // ---------------------------- 投递任务（Qt → 易语言） ----------------------------
+// ⚠ 任务槽只有 50 个（kSlotCount），而且是 type 1（命令 / 心跳 / 同步插件）和
+//   type 2（32 位插件的消息帧）**共用**同一个区。槽什么时候能再用，只有客户端（易语言）
+//   说了算 —— 它把状态清回 0 之前 Qt 一个都抢不回来，Qt 侧超时也不回收。
+//   所以突发投递很容易撞满，尤其 32 位插件 on_message 慢的时候。
+// 2026-11-22 之前：撞满 = 直接丢。消息帧这条链的返回值根本没人看 → 界面上零提示，
+//   表现就是「一次投递多条，有些没反应」。
+// 现在：撞满 → 进 m_pending 排队，20ms 一跳（flushPendingTasks）扫空槽按 FIFO 补发；
+//   连队列也满了（500 条 / 16MB）才真丢，并且计数 + 打日志。
+
+// 找一个空槽写进去。调用者必须持 m_taskMutex（状态字段自己带屏障）。
+bool SharedMemoryBridge::writeTaskSlotLocked(int type, const QByteArray &payload)
+{
+    char *base = m_pMem + kTaskBase;
+    for (int i = 0; i < kSlotCount; ++i) {
+        char *slot = slotAt(base, i);
+        if (getSlotState(slot) != SLOT_STATE_EMPTY) continue;   // 客户端还没取走（状态 2），跳过
+
+        put32(slot + SLOT_OFF_X,    static_cast<quint32>(type));
+        put32(slot + SLOT_OFF_Y,    static_cast<quint32>(payload.size()));
+        memcpy(slot + SLOT_OFF_REQID, payload.constData(), static_cast<size_t>(payload.size()));
+
+        // 数据写完了才把状态置 2（客户端是「先看状态、再读数据」），中间必须有屏障
+        setSlotState(slot, SLOT_STATE_RDY);
+
+        if (m_hRespEvent) SetEvent(m_hRespEvent);
+        return true;
+    }
+    return false;
+}
+
+// 排进待发队列。调用者必须持 m_taskMutex。返回 false = 队列也满了（真丢）。
+bool SharedMemoryBridge::enqueuePendingLocked(int type, const QByteArray &payload)
+{
+    if (m_pending.size() >= kPendingMaxCount ||
+        m_pendingBytes + payload.size() > kPendingMaxBytes) {
+        ++m_droppedTasks;
+        if (m_droppedTasks == 1 || m_droppedTasks % 50 == 0) {
+            qWarning() << "共享内存: 待发队列也满了，**丢弃**任务 type =" << type
+                       << "（累计丢弃" << m_droppedTasks << "条；仍在排队"
+                       << m_pending.size() << "条 /" << m_pendingBytes << "字节）";
+        }
+        return false;
+    }
+
+    PendingTask t;
+    t.type    = type;
+    t.payload = payload;
+    m_pending.enqueue(t);
+    m_pendingBytes += payload.size();
+    ++m_queuedTasks;
+    return true;
+}
 
 bool SharedMemoryBridge::writeResponseToBlock(int type, const char *text)
 {
@@ -655,26 +737,85 @@ bool SharedMemoryBridge::writeResponseToBlock(int type, const char *text)
     if (payload.size() > kSlotSize - SLOT_OFF_REQID)
         payload = R"({"error":"推送数据超过 100KB 上限"})";
 
-    QMutexLocker lk(&m_taskMutex);
+    bool ok = false;
+    bool needFlush = false;
+    {
+        QMutexLocker lk(&m_taskMutex);
 
-    char *base = m_pMem + kTaskBase;
-    for (int i = 0; i < kSlotCount; ++i) {
-        char *slot = slotAt(base, i);
-        if (getSlotState(slot) != SLOT_STATE_EMPTY) continue;   // 客户端正在取用（状态 2），跳过
+        if (!m_pending.isEmpty()) {
+            // 队列里还有积压 → 一律排到队尾。别让新任务从空槽「插队」：
+            // 命令链（先加载再同步之类）靠这个保序。
+            ok = enqueuePendingLocked(type, payload);
+        } else if (writeTaskSlotLocked(type, payload)) {
+            ok = true;
+        } else {
+            ++m_slotFullHits;
+            if (m_slotFullHits == 1) {
+                qWarning() << "共享内存: 50 个任务槽已占满（type 1/2 共用）→ 转入待发队列，"
+                              "等客户端腾出槽后自动补发；后续每 100 次报一条";
+            } else if (m_slotFullHits % 100 == 0) {
+                qWarning() << "共享内存: 任务槽第" << m_slotFullHits << "次占满，排队中"
+                           << m_pending.size() << "条（32 位客户端处理跟不上？）";
+            }
+            ok = enqueuePendingLocked(type, payload);
+        }
 
-        put32(slot + SLOT_OFF_X,    static_cast<quint32>(type));
-        put32(slot + SLOT_OFF_Y,    static_cast<quint32>(payload.size()));
-        memcpy(slot + SLOT_OFF_REQID, payload.constData(), static_cast<size_t>(payload.size()));
+        needFlush = !m_pending.isEmpty();
+    }   // ← 必须先放锁：scheduleFlush 可能把调用投到别的线程
 
-        // 数据写完了才把状态置 2（客户端是「先看状态、再读数据」），中间必须有屏障
-        setSlotState(slot, SLOT_STATE_RDY);
+    if (ok && needFlush)
+        scheduleFlush();
+    return ok;
+}
 
-        if (m_hRespEvent) SetEvent(m_hRespEvent);
-        return true;
+// 让补发定时器跑起来。QTimer 只能在它所属线程 start，所以跨线程时投一个排队调用过去。
+// （bridge 析构时这些排队调用会随 receiver 一起失效，不会打野指针。）
+// ⚠ 跨线程时用 m_flushPostPending 压一下：一次突发里每条任务都会调到这里，
+//   不压的话事件队列会被几百个「启表」空调用灌满，反而拖慢主线程。
+void SharedMemoryBridge::scheduleFlush()
+{
+    if (!m_flushTimer) return;
+
+    if (QThread::currentThread() == thread()) {
+        m_flushPostPending.store(false);
+        if (!m_flushTimer->isActive())
+            m_flushTimer->start();
+        return;
     }
 
-    qWarning() << "共享内存: 50 个任务槽全满（客户端没在取？），推送失败 type =" << type;
-    return false;
+    if (m_flushPostPending.exchange(true)) return;   // 已经有一个投递在路上了
+    QMetaObject::invokeMethod(this, [this]() { scheduleFlush(); }, Qt::QueuedConnection);
+}
+
+// 定时器回调（桥自己的线程 = 主线程）：把队列里的任务按顺序补进空槽，槽一满就停手等下一跳。
+void SharedMemoryBridge::flushPendingTasks()
+{
+    if (!m_pMem) {                 // 已经 stopServer / 重启中
+        if (m_flushTimer) m_flushTimer->stop();
+        return;
+    }
+
+    QMutexLocker lk(&m_taskMutex);
+
+    while (!m_pending.isEmpty()) {
+        const PendingTask &head = m_pending.head();
+        if (!writeTaskSlotLocked(head.type, head.payload))
+            break;                 // 又满了：下一跳再来（定时器是重复触发的）
+        m_pendingBytes -= head.payload.size();
+        m_pending.dequeue();
+    }
+
+    if (!m_pending.isEmpty())
+        return;
+
+    m_flushTimer->stop();
+    if (m_queuedTasks > 0) {
+        qDebug() << "共享内存: 任务槽积压已清空（本次排队" << m_queuedTasks
+                 << "条、丢弃" << m_droppedTasks << "条、槽满" << m_slotFullHits << "次）";
+    }
+    m_queuedTasks  = 0;
+    m_droppedTasks = 0;
+    m_slotFullHits = 0;
 }
 
 // ---------------------------- 命令返回值等待（多路，2026-10-09 二版） ----------------------------

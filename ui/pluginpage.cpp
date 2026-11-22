@@ -2810,12 +2810,23 @@ int PluginPage::dispatch_message(const QString &text, MessageEvent &msg)
         // ⚠ 正文一个字不动；易语言侧按 plugins[i] 直接调函数，不必再自己匹配一遍。
         //   万一帧解析不出来（理论上不会）就退回原始帧，保持旧行为。
         QJsonObject doc = QJsonDocument::fromJson(utf8.constData()).object();
+        // 返回值：true = 已写进任务槽 **或已进待发队列**（桥会 20ms 一跳补发）；
+        // false = 真丢了（桥没起 / 待发队列也溢出）。这条链没有等待者，不报一句的话
+        // 界面上完全看不出来 —— 「一次投递多条，有些没反应」就是这么来的。
+        bool posted = false;
         if (!doc.isEmpty()) {
             doc["plugins"] = plugins32;
             const QByteArray frame32 = QJsonDocument(doc).toJson(QJsonDocument::Compact);
-            bridge->writeResponseToBlock(2, frame32.constData());
+            posted = bridge->writeResponseToBlock(2, frame32.constData());
         } else {
-            bridge->writeResponseToBlock(2, utf8.constData());
+            posted = bridge->writeResponseToBlock(2, utf8.constData());
+        }
+        if (!posted) {
+            // ⚠ dispatch_message 可能跑在工作线程里（bot 线程池），而 AppendEventLog 会直接碰 UI →
+            // 必须投到主线程再记，别在这个线程里调。
+            QMetaObject::invokeMethod(this, [this]() {
+                AppendEventLog(QStringLiteral("[32位] 消息帧投递失败（待发队列溢出），本条已丢弃"), 0xff);
+            }, Qt::QueuedConnection);
         }
     }
 
@@ -3020,7 +3031,10 @@ int PluginPage::invokeToolCommand(const QString &pluginId, const QString &plugin
         QJsonArray arr;
         arr.append(one);
         doc["plugins"] = arr;
-        bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData());
+        if (!bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData())) {
+            err = "32 位投递失败（共享内存待发队列溢出）";
+            return -1;
+        }
         return 1;
 #else
         err = "当前平台不支持 32 位插件";
@@ -3480,7 +3494,10 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
         QJsonArray arr;
         arr.append(item);
         doc["plugins"] = arr;
-        bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData());
+        if (!bridge->writeResponseToBlock(2, QJsonDocument(doc).toJson(QJsonDocument::Compact).constData())) {
+            row.note = QStringLiteral("32 位投递失败（共享内存待发队列溢出），本条没发出去");
+            return;
+        }
         row.note = QStringLiteral("已投递 32 位（异步，回复可能晚到/串台）");
     };
 #endif
@@ -5407,7 +5424,7 @@ void PluginPage::sendData32Async(const QJsonObject &req, int timeoutMs,
     //   这一路里，下一跳就能取到，不会丢
     if (!bridge->writeResponseToBlock(target, data.constData())) {
         bridge->endCommandWait(reqId);
-        if (cb) cb(QStringLiteral("发送命令失败（共享内存繁忙）"));
+        if (cb) cb(QStringLiteral("发送命令失败（共享内存待发队列溢出）"));
         return;
     }
 
@@ -5482,7 +5499,7 @@ QString PluginPage::sendData32Wait(const QJsonObject &req, int timeoutMs)
     const QByteArray data = QJsonDocument(r).toJson(QJsonDocument::Compact);
     if (!bridge->writeResponseToBlock(1, data.constData())) {
         bridge->endCommandWait(reqId);
-        return QStringLiteral("发送命令失败（共享内存繁忙）");
+        return QStringLiteral("发送命令失败（共享内存待发队列溢出）");
     }
     return bridge->processRequestsA(reqId, timeoutMs);   // 内部会把这一路注销掉
 #else

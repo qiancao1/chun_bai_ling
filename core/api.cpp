@@ -1395,7 +1395,7 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
             result ="移除群成员 参数1 群id不能是空";
             break;
         }
-        QString user_list = toQString(_1);
+        QString user_list = toQString(_2);
         if(user_list.isEmpty())
         {
             result ="移除群成员 参数2 设置的用户不能是空";

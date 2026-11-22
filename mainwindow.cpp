@@ -83,17 +83,20 @@
 #include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
-#define APP_VERSION_STR "v1.5.9.204"
-#define APP_BUILD_NUMBER 204
+#define APP_VERSION_STR "v1.6.1.206"
+#define APP_BUILD_NUMBER 206
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.6.1.206  (2026-11-22)
+- 修复 踢人api 参数用错的问题
+- 修复 linux 更新按钮无效问题
+
 ## v1.5.9.204  (2026-11-18)
 - 整合 指令 签到
 - 修复 32位不能使用昵称审核问题
 - 优化 昵称审核 运行自定义加载条数了
 - 修复 32位注册式 参数乱码问题
-
 
 ## v1.5.8.198  (2026-11-17)
 - 增加 内置功能 抽奖
@@ -2025,15 +2028,288 @@ QString getLatestDownloadUrl() {
     QJsonObject obj = doc.object();
     QJsonArray assets = obj["assets"].toArray();
 
+    // 优先 .7z（项目发布的一直是 7z），没有才退 .zip
+    QString zipUrl;
     for (const QJsonValue &val : std::as_const(assets)) {
         QJsonObject asset = val.toObject();
-        QString name = asset["name"].toString();
-        if (name.contains("linux", Qt::CaseInsensitive) &&
-            (name.endsWith(".zip") || name.endsWith(".7z"))) {
-            return asset["browser_download_url"].toString();
-        }
+        const QString name = asset["name"].toString();
+        if (!name.contains("linux", Qt::CaseInsensitive))
+            continue;
+        const QString url = asset["browser_download_url"].toString();
+        if (url.isEmpty())
+            continue;
+        if (name.endsWith(".7z", Qt::CaseInsensitive))
+            return url;
+        if (zipUrl.isEmpty() && name.endsWith(".zip", Qt::CaseInsensitive))
+            zipUrl = url;
     }
 
+    return zipUrl;
+}
+
+// ==================== Linux 自动更新 ====================
+// 「检查更新 → 前往下载」和指令 #确认更新框架 共用这一套。
+// 原来的做法是「7z 直接解压到程序目录 + exec 主程序」，在 Linux 上有五个坑：
+//   ① release 包顶层多套一层 纯白铃-linux-x.x.x/ → 全都解到子目录里，主程序压根没被替换；
+//   ② 直接解到程序目录，正在跑的可执行文件会被写坏（Text file busy）；
+//   ③ 只认 7z / unzip：Ubuntu 24.04 的 7zip 只提供 7zz，而 unzip 解不了 .7z；
+//   ④ 重启时直接 exec qiancao，丢掉 AppRun 里的 LD_LIBRARY_PATH / PYTHONHOME / QT_PLUGIN_PATH，
+//      也不看 svc/mode（headless、VNC 机器上直接起 GUI 必然起不来）；
+//   ⑤ systemd 的 Restart=always 会在更新中途把旧版本再拉起来。
+// 现在：下载 → 解到 staging → 摊平顶层 → mv 覆盖（rename 不撞 Text file busy）
+//      → 补可执行位 / 修正 AppRun → 交给 systemctl restart 或 svc/qiancao-run.sh 重启。
+// 返回空串 = 更新脚本已 detach 起跑（调用方自己 quit）；否则是给人看的错误说明。
+QString qcLinuxUpdateApply(const QString &downloadUrl)
+{
+    // ⚠ 这个函数刻意不裹 #ifndef _WIN32：非 Win 分支在 Windows 上会被预处理整段跳过，
+    // 而 MSVC 在「被跳过的块」里遇到跨行原始串会误报 C1004（发现意外的文件尾）。
+    // 里面只用了跨平台的 Qt API，Windows 上编译得进、只是永远调不到。
+    if (downloadUrl.isEmpty())
+        return QStringLiteral("没有可用的下载地址");
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (appDir.isEmpty())
+        return QStringLiteral("拿不到程序所在目录");
+
+    // 用单引号包 shell 参数，把 ' 转义成 '\''
+    QString quoted = appDir;
+    quoted.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+
+    static const char *kScript = R"UPD(#!/bin/bash
+# 纯白铃 Linux 自动更新脚本（主程序生成，请勿手改）
+# $1 = 安装包下载地址（.7z 或 .zip）
+set -u
+URL="${1:-}"
+APP_DIR='@APP_DIR@'
+NAME='qiancao'
+LOG="$APP_DIR/update.log"
+PKG="$APP_DIR/.update_pkg"
+STAGE="$APP_DIR/.update_stage"
+
+log() { echo "[$(date '+%m-%d %H:%M:%S')] $*"; }
+
+exec >>"$LOG" 2>&1
+echo "======== $(date '+%F %T') 自动更新开始 ========"
+log "程序目录: $APP_DIR"
+log "下载地址: $URL"
+
+if [ -z "$URL" ]; then log "没有下载地址，退出"; exit 1; fi
+if [ ! -d "$APP_DIR" ]; then log "程序目录不存在"; exit 1; fi
+if [ ! -w "$APP_DIR" ]; then log "程序目录不可写（试试换个有权限的用户或 chown）"; exit 1; fi
+
+# ---------- 0. 权限 & systemd 探测 ----------
+SUDO=""
+if [ "$(id -u)" != "0" ]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        SUDO="sudo -n"
+    fi
+fi
+SERVICE=0
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet qiancao >/dev/null 2>&1; then
+    SERVICE=1
+    log "检测到 systemd 服务 qiancao"
+    if [ "$(id -u)" = "0" ] || [ -n "$SUDO" ]; then
+        $SUDO systemctl stop qiancao >/dev/null 2>&1 && log "已停止服务（免得 systemd 中途把旧版本拉起来）"
+    else
+        log "没有免密 sudo，停不了服务：中途可能被 systemd 拉起旧版本，最后会再 restart 一次"
+    fi
+fi
+
+# ---------- 1. 等主程序退出 ----------
+log "等待主程序退出..."
+i=0
+while [ "$i" -lt 40 ]; do
+    pgrep -x "$NAME" >/dev/null 2>&1 || break
+    i=$((i + 1))
+    sleep 0.5
+done
+if pgrep -x "$NAME" >/dev/null 2>&1; then
+    log "20 秒还没退出，强制结束"
+    pkill -x "$NAME" >/dev/null 2>&1
+    sleep 2
+fi
+
+# ---------- 2. 找解压工具 ----------
+SEVENZIP=""
+for c in 7zz 7z 7za 7zr; do
+    if command -v "$c" >/dev/null 2>&1; then SEVENZIP="$c"; break; fi
+done
+log "解压工具: ${SEVENZIP:-无}"
+
+# ---------- 3. 下载（断点续传 + 重试） ----------
+rm -f "$PKG"
+ok=0
+n=0
+if command -v curl >/dev/null 2>&1; then
+    while [ "$n" -lt 5 ]; do
+        n=$((n + 1))
+        log "下载中（第 $n 次）..."
+        if curl -fL -C - --connect-timeout 15 --retry 2 --speed-limit 20480 --speed-time 60 -o "$PKG" "$URL"; then
+            ok=1
+            break
+        fi
+        sleep 3
+    done
+elif command -v wget >/dev/null 2>&1; then
+    while [ "$n" -lt 5 ]; do
+        n=$((n + 1))
+        log "下载中（第 $n 次，wget）..."
+        if wget -c -O "$PKG" "$URL"; then ok=1; break; fi
+        sleep 3
+    done
+else
+    log "没有 curl / wget，无法下载"
+    exit 1
+fi
+if [ "$ok" != "1" ] || [ ! -s "$PKG" ]; then
+    log "下载失败（可以手动下载最新包，用 install.sh 覆盖安装）"
+    exit 1
+fi
+log "下载完成: $(du -h "$PKG" 2>/dev/null | cut -f1)"
+
+# ---------- 4. 解压到 staging（绝不直接解到程序目录） ----------
+rm -rf "$STAGE"
+mkdir -p "$STAGE" || { log "建不了临时目录"; exit 1; }
+log "解压中..."
+ok=0
+if [ -n "$SEVENZIP" ]; then
+    "$SEVENZIP" x -y -aoa -o"$STAGE" "$PKG" >/dev/null 2>&1 && ok=1
+elif command -v unzip >/dev/null 2>&1; then
+    unzip -oq "$PKG" -d "$STAGE" >/dev/null 2>&1 && ok=1
+fi
+if [ "$ok" != "1" ]; then
+    log "解压失败（没有可用的解压工具？请先 apt-get install -y 7zip）"
+    rm -rf "$STAGE" "$PKG"
+    exit 1
+fi
+
+# ---------- 5. 摊平顶层目录 ----------
+SRC="$STAGE"
+cnt=$(ls -A "$SRC" 2>/dev/null | wc -l)
+if [ "$cnt" = "1" ]; then
+    one=$(ls -A "$SRC" | head -n 1)
+    if [ -d "$SRC/$one" ]; then
+        log "摊平顶层目录: $one"
+        SRC="$SRC/$one"
+    fi
+fi
+if [ ! -f "$SRC/$NAME" ] && [ ! -d "$SRC/webui" ]; then
+    log "包结构不对（既没 $NAME 也没 webui），放弃本次更新"
+    rm -rf "$STAGE" "$PKG"
+    exit 1
+fi
+
+# ---------- 6. 备份 + 用 mv 覆盖 ----------
+[ -f "$APP_DIR/$NAME" ] && cp -f "$APP_DIR/$NAME" "$APP_DIR/$NAME.old" 2>/dev/null
+[ -f "$APP_DIR/AppRun" ] && cp -f "$APP_DIR/AppRun" "$APP_DIR/AppRun.old" 2>/dev/null
+
+cnt=0
+shopt -s dotglob nullglob
+for src in "$SRC"/*; do
+    base=$(basename "$src")
+    case "$base" in
+        data|svc|lib|usr|update.log|.env_ready|.update_stage|.update_pkg)
+            log "跳过 $base（用户数据 / 运行环境，别覆盖）"
+            continue
+            ;;
+    esac
+    if [ -d "$src" ]; then
+        rm -rf "$APP_DIR/$base"
+        cp -a "$src" "$APP_DIR/$base" && cnt=$((cnt + 1))
+    else
+        mv -f "$src" "$APP_DIR/$base" && cnt=$((cnt + 1))
+    fi
+done
+shopt -u dotglob nullglob
+log "覆盖完成，共 $cnt 项"
+
+# ---------- 7. 收尾 ----------
+if [ -f "$APP_DIR/usr/bin/qiancao" ]; then
+    log "把 usr/bin/qiancao 挪到根目录（老包结构）"
+    mv -f "$APP_DIR/usr/bin/qiancao" "$APP_DIR/$NAME"
+fi
+chmod +x "$APP_DIR/$NAME" 2>/dev/null
+if [ -f "$APP_DIR/AppRun" ]; then
+    chmod +x "$APP_DIR/AppRun" 2>/dev/null
+    sed -i 's|usr/bin/qiancao|qiancao|g' "$APP_DIR/AppRun" 2>/dev/null
+fi
+[ -f "$APP_DIR/AppRun-nogui" ] && chmod +x "$APP_DIR/AppRun-nogui" 2>/dev/null
+[ -f "$APP_DIR/svc/qiancao-run.sh" ] && chmod +x "$APP_DIR/svc/qiancao-run.sh" 2>/dev/null
+if [ -f "$APP_DIR/usr/lib/libQt5Core.so.5" ]; then
+    touch "$APP_DIR/.env_ready" 2>/dev/null
+else
+    rm -f "$APP_DIR/.env_ready"
+fi
+rm -rf "$STAGE" "$PKG"
+log "临时文件已清理"
+
+if [ ! -s "$APP_DIR/$NAME" ]; then
+    log "警告: $APP_DIR/$NAME 是空的，更新可能没成功"
+fi
+
+# ---------- 8. 重启 ----------
+cd "$APP_DIR" 2>/dev/null || true
+if [ "$SERVICE" = "1" ]; then
+    if [ "$(id -u)" = "0" ] || [ -n "$SUDO" ]; then
+        log "systemctl restart qiancao"
+        $SUDO systemctl restart qiancao
+        log "systemctl restart 返回码 $?"
+    else
+        log "没有免密 sudo，请手动执行：sudo systemctl restart qiancao"
+    fi
+    exit 0
+fi
+
+start_bg() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" >>"$LOG" 2>&1 &
+    else
+        nohup "$@" >>"$LOG" 2>&1 &
+    fi
+}
+
+if [ -x "$APP_DIR/svc/qiancao-run.sh" ]; then
+    log "按 svc/mode 重启（svc/qiancao-run.sh）"
+    start_bg "$APP_DIR/svc/qiancao-run.sh"
+elif [ -x "$APP_DIR/AppRun-nogui" ]; then
+    log "用 AppRun-nogui 重启"
+    start_bg "$APP_DIR/AppRun-nogui"
+elif [ -x "$APP_DIR/AppRun" ]; then
+    log "用 AppRun 重启"
+    start_bg "$APP_DIR/AppRun"
+else
+    log "找不到启动入口，请手动启动"
+    exit 1
+fi
+
+sleep 8
+if pgrep -x "$NAME" >/dev/null 2>&1; then
+    log "更新完成，主程序已重启"
+else
+    log "警告：重启后没看到 $NAME 进程，详细日志见 $LOG"
+fi
+exit 0
+)UPD";
+
+    QString content = QString::fromUtf8(kScript);
+    content.replace(QStringLiteral("@APP_DIR@"), quoted);
+
+    const QString scriptPath = QDir::tempPath() + QStringLiteral("/qiancao_update.sh");
+    QFile script(scriptPath);
+    if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return QStringLiteral("无法创建更新脚本：") + scriptPath;
+    script.write(content.toUtf8());
+    script.close();
+    QFile::setPermissions(scriptPath,
+                          QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
+                              QFile::ReadGroup | QFile::ExeGroup |
+                              QFile::ReadOther | QFile::ExeOther);
+
+    // URL 走参数传，不拼进脚本，省得引号/百分号转义踩坑
+    if (!QProcess::startDetached(QStringLiteral("/bin/bash"), QStringList() << scriptPath << downloadUrl)) {
+        QFile::remove(scriptPath);
+        return QStringLiteral("无法启动更新脚本（/bin/bash）");
+    }
     return QString();
 }
 
@@ -2059,70 +2335,15 @@ QString startDownloadAndReplace() {
     }
     return "启动失败（CreateProcess 返回错误）";
     #else
-    QString unzipTool;
-    if (QProcess::execute("which", QStringList() << "7z") == 0) {
-        unzipTool = "7z";
-    } else if (QProcess::execute("which", QStringList() << "unzip") == 0) {
-        unzipTool = "unzip";
-    } else {
-        return "未找到 7z 或 unzip，请安装 p7zip-full（sudo apt install p7zip-full）";
-    }
-
-    // 2. 获取下载 URL（自动选择包含 "linux" 的压缩包）
+    // Linux：统一走 qcLinuxUpdateApply（下载 → staging 解压 → 摊平 → mv 覆盖 → 重启）
     QString downloadUrl = getLatestDownloadUrl();
     if (downloadUrl.isEmpty())
-        return "未找到 Linux 版本的更新包";
+        return "未找到 Linux 版本的更新包（release 里没有带 linux 的 .7z/.zip）";
 
-    // 3. 创建临时 Shell 脚本
-    QString scriptPath = QDir::tempPath() + "/update.sh";
-    QFile script(scriptPath);
-    if (!script.open(QIODevice::WriteOnly | QIODevice::Text))
-        return "无法创建临时脚本";
-
-    QString appPath = QCoreApplication::applicationFilePath();
-    QString appDir = QCoreApplication::applicationDirPath();
-
-    // 脚本内容（根据检测到的工具生成对应的解压命令）
-    QString unzipCmd;
-    if (unzipTool == "7z") {
-        unzipCmd = "7z x /tmp/update.zip -y -o'%2'";
-    } else {
-        unzipCmd = "unzip -o /tmp/update.zip -d '%2'";
-    }
-
-    QString scriptContent = QString(
-                                "#!/bin/bash\n"
-                                "sleep 2   # 等待主程序完全退出\n"
-                                "echo '下载更新包...'\n"
-                                "wget -O /tmp/update.zip '%1' || curl -L -o /tmp/update.zip '%1'\n"
-                                "if [ $? -ne 0 ]; then echo '下载失败'; exit 1; fi\n"
-                                "echo '解压中...'\n"
-                                "%3\n"
-                                "if [ $? -ne 0 ]; then echo '解压失败'; exit 1; fi\n"
-                                "rm -f /tmp/update.zip\n"
-                                "echo '更新完成，重启程序...'\n"
-                                "exec '%4' &\n"
-                                "exit 0\n"
-                                ).arg(downloadUrl, appDir, unzipCmd, appPath);
-
-    script.write(scriptContent.toUtf8());
-    script.close();
-
-    // 添加执行权限
-    QFile::setPermissions(scriptPath,
-                          QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
-                              QFile::ReadGroup | QFile::ExeGroup |
-                              QFile::ReadOther | QFile::ExeOther);
-
-    // 4. 启动脚本（detach）
-    if (!QProcess::startDetached("/bin/bash", QStringList() << scriptPath)) {
-        QFile::remove(scriptPath);
-        return "无法启动更新脚本";
-    }
-
-    // 5. 主程序退出
-    QCoreApplication::quit();
-    return QString(); // 成功
+    QString err = qcLinuxUpdateApply(downloadUrl);
+    if (err.isEmpty())
+        QCoreApplication::quit();   // 脚本已 detach，等它接管替换 + 重启
+    return err;
     #endif
     return "其他系统暂时不支持";
 }

@@ -30,6 +30,9 @@
 #include <QMutex>
 #include <QWaitCondition>
 #include <QHash>
+#include <QQueue>
+#include <QTimer>
+#include <QByteArray>
 #include <functional>
 #include <string>
 #include <atomic>
@@ -72,6 +75,11 @@ public:
     //   type = 2：交给 32 位插件 DLL 的 on_message
     // ⚠ 发完就返回，不等回信 —— **唯一「等返回」的通道是 processRequestsA()**。
     //   只有 type = 1 才可能有返回值（类型 2 是甩完就走，等也没人回）。
+    // ⚠ 返回值语义（2026-11-22 加待发队列后）：
+    //     true  = **已写入任务槽** 或 **已排进待发队列**（会被稍后补发，调用方可以当作已受理）
+    //     false = 真丢了（桥没启动 / 待发队列也溢出）→ 调用方必须自己记日志，别当成功
+    //   槽满不再直接丢：进 m_pending，20ms 一跳扫空槽补发（FIFO）。改这里前读
+    //   sharedmemorybridge.cpp 里 writeResponseToBlock 上方的说明。
     bool writeResponseToBlock(int type, const char *text);
 
     // 取易语言回吐的命令返回值（易语言 _post4(1831501026, reqId, "", 结果json) 送来的那个 json）。
@@ -108,7 +116,18 @@ private:
     static constexpr int kShmSize   = 10 * 1024 * 1024;    // 共享内存总大小 10MB
     static constexpr int kTaskBase  = 5 * 1024 * 1024;     // 任务槽区起始偏移（后半 5MB）
 
+    // ---- 待发队列（2026-11-22）：任务槽满了不丢，排队等客户端腾出来 ----
+    // 上限是「防雪崩」用的，不是正常水位：500 条基本够一波消息突发（每条帧通常 1~2KB）。
+    static constexpr int kPendingMaxCount = 500;
+    static constexpr int kPendingMaxBytes = 16 * 1024 * 1024;   // 光看条数不够，长帧也能吃满内存
+    static constexpr int kFlushIntervalMs = 20;                 // 补发轮询（比 100ms 的槽扫描快，但别太频繁）
+
     static char *slotAt(char *base, int index) { return base + static_cast<size_t>(index) * kSlotSize; }
+
+    struct PendingTask {
+        int        type = 0;
+        QByteArray payload;
+    };
 
     struct RequestData {
         int apiId = 0;
@@ -143,6 +162,12 @@ private:
     void scanRequestSlots();
     void clearRequestSlot(int slotIndex);
     bool writeSlotResponse(int slotIndex, int reqId, const char *text);
+
+    // ---- 任务投递 / 待发队列 ----
+    bool writeTaskSlotLocked(int type, const QByteArray &payload);   // 调用者需持 m_taskMutex
+    bool enqueuePendingLocked(int type, const QByteArray &payload);  // 调用者需持 m_taskMutex
+    void scheduleFlush();                    // 线程安全：不在桥的线程上就投递过去
+    void flushPendingTasks();                // 定时器：把队列里的补进空槽（本线程执行）
     void parseRequestBody(const char *data, quint32 len, RequestData &req) const;
     void deliverCommandResult(const RequestData &req);
 
@@ -173,6 +198,18 @@ private:
     QThread     *m_workerThread = nullptr;
     QThreadPool  m_pool;             // 桥接专用线程池（stopServer 时能安全 waitForDone）
     QMutex       m_taskMutex;        // 串行化任务槽写入（writeResponseToBlock 可能多线程调用）
+
+    // ---- 待发队列：任务槽全满时的缓冲（2026-11-22）----
+    // ⚠ 下面这些全部由 m_taskMutex 保护。FIFO：队列非空时新任务一律排在队尾，
+    //   不允许「插空槽」—— 否则同一条命令链会和排队帧乱序。
+    QQueue<PendingTask> m_pending;
+    int          m_pendingBytes = 0;      // 队列里 payload 总字节（配 kPendingMaxBytes 用）
+    QTimer      *m_flushTimer   = nullptr;// 挂在 this 上；只有非空时才跑
+    std::atomic<bool> m_flushPostPending{false};  // 跨线程「启表」已投递过一次（别把事件队列刷爆）
+    // 统计（每次队列清空后归零，日志里按「本次」报）
+    int          m_queuedTasks  = 0;      // 因槽满而排队的次数
+    int          m_droppedTasks = 0;      // 连队列都满了、真丢掉的次数
+    int          m_slotFullHits = 0;      // 撞上「50 槽全满」的次数（含排队的）
     QMutex       m_procMutex;        // 保护 m_hYiProcess / m_yiPid
     Callback     m_callback;
 
