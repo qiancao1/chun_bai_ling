@@ -1371,7 +1371,7 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
             result ="获取群黑名单列表 参数1 群id不能是空";
             break;
         }
-        QString cursor = toQString(_1);
+        QString cursor = toQString(_2);
 
         result = client->get_member_blacklist(text,cursor, pluginAsyncCb(_7)).toStdString();
         break;
@@ -1383,7 +1383,7 @@ static const char* myCallbackImpl(const char* uuid, int apiId, int appid, const 
             result ="设置群黑名单列表 参数1 群id不能是空";
             break;
         }
-        QString user_list = toQString(_1);
+        QString user_list = toQString(_2);
         bool op = toBool(_3);
         result = client->member_blacklist(text,user_list,op, pluginAsyncCb(_7)).toStdString();
         break;

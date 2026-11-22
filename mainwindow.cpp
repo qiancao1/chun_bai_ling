@@ -89,7 +89,7 @@ QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
 ## v1.6.1.206  (2026-11-22)
-- 修复 踢人api 参数用错的问题
+- 修复 踢人api 以及其他 参数用错的问题
 - 修复 linux 更新按钮无效问题
 
 ## v1.5.9.204  (2026-11-18)
