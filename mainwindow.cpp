@@ -83,14 +83,15 @@
 #include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
-#define APP_VERSION_STR "v1.6.1.206"
-#define APP_BUILD_NUMBER 206
+#define APP_VERSION_STR "v1.6.1.207"
+#define APP_BUILD_NUMBER 207
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
-## v1.6.1.206  (2026-11-22)
+## v1.6.1.207  (2026-11-22)
 - 修复 踢人api 以及其他 参数用错的问题
 - 修复 linux 更新按钮无效问题
+- 修复 替换 32位 yyjson解析崩溃 替换到zyjson4.2.8(修复多线程崩溃版)
 
 ## v1.5.9.204  (2026-11-18)
 - 整合 指令 签到

@@ -22,6 +22,7 @@
 #include <QEventLoop>       // 32 位命令的同步外壳：GUI 线程上用局部事件循环跑 100ms 轮询
 #include <QElapsedTimer>
 #include <QThread>
+#include <memory>          // make_shared：测试汇总的 rows / 计时器要跨「500ms 轮询」活下来
 #include <qlibrary.h>
 #include "appwindow.h"
 
@@ -3273,14 +3274,18 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
     dlgRaw->resize(single ? 760 : 840, single ? 470 : 620);
     dlgRaw->setAttribute(Qt::WA_DeleteOnClose);
     dlgRaw->setModal(true);       // 模态但走 show()：代码继续跑，界面照常重绘
-    QPointer<QDialog> dlg(dlgRaw);
+    // 窗口关没关，靠下面捕获的 logPtr（QPointer）判断 —— 它随 dlgRaw 一起失效
 
-    // 收异步回复的窗口：同步插件（Python / 原生 / JS）单条 2 秒、全测 3 秒足够。
+    // 收异步回复的「上限」：同步插件（Python / 原生 / JS）单条 2 秒、全测 3 秒足够。
     // ⚠ 32 位（type 2）不一样：帧走共享内存交给易语言，由它自己的线程逐帧取、逐条跑插件，
     //   比同步插件慢一个量级。全测十几条时 3 秒根本收不齐 —— 现象就是「前几条有回复，
     //   后面全停在『已投递』」，而且每次收到的条数随机（纯看赶不赶得上）。
+    // ⚠ 这是**上限**不是固定等待：下面每 kTestPollMs 拍一次，全部行都拿到回复就立刻出结果。
     const int waitMs = (p.type == 2) ? (single ? 4000 : 10000)
                                      : (single ? 2000 : 3000);
+    static constexpr int kTestPollMs = 500;   // 轮询节拍：太密白烧 CPU，太疏收齐了也白等
+    static constexpr int kTestMinWaitMs = 1000; // 收齐了也至少留这么久的窗口，接异步尾巴（被扣下的发送）
+    static constexpr int kTestIdleMs = 2500;  // 连续这么久没有新回复 → 认为对面跑完了，提前收工
 
     QVBoxLayout *lay = new QVBoxLayout(dlgRaw);
     QLabel *titleLab = new QLabel(single
@@ -3320,7 +3325,7 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
         "%4\n\n"
         "测试正文 = 指令 + 「%5」，插件回复里出现「%5」就说明它把用户打的内容原样复读回去了。\n"
         "⚠ 这条指令会被**真的执行一次**（会发话题 / 请求 AI / 写库的都会照做，只是它要说的话被扣下不发）。\n"
-        "（执行完等 %6 秒收异步回复，别关窗口）")
+        "（收齐回复就立刻出结果，最多等 %6 秒；别关窗口）")
         .arg(pname, version,
              (p.type == 0 ? "Python" : p.type == 1 ? "DLL" : p.type == 2 ? "DLL32" : "JS"),
              single ? QStringLiteral("只测你点的那一条。")
@@ -3343,7 +3348,9 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
         QString     note;            // 跳过 / 未命中 / 异常的原因
         QStringList replies;         // 同步返回值 + 被扣下的发送
     };
-    QList<Row> rows;
+    // rows 放堆上：轮询定时器的回调要在本函数返回后继续读它（按值捕获整份 QList 就没法边收边判了）
+    auto rowsPtr = std::make_shared<QList<Row>>();
+    QList<Row> &rows = *rowsPtr;   // 引用别名：下面沿用 rows，改动量最小
 
     const QString cfgKey = p.id.isEmpty() ? p.name : p.id;
 
@@ -3530,11 +3537,18 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
     // 后面到的消息不再按「当前条」归属（各条已经有自己的序号了）
     pluginTestSetSeq(-1);
 
-    // ---- 到点汇总（异步回复的窗口；单条 2 秒、全测 3 秒）----
-    QTimer::singleShot(waitMs, this, [this, dlgPtr = dlg, logPtr, titlePtr = QPointer<QLabel>(titleLab),
-                                      rows, pname, version, probe, ptype = p.type, single, cfgLabel,
-                                      waitMs]() mutable {
-        // 先把异步落进来的正文并进各条（按序号取，取完清）
+    // ---- 汇总（收齐就提前跑，等满 waitMs 才放弃）----
+    auto elapsed  = std::make_shared<QElapsedTimer>();
+    auto doneFlag = std::make_shared<bool>(false);
+    elapsed->start();
+
+    auto finish = [logPtr, titlePtr = QPointer<QLabel>(titleLab), rowsPtr, elapsed,
+                   pname, version, probe, ptype = p.type, single, cfgLabel](int reason) {
+        QList<Row> &rows = *rowsPtr;
+        const int waitedMs  = static_cast<int>(elapsed->elapsed());
+        const int waitedSec = (waitedMs + 999) / 1000;
+
+        // 再收一次：轮询那一拍之后可能又落进来几条
         for (int i = 0; i < rows.size(); ++i)
             rows[i].replies += pluginTestTakeTexts(i);
         // 没带 "|T<序号>|" 的回复会落到 -1（不知道是哪条指令的）→ 至少报出来，别静默吞掉
@@ -3573,6 +3587,12 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
                    .arg(rows.size()).arg(hit).arg(replied).arg(echoed)
                    .arg(skipCount > 0 ? QStringLiteral(" · 跳过(等于) %1").arg(skipCount) : QString());
         out << QStringLiteral("测试正文 = 指令 + 「%1」；只对 开头是/结尾是/包含 判复读。").arg(probe);
+        out << QStringLiteral("耗时 %1 秒%2")
+                   .arg(waitedMs / 1000.0, 0, 'f', 1)
+                   .arg(reason == 0 ? QStringLiteral("，回复已收齐，提前收工")
+                        : reason == 1 ? QStringLiteral("（连续 %1 秒没有新回复，按它跑完了处理）")
+                                            .arg(kTestIdleMs / 1000)
+                                      : QStringLiteral("（等满上限才收工，可能还有回复没回来）"));
         if (!orphanReplies.isEmpty()) {
             out << QStringLiteral("⚠ 另有 %1 条回复没带测试序号（没法认出是哪条指令的）：")
                        .arg(orphanReplies.size());
@@ -3624,8 +3644,8 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
                 // 32 位这一条：投递成功、只是窗口内没收到回复 —— 别让人误以为「没执行」。
                 if (ptype == 2 && r.matched &&
                     why == QStringLiteral("已投递 32 位（异步，回复可能晚到/串台）")) {
-                    why = QStringLiteral("已投递，但 %1 秒内没等到它的回复（不代表没执行，去主日志看）")
-                              .arg(waitMs / 1000);
+                    why = QStringLiteral("已投递，但等了 %1 秒也没等到回复（不代表没执行，去主日志看）")
+                              .arg(waitedSec);
                 }
                 out << QStringLiteral("%1. [%2] %3 —— %4")
                            .arg(++n).arg(pluginTestMatchTypeName(r.type), r.cmd,
@@ -3648,7 +3668,59 @@ void PluginPage::runPluginTest(int index, const QString &onlyKey, int onlyType, 
                                   : QStringLiteral("测试完成：「%1」共 %2 条指令，命中 %3，复读 %4")
                                         .arg(pname).arg(rows.size()).arg(hit).arg(echoed));
         }
+    };   // ← finish 定义结束
+
+    // 轮询：每 500ms 收一次，三种收工条件任满其一：
+    //   ① 全部「命中且该回话」的行都拿到回复（且已过最小窗口）
+    //   ② 连续 kTestIdleMs 没有新回复 → 认为它已经跑完（防止「本来就不回话」的行把窗口拖满）
+    //   ③ 等满 waitMs 上限
+    // 32 位全测的上限是 10 秒，但实际通常 1~3 秒就齐了 / 就没动静了，不会再白等满 10 秒。
+    struct PollState {
+        qint64 lastGrowth = 0;    // 最后一次「回复条数变多」的时刻
+        int    lastCount  = 0;    // 上一次统计到的回复条数
+    };
+    auto pollSt = std::make_shared<PollState>();
+    QTimer *pollTimer = new QTimer(this);
+    pollTimer->setInterval(kTestPollMs);
+    connect(pollTimer, &QTimer::timeout, this,
+            [this, rowsPtr, elapsed, doneFlag, logPtr, waitMs, pollTimer, pollSt, finish]() {
+        if (*doneFlag) return;
+
+        if (!logPtr) {                    // 窗口被关了：直接收尾，别空转到超时（也别影响下一次测试）
+            *doneFlag = true;
+            pollTimer->stop();
+            pluginTestEnd();
+            return;
+        }
+
+        int  replyCount = 0;              // 只用来判断「还在长吗」
+        bool pending    = false;          // 还有「命中且该回话」的行没拿到回复
+        for (int i = 0; i < rowsPtr->size(); ++i) {
+            Row &r = (*rowsPtr)[i];
+            r.replies += pluginTestTakeTexts(i);
+            replyCount += r.replies.size();
+            if (r.matched && !r.skippedEquals && r.replies.isEmpty())
+                pending = true;
+        }
+
+        const qint64 now = static_cast<qint64>(elapsed->elapsed());
+        if (replyCount > pollSt->lastCount) {
+            pollSt->lastCount  = replyCount;
+            pollSt->lastGrowth = now;     // 有动静 → 静默计时重来
+        }
+
+        int reason = -1;                  // 0 = 收齐 / 1 = 静默收工 / 2 = 等满上限
+        if (!pending && now >= kTestMinWaitMs)              reason = 0;
+        else if (now >= waitMs)                            reason = 2;
+        else if (now - pollSt->lastGrowth >= kTestIdleMs)   reason = 1;
+        if (reason < 0) return;           // 继续等下一拍
+
+        *doneFlag = true;
+        pollTimer->stop();
+        pollTimer->deleteLater();
+        finish(reason);
     });
+    pollTimer->start();
 }
 
 //选中列表
