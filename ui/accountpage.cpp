@@ -655,16 +655,15 @@ void AccountPage::onSaveSelected() {
 
     ai->secret = tmp.secret;
     ai->botqq = tmp.botqq;
-
+    bool qh = (ai->type != tmp.type);
     ai->type = tmp.type;
     ai->markdown = tmp.markdown;
     ai->markdown_pd = tmp.markdown_pd;
     ai->markdown_pd_mb = tmp.markdown_pd_mb;
     ai->wsIntents = tmp.wsIntents;
-    bool qh = (ai->sandbox != tmp.sandbox);
+    if(!qh) qh = (ai->sandbox != tmp.sandbox);
     ai->sandbox = tmp.sandbox;
-    // 注意：botsettext 由 QQ 回调写入，表单里没有对应控件，这里保持原值不清空
-
+    if(ai->sandbox) ai->type=0; //沙盒必须是 ws
     saveAccounts(ai);
 
     if (g_CW.contains(ai->appid_int) && g_CW[ai->appid_int]){
@@ -673,7 +672,7 @@ void AccountPage::onSaveSelected() {
             auto *c = m_botClients[ai->appid_int];
             if(c->m_info->online){
                 c->stop();
-                QMessageBox::warning(this,"沙盒切换","检测到切换沙盒 自动下线 请点击登录按钮 进行登录");
+                QMessageBox::warning(this,"登录类型切换","检测到切换登录类型 自动下线 请点击登录按钮 进行登录");
             }
         }
         g_CW[ai->appid_int]->refreshDisplay();
