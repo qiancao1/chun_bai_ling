@@ -15,6 +15,15 @@
 #include "themecolorwidget.h"
 #include "themecolors.h"
 #include <QApplication>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSslConfiguration>
+#include <QSslError>
+#include <QSslSocket>
+#include <QPointer>
+#include <QRegularExpression>
+#include <functional>
 #include <vector>       // scanWorkingSetPages() 的 QueryWorkingSetEx 批量缓冲
 #ifdef Q_OS_WIN
 #ifndef _WINDOWS_
@@ -402,6 +411,11 @@ void set::setupUI()
     m_addrEdit->setPlaceholderText(tr("如 abcd.com 或 22.33.44.55"));
     m_addrEdit->setMinimumWidth(150);
     m_startStopBtn = new QPushButton("保存", this);
+    m_pubIpBtn = new QPushButton(tr("获取公网IP"), this);
+    m_pubIpBtn->setCursor(Qt::PointingHandCursor);
+    m_pubIpBtn->setToolTip(tr("问第三方回显服务（myip.ipip.net / api.ipify.org / ip.3322.net）\n"
+                              "「你看到我是谁」，把查到的公网 IPv4 填进「对外链接」。\n"
+                              "拿到的只是出口 IP：家里宽带还要在路由器上把端口映射到本机。"));
     lts_but = new QPushButton("复制聊天室链接", this);
 
     Ewebhook = new QCheckBox;
@@ -613,7 +627,7 @@ void set::setupUI()
                                     QStringLiteral("端口改完要点确认，会重启对应监听"));
         auto *grid = makeGrid();
         grid->addWidget(makeLabel(tr("对外链接"), "setFieldLabel"), 0, 0);
-        grid->addWidget(fieldUnit(m_addrEdit, {m_startStopBtn}), 0, 1);
+        grid->addWidget(fieldUnit(m_addrEdit, {m_pubIpBtn, m_startStopBtn}), 0, 1);
         grid->addWidget(makeLabel(tr("聊天室链接"), "setFieldLabel"), 0, 2);
         grid->addWidget(lts_but, 0, 3, Qt::AlignLeft);
 
@@ -628,7 +642,19 @@ void set::setupUI()
         switchRow->addWidget(Ews);
         switchRow->addWidget(ESSL);
         switchRow->addStretch();
+
+        // 测试 webhook 端口是否真的能访问（本机 + 公网两跳，见 testWebhookReach()）
+        if (!m_testWebhookBtn)
+            m_testWebhookBtn = new QPushButton(tr("测试能否访问"), this);
+        m_testWebhookBtn->setCursor(Qt::PointingHandCursor);
+        m_testWebhookBtn->setToolTip(tr("先用 127.0.0.1 测本机监听，再用「对外链接」测公网地址能不能连上\n"
+                                       "（只看能不能建立 HTTP 响应，404 也算通）"));
+        switchRow->addWidget(m_testWebhookBtn);
+
         grid->addLayout(switchRow, 2, 0, 1, 4);
+
+        connect(m_testWebhookBtn, &QPushButton::clicked, this, [this]() { testWebhookReach(); });
+        connect(m_pubIpBtn, &QPushButton::clicked, this, [this]() { fetchPublicIp(); });
 
         // 这里只给**格式说明**，不放输入框 —— 这条地址是填在 QQ 开放平台「回调配置」里的，
         // 平台会往它 POST 事件。框架只接 POST 且 path 必须以 /webhook/ 开头（image-server.cpp:872），
@@ -1194,6 +1220,349 @@ void set::set_webui(bool value)
 
 
 
+
+// ===========================================================================
+// 「获取公网IP」
+//
+// 「公网 IP」不是本机能算出来的：本机只知道自己的内网地址（192.168.x.x），
+// 出口 IP 在你路由器 / 运营商那侧。通用的做法是**问一个回显服务**——
+// 它把「这次请求的来源地址」原样回给你，等于告诉你「外面看到你是谁」。
+// 这类服务都免 key、只要 GET，按「国内优先」排三条，前一条失败自动换下一条：
+//   ① https://myip.ipip.net              纯文本「当前 IP：1.2.3.4  来自于：中国 广东 深圳 电信」
+//   ② https://api.ipify.org?format=json  {"ip":"1.2.3.4"}
+//   ③ http://ip.3322.net/                纯文本 IP（老牌国内 DDNS 回显，只在 https 都挂时兜底）
+// ⚠ 拿到的是「出口 IP」：家里 / 公司宽带大多在 NAT 后面，这个 IP 在路由器上，
+//   要让平台推事件进来还得做端口映射（云服务器则是放行安全组），所以填完会提示一句。
+// ===========================================================================
+namespace {
+
+// 从任意文本里挑第一个合法 IPv4：ipip 是中文句子、ipify 是 JSON、3322 是裸 IP，
+// 统一用正则捞（顺便校验每段 0-255，防「2025.11.25」这种日期被误认成 IP）。
+QString pickIPv4(const QString &text)
+{
+    static const QRegularExpression re(QStringLiteral("(\\d{1,3}(?:\\.\\d{1,3}){3})"));
+    auto it = re.globalMatch(text.left(600));
+    while (it.hasNext()) {
+        const QString ip = it.next().captured(1);
+        const QStringList parts = ip.split(QLatin1Char('.'));
+        if (parts.size() != 4)
+            continue;
+        bool ok = true;
+        for (const QString &p : parts) {
+            const int v = p.toInt(&ok);
+            if (!ok || v < 0 || v > 255) { ok = false; break; }
+        }
+        if (ok)
+            return ip;
+    }
+    return QString();
+}
+
+// 内网 / 保留 / 运营商级 NAT：这种地址填进「对外链接」外面肯定进不来
+bool isPrivateIPv4(const QString &ip)
+{
+    const QStringList p = ip.split(QLatin1Char('.'));
+    if (p.size() != 4)
+        return false;
+    const int a = p.at(0).toInt();
+    const int b = p.at(1).toInt();
+    if (a == 10 || a == 127 || a == 0)          return true;
+    if (a == 192 && b == 168)                   return true;
+    if (a == 172 && b >= 16 && b <= 31)         return true;
+    if (a == 169 && b == 254)                   return true;   // 链路本地（网卡没拿到 DHCP）
+    if (a == 100 && b >= 64 && b <= 127)        return true;   // CGNAT：运营商级 NAT，一样进不来
+    return false;
+}
+
+// 探测链：串行问几个回显服务，第一个给出合法 IPv4 的就用。
+// 做成挂在 set 下面的 QObject，结束时 deleteLater() 自删 —— 不用 shared_ptr 自引用
+// （lambda 里存 shared_ptr<function> 会形成环，点一次泄漏一次）。
+class PublicIpProbe : public QObject
+{
+public:
+    struct Src { const char *url; const char *name; };
+    // done(成功?, IP, 归属地(ipip 才有), 失败明细/命中的服务名)
+    using DoneCb = std::function<void(bool, const QString &, const QString &, const QString &)>;
+
+    PublicIpProbe(QObject *parent, DoneCb done)
+        : QObject(parent), m_done(std::move(done))
+    {
+        m_nam = new QNetworkAccessManager(this);
+    }
+
+    void start() { query(0); }
+
+private:
+    void query(int idx)
+    {
+        static const Src kSrcs[] = {
+            { "https://myip.ipip.net",             "myip.ipip.net" },
+            { "https://api.ipify.org?format=json", "api.ipify.org" },
+            { "http://ip.3322.net/",               "ip.3322.net" },
+        };
+        const int n = int(sizeof(kSrcs) / sizeof(kSrcs[0]));
+
+        if (idx >= n) {                       // 三条全挂
+            m_done(false, QString(), QString(), m_errs.join(QLatin1Char('\n')));
+            deleteLater();
+            return;
+        }
+
+        const QString name = QString::fromLatin1(kSrcs[idx].name);
+        QNetworkRequest req{QUrl(QString::fromLatin1(kSrcs[idx].url))};
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+        // 有的回显站按 UA 判人机，不带就 403 —— 给个普通浏览器串
+        req.setHeader(QNetworkRequest::UserAgentHeader,
+                      QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+
+        QNetworkReply *r = m_nam->get(req);
+        QTimer::singleShot(6000, r, [r]() { if (r->isRunning()) r->abort(); });
+
+        connect(r, &QNetworkReply::finished, this, [this, r, idx, name]() {
+            const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray data = r->readAll();
+            const auto err = r->error();
+            const QString errStr = r->errorString();     // deleteLater 前先取
+            r->deleteLater();
+
+            if (status >= 200 && status < 300) {
+                const QString text = QString::fromUtf8(data.left(600));
+                const QString ip = pickIPv4(text);
+                if (!ip.isEmpty()) {
+                    // ipip 的原文带归属地，捞出来当提示（其余两个没有）
+                    QString loc;
+                    const int p = text.indexOf(QStringLiteral("来自于"));
+                    if (p >= 0)
+                        loc = text.mid(p + 3).simplified().trimmed();
+                    m_done(true, ip, loc, name);
+                    deleteLater();
+                    return;
+                }
+            }
+
+            QString why;
+            if (status > 0)
+                why = QStringLiteral("HTTP %1，返回里没有 IP").arg(status);
+            else if (err == QNetworkReply::OperationCanceledError || err == QNetworkReply::TimeoutError)
+                why = QStringLiteral("6 秒没响应（超时）");
+            else
+                why = errStr.isEmpty() ? QStringLiteral("连不上") : errStr;
+            m_errs << QStringLiteral("· %1：%2").arg(name, why);
+            query(idx + 1);     // 换下一个
+        });
+    }
+
+    QNetworkAccessManager *m_nam = nullptr;
+    DoneCb m_done;
+    QStringList m_errs;
+};
+
+} // namespace
+
+void set::fetchPublicIp()
+{
+    if (!m_pubIpBtn)
+        return;
+
+    m_pubIpBtn->setEnabled(false);
+    m_pubIpBtn->setText(tr("获取中…"));
+
+    auto *probe = new PublicIpProbe(this,
+        [this](bool ok, const QString &ip, const QString &loc, const QString &detail) {
+            if (m_pubIpBtn) {
+                m_pubIpBtn->setEnabled(true);
+                m_pubIpBtn->setText(tr("获取公网IP"));
+            }
+
+            if (!ok) {
+                QMessageBox::warning(this, tr("获取公网IP失败"),
+                    QStringLiteral("三个回显服务都没问到：\n\n%1\n\n"
+                                   "· 本机断网，或者走了代理但代理不通？\n"
+                                   "· 防火墙 / 安全软件拦了程序的出站请求？\n"
+                                   "· 也可以自己在浏览器打开 https://myip.ipip.net 手抄一个填进来。")
+                        .arg(detail));
+                return;
+            }
+
+            // 当前填的是域名（含字母）就别默默覆盖，先问一句
+            const QString cur = m_addrEdit->text().trimmed();
+            bool looksDomain = false;
+            for (const QChar &c : cur) {
+                if (c.isLetter()) { looksDomain = true; break; }
+            }
+            if (looksDomain && cur != ip
+                && QMessageBox::question(this, tr("要替换吗"),
+                       QStringLiteral("「对外链接」现在填的是：\n%1\n\n"
+                                      "要换成刚查到的公网 IP %2 吗？").arg(cur, ip))
+                       != QMessageBox::Yes) {
+                return;
+            }
+
+            m_addrEdit->setText(ip);
+
+            QString msg = QStringLiteral("已填入：%1").arg(ip);
+            if (!loc.isEmpty())
+                msg += QStringLiteral("\n归属地：%1").arg(loc);
+            msg += QStringLiteral("\n（来自 %1）\n\n").arg(detail);
+
+            if (isPrivateIPv4(ip))
+                msg += QStringLiteral("⚠ 这是内网 / 运营商级 NAT 地址，外面进不来：\n"
+                                      "需要在路由器上做端口映射，或者用内网穿透。");
+            else
+                msg += QStringLiteral("这是本机对外的出口 IP。还要做两件事才收得到推送：\n"
+                                      "· 点「保存」把它写进配置；\n"
+                                      "· 本机在路由器后面 → 路由器上把这个端口映射到这台机器；\n"
+                                      "  云服务器 → 安全组放行 webhook 端口。\n"
+                                      "填好后可以点「测试能否访问」验一下。");
+
+            QMessageBox::information(this, tr("获取公网IP成功"), msg);
+        });
+    probe->start();
+}
+
+// ===========================================================================
+// 「测试能否访问」：先打 127.0.0.1 看监听起没起，再按「对外链接」打公网地址
+//
+// 判定口径：**只要连上并收到 HTTP 响应就算通**（404 也算通 —— 说明服务在，
+// 只是没这个路径）。连不上 / 解析不了 / 超时 / 握手失败才算不通。
+// 探测不走 NetManager（它拿不到状态码），这里自带 QNAM；https 不校验证书，
+// 因为自签证书也要能测通，这条只用来判断「能不能连上」。
+// ===========================================================================
+void set::testWebhookReach()
+{
+    const int port = g_config["webhook_p"].toInt();
+    if (port <= 0 || port > 0xffff) {
+        QMessageBox::warning(this, "端口不对",
+            "webhook 端口没配置（或不在 1-65535）。先填端口并点确认。");
+        return;
+    }
+    if (!Ewebhook->isChecked()) {
+        QMessageBox::warning(this, "webhook 没启用",
+            QStringLiteral("「启动用webhook」没勾上，端口 %1 上没有任何服务在监听。\n\n"
+                           "勾上之后点确认，再回来测。").arg(port));
+        return;
+    }
+
+    const bool ssl = ESSL->isChecked();
+
+    // 对外链接允许三种写法：host / host:port / http(s)://host[:port][/path]
+    auto makeUrl = [ssl, port](const QString &base) -> QUrl {
+        QString b = base.trimmed();
+        if (b.isEmpty()) return QUrl();
+        if (!b.contains(QStringLiteral("://")))
+            b.prepend(ssl ? QStringLiteral("https://") : QStringLiteral("http://"));
+        QUrl u(b);
+        if (u.port() <= 0) u.setPort(port);
+        u.setPath(QStringLiteral("/"));
+        u.setQuery(QString());
+        return u;
+    };
+
+    const QUrl localUrl  = makeUrl(QStringLiteral("127.0.0.1"));
+    const QUrl publicUrl = makeUrl(m_addrEdit->text());
+
+    if (m_testWebhookBtn) m_testWebhookBtn->setEnabled(false);
+
+    // 单次探测：done(是否通, 一句话结果)
+    auto probe = [this](const QString &label, const QUrl &url,
+                        std::function<void(bool, QString)> done) {
+        auto *nam = new QNetworkAccessManager(this);
+        QNetworkRequest req(url);
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+        QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
+        cfg.setPeerVerifyMode(QSslSocket::VerifyNone);   // 自签证书也算通
+        req.setSslConfiguration(cfg);
+
+        QNetworkReply *r = nam->get(req);
+        // 自签 / 过期证书：直接忽略（这条只测连通性）
+        connect(r, &QNetworkReply::sslErrors, r, [r](const QList<QSslError> &) { r->ignoreSslErrors(); });
+
+        QPointer<QNetworkReply> guard(r);
+        QTimer::singleShot(8000, r, [guard]() {
+            if (guard && guard->isRunning()) guard->abort();
+        });
+
+        connect(r, &QNetworkReply::finished, this,
+            [r, nam, label, url, done]() {
+                const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const auto err = r->error();
+                const QString errStr = r->errorString();   // deleteLater 前先取
+                r->deleteLater();
+                nam->deleteLater();
+
+                if (status > 0) {         // 收到 HTTP 响应就是通
+                    done(true, QStringLiteral("%1  %2 → 通（HTTP %3）")
+                                   .arg(label, url.toString()).arg(status));
+                    return;
+                }
+
+                QString why;
+                switch (err) {
+                case QNetworkReply::ConnectionRefusedError:
+                    why = QStringLiteral("连接被拒（端口没在监听 / 防火墙拦了）"); break;
+                case QNetworkReply::HostNotFoundError:
+                    why = QStringLiteral("域名解析失败（地址写错了？）"); break;
+                case QNetworkReply::TimeoutError:
+                case QNetworkReply::OperationCanceledError:
+                    why = QStringLiteral("超时（8 秒没响应）"); break;
+                case QNetworkReply::SslHandshakeFailedError:
+                    why = QStringLiteral("SSL 握手失败"); break;
+                default:
+                    why = errStr.isEmpty()
+                              ? QStringLiteral("连不上（错误码 %1）").arg(int(err))
+                              : errStr;
+                    break;
+                }
+                done(false, QStringLiteral("%1  %2 → 不通：%3")
+                               .arg(label, url.toString(), why));
+            });
+    };
+
+    // 先本机，后公网（串行，避免两条都超时干等 16 秒分不清哪个慢）
+    probe(QStringLiteral("【本机】"), localUrl,
+          [this, publicUrl, probe](bool localOk, QString localText) {
+              if (publicUrl.isEmpty()) {
+                  if (m_testWebhookBtn) m_testWebhookBtn->setEnabled(true);
+                  QMessageBox::information(this,
+                      localOk ? "本机能访问" : "本机也不通",
+                      localText + "\n\n"
+                      + (localOk
+                            ? "本机监听是正常的。\n「对外链接」是空的，所以没测公网地址 —— "
+                              "要测公网就把对外链接填上（域名或 IP，点旁边的保存）。"
+                            : "本机都连不上，说明服务没真的起来：\n"
+                              "· 「启动用webhook」勾了吗？端口点了确认吗？\n"
+                              "· 端口是不是被别的程序占了（日志里搜「启动服务器启动失败」）。"));
+                  return;
+              }
+
+              probe(QStringLiteral("【对外】"), publicUrl,
+                    [this, localOk, localText](bool pubOk, QString pubText) {
+                        if (m_testWebhookBtn) m_testWebhookBtn->setEnabled(true);
+
+                        QString tail;
+                        if (localOk && pubOk)
+                            tail = "两条都通 —— 平台能推到这个地址。记得去开放平台订阅事件。";
+                        else if (localOk && !pubOk)
+                            tail = "本机是通的，问题在「外面进不来」：\n"
+                                   "· 云服务器安全组 / 防火墙放行这个端口了吗？\n"
+                                   "· 路由器端口映射（内网穿透）对吗？对外 IP 是公网 IP 吗？\n"
+                                   "· 用域名的话，DNS 解析到这个 IP 了吗？\n"
+                                   "· 「对外链接」里不该带 http:// 以外的路径。";
+                        else if (!localOk && pubOk)
+                            tail = "公网能通但本机 127.0.0.1 不通，比较怪：\n"
+                                   "可能服务监听在指定网卡上，或对外地址其实指向了另一台机器（反代）。";
+                        else
+                            tail = "两条都不通：先把服务起起来（勾「启动用webhook」+ 点端口确认），"
+                                   "再看防火墙/端口映射。";
+
+                        QMessageBox::information(this,
+                            (localOk && pubOk) ? "可以访问" : "有不通的",
+                            localText + "\n" + pubText + "\n\n" + tail);
+                    });
+          });
+}
 
 void set::loadConfig()
 {

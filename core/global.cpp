@@ -542,6 +542,12 @@ static QString hintFillFallback(const QString &tpl, const QString &userText, int
 
     QString out = tpl;
     out.replace(kPlaceholder, fill);    // 一条都没匹配上 → 占位符清空（不瞎猜，也不留一串方括号）
+
+    // ⚠ 一条都没匹配上时（纯数字、一串符号、或者正文压根没从日志库读回来），占位符会被换成空串。
+    // 要是文案本身就只有这一个占位符，整条消息就成了空串 → 调用方的 `!reply.isEmpty()` 直接吞掉，
+    // 用户看到的现象就是「发数字完全没反应、发中文英文正常」（中英文总能匹配到几条，所以非空）。
+    if (fill.isEmpty() && out.trimmed().isEmpty())
+        out = QStringLiteral("没有找到相近的指令，发送 [菜单]() 看看都能做什么");
     return out;
 }
 

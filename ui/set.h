@@ -42,6 +42,10 @@ private slots:
 private:
     void setupUI();
     void loadConfig();
+    // 测 webhook 端口能不能访问：先本机 127.0.0.1，再按「对外链接」测公网地址
+    void testWebhookReach();
+    // 问第三方回显服务「你看到我是谁」，把公网 IPv4 填进「对外链接」（见 set.cpp 顶部说明）
+    void fetchPublicIp();
 
     QLineEdit  *m_ffmpegpath,*m_日志数量,*m_日志颜色,*webws_port,*webhook,*m_xcs;
     QPushButton  *web_qr;
@@ -57,6 +61,8 @@ private:
     QLineEdit    *m_cos_secretId,*m_cos_secretKey,*m_cos_host;
     QPushButton *m_cos_qr,*m_cos_cs;
     QPushButton  *m_startStopBtn,*lts_but; //聊天室
+    QPushButton  *m_testWebhookBtn = nullptr;   // 「测试能否访问」
+    QPushButton  *m_pubIpBtn = nullptr;         // 「获取公网IP」
 };
 
 #endif // SET_H

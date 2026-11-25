@@ -374,10 +374,13 @@ public:
     void run() override {
         auto *db = g_botdb[g_appid];
         QQBotClient *bot = m_botClients[g_appid];
-        // 一次扫库拿到所有好友可用的被动回复 msgid（窗口 5 分钟），整批推送都不用再查
+        // 一次扫库拿到所有好友可用的被动回复 msgid（窗口 1 小时），下面每 60 秒再补扫一次
+        // （好友多、队列长时跑过 1 小时，老 msgid 就作废了 → 必须换新的，不能一直用开局那份）
+        LogDB *ldbF = g_logdb[mapTypeToTabIndex(2)].get();
         QHash<QString, QStringList> replyIds;
-        if (LogDB *ldb = g_logdb[mapTypeToTabIndex(2)].get())
-            replyIds = ldb->getRecentMsgIdMap(QString::number(g_appid), false);
+        if (ldbF) replyIds = ldbF->getRecentMsgIdMap(QString::number(g_appid), false);
+        QElapsedTimer replyIdsTimerF;
+        replyIdsTimerF.start();
 
         QString pname = "[批量推送]";
         int len = ts_m_friendStatus.size();
@@ -394,6 +397,12 @@ public:
             if (i >= len) return;
             if (!ts_m_stopPush) return;
             if (ts_m_friendStatus[i] == 0) continue;
+
+            // 每 60 秒换一份 msgid：老的可能已经超过 1 小时窗口，再拿去发会被平台拒（消息就丢了）
+            if (ldbF && replyIdsTimerF.elapsed() > 60 * 1000) {
+                replyIds = ldbF->getRecentMsgIdMap(QString::number(g_appid), false);
+                replyIdsTimerF.restart();
+            }
 
             QString user;
             db->getOpenIdBySeqId(ts_m_friendStatus[i], user);
@@ -429,7 +438,8 @@ public:
         QQBotClient *bot = m_botClients[g_appid];
         // 群日志库（type=0 → tabIndex=1）
         LogDB *ldb = g_logdb[mapTypeToTabIndex(0)].get();
-        // 群的被动回复窗口只有 5 分钟，整批推送可能跑很久 → 先扫一次，之后每 60 秒重扫
+        // 群的被动回复窗口 1 小时（旧口径 5 分钟），整批推送可能跑很久 → 先扫一次，之后每 60 秒重扫
+        // （既换掉快过期的，也补上这一分钟内新收到的）
         QHash<QString, QStringList> replyIds;
         if (ldb) replyIds = ldb->getRecentMsgIdMap(QString::number(g_appid), true);
         QElapsedTimer replyIdsTimer;
@@ -457,7 +467,7 @@ public:
                 replyIdsTimer.restart();
             }
 
-            // 混合发送：有 msgid 就走被动回复（群窗口 5 分钟），没有就走主动发送
+            // 混合发送：有 msgid 就走被动回复（群窗口 1 小时），没有就走主动发送
             QString msgid = replyIds.value(ts_m_groupStatus[i]).value(0);
 
             if (msgid.isEmpty()) {

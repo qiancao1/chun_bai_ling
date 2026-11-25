@@ -416,6 +416,10 @@ public:
     // 与私有的 findPluginIndex 区分：那个按 path / uuid 精确匹配，判断的是"同一路径有没有被重复加载"；
     // 这个对应插件市场里 `info.id == p.id` 的那套。给市场「重新安装」用 —— 覆盖前先卸载旧实例。
     int findPluginIndexByIdentity(const QString &id, const QString &name = QString()) const;
+    // 按**落地目录**找已载入的插件（绝对目录，相对路径也行；返回下标，找不到 -1）。
+    // 覆盖安装的兜底查找：JSON 的市场 id 未必等于插件自己注册的 id，
+    // 只按 id 找不到就漏卸旧实例 → 文件被占用、换目录失败。
+    int findPluginIndexByInstallDir(const QString &absDir) const;
     bool disable_Plugin(PluginInfo &info);//禁用
     void savePlugins();
     void loadPlugins();
@@ -681,6 +685,9 @@ private:
     // 「添加-脚本」：选文件夹 → 先看 main.py，再看 main.js，按命中项分流到 pip / npm 入口
     // （两个都没有就提示；默认目录定位到 <程序目录>/plugins）
     void LoadPlugin_Script();
+    // 「导入」：粘贴一条插件市场 JSON（单条对象 / 数组 / 市场接口壳都认）→ 下载 → 解压 → 加载。
+    // 下载与解压在后台线程跑，主线程只负责换目录和加载（见 plugin/pluginimporter.h）。
+    void importPluginFromJson();
     void updateDetailPanel(int index);
     void updateAccountCheckList(int pluginIndex);
     // 返回 true = 该插件**有注册规则命中**这条消息（空规则表的插件不算命中）。
@@ -748,6 +755,9 @@ private:
                            const QString &key, int &role, QString &newKey) const;
     int currentSelected_index;
     std::thread m_asyncio_thread; // 改成成员变量
+    // 「从 JSON 导入」在途标记：下载 + 解压跑在后台线程，中途再点一次会两家同时往
+    // plugins/<名字>.importing 里写（7z 互踩、rename 抢目录），所以一次只允许一个。
+    bool m_importingPlugin = false;
 
     // ==================== 市场覆盖安装：旧启用态暂存 ====================
     // key = 归一化后的插件**目录**绝对路径（见 pluginpage.cpp 的 reinstallKey）。

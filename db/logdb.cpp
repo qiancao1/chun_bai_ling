@@ -67,11 +67,14 @@ static const int SEQ_DIGITS = 20;
 // （坏记录 / 磁盘满 / I-O 错误），否则 appendLog 会一直往里堆 = 无界涨内存。
 static const int MAX_PENDING_CACHE = 20000;
 
-// ---- 被动回复 msgid 的有效窗口（2026-10-11）----
-// 被动回复用的 msg_id 有效期：群 5 分钟、好友 1 小时（用户口径）。超窗的 msg_id 发出去会失败，
-// 所以按各自窗口取最近一条即可；拿不到就传空 msgid 走主动发送。
-static const qint64 GROUP_MSGID_WINDOW_SECS  = 5 * 60;      // 群消息：5 分钟
-static const qint64 FRIEND_MSGID_WINDOW_SECS = 60 * 60;     // 好友/单聊：1 小时
+// ---- 被动回复 msgid 的有效窗口（2026-10-11 建，2026-11-24 群窗口 5 分钟 → 1 小时）----
+// 被动回复用的 msg_id 有效期：群 / 好友**都是 1 小时**（用户实测口径）。超窗的 msg_id 发出去会被
+// 平台拒掉，而批量推送/订阅推送发完就把目标从列表里划掉了（不重试）→ 等于**静默丢消息**，
+// 所以宁可保守一点，两个窗口都留 60 秒余量，别踩在过期边界上。
+// 拿不到 msgid 就传空走主动发送，那条路只是吃分钟额度，不会丢。
+static const qint64 MSGID_SAFETY_SECS        = 60;                    // 边界安全余量
+static const qint64 GROUP_MSGID_WINDOW_SECS  = 60 * 60 - MSGID_SAFETY_SECS;   // 群消息：1 小时
+static const qint64 FRIEND_MSGID_WINDOW_SECS = 60 * 60 - MSGID_SAFETY_SECS;   // 好友/单聊：1 小时
 
 // ---- SQLite 参数 ----
 // cache_size 是「负值 = KB」，这里是**硬上限**：不管 logs.db 是 200MB 还是 2GB，
@@ -515,9 +518,10 @@ void LogDB::recordMsgId(const QString &appid, const QString &conv, const QString
 
     // 过期清理：最多 5 分钟扫一次全表。条目数 = 会话数（每会话只留一条，天然有界），
     // 这里只是为了把「退群 / 再也不说话」的会话吐出去，正常规模根本走不到。
+    // 裁决线取「两个窗口里更长的那个」，否则群/好友窗口不一致时会把还活着的条目删掉。
     if (now - m_msgIdSweptAt >= 300) {
         m_msgIdSweptAt = now;
-        const qint64 cutoff = now - FRIEND_MSGID_WINDOW_SECS;
+        const qint64 cutoff = now - qMax(GROUP_MSGID_WINDOW_SECS, FRIEND_MSGID_WINDOW_SECS);
         for (auto bit = m_msgIds.begin(); bit != m_msgIds.end(); ) {
             QHash<QString, MsgIdEntry> &bucket = bit.value();
             for (auto it = bucket.begin(); it != bucket.end(); ) {

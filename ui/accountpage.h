@@ -4,6 +4,8 @@
 #include <QWidget>
 #include <qpushbutton.h>
 #include <QSet>
+#include <QPointer>
+#include <functional>
 #include "accountinfo.h"
 
 class AddAccountDialog;
@@ -11,6 +13,7 @@ class CardWidget;
 class QScrollArea;
 class QVBoxLayout;
 class QLabel;
+class QDialog;
 
 // 账号页（列表式布局）
 //   左列：账号卡片（一列排布，整卡可点击选中）+ 底部 [+]
@@ -47,6 +50,11 @@ private:
     AccountInfo* findAccount(int appid);
     void removeAccountNow(int appid);   // 真正删掉账号（下线并等待 1 秒后才调用）
 
+    // ---- WS / Webhook 切换（登录态只在内存，按开发者 QQ 号分开存，见 core/devlogin.h）----
+    void onConnectModeRequested(int targetType);   // 右侧表单里点了 WebSocket / Webhook 单选
+    void runConnectModeSwitch(int appid, int action, const QString &webhookUrl, bool forceLogin = false);
+    void showDevQrDialog(int appid, std::function<void(bool)> afterLogin);
+
     QScrollArea *m_scrollArea = nullptr;
     QWidget *m_containerWidget = nullptr;
     QVBoxLayout *m_cardLayout = nullptr;
@@ -55,6 +63,7 @@ private:
     AddAccountDialog *m_editor = nullptr;   // 右侧嵌入的配置面板
     QLabel *m_editorHint = nullptr;
     QPushButton *m_saveSelBtn = nullptr;
+    QPointer<QDialog> m_devQrDialog;        // 开放平台扫码窗口（同一时间只会有一个）
 
     int m_selectedAppid = 0;    // 0 = 没有选中任何账号
     bool m_newMode = false;     // 编辑器处于“新建账号”状态

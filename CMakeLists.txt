@@ -159,6 +159,7 @@ set(PROJECT_SOURCES_ALL
     python/python_api.cpp
     core/ahocorasick.h
     core/qq_bind_login.h
+    core/devlogin.h core/devlogin.cpp
     plugin/node_process.h plugin/node_process.cpp
     plugin/node_plugin_manager.h plugin/node_plugin_manager.cpp
     core/placeholderlineedit.h core/placeholderlineedit.cpp

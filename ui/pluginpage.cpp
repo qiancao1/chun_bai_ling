@@ -7,6 +7,10 @@
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QPixmap>
+#include <QDialog>
+#include <QDialogButtonBox>   // 「导入」弹窗的按钮行
+#include <QClipboard>          // 「导入」打开时自动带出剪贴板里的 JSON
+#include <QProgressDialog>     // 「导入」下载 / 解压期间的忙碌提示（非模态，不能挡事件循环）
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QHBoxLayout>
@@ -28,6 +32,7 @@
 
 #include "pluginmarketwindow.h"
 #include "plugininstaller.h"  // PluginInstaller::pluginsRootDir()：文件对话框默认定位到 <程序目录>/plugins
+#include "pluginimporter.h"   // 「导入」：粘贴 JSON → 下载 → 暂存解压 → 换入并加载
 #include "ruleeditdialog.h"   // 「编辑指令」独立页面
 #include "shoppricedialog.h"  // 「商品定价」独立页面（铃铛商店按机器人改价）
 #include "global.h"
@@ -373,10 +378,13 @@ void PluginPage::setupUi()
     addPluginBtn  = new QPushButton("添加-DLL");
     addScriptBtn  = new QPushButton("添加-脚本");     // Python / JS 合并：选目录后按 main.py / main.js 自动分流
     addScriptBtn->setToolTip("选择插件文件夹（内含 main.py 或 main.js）");
+    QPushButton *importBtn = new QPushButton("导入");  // 从 JSON 导入（与插件市场同一份格式）
+    importBtn->setToolTip("粘贴插件市场的 JSON（含 downloadUrl）→ 自动下载并安装");
 
     QHBoxLayout *btnRow = new QHBoxLayout;
     btnRow->addWidget(addPluginBtn);
     btnRow->addWidget(addScriptBtn);
+    btnRow->addWidget(importBtn);
     leftLayout->addWidget(listTitle);
     leftLayout->addWidget(pluginListWidget);
     leftLayout->addLayout(btnRow);
@@ -575,6 +583,7 @@ void PluginPage::setupUi()
     connect(pluginListWidget, &QListWidget::currentRowChanged, this, &PluginPage::onPluginSelected);
     connect(addPluginBtn, &QPushButton::clicked, [this](){ LoadPlugin_DLL(); });
     connect(addScriptBtn, &QPushButton::clicked, [this](){ LoadPlugin_Script(); });
+    connect(importBtn,    &QPushButton::clicked, [this](){ importPluginFromJson(); });
 
 
     connect(setBtn, &QPushButton::clicked, [this](){
@@ -4601,6 +4610,20 @@ bool PluginPage::uninstall_PluginForReinstall(int index)
     return uninstall_Plugin2(index);
 }
 
+// 按**落地目录**找已载入的插件（返回下标，找不到 -1）。
+// 给「从 JSON 导入」的覆盖安装用：JSON 里的 id 是作者手写的市场 id，未必和插件自己
+// 注册的 id 一致（Python / JS 尤其常见）；只按 id 找不到就会漏卸旧实例，
+// 结果 7z 换目录时 .pyd / 依赖 DLL 还锁着 → 「可能有文件正在被占用」。
+int PluginPage::findPluginIndexByInstallDir(const QString &absDir) const
+{
+    const QString key = reinstallKey(absDir);   // 归一化成「绝对目录 + cleanPath」
+    if (key.isEmpty()) return -1;
+    for (int i = 0; i < m_pluginList.size(); ++i) {
+        if (reinstallKey(m_pluginList[i].path) == key) return i;
+    }
+    return -1;
+}
+
 bool PluginPage::uninstall_Plugin2(int index)
 {
     if (index < 0 || index >= m_pluginList.length()) return false;
@@ -5060,6 +5083,202 @@ void PluginPage::LoadPlugin_Script()
         QMessageBox::warning(this, "错误",
                              "所选文件夹里既没有 main.py 也没有 main.js，不是有效的插件目录。");
     }
+}
+
+// ==================== 「导入」：粘贴插件市场 JSON 下载安装 ====================
+// 与插件市场同一份数据格式（id / name / index / type / downloadUrl / downloadUrl_linux …），
+// 区别只是市场从接口拉列表，这里由用户把某一条直接粘进来。
+//
+// 时序（别乱调）：
+//   主线程：弹窗 → 解析 → 平台包 / 7za 预检查 → 确认 → 显示忙碌框 → 起后台线程 → 立刻返回事件循环
+//   后台线程：下载 → 解压到 plugins/<名字>.importing → 探测入口（最耗时的三步，必须在后台）
+//   主线程：卸载同 id 旧实例 → 删旧目录 → 暂存目录改名换入 → 按类型加载（installFromMeta 投回）
+//
+// ⚠ 进度框必须是**非模态**：换入 / 加载那一步走 BlockingQueuedConnection，
+//   主线程得在跑事件循环才收得到 —— 用 exec() 或阻塞等线程结束都会死锁。
+void PluginPage::importPluginFromJson()
+{
+    // 一次只允许一个：下载 + 解压是后台线程，两个同时跑会往同一个 .importing 目录里写
+    if (m_importingPlugin) {
+        QMessageBox::information(this, "从 JSON 导入", "上一次导入还没结束，请等它装完再试。");
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("从 JSON 导入插件");
+    dlg.resize(640, 500);
+
+    QVBoxLayout *v = new QVBoxLayout(&dlg);
+
+    QLabel *tip = new QLabel(
+        "把插件 JSON 粘到下面（打开时会自动填入剪贴板里的内容，没有就改下面这份模板）。\n"
+        "name = 插件名，安装时用它建 plugins 下的文件夹，别带 \\ / : * ? \" < > | 这些字符；\n"
+        "index = 压缩包内入口 DLL 名（如 qiancao_videoparse），Python / JS 插件可不写；\n"
+        "downloadUrl = 下载地址，Linux 原生库再补 downloadUrl_linux（Python / JS 不需要）。\n"
+        "点「开始导入」就会下载 → 解压到 plugins/<插件名>/ → 载入，已装过的会先卸旧版本再覆盖。\n"
+        "行尾的 <-- 说明文字会自动忽略，不用手动删。\n"
+        "如果你是插件作者 可以提供这个json 粘贴到框架快速导入",
+        &dlg);
+    tip->setWordWrap(true);
+    tip->setStyleSheet("color: #444444;");
+    v->addWidget(tip);
+
+    QPlainTextEdit *edit = new QPlainTextEdit(&dlg);
+    QString text1 =         "{\n"
+                           "  \"name\": \"视频解析\",<--插件名字 会以这个创建文件夹 请勿 非法字符 <>等\n"
+                           "  \"index\": \"qiancao_videoparse\",<--DLL类型专属 压缩包内入口dll名 如 qiancao_videoparse.dll python JS 插件可空\n"
+                           "  \"downloadUrl\": \"https://.../xxx.7z\", <--插件包下载链接\n"
+                           "  \"downloadUrl_linux\": \"https://.../xxx.7z\"<--Linux下载链接 注意python JS类不需要本项\n"
+                           "}";
+    edit->setPlainText(text1);
+
+    // 显式配色：全局 QSS 里有 QWidget{color} 这类规则，不写的话粘贴区可能变成白底浅字
+    edit->setStyleSheet("background: #ffffff; color: #222222; "
+                        "border: 1px solid #cccccc; border-radius: 4px; padding: 6px;");
+    {
+        const QString clip = QApplication::clipboard()->text().trimmed();
+        if (clip.startsWith('{') || clip.startsWith('[')) edit->setPlainText(clip);
+    }
+    v->addWidget(edit, 1);
+
+    QDialogButtonBox *box = new QDialogButtonBox(&dlg);
+    QPushButton *okBtn     = box->addButton("开始导入", QDialogButtonBox::AcceptRole);
+    QPushButton *cancelBtn = box->addButton("取消", QDialogButtonBox::RejectRole);
+    okBtn->setDefault(true);
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    v->addWidget(box);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QString text = edit->toPlainText().trimmed();
+    if (text.isEmpty()) {
+        QMessageBox::information(this, "从 JSON 导入", "内容是空的，请先粘贴插件 JSON。");
+        return;
+    }
+
+    PluginInfo2 info;
+    QString perr;
+    if (!PluginImporter::parsePluginJson(text.toUtf8(), info, perr)) {
+        QMessageBox::warning(this, "JSON 解析失败", perr);
+        return;
+    }
+
+    const QString dispName = info.name.trimmed().isEmpty() ? info.id : info.name.trimmed();
+
+    // 按当前平台挑包（原生库：Windows=downloadUrl / Linux=downloadUrl_linux；Python / JS 复用通用包）
+    const QString dlUrl = PluginMarketMeta::activeDownloadUrl(info);
+    if (dlUrl.isEmpty()) {
+        QMessageBox::warning(this, "无法导入",
+                             QString("「%1」没有 %2 版本的包（JSON 里 %3 是空的）。")
+                                 .arg(dispName, PluginMarketMeta::platformName(),
+                                      PluginMarketMeta::downloadUrlFieldName(info.type)));
+        return;
+    }
+
+    // 模板里的占位地址（https://.../xxx.7z）host 解析出来是 "..." / 空 —— 直接拦，别去下一个空地址
+    {
+        const QUrl u(dlUrl);
+        if (!u.isValid() || u.host().isEmpty() || u.host() == QStringLiteral("...")) {
+            QMessageBox::warning(this, "下载地址无效",
+                                 QString("下载地址看起来还是模板占位符：\n%1\n\n"
+                                         "请把 downloadUrl 换成真实的插件包地址再试。").arg(dlUrl));
+            return;
+        }
+    }
+
+    // 解压工具预检查（与插件市场口径一致：Windows 找程序目录的 7za.exe，Linux 找 7zz / 7z / 7za）
+    {
+        QString zipErr;
+        if (PluginInstaller::resolveSevenZip(&zipErr).isEmpty()) {
+            QMessageBox::warning(this, "无法导入", zipErr);
+            return;
+        }
+    }
+
+    // 极简 JSON 不写 type：显示成「自动识别」，别让用户以为是缺字段
+    const QString typeText =
+        (info.type.trimmed().isEmpty() || info.type == QStringLiteral("未知"))
+            ? QStringLiteral("（未写，按包内容自动识别）")
+            : info.type;
+
+    // 落地目录：name 建文件夹（非法字符会被替换成下划线）
+    const QString installDir = PluginInstaller::installDirName(info);
+    const bool installed = (findPluginIndexByIdentity(info.id, info.name) >= 0)
+                           || (findPluginIndexByInstallDir(PluginInstaller::pluginsRootDir()
+                                                           + "/" + installDir) >= 0);
+
+    QStringList lines;
+    lines << QString("插件：%1").arg(dispName);
+    if (!info.versionName.trimmed().isEmpty()) lines << QString("版本：%1").arg(info.versionName);
+    if (!info.author.trimmed().isEmpty())      lines << QString("作者：%1").arg(info.author);
+    lines << QString("类型：%1").arg(typeText);
+    lines << QString("落地目录：plugins/%1/").arg(installDir);
+    lines << QString();
+    lines << QStringLiteral("下载地址：");
+    lines << dlUrl;
+    if (installed) {
+        lines << QString();
+        lines << QStringLiteral("注意：本机已经装过这个插件，导入会先卸载旧版本再装新的。");
+    }
+    if (QMessageBox::question(this, "确认导入", lines.join(QLatin1Char('\n')),
+                              QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok) {
+        return;
+    }
+
+    // ---- 忙碌提示（非模态，不挡事件循环）----
+    QProgressDialog *prog = new QProgressDialog(
+        QStringLiteral("正在下载并导入「%1」...\n大插件可能要几分钟，请稍候。").arg(dispName),
+        QString(), 0, 0, this);
+    prog->setWindowTitle("导入插件");
+    prog->setWindowModality(Qt::NonModal);
+    prog->setCancelButton(nullptr);                       // 中途取消会留下半套文件，干脆不给取消
+    prog->setWindowFlag(Qt::WindowCloseButtonHint, false);
+    prog->setMinimumDuration(0);
+    prog->setAutoClose(false);
+    prog->setAutoReset(false);
+    prog->setMinimumWidth(400);
+    prog->show();
+
+    QPointer<PluginPage> self(this);
+    QPointer<QProgressDialog> progPtr(prog);
+    m_importingPlugin = true;      // 与开头的守卫配对，收口时在主线程复位
+
+    QThread *th = QThread::create([self, progPtr, info]() {
+        QString note;
+        QString err;
+        // 下载 / 解压跑在后台线程，异常必须在这里兜住 —— 漏出去就是 std::terminate，整个程序退出
+        try {
+            err = PluginImporter::installFromMeta(info, note);
+        } catch (const std::exception &e) {
+            err = QStringLiteral("内部异常：%1").arg(QString::fromUtf8(e.what()));
+        } catch (...) {
+            err = QStringLiteral("内部未知异常");
+        }
+
+        // 收口回主线程：复位在途标记、关进度框、写日志、弹结果
+        QMetaObject::invokeMethod(qApp, [self, progPtr, info, err, note]() {
+            if (progPtr) { progPtr->close(); progPtr->deleteLater(); }
+            if (!self) return;
+            self.data()->m_importingPlugin = false;
+
+            const QString name = info.name.trimmed().isEmpty() ? info.id : info.name.trimmed();
+            if (!err.isEmpty()) {
+                AppendEventLog("[导入插件] " + name + " 失败：" + err, 0xff);
+                QMessageBox::warning(self, "导入失败", QString("「%1」导入失败：\n%2").arg(name, err));
+                return;
+            }
+
+            QString msg = QString("已导入「%1」").arg(name);
+            if (!info.versionName.trimmed().isEmpty()) msg += " " + info.versionName;
+            if (!note.isEmpty()) msg += "\n\n" + note;
+            AppendEventLog("[导入插件] " + name);
+            QMessageBox::information(self, "导入完成", msg);
+        }, Qt::QueuedConnection);
+    });
+    // 线程跑完自删（finished 在 worker 线程发出，th 属于主线程 → 自动排队到主线程执行）
+    connect(th, &QThread::finished, th, &QObject::deleteLater);
+    th->start();
 }
 
 

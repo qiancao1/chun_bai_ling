@@ -39,6 +39,7 @@
 #include <QElapsedTimer>
 #include <thread>
 #include <openssl/evp.h>
+#include <openssl/err.h>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -2286,18 +2287,32 @@ void QQBotClient::onTextMessageReceived(const QString &message) {
     auto *task = new ___tdxx(this, message);
     QThreadPool::globalInstance()->start(task);
 }
+// 取 OpenSSL 错误队列文本（诊断用；Ed25519 走 EVP_DigestSign* 失败时才有内容）
+static QString sslLastErrorText() {
+    QStringList out;
+    unsigned long e;
+    while ((e = ERR_get_error()) != 0)
+        out << QString::fromLatin1(ERR_error_string(e, nullptr));
+    return out.join("; ");
+}
+
 QString webhook_sig(const QJsonObject &obj, const QString &secret) {
+    ERR_clear_error();   // 清掉可能残留的旧错误，避免失败日志里混进无关信息
     QJsonObject d = obj.value("d").toObject();
     QString plain_token = d.value("plain_token").toString();
     QString event_ts = d.value("event_ts").toString();
-
+    AppendEventLog("webhook 验证："+plain_token+"|"+event_ts);
     if (plain_token.isEmpty() || event_ts.isEmpty()) {
-        qWarning() << "Missing plain_token or event_ts";
+        AppendEventLog("Missing plain_token or event_ts");
         return QString();
     }
 
     // 生成种子：重复 secret 直到 >= 32 字节，截取前 32 字节
     QByteArray seed = secret.toUtf8();
+    if (seed.isEmpty()) {   // ⚠ 空 secret 会让下面的 while 永远不增长 → 死循环卡住整条 HTTP 线程
+        AppendEventLog("secret 为空，无法签名");
+        return QString();
+    }
     while (seed.size() < 32) {
         seed.append(seed);
     }
@@ -2311,7 +2326,7 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
         seed.size()
         );
     if (!pkey) {
-        qWarning() << "创建 Ed25519 私钥失败";
+        AppendEventLog("创建 Ed25519 私钥失败");
         return QString();
     }
 
@@ -2319,31 +2334,36 @@ QString webhook_sig(const QJsonObject &obj, const QString &secret) {
     QByteArray message = event_ts.toUtf8() + plain_token.toUtf8();
 
     // 签名
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, nullptr);
-    if (!ctx) {
-        qWarning() << "创建上下文失败";
+    // ⚠ Ed25519 是纯 one-shot 算法：1.1.1 的 ed25519_pkey_meth 里 sign_init / sign 两个槽
+    //   都是 NULL（只有 digestsign / digestverify），所以 EVP_PKEY_sign_init() 必然返回 -2
+    //   OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE。必须用 EVP_DigestSign*，且 md 参数传 nullptr。
+    EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+    if (!mctx) {
+        AppendEventLog("创建 MD 上下文失败");
         EVP_PKEY_free(pkey);
         return QString();
     }
-    if (EVP_PKEY_sign_init(ctx) <= 0) {
-        qWarning() << "初始化签名失败";
-        EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_CTX *ctx = nullptr;
+    if (EVP_DigestSignInit(mctx, &ctx, nullptr, nullptr, pkey) <= 0) {
+        AppendEventLog("初始化签名失败：" + sslLastErrorText());
+        EVP_MD_CTX_free(mctx);
         EVP_PKEY_free(pkey);
         return QString();
     }
 
     unsigned char signature[64];
     size_t siglen = sizeof(signature);
-    int ret = EVP_PKEY_sign(ctx,
-                            signature,
-                            &siglen,
-                            reinterpret_cast<const unsigned char*>(message.constData()),
-                            message.size());
-    EVP_PKEY_CTX_free(ctx);
+    int ret = EVP_DigestSign(mctx,
+                             signature,
+                             &siglen,
+                             reinterpret_cast<const unsigned char*>(message.constData()),
+                             static_cast<size_t>(message.size()));
+    const QString sigErr = (ret != 1) ? sslLastErrorText() : QString();
+    EVP_MD_CTX_free(mctx);
     EVP_PKEY_free(pkey);
 
     if (ret != 1 || siglen != 64) {
-        qWarning() << "签名失败";
+        AppendEventLog("签名失败：" + sigErr);
         return QString();
     }
 

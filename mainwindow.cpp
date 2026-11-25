@@ -83,11 +83,18 @@
 #include <QRandomGenerator>  // 窗口描边色每次启动随机（randomFrameBorderColor）
 
 
-#define APP_VERSION_STR "v1.6.1.207"
-#define APP_BUILD_NUMBER 207
+#define APP_VERSION_STR "v1.6.2.212"
+#define APP_BUILD_NUMBER 212
 QStackedWidget *stackedWidget=nullptr;
 QString Homev=R"(
 # 更新日志🌸
+## v1.6.2.212  (2026-11-25)
+- 修复 webhook签名
+- 增加 json导入插件 可以使用其他 插件作者提供的 json代码 快速导入
+- 增加 快捷切换webhook ws
+- 修改 ws webhook 沙箱 标签颜色
+- 增加 设置增加获取公网ip
+
 ## v1.6.1.207  (2026-11-22)
 - 修复 踢人api 以及其他 参数用错的问题
 - 修复 linux 更新按钮无效问题

@@ -658,7 +658,7 @@ private:
     void signAggArmTimer();             // 拉起定时器（跨线程会投递到主线程）
     void onSignAggTimeout();            // 定时器到点：把到期的拼成一条发掉
     void sendSignAggOne(const SignAgg &a);
-    static constexpr int kSignAggWaitMs = 3000;    // 起始等待
+    static constexpr int kSignAggWaitMs = 1500;    // 起始等待
     static constexpr int kSignAggMaxMs  = 10000;   // 总上限（插件太慢就不再等了）
     static constexpr int kSignAggTickMs = 500;     // 定时器粒度
 

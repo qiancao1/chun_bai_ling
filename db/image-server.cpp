@@ -869,6 +869,7 @@ static void handleRequest(QTcpSocket *socket)
                 handleGet(socket, path);
 
         } else if (method == "POST") {
+            //AppendEventLog("收到webhook 信息："+body);
             if (path.startsWith("/webhook/"))
             {
                 sendResponse(socket, 200, "application/json",

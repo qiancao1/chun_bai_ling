@@ -664,7 +664,7 @@ static int scheduleSendState(const QString &resp)
 }
 
 // 一次性扫库，拿「该 appid 下所有会话还能用来被动回复的 msgid」
-//   isGroup=true → 群（最近 5 分钟）；false → 好友/单聊（最近 1 小时）
+//   isGroup=true → 群（最近 1 小时）；false → 好友/单聊（最近 1 小时）
 // 拿不到就是空表 → 调用方传空 msgid 走主动推送。
 // ⚠ 批量任务不要每个 target 都调一次（每次都要扫最近日志），一个 appid 一次触发扫一次即可。
 static QHash<QString, QStringList> loadReplyMsgIds(int appid, bool isGroup)
@@ -700,7 +700,7 @@ void processAppidTasks(int appid) {
     qint64 lastPrivateSendTime = 0;
 
     // ---- 被动回复 msgid：每个 appid 一次触发只扫一次库（懒加载）----
-    //   群 = 最近 5 分钟窗口，好友 = 最近 1 小时窗口，每会话取最新一条；取不到就传空 msgid 走主动发送
+    //   群 / 好友都是 1 小时窗口（留 60 秒余量），每会话取最新一条；取不到就传空 msgid 走主动发送
     QHash<QString, QStringList> replyIdsG, replyIdsF;
     bool loadedG = false, loadedF = false;
     auto msgIdFor = [&](int type, const QString &openid) -> QString {
@@ -887,7 +887,7 @@ void processAppidTasks(int appid) {
             }
 
 
-            // 混合发送：优先用「该群最近 5 分钟内收到的消息 msgid」走被动回复；取不到就传空走主动发送
+            // 混合发送：优先用「该群最近 1 小时内收到的消息 msgid」走被动回复；取不到就传空走主动发送
             QString msgid;
             if (!data.isEmpty()) msgid = msgIdFor(type, openid);
 

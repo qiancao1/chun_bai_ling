@@ -62,14 +62,14 @@ public:
     // ===== 被动回复用的 msgid（2026-11-13：改为纯内存）=====
     // 收到消息时登记一条，批量/定时任务直接内存取 —— 不再反扫日志库（旧实现一次扫 2 万条
     // 并逐条 deserializeMessage，几十毫秒且全程持 m_mutex）。
-    //   isGroup = true  → 群：只认最近 5 分钟内登记的
-    //   isGroup = false → 好友/单聊：最近 1 小时
+    //   isGroup = true  → 群：只认最近 1 小时（留 60 秒余量）内登记的
+    //   isGroup = false → 好友/单聊：最近 1 小时（同上）
     // ⚠ 只登记「用户发来的消息 id」；机器人自己发出去的 id（plugin_ch）绝不能用于发送。
     //   拿不到就返回空表，调用方传空 msgid 走主动发送（群 60 条/分钟、好友 30 条/分钟）。
     QStringList getRecentMsgIds(const QString &appid, const QString &groupId, bool isGroup,
                                 int maxCount = 5) const;
     // 一次取该 appid 下所有会话的 msgid（批量推送用）
-    //   返回 <会话id, msgid 列表>；isGroup 决定时间窗（群 5 分钟 / 好友 1 小时）
+    //   返回 <会话id, msgid 列表>；isGroup 决定时间窗（群 1 小时 / 好友 1 小时）
     QHash<QString, QStringList> getRecentMsgIdMap(const QString &appid, bool isGroup,
                                                   int maxCountPerConv = 5) const;
     // 登记一条可用于被动回复的 msgid（收消息时调，见 qqbotclient.cpp）

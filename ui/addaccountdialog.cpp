@@ -15,10 +15,55 @@
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QRadioButton>
+#include <QToolButton>
+#include <QIcon>
 #include <QMessageBox>
 #include <QEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <QApplication>
 #include <qurlquery.h>
 extern QList<PluginInfo> m_pluginList;
+
+// 连接方式小图标（14px 自绘向量图：不占资源文件体积，高 DPI 下也清晰）
+//   WebSocket -> ⇄  双向箭头（程序主动连腾讯，双向通信）
+//   Webhook   -> ↓  事件落到你的地址（腾讯把消息 POST 过来）
+static QPixmap modeIconPixmap(bool webhook, int size = 14)
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(qRound(size * dpr), qRound(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(0xFF, 0x7F, 0x32));      // 与页面主色一致
+    pen.setWidthF(1.5);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+
+    const qreal s = size;
+    if (!webhook) {
+        const qreal y1 = s * 0.34, y2 = s * 0.66;
+        const qreal h  = s * 0.16;
+        // 上面一根向右
+        p.drawLine(QPointF(s * 0.10, y1), QPointF(s * 0.82, y1));
+        p.drawLine(QPointF(s * 0.64, y1 - h), QPointF(s * 0.84, y1));
+        p.drawLine(QPointF(s * 0.64, y1 + h), QPointF(s * 0.84, y1));
+        // 下面一根向左
+        p.drawLine(QPointF(s * 0.90, y2), QPointF(s * 0.18, y2));
+        p.drawLine(QPointF(s * 0.36, y2 - h), QPointF(s * 0.16, y2));
+        p.drawLine(QPointF(s * 0.36, y2 + h), QPointF(s * 0.16, y2));
+    } else {
+        // 向下箭头 + 托盘
+        p.drawLine(QPointF(s * 0.50, s * 0.08), QPointF(s * 0.50, s * 0.62));
+        p.drawLine(QPointF(s * 0.28, s * 0.40), QPointF(s * 0.50, s * 0.64));
+        p.drawLine(QPointF(s * 0.72, s * 0.40), QPointF(s * 0.50, s * 0.64));
+        p.drawLine(QPointF(s * 0.14, s * 0.88), QPointF(s * 0.86, s * 0.88));
+    }
+    return pm;
+}
 
 QString m_taskId_login;
 QDialog *m_qrDialog =nullptr;
@@ -346,11 +391,58 @@ void AddAccountDialog::setupUI() {
     typeLayout->setContentsMargins(0, 0, 0, 0);
     typeLayout->setSpacing(4);
 
+    // 连接方式旁边的小按钮（自绘向量图标）：点它才会问「要不要同步到开放平台」，
+    // 点单选按钮本身只改本地配置（保存时写库），不会弹任何框。
+    auto *wsIcon = new QToolButton;
+    wsIcon->setIcon(QIcon(modeIconPixmap(false)));
+    wsIcon->setIconSize(QSize(14, 14));
+    wsIcon->setAutoRaise(true);                 // 平时无边框，悬停才浮出来
+    wsIcon->setCursor(Qt::PointingHandCursor);
+    wsIcon->setFixedSize(20, 20);
+    wsIcon->setToolTip(QStringLiteral(
+        "把 QQ 开放平台上的连接方式改成 WebSocket\n"
+        "（WebSocket：程序主动连腾讯，长连接双向通信，不需要公网 IP）"));
+
+    auto *whIcon = new QToolButton;
+    whIcon->setIcon(QIcon(modeIconPixmap(true)));
+    whIcon->setIconSize(QSize(14, 14));
+    whIcon->setAutoRaise(true);
+    whIcon->setCursor(Qt::PointingHandCursor);
+    whIcon->setFixedSize(20, 20);
+    whIcon->setToolTip(QStringLiteral(
+        "把 QQ 开放平台上的连接方式改成 Webhook\n"
+        "（Webhook：腾讯把事件 POST 到你的对外地址，需要公网可访问 + 在开放平台订阅事件）"));
+
+    m_wsRadio->setToolTip(QStringLiteral("WebSocket：程序主动连腾讯（长连接），只改本地配置；"
+                                         "要同步平台请点右边的小图标。"));
+    m_webhookRadio->setToolTip(QStringLiteral("Webhook：腾讯把事件 POST 到你的对外地址，只改本地配置；"
+                                              "要同步平台请点右边的小图标。"));
+
+    // 只有点「小图标」才触发开放平台切换
+    connect(wsIcon, &QToolButton::clicked, this, [this]() {
+        if (m_modeSwitchHandler) m_modeSwitchHandler(0);
+    });
+    connect(whIcon, &QToolButton::clicked, this, [this]() {
+        if (m_modeSwitchHandler) m_modeSwitchHandler(1);
+    });
+
+    QHBoxLayout *wsBox = new QHBoxLayout;
+    wsBox->setContentsMargins(0, 0, 0, 0);
+    wsBox->setSpacing(2);
+    wsBox->addWidget(m_wsRadio);
+    wsBox->addWidget(wsIcon);
+
+    QHBoxLayout *whBox = new QHBoxLayout;
+    whBox->setContentsMargins(0, 0, 0, 0);
+    whBox->setSpacing(2);
+    whBox->addWidget(m_webhookRadio);
+    whBox->addWidget(whIcon);
+
     QHBoxLayout *typeRow1 = new QHBoxLayout;
     typeRow1->setContentsMargins(0, 0, 0, 0);
     typeRow1->setSpacing(16);
-    typeRow1->addWidget(m_wsRadio);
-    typeRow1->addWidget(m_webhookRadio);
+    typeRow1->addLayout(wsBox);
+    typeRow1->addLayout(whBox);
     typeRow1->addWidget(m_sandboxCheckBox);
     typeRow1->addStretch();
 

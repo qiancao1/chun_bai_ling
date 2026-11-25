@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QRadioButton>
+#include <functional>
 #include "accountinfo.h"
 
 class QLineEdit;
@@ -25,6 +26,11 @@ public:
     void setEmbeddedMode(bool embedded);
     // 让 AppID 输入框获得焦点
     void focusAppId();
+
+    // 用户点了 WebSocket / Webhook 旁边的小图标（targetType 0=WS 1=Webhook）时回调给账号页：
+    // 账号页负责问「要不要同步改开放平台」并走扫码 → connect_info/modify。
+    // 点单选按钮本身不会触发它（那只是本地配置）；没设置回调时图标点了没反应。
+    void setModeSwitchHandler(std::function<void(int)> handler) { m_modeSwitchHandler = std::move(handler); }
 
 protected:
     // 监听 Secret 输入框的 获得/失去 焦点，切换「明文 / ***」
@@ -51,6 +57,7 @@ private:
 
     QRadioButton *m_wsRadio;
     QRadioButton *m_webhookRadio;
+    std::function<void(int)> m_modeSwitchHandler;   // 见 setModeSwitchHandler()
 
 
     // 回复设置控件

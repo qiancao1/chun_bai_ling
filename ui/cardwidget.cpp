@@ -53,8 +53,11 @@ void CardWidget::setupUI() {
     nameLayout->setSpacing(5);
     m_nicknameLabel = new QLabel;
     m_nicknameLabel->setStyleSheet("background: transparent; color: #17202A; font-weight: 800; font-size: 13px;");
+
     m_typeLabel = new QLabel;
     m_typeLabel->setStyleSheet("color: #000; font-size: 10px; background-color: #FF9E90; padding: 1px 7px; border-radius: 8px;");
+
+
     m_appidLabel = new QLabel;
     m_appidLabel->setStyleSheet("background: transparent; color: #8A94A6; font-size: 10px;");
     m_appidLabel->hide();
@@ -195,10 +198,12 @@ void CardWidget::refreshDisplay() {
     m_nicknameLabel->setToolTip(showNick == fullNick ? QString() : fullNick);
 
     if(m_info->type == 0 && m_info->sandbox){
-         m_typeLabel->setText("沙箱模式");
+        m_typeLabel->setText("沙箱模式");
+        m_typeLabel->setStyleSheet("color: #000; font-size: 10px; background-color: #C4F650; padding: 1px 7px; border-radius: 8px;");
     }else
     {
-         m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");
+        m_typeLabel->setText(m_info->type == 0 ? "ws" : "webhook");
+        m_typeLabel->setStyleSheet(QString("color: #000; font-size: 10px; background-color: %1; padding: 1px 7px; border-radius: 8px;").arg(m_info->type == 0 ? "#FD9D92" : "#FFA500"));
     }
 
 
